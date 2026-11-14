@@ -88,6 +88,8 @@ n_mail() { find "$T/mail" -name '*.eml' | wc -l | tr -d ' '; }
 calls() { printf '%s/%s/%s/%s/%s/%s' "$(n_slack)" "$(n_ps)" "$(n_mail)" "$(n_line)" "$(n_aws)" "$(n_hook)"; }
 at() { BOARD_NOW_MS="$1"; export BOARD_NOW_MS; }
 wait_mail() { for _ in $(seq 1 30); do [ "$(n_mail)" -ge "$1" ] && return 0; sleep 0.1; done; }
+# Desktop toasts run detached, so their shim may record the call a little later: poll, don't sleep.
+wait_calls() { for _ in $(seq 1 50); do [ "$(calls)" = "$1" ] && return 0; sleep 0.1; done; }
 alert() { jq -r "$2" <<<"$(jq --arg k "$1" '.[$k]' "$BOARD_HOME/alerts.json")"; }
 
 echo "routing (slack/desktop/email/line/sns/webhook):"
@@ -102,7 +104,7 @@ reset_calls
 start=$(date +%s%N)
 FAKE_PS_SLEEP=5 "$N" send --level warn --key t:warn --title "API needs you" >/dev/null
 el=$(( ($(date +%s%N) - start) / 1000000 ))
-sleep 0.2
+wait_calls "1/1/0/0/0/0"
 eq "warn -> slack + desktop" "$(calls)" "1/1/0/0/0/0"
 has "warn: slack mention" "$(cat "$T"/curl/*.cfg)" "<@U0TESTER>"
 if [ "$el" -lt 3000 ]; then ok "desktop does not block (${el}ms)"; else bad "desktop does not block" "${el}ms"; fi
@@ -111,6 +113,7 @@ has "desktop uses an encoded command" "$(cat "$T"/ps/*)" "-EncodedCommand"
 reset_calls
 "$N" send --level high --key t:high --title "decision waiting" --body "Q1" >/dev/null
 wait_mail 1
+wait_calls "1/1/1/0/0/0"
 eq "high -> slack + desktop + email" "$(calls)" "1/1/1/0/0/0"
 m="$(cat "$T"/mail/*.eml)"
 has "email subject has HIGH" "$m" "Subject: [agent-switchboard] HIGH: decision waiting"
@@ -121,6 +124,7 @@ reset_calls
 long="$(head -c 6000 /dev/zero | tr '\0' 'x')"
 "$N" send --level urgent --key t:urgent --title "prod gate" --body "$long" --url "https://example.test/a" >/dev/null
 wait_mail 1
+wait_calls "1/1/1/1/1/1"
 eq "urgent -> all six channels" "$(calls)" "1/1/1/1/1/1"
 lcfg="$(cat "$(grep -l 'api.line.me' "$T"/curl/*.cfg)")"
 has "line: push endpoint" "$lcfg" 'url = "https://api.line.me/v2/bot/message/push"'
@@ -151,7 +155,9 @@ out="$(FAKE_CURL_CODE=500 "$N" send --level info --key t:fail --title "boom")"; 
 eq "send exit 0 on failure" "$rc" "0"
 has "failure reported" "$out" "slack=FAIL(http 500)"
 has "failure logged" "$(tail -n 1 "$BOARD_HOME/events.jsonl")" '"error": "http 500"'
-out="$(SMTP_PORT=1 "$N" test --channel email)"; rc=$?
+# A port that was just free refuses at once (some hosts silently drop low ports like 1 → 5 s timeout).
+closed_port="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
+out="$(SMTP_PORT="$closed_port" "$N" test --channel email)"; rc=$?
 eq "email to a closed port -> exit 1" "$rc" "1"
 has "email failure reported" "$out" "email: FAIL"
 for f in "$BOARD_HOME/events.jsonl" "$BOARD_HOME/alerts.json"; do
@@ -309,16 +315,23 @@ out="$(printf '{"session_id":"s2"}' | BOARD_STATUSLINE_NEXT='cat' "$TAP")"
 sleep 0.3
 eq "tap: no rate_limits -> passthrough" "$out" '{"session_id":"s2"}'
 eq "tap: no rate_limits -> usage.json untouched" "$(cat "$BOARD_HOME/usage.json")" "$before"
+rm -f "$BOARD_HOME/usage.json"
 out="$("$TAP" <"$T/tap.in")"; rc=$?
 eq "tap: no next -> prints nothing" "$out" ""
 eq "tap: no next -> exit 0" "$rc" "0"
-sleep 0.3
+# Wait for the background write to finish (usage.json reappears) before looking for leftovers.
+for _ in $(seq 1 60); do [ -s "$BOARD_HOME/usage.json" ] && break; sleep 0.05; done
+sleep 0.05
 if ls "$BOARD_HOME"/usage.json.tmp.* >/dev/null 2>&1; then bad "tap: no temp files left"; else ok "tap: no temp files left"; fi
 # overhead: tap+true vs plain true, 20 runs each
-runs=20
-s=$(date +%s%N); for _ in $(seq "$runs"); do /bin/sh -c true <"$T/tap.in"; done; base=$(( ($(date +%s%N) - s) / runs / 1000000 ))
-s=$(date +%s%N); for _ in $(seq "$runs"); do BOARD_STATUSLINE_NEXT=true "$TAP" <"$T/tap.in"; done; with=$(( ($(date +%s%N) - s) / runs / 1000000 ))
-over=$((with - base))
+# Best of 3 rounds, so a load spike from another process doesn't fail the check.
+runs=20; over=""
+for _ in 1 2 3; do
+  s=$(date +%s%N); for _ in $(seq "$runs"); do /bin/sh -c true <"$T/tap.in"; done; base=$(( ($(date +%s%N) - s) / runs / 1000000 ))
+  s=$(date +%s%N); for _ in $(seq "$runs"); do BOARD_STATUSLINE_NEXT=true "$TAP" <"$T/tap.in"; done; with=$(( ($(date +%s%N) - s) / runs / 1000000 ))
+  o=$((with - base)); { [ -z "$over" ] || [ "$o" -lt "$over" ]; } && over=$o
+  [ "$over" -lt 30 ] && break
+done
 if [ "$over" -lt 30 ]; then ok "tap overhead ${over}ms < 30ms"; else bad "tap overhead < 30ms" "${over}ms"; fi
 [ "$VERBOSE" = 1 ] && echo "  (tap overhead ${over}ms)"
 

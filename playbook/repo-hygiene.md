@@ -63,6 +63,24 @@ under `tests/fixtures/`. Don't widen the allowlist to get a commit through. Fix 
 - gitleaks-action needs a free `GITLEAKS_LICENSE` secret when the repository belongs to a GitHub
   **organization**. Personal repos don't need it.
 
+### Scanning by hand: scan what is tracked, not the directory
+
+`gitleaks dir .` scans **every file in the folder, including ignored ones**: `tmp-local/.env`, your
+real webhook URLs, local tokens. It reports secrets that will never be committed. Worse, its report
+(and any baseline you save from it) now holds those secrets, and that report is easy to paste into an
+issue. To check what a commit or push would actually publish, scan the tracked set instead:
+
+```bash
+gitleaks git --redact .                         # every commit in the history
+
+# only the tracked files, as staged in the index (ignored files are never copied)
+tmp=$(mktemp -d) && git checkout-index -a --prefix="$tmp/" \
+  && gitleaks dir --redact -c .gitleaks.toml "$tmp"; rm -rf "$tmp"
+```
+
+Or just rely on the pre-commit hook (staged changes) and CI (pushed commits), which only ever see
+tracked content. Always pass `--redact` when you scan by hand.
+
 The banned-terms list is **not** available in CI by design (see below). If you want CI to check it
 too, store the list as a CI secret and write it to `tmp-local/banned-terms.txt` in the job. Never
 commit it.

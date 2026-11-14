@@ -8,10 +8,12 @@
 #   - creates $BOARD_HOME (default ~/.agent-switchboard) and its subdirectories
 #   - merges hooks/board-hook.sh into ~/.claude/settings.json for the events it handles,
 #     keeping every existing hook; backs the file up to settings.json.bak-<date> first.
+#   - wraps the statusLine command with hooks/board-statusline-tap.sh (usage meter); the previous
+#     statusLine is saved to $BOARD_HOME/statusline.prev.json and restored by --uninstall.
 #     Running it again changes nothing.
 #
 #   --dry-run    print the planned actions and the settings.json diff; change nothing
-#   --uninstall  remove the board-hook entries and the ~/.local/bin symlinks
+#   --uninstall  remove the board-hook entries, restore the statusLine, remove the symlinks
 #
 # Env: BOARD_HOME, CLAUDE_SETTINGS (default ~/.claude/settings.json), BIN_DIR (default ~/.local/bin)
 set -u
@@ -89,6 +91,41 @@ else
 fi
 new="$(jq --indent 2 --arg hook "$HOOK" --argjson events "$EVENTS" "$filter" <<<"$current")" \
   || { echo "install.sh: failed to merge settings" >&2; exit 1; }
+
+# ---- statusLine tap (usage meter): wrap the existing statusline command, keep its other keys.
+TAP="$REPO/hooks/board-statusline-tap.sh"
+SL_PREV="$BOARD_HOME/statusline.prev.json"
+cur_sl="$(jq -r '.statusLine.command // empty' <<<"$current")"
+sl_save=0
+if [ "$uninstall" = 1 ]; then
+  case "$cur_sl" in
+    *board-statusline-tap.sh*)
+      if [ -f "$SL_PREV" ]; then
+        new="$(jq --indent 2 --slurpfile p "$SL_PREV" \
+          'if $p[0] == null then del(.statusLine) else .statusLine = $p[0] end' <<<"$new")"
+        say "  statusLine: restore the previous setting from $SL_PREV"
+      elif [ "$cur_sl" = "$TAP" ]; then
+        new="$(jq --indent 2 'del(.statusLine)' <<<"$new")"
+        say "  statusLine: remove the tap (there was no previous statusline)"
+      else
+        say "  statusLine: WARNING — $SL_PREV is missing; the tap is left in place. Edit statusLine by hand."
+      fi ;;
+  esac
+else
+  case "$cur_sl" in
+    *board-statusline-tap.sh*) say "  statusLine: tap already installed" ;;
+    *)
+      if [ -n "$cur_sl" ]; then
+        q="$(printf '%s' "$cur_sl" | sed "s/'/'\\\\''/g")"   # single-quote for sh
+        sl_cmd="BOARD_STATUSLINE_NEXT='$q' $TAP"
+      else
+        sl_cmd="$TAP"   # no previous statusline: the tap prints nothing
+      fi
+      new="$(jq --indent 2 --arg c "$sl_cmd" '.statusLine = ((.statusLine // {}) + {type: "command", command: $c})' <<<"$new")"
+      sl_save=1
+      say "  statusLine: wrap with the usage tap (previous setting saved to $SL_PREV)" ;;
+  esac
+fi
 old_pretty="$(jq --indent 2 . <<<"$current")"
 
 if [ "$new" = "$old_pretty" ]; then
@@ -100,6 +137,10 @@ else
       <(printf '%s\n' "$old_pretty") <(printf '%s\n' "$new") | sed 's/^/    /'
   else
     mkdir -p "$(dirname "$SETTINGS")"
+    if [ "$sl_save" = 1 ]; then
+      mkdir -p "$BOARD_HOME"
+      jq '.statusLine // null' <<<"$current" > "$SL_PREV"
+    fi
     if [ -f "$SETTINGS" ]; then
       backup="$SETTINGS.bak-$(date +%Y%m%d-%H%M%S)"
       cp -p "$SETTINGS" "$backup"
@@ -108,6 +149,10 @@ else
     tmp="$SETTINGS.tmp.$$"
     printf '%s\n' "$new" > "$tmp" && mv -f "$tmp" "$SETTINGS"
     say "  settings.json updated"
+    if [ "$uninstall" = 1 ] && [ -f "$SL_PREV" ] && \
+       ! jq -e '.statusLine.command // "" | test("board-statusline-tap\\.sh")' "$SETTINGS" >/dev/null 2>&1; then
+      rm -f "$SL_PREV"
+    fi
   fi
 fi
 

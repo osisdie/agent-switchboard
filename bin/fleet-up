@@ -11,7 +11,8 @@
 # i.e. a fresh session is started only when the resume attempt ends within
 # resume_fallback_seconds (default 15: "no such session"), never after a real session exits.
 # Without resume_name it just runs `claude -n CODE --remote-control CODE EXTRA`. With `collector: true` (default) it also makes sure a
-# tmux session `switchboard` runs board-collect.
+# tmux session `switchboard` runs board-collect, after `board-collect --baseline` when
+# $BOARD_HOME/alerts.json does not exist yet (no alert storm for conditions already open).
 #
 #   --dry-run    print what would be done, change nothing
 #   --only CODE  start just this session (even if autostart is false)
@@ -85,6 +86,15 @@ while IFS= read -r line; do
 done < <(python3 "$FLEET" sessions)
 
 if [ -z "$only" ] && [ "$(python3 "$FLEET" get collector true)" = true ]; then
+  # First start on this BOARD_HOME: ack whatever is already open, so only new conditions alert.
+  if [ ! -f "$BOARD_HOME/alerts.json" ]; then
+    log "alerts: no alerts.json yet — taking a baseline"
+    if [ "$dry" = 1 ]; then
+      echo "  would run: $REPO/bin/board-collect --baseline"
+    else
+      "$REPO/bin/board-collect" --baseline >> "$LOG" 2>&1 || log "alerts: baseline failed (collector will retry)"
+    fi
+  fi
   collector_running=0
   if [ -f "$BOARD_HOME/collect.lock" ] && ! flock -n "$BOARD_HOME/collect.lock" true 2>/dev/null; then
     collector_running=1

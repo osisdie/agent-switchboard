@@ -2,14 +2,16 @@
 """Build $BOARD_HOME/snapshot.json from the Claude Code session registry, the hook state
 files and the decision files (see docs/contract.md).
 
-Usage: collect.py [--no-notify] [--verbose]
+Usage: collect.py [--no-notify] [--baseline] [--verbose]
 
 - Writes snapshot.json atomically, and only when its content (excluding generated_at) changed.
 - Marks pending decisions `timeout` after decision_timeout_hours, and permission decisions
   `stale` once the session no longer shows that tool_use_id as pending.
-- Notifies (via `board notify`) on transitions into needs-you and on new pending decisions,
-  with a per-session cooldown (notify_cooldown_minutes), and exactly once per usage-limit
-  episode ($BOARD_HOME/limit.json, see lib/limit.py).
+- Alerts through lib/notify.py (board-notify): on transitions into needs-you, new pending
+  decisions and a new usage-limit episode, then notify.tick() on every run (escalation,
+  auto-ack, repeats, usage thresholds). --no-notify skips all of it.
+- Alert-storm guard: when $BOARD_HOME/alerts.json does not exist yet (first run), every
+  condition already open is acked as a baseline instead of alerted. --baseline does only that.
 - Adds the tasks ($BOARD_HOME/tasks/*.json) and the active usage limit to the snapshot.
 """
 import glob
@@ -22,6 +24,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import fleet  # noqa: E402
 import limit  # noqa: E402
+import notify  # noqa: E402
 
 FINAL = ("relayed", "stale", "timeout", "unauthorized")
 
@@ -207,63 +210,30 @@ def attach_tasks(sessions, tasks):
         s["stage"] = cur.get("stage") if cur else None
 
 
-def send(text, verbose):
-    board = os.path.join(fleet.REPO, "bin", "board")
-    try:
-        subprocess.run([board, "notify", text], timeout=15, check=False,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except (OSError, subprocess.SubprocessError):
-        pass
-    if verbose:
-        print("notify: %s" % text)
-
-
-def notify(home, cfg, prev, snap, now, verbose):
-    """prev may be None (first run): then only the usage-limit alert can fire."""
-    cooldown_ms = float(cfg.get("notify_cooldown_minutes") or 10) * 60 * 1000
-    cpath = os.path.join(home, "slack-cooldown.json")
-    cool = read_json(cpath) or {}
-    sent = False
-    lim = snap.get("limit")
-    if lim and cool.get("_limit_hit_at") != lim.get("hit_at"):
-        n = sum(1 for d in snap["decisions"] if d.get("status") == "pending")
-        send("[switchboard] usage limit hit (%s), resets ~%s; board frozen; decisions pending: %d" % (
-            lim.get("kind") or "unknown", limit.fmt_time(lim.get("resets_at"), now), n), verbose)
-        cool["_limit_hit_at"] = lim.get("hit_at")
-        sent = True
-    if prev is None:
-        if sent:
-            write_json_atomic(cpath, cool)
-        return
+def alert(prev, snap, verbose):
+    """Per-event alerts (board-notify), so the first alert does not wait for the next tick().
+    tick() is the safety net: it opens alerts for anything these calls miss."""
     prev_state = {s["code"]: s.get("state") for s in prev.get("sessions", [])}
     prev_pending = {d["id"] for d in prev.get("decisions", []) if d.get("status") == "pending"}
-    msgs = []  # (code, text)
     for s in snap["sessions"]:
         if s["state"] == "needs-you" and prev_state.get(s["code"]) != "needs-you":
-            p = s.get("pending") or {}
-            what = ("%s: %s" % (p.get("tool_name") or "tool", (p.get("summary") or "")[:120])) if p else "waiting"
-            msgs.append((s["code"], "[switchboard] %s needs you — %s" % (s["code"], what)))
-    for d in snap["decisions"]:
-        if d.get("status") == "pending" and d["id"] not in prev_pending:
-            code = d.get("from") or "?"
-            if d.get("kind") == "permission":
-                if any(c == code for c, _ in msgs):
-                    continue  # already covered by the needs-you message
-                text = "[switchboard] %s asks permission — %s: %s" % (
-                    code, d.get("tool_name") or "tool", (d.get("summary") or "")[:120])
-            else:
-                text = "[switchboard] %s asks: %s" % (code, (d.get("question") or "")[:300])
-            msgs.append((code, text))
-    for code, text in msgs:
-        if now - int(cool.get(code) or 0) < cooldown_ms:
+            r = notify.on_needs_you(s)
             if verbose:
-                print("cooldown: %s" % code)
+                print("alert: %s %s" % (r.get("key"), r.get("status")))
+    for d in snap["decisions"]:
+        if d.get("status") != "pending" or d["id"] in prev_pending:
             continue
-        send(text, verbose)
-        cool[code] = now
-        sent = True
-    if sent:
-        write_json_atomic(cpath, cool)
+        if d.get("kind") == "permission" and d.get("gate") != "production":
+            continue  # the session's needs-you alert covers it
+        r = notify.on_decision(d)
+        if verbose:
+            print("alert: %s %s" % (r.get("key"), r.get("status")))
+    lim = snap.get("limit")
+    if lim and (prev.get("limit") or {}).get("hit_at") != lim.get("hit_at"):
+        n = sum(1 for d in snap["decisions"] if d.get("status") == "pending")
+        r = notify.on_limit_hit(lim, n)
+        if verbose:
+            print("alert: %s %s" % (r.get("key"), r.get("status")))
 
 
 def main(argv):
@@ -290,14 +260,27 @@ def main(argv):
     prev_body = dict(prev) if isinstance(prev, dict) else None
     if prev_body is not None:
         prev_body.pop("generated_at", None)
-    if prev_body != body:
+    changed = prev_body != body
+    if changed:
         write_json_atomic(spath, snap)
         if verbose:
             print("snapshot: updated (%d sessions, %d decisions)" % (len(sessions), len(decisions)))
-        if "--no-notify" not in argv:
-            notify(home, cfg, prev if isinstance(prev, dict) else None, snap, now, verbose)
     elif verbose:
         print("snapshot: unchanged")
+
+    first = not os.path.exists(os.path.join(home, "alerts.json"))
+    if "--baseline" in argv or ("--no-notify" not in argv and first):
+        keys = notify.baseline()
+        if verbose or "--baseline" in argv:
+            print("alerts: baseline — %d open condition(s) acked%s" % (len(keys), (": " + ", ".join(keys)) if keys else ""))
+        if "--baseline" in argv:
+            return 0
+    elif "--no-notify" not in argv and changed and isinstance(prev, dict):
+        alert(prev, snap, verbose)
+    if "--no-notify" not in argv:
+        for r in notify.tick():
+            if verbose and r.get("status") not in (None, "deduped"):
+                print("tick: %s %s %s" % (r.get("key"), r.get("level"), r.get("status") or r.get("error")))
     return 0
 
 

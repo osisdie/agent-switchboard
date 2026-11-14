@@ -23,6 +23,7 @@
 #   board press CODE allow|deny --expect TOOL_USE_ID
 #                                              answer a permission prompt via tmux, after checks
 #   board notify "text"                        send a Slack message (SLACK_WEBHOOK_URL)
+#   board ack KEY [KEY...]                     acknowledge alerts (board-notify ack; glob ok)
 #   board doctor                               check dependencies and installation
 #
 # Env: BOARD_HOME (default ~/.agent-switchboard), BOARD_CONFIG_DIR (default <repo>/tmp-local
@@ -109,6 +110,8 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
     "task show") echo "usage: board task show ID" ;;
     limit) echo "usage: board limit [--json|--clear]"
         echo "  show (or end) the current usage-limit episode (\$BOARD_HOME/limit.json)" ;;
+    ack) echo "usage: board ack KEY [KEY...]"
+        echo "  stop escalation of open alerts (board-notify ack). KEY may be a glob: 'session:API:*'" ;;
     notify) echo "usage: board notify \"text\""
         echo "  post to SLACK_WEBHOOK_URL (env or <config dir>/.env); silent no-op when unset" ;;
     doctor) echo "usage: board doctor"
@@ -621,6 +624,8 @@ cmd_doctor() {
   if [ -f "$BOARD_HOME/collect.lock" ] && ! flock -n "$BOARD_HOME/collect.lock" true 2>/dev/null; then
     ok "collector running (pid $(cat "$BOARD_HOME/collect.pid" 2>/dev/null || echo '?'))"
   else warn "collector not running (fleet-up starts it in tmux session 'switchboard')"; fi
+  echo "alerting (board-notify status):"
+  "$REPO/bin/board-notify" status 2>&1 | sed 's/^/  /'
   if [ -f "$BOARD_HOME/snapshot.json" ]; then
     local age=$(( ( $(now_ms) - $(jq '.generated_at // 0' "$BOARD_HOME/snapshot.json") ) / 1000 ))
     ok "snapshot.json generated ${age}s ago"
@@ -632,7 +637,7 @@ cmd_doctor() {
 sub="${1:-}"
 [ $# -gt 0 ] && shift
 case "$sub" in
-  ls|snapshot|ask|decisions|answer|mark|press|limit|notify|doctor)
+  ls|snapshot|ask|decisions|answer|mark|press|limit|notify|doctor|ack)
     if wants_help "$@"; then sub_usage "$sub"; exit 0; fi ;;
   task)
     if wants_help "$@"; then
@@ -651,6 +656,7 @@ case "$sub" in
   task) cmd_task "$@" ;;
   limit) cmd_limit "$@" ;;
   notify) cmd_notify "$@" ;;
+  ack) [ $# -gt 0 ] || { sub_usage ack >&2; exit 2; }; exec "$REPO/bin/board-notify" ack "$@" ;;
   doctor) cmd_doctor "$@" ;;
   -h|--help|help) usage ;;
   "") usage; exit 2 ;;

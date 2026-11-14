@@ -15,7 +15,10 @@ export BOARD_HOME="$T/home"
 export BOARD_CONFIG_DIR="$T/config"
 export CLAUDE_SESSIONS_DIR="$T/sessions"
 export CLAUDE_SETTINGS="$T/settings.json"
-unset SLACK_WEBHOOK_URL TMUX_PANE
+unset TMUX_PANE
+# Alert channels: nothing from the real environment, and never a real desktop toast.
+while IFS= read -r v; do unset "$v"; done < <(compgen -e | grep -E '^(SLACK_|SMTP_|ALERT_|LINE_|AWS_)')
+export ALERT_DESKTOP=0
 mkdir -p "$BOARD_CONFIG_DIR" "$CLAUDE_SESSIONS_DIR" "$T/bin"
 
 pass=0; fail=0
@@ -160,9 +163,30 @@ eq "old pending decision -> timeout" "$(jq -r .status "$BOARD_HOME/decisions/$oi
 
 # ---- notify (fake curl on PATH)
 echo "notify:"
+# Fake curl: logs the JSON body, whether given as --data-binary or in a `-K -` config on stdin
+# (board-notify keeps the URL and body off argv).
 cat > "$T/bin/curl" <<'EOF'
 #!/usr/bin/env bash
-while [ $# -gt 0 ]; do [ "$1" = "--data-binary" ] && { shift; echo "$1" >> "$FAKE_CURL_LOG"; }; shift; done
+data=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --data-binary) shift; data="$1" ;;
+    -K) shift; [ "$1" = "-" ] && data="$(python3 -c '
+import sys
+for line in sys.stdin:
+    if line.startswith("data-binary = "):
+        v = line[len("data-binary = "):].rstrip("\n")[1:-1]
+        out, i = [], 0
+        while i < len(v):
+            if v[i] == "\\" and i + 1 < len(v):
+                out.append({"n": "\n", "r": "\r"}.get(v[i + 1], v[i + 1])); i += 2
+            else:
+                out.append(v[i]); i += 1
+        print("".join(out))')" ;;
+  esac
+  shift
+done
+[ -n "$data" ] && printf '%s\n' "$data" | jq -c . >> "$FAKE_CURL_LOG"
 printf 200
 EOF
 chmod +x "$T/bin/curl"
@@ -173,7 +197,8 @@ echo "SLACK_WEBHOOK_URL=\"http://example.invalid/hook\"" > "$BOARD_CONFIG_DIR/.e
 PATH="$T/bin:$PATH" "$REPO/bin/board" notify "hello"
 eq "notify posts JSON" "$(jq -r .text "$FAKE_CURL_LOG")" "hello"
 : > "$FAKE_CURL_LOG"
-# QA goes from needs-you to busy and back: one notification, then cooldown.
+[ -f "$BOARD_HOME/alerts.json" ] && bad "--no-notify runs leave alerts.json alone" || ok "--no-notify runs leave alerts.json alone"
+# QA goes from needs-you to busy and back: one alert, then deduped (repeat_minutes).
 jq '.status = "busy"' "$CLAUDE_SESSIONS_DIR/$live_pid3.json" > "$T/r" && mv "$T/r" "$CLAUDE_SESSIONS_DIR/$live_pid3.json"
 PATH="$T/bin:$PATH" "$REPO/bin/board-collect" --once
 jq '.status = "waiting"' "$CLAUDE_SESSIONS_DIR/$live_pid3.json" > "$T/r" && mv "$T/r" "$CLAUDE_SESSIONS_DIR/$live_pid3.json"
@@ -183,10 +208,38 @@ jq '.status = "busy"' "$CLAUDE_SESSIONS_DIR/$live_pid3.json" > "$T/r" && mv "$T/
 PATH="$T/bin:$PATH" "$REPO/bin/board-collect" --once
 jq '.status = "waiting"' "$CLAUDE_SESSIONS_DIR/$live_pid3.json" > "$T/r" && mv "$T/r" "$CLAUDE_SESSIONS_DIR/$live_pid3.json"
 PATH="$T/bin:$PATH" "$REPO/bin/board-collect" --once
-eq "per-session cooldown" "$(grep -c "QA needs you" "$FAKE_CURL_LOG")" "1"
+eq "re-opened needs-you deduped within repeat_minutes" "$(grep -c "QA needs you" "$FAKE_CURL_LOG")" "1"
 "$REPO/bin/board" ask --from INFRA "Rotate keys now?" >/dev/null
 PATH="$T/bin:$PATH" "$REPO/bin/board-collect" --once
 grep -q "INFRA asks: Rotate keys now?" "$FAKE_CURL_LOG" && ok "new question notifies" || bad "new question notifies" "$(cat "$FAKE_CURL_LOG")"
+eq "alerts logged to events.jsonl" "$(jq -s '[.[] | select(.type=="alert" and .channel=="slack" and .ok)] | length > 0' "$BOARD_HOME/events.jsonl")" "true"
+out="$("$REPO/bin/board" ack 'decision:*')"; rc=$?
+eq "board ack exits 0" "$rc" "0"
+grep -q "^acked decision:" <<<"$out" && ok "board ack acks by glob" || bad "board ack acks by glob" "$out"
+"$REPO/bin/board" ack 'nothing:*' >/dev/null 2>&1; eq "board ack with no match exits 1" "$?" "1"
+"$REPO/bin/board" doctor 2>&1 | grep -q "channels: slack=on" && ok "doctor shows board-notify status" || bad "doctor shows board-notify status"
+
+# ---- alert-storm guard: baseline on a fresh BOARD_HOME
+echo "baseline:"
+H2="$T/home2"; : > "$FAKE_CURL_LOG"
+BOARD_HOME="$H2" "$REPO/bin/board" ask --from QA "Already open before the collector started?" >/dev/null
+out="$(BOARD_HOME="$H2" PATH="$T/bin:$PATH" "$REPO/bin/board-collect" --once --verbose)"
+grep -q "alerts: baseline" <<<"$out" && ok "first run takes a baseline" || bad "first run takes a baseline" "$out"
+eq "no alerts sent for conditions already open" "$(wc -l < "$FAKE_CURL_LOG" | tr -d ' ')" "0"
+eq "open needs-you acked as baseline" "$(jq -r '."session:QA:needs-you".acked_by' "$H2/alerts.json")" "baseline"
+eq "open decision acked as baseline" "$(jq -r '[to_entries[] | select(.key | startswith("decision:")) | .value.acked_by] | unique | join(",")' "$H2/alerts.json")" "baseline"
+BOARD_HOME="$H2" "$REPO/bin/board" ask --from QA "Asked after the baseline?" >/dev/null
+BOARD_HOME="$H2" PATH="$T/bin:$PATH" "$REPO/bin/board-collect" --once
+grep -q "Asked after the baseline" "$FAKE_CURL_LOG" && ok "new condition after baseline alerts" || bad "new condition after baseline alerts" "$(cat "$FAKE_CURL_LOG")"
+eq "...and only that one" "$(wc -l < "$FAKE_CURL_LOG" | tr -d ' ')" "1"
+: > "$FAKE_CURL_LOG"
+out="$(BOARD_HOME="$H2" PATH="$T/bin:$PATH" "$REPO/bin/board-collect" --baseline)"; rc=$?
+eq "--baseline exits 0" "$rc" "0"
+grep -q "baseline — 1 open condition" <<<"$out" && ok "--baseline acks the open alert" || bad "--baseline acks the open alert" "$out"
+eq "--baseline sends nothing" "$(wc -l < "$FAKE_CURL_LOG" | tr -d ' ')" "0"
+H3="$T/home3"
+out="$(BOARD_HOME="$H3" PATH="$T/bin:$PATH" "$REPO/bin/board-collect" --baseline)"
+[ -f "$H3/alerts.json" ] && ok "--baseline creates alerts.json even when nothing is open" || bad "--baseline creates alerts.json"
 rm -f "$BOARD_CONFIG_DIR/.env"
 
 # ---- press (fake tmux on PATH)
@@ -369,7 +422,7 @@ echo "help:"
 out="$("$B" answer --help)"; rc=$?
 eq "board answer --help exits 0" "$rc" "0"
 grep -q "lgtm" <<<"$out" && ok "answer --help lists approve words" || bad "answer --help lists approve words" "$out"
-for c in ls snapshot ask decisions answer mark press limit notify doctor task "task new" "task stage" "task ls" "task show"; do
+for c in ls snapshot ask decisions answer mark press limit notify doctor ack task "task new" "task stage" "task ls" "task show"; do
   # shellcheck disable=SC2086  # word-split "task new" on purpose
   out="$("$B" $c -h 2>&1)"; rc=$?
   if [ "$rc" = 0 ] && grep -q "^usage: board ${c%% *}" <<<"$out"; then ok "board $c -h"; else bad "board $c -h" "rc=$rc $out"; fi
@@ -434,8 +487,37 @@ before="$(cat "$CLAUDE_SETTINGS")"
 BIN_DIR="$T/localbin" "$REPO/scripts/install.sh" >/dev/null
 eq "install idempotent" "$(cat "$CLAUDE_SETTINGS")" "$before"
 [ -L "$T/localbin/board" ] && ok "bin symlinked" || bad "bin symlinked"
+[ -L "$T/localbin/board-notify" ] && ok "board-notify symlinked" || bad "board-notify symlinked"
+TAP="$REPO/hooks/board-statusline-tap.sh"
+eq "no previous statusline: tap installed bare" "$(jq -r .statusLine.command "$CLAUDE_SETTINGS")" "$TAP"
 BIN_DIR="$T/localbin" "$REPO/scripts/install.sh" --uninstall >/dev/null
 eq "uninstall restores hooks" "$(jq -c .hooks "$CLAUDE_SETTINGS")" '{"Stop":[{"hooks":[{"type":"command","command":"/other/hook.sh"}]}]}'
+eq "uninstall removes a statusLine that was not there before" "$(jq -c 'has("statusLine")' "$CLAUDE_SETTINGS")" "false"
+[ -L "$T/localbin/board" ] && bad "uninstall removes symlinks" || ok "uninstall removes symlinks"
+
+# statusLine tap around an existing statusline (with quotes), other keys kept, exact restore.
+SL_PREV="$BOARD_HOME/statusline.prev.json"
+sl_orig='{"type":"command","command":"printf %s \"it'"'"'s $(cat | jq -r .session_id)\"","padding":2}'
+jq --argjson sl "$sl_orig" '.statusLine = $sl' "$CLAUDE_SETTINGS" > "$T/s" && mv "$T/s" "$CLAUDE_SETTINGS"
+expected="$(printf '{"session_id":"s9"}' | sh -c "$(jq -r .statusLine.command "$CLAUDE_SETTINGS")")"
+eq "statusline fixture works" "$expected" "it's s9"
+BIN_DIR="$T/localbin" "$REPO/scripts/install.sh" --dry-run > "$T/dry.txt"
+grep -q 'board-statusline-tap.sh' "$T/dry.txt" && ok "dry-run shows the statusLine change" || bad "dry-run shows the statusLine change"
+[ -f "$SL_PREV" ] && bad "dry-run writes no statusline backup" || ok "dry-run writes no statusline backup"
+BIN_DIR="$T/localbin" "$REPO/scripts/install.sh" >/dev/null
+cmd="$(jq -r .statusLine.command "$CLAUDE_SETTINGS")"
+case "$cmd" in "BOARD_STATUSLINE_NEXT="*"$TAP") ok "statusLine wrapped with the tap" ;; *) bad "statusLine wrapped with the tap" "$cmd" ;; esac
+eq "other statusLine keys kept" "$(jq -c '[.statusLine.type, .statusLine.padding]' "$CLAUDE_SETTINGS")" '["command",2]'
+eq "previous statusLine saved" "$(jq -c . "$SL_PREV")" "$(jq -c . <<<"$sl_orig")"
+out="$(printf '{"session_id":"s9"}' | sh -c "$cmd")"
+eq "wrapped statusline prints the same" "$out" "$expected"
+before="$(cat "$CLAUDE_SETTINGS")"
+BIN_DIR="$T/localbin" "$REPO/scripts/install.sh" >/dev/null
+eq "statusline wrap idempotent" "$(cat "$CLAUDE_SETTINGS")" "$before"
+eq "backup still the original" "$(jq -c . "$SL_PREV")" "$(jq -c . <<<"$sl_orig")"
+BIN_DIR="$T/localbin" "$REPO/scripts/install.sh" --uninstall >/dev/null
+eq "uninstall restores the exact statusLine" "$(jq -c .statusLine "$CLAUDE_SETTINGS")" "$(jq -c . <<<"$sl_orig")"
+[ -f "$SL_PREV" ] && bad "statusline backup removed after restore" || ok "statusline backup removed after restore"
 
 # ---- fleet-up dry run
 echo "fleet-up:"
@@ -467,6 +549,9 @@ grep -q "CP: tmux session exists" <<<"$out" && ok "skips existing session" || ba
 grep -q "OFF" <<<"$out" && bad "skips autostart:false" || ok "skips autostart:false"
 grep -q "would run: tmux new-session -d -s switchboard" <<<"$out" && ok "starts collector" || bad "starts collector" "$out"
 grep -q '^new-session' "$FAKE_TMUX_LOG" && bad "dry-run changes nothing" || ok "dry-run changes nothing"
+grep -q "would run: .*board-collect --baseline" <<<"$out" && bad "no baseline when alerts.json exists" "$out" || ok "no baseline when alerts.json exists"
+out="$(BOARD_HOME="$T/home4" PATH="$T/bin:$PATH" "$REPO/bin/fleet-up" --dry-run)"
+grep -q "would run: .*board-collect --baseline" <<<"$out" && ok "fleet-up takes a baseline when alerts.json is missing" || bad "fleet-up baseline" "$out"
 
 echo
 echo "passed: $pass  failed: $fail"

@@ -5,7 +5,6 @@
 collector: true
 poll_interval: 3              # seconds between snapshot rebuilds
 decision_timeout_hours: 24    # pending decisions older than this become "timeout"
-notify_cooldown_minutes: 10   # per-session Slack cooldown
 resume_fallback_seconds: 15   # fleet-up: start fresh only if `claude -r NAME` exits this fast
 
 # Who may decide (board user ids, e.g. from the artifact page's user.id()).
@@ -42,3 +41,15 @@ sessions:
 # Aliases can also be given here: CODE -> [alias, ...]
 # aliases:
 #   WEB: [frontend]
+
+# Alerting (bin/board-notify). Channels are enabled by their variables in .env.
+# alerting:
+#   routes:                     # level -> channels (defaults shown)
+#     info:   [slack]
+#     warn:   [slack, desktop]
+#     high:   [slack, desktop, email]
+#     urgent: [slack, desktop, email, line, sns, webhook]
+#   quiet_hours: "23:00-08:00"  # local time; only urgent is delivered, the rest is held until it ends
+#   repeat_minutes: 60          # re-alert an unacked key at the same level after this long (0 = never)
+#   escalate_minutes: {high: 10, urgent: 30, permission_urgent: 10}
+#   thresholds: [80, 90, 95]    # usage % -> warn / high / urgent, once per threshold per reset window

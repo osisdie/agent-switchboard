@@ -16,7 +16,6 @@ DEFAULTS = {
     "collector": True,
     "poll_interval": 3,
     "decision_timeout_hours": 24,
-    "notify_cooldown_minutes": 10,
     "remote_url_prefix": "https://claude.ai/code/",
     "resume_fallback_seconds": 15,
     "approvers": [],

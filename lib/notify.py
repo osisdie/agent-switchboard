@@ -750,6 +750,36 @@ def _sync_usage(data, usage, cfg, now):
     return new
 
 
+def baseline(now=None, cfg=None):
+    """Treat every condition open right now as already known: open alerts for them (as tick()
+    would) and ack them with acked_by="baseline", without delivering anything. Only conditions
+    that appear later alert. Creates alerts.json even when nothing is open, so the collector
+    knows the baseline was taken. Returns the keys acked. Never raises."""
+    try:
+        now = now if now is not None else now_ms()
+        cfg = cfg if cfg is not None else load_config()
+        h = home()
+        snap = read_json(os.path.join(h, "snapshot.json"))
+        usage = read_json(os.path.join(h, "usage.json"))
+        seeded = []
+        with Store() as st:
+            if isinstance(snap, dict):
+                _sync_snapshot(st.data, snap, now)
+            _sync_usage(st.data, usage, cfg, now)
+            for key, e in st.data.items():
+                if not e.get("acked_at") and not e.get("resolved"):
+                    e["acked_at"] = now
+                    e["acked_by"] = "baseline"
+                    seeded.append(key)
+        path = os.path.join(h, "alerts.json")
+        if not os.path.exists(path):
+            write_json_atomic(path, {})
+        log_event({"ts": now, "type": "alert-baseline", "keys": seeded})
+        return seeded
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def tick(now=None, env=None, cfg=None):
     """Escalation pass. Reads snapshot.json + usage.json + alerts.json, auto-acks, discovers new
     conditions, escalates unacked keys and delivers what is due. Never raises."""

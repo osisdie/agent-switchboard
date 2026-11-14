@@ -11,7 +11,8 @@ $BOARD_HOME/
   decisions/<id>.json       # written by `board ask` (kind=question) and by the hook (kind=permission)
   outbox/                   # reserved
   snapshot.json             # written by bin/board-collect (merged view, see below)
-  slack-cooldown.json       # collector's per-session last-notify timestamps
+  alerts.json               # board-notify alert state {key: {level, first_at, last_at, acked_at}}; dedupe/repeat per
+                            # key and level follow the alerting policy (alerting.yaml / fleet.yaml `alerting:`)
 ```
 
 ### state/<session_id>.json

@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # board-collect — keep $BOARD_HOME/snapshot.json up to date (see docs/contract.md).
 #
-# Usage: board-collect [--once] [--no-notify] [--verbose] [--interval SECONDS]
+# Usage: board-collect [--once] [--baseline] [--no-notify] [--verbose] [--interval SECONDS]
 #
 #   --once         build the snapshot once and exit (for tests / cron)
-#   --no-notify    never send notifications
+#   --baseline     build the snapshot, ack every condition already open in alerts.json
+#                  (no alerts sent), and exit. Done automatically when alerts.json is missing.
+#   --no-notify    never alert (no board-notify calls, no tick)
 #   --verbose      print what changed
 #   --interval N   poll interval in seconds (default: poll_interval in fleet.yaml, else 3)
 #
@@ -23,6 +25,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --once) once=1 ;;
     --no-notify) pyargs+=(--no-notify) ;;
+    --baseline) pyargs+=(--baseline); once=1 ;;
     -v|--verbose) pyargs+=(--verbose) ;;
     --interval) shift; interval="${1:-}" ;;
     -h|--help) awk 'NR > 1 && !/^#/ { exit } NR > 1 && !/shellcheck/ { sub(/^# ?/, ""); print }' "$0"; exit 0 ;;

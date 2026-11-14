@@ -70,9 +70,10 @@ WEBHOOK=$(grep -E '^SLACK_WEBHOOK_URL=' .env 2>/dev/null | cut -d= -f2- | tr -d 
 
 - Webhook notifications are sent without asking for confirmation.
 - Build the JSON with `jq`, so quotes in the message don't break it.
-- With the switchboard installed, `board notify "<text>"` goes through its alert adapters (Slack,
-  desktop, email, LINE, SNS, webhook), with escalation levels, quiet hours and dedupe. See the README's
-  "Alerting & escalation" section.
+- With the switchboard installed, `board notify "<text>"` posts to Slack, and
+  `board-notify send --level <level> --key <key> --title "<text>"` goes through all alert adapters
+  (Slack, desktop, email, LINE, SNS, webhook), with escalation levels, quiet hours and dedupe. See
+  the README's "Alerting & escalation" section.
 - Never print the webhook URL. It is a secret.
 
 ## Commit and PR attribution
