@@ -4,8 +4,13 @@
 Usage: serve.py [--port PORT] [--check] [--quiet]
        serve.py --watch [--once] [--tick SECONDS]
 
-Serves the board page and a small JSON API from $BOARD_HOME, bound to 127.0.0.1 only.
-See docs/contract.md, "Local adapter API", for the endpoints and the security model.
+Serves the board page and a small JSON API from $BOARD_HOME, on 127.0.0.1 only, through two
+listeners (docs/contract.md, "Local adapter API"):
+
+  local   127.0.0.1:serve.port         identity "local"; a browser on this machine only
+  tunnel  127.0.0.1:serve.tunnel.port  (serve.tunnel.enabled) the cloudflared ingress target;
+                                       identity = the email in a verified Cloudflare Access JWT,
+                                       never "local"
 
   GET  /                               the board page, in local mode
   GET  /api/state                      the board state (sessions, decisions, tasks, ...)
@@ -46,19 +51,20 @@ MAX_MESSAGE = 4000
 MAX_SSE = 32
 KEEPALIVE_S = 25
 POLL_S = 1.0
-LOOPBACK_PEERS = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
-LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "[::1]")
-ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+LOOPBACK_PEERS = ("127.0.0.1", "::ffff:127.0.0.1")
+DEC_ID_RE = re.compile(r"^d-[0-9]+-[a-z0-9]+$")
+MSG_ID_RE = re.compile(r"^m-[0-9]+-[a-z0-9]+$")
 CODE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
-# Any of these means the request did not come straight from a local browser or script.
-FORWARD_HEADERS = ("X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "Forwarded",
-                   "X-Real-Ip", "Cf-Connecting-Ip", "Cf-Ray", "Cf-Visitor", "Cdn-Loop",
+# On the local listener, any of these means the request did not come straight from a browser on
+# this machine (cloudflared, a proxy, or something pretending to be one): refused.
+FORWARD_HEADERS = ("Cf-Connecting-Ip", "Cf-Ray", "X-Forwarded-For", "Forwarded", "X-Forwarded-Host",
+                   "X-Forwarded-Proto", "X-Real-Ip", "Cf-Visitor", "Cdn-Loop",
                    "Cf-Access-Authenticated-User-Email", "Cf-Access-Jwt-Assertion")
 SESSION_KEYS = ("code", "aliases", "state", "status", "tmux", "remote_url", "pending", "updated_at")
 DECISION_KEYS = ("id", "kind", "from", "question", "options", "context", "tool_use_id", "tool_name",
                  "summary", "status", "answer", "answered_by", "answered_at", "relayed_at",
                  "created_at", "updated_at", "task_id", "stage", "gate", "artifact_ref",
-                 "escalation_level", "notified_via")
+                 "escalation_level", "notified_via", "summary_truncated")
 OPERATOR_KEYS = ("heartbeat_at", "version", "operator_session", "account_hint")
 
 
@@ -101,26 +107,44 @@ def as_int(v):
 def settings(cfg=None):
     cfg = cfg if cfg is not None else fleet.load_fleet()
     s = cfg.get("serve") if isinstance(cfg.get("serve"), dict) else {}
-    cf = s.get("cf_access") if isinstance(s.get("cf_access"), dict) else {}
+    t = s.get("tunnel") if isinstance(s.get("tunnel"), dict) else {}
     try:
         port = int(s.get("port") or DEFAULT_PORT)
     except (TypeError, ValueError):
         port = DEFAULT_PORT
-    hostnames = s.get("hostnames") or []
-    if not isinstance(hostnames, list):
-        hostnames = [hostnames]
-    team = str(cf.get("team_domain") or "").strip().lower()
-    team = re.sub(r"^https?://", "", team).rstrip("/")
+    try:
+        tport = int(t.get("port") or port + 1)
+    except (TypeError, ValueError):
+        tport = port + 1
+    team = re.sub(r"^https?://", "", str(t.get("team_domain") or "").strip().lower()).rstrip("/")
     return {
         "enabled": s.get("enabled") is True,
         "port": port,
-        "hostnames": [str(h).strip().lower() for h in hostnames if str(h or "").strip()],
-        "trust_cf_headers": s.get("trust_cf_headers") is True,
+        "tunnel": t.get("enabled") is True,
+        "tunnel_port": tport,
+        "hostname": str(t.get("hostname") or "").strip().lower(),
         "team_domain": team,
-        "aud": str(cf.get("aud") or "").strip(),
-        "certs_url": str(cf.get("certs_url") or "").strip()
+        "aud": str(t.get("aud") or "").strip(),
+        # Test hook / private mirror; normally derived from team_domain.
+        "certs_url": str(t.get("certs_url") or "").strip()
         or ("https://%s/cdn-cgi/access/certs" % team if team else ""),
     }
+
+
+def tunnel_problems(cfg):
+    """Why the tunnel listener must not start (empty list = it may)."""
+    out = []
+    if not re.fullmatch(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+", cfg["hostname"]):
+        out.append("serve.tunnel.hostname is missing or not a host name")
+    if not cfg["team_domain"]:
+        out.append("serve.tunnel.team_domain is missing (e.g. yourteam.cloudflareaccess.com)")
+    if not cfg["aud"]:
+        out.append("serve.tunnel.aud is missing (the Access application's AUD tag)")
+    if not have_crypto():
+        out.append("the python3 'cryptography' module is not installed (needed to verify Access JWTs)")
+    if cfg["tunnel_port"] == cfg["port"]:
+        out.append("serve.tunnel.port must differ from serve.port")
+    return out
 
 
 def have_crypto():
@@ -156,7 +180,7 @@ class Jwks:
     def _fetch(self):
         from cryptography.hazmat.primitives.asymmetric import rsa
         if not self.url.startswith(("https://", "file://")):
-            raise JwtError("certs_url must be https://")
+            raise JwtError("certs_url must be https:// (file:// for tests)")
         with urllib.request.urlopen(self.url, timeout=10) as resp:  # noqa: S310 (scheme checked)
             data = json.loads(resp.read(256 * 1024).decode("utf-8"))
         keys = {}
@@ -333,7 +357,7 @@ class StateBuilder:
         messages.sort(key=lambda m: as_int(m.get("created_at")), reverse=True)
         messages = messages[:20]
         for m in messages:
-            if not ID_RE.match(str(m["id"])):
+            if not MSG_ID_RE.match(str(m["id"])):
                 continue
             rs = []
             for f in glob.glob(self.p("messages", m["id"], "replies", "*.json")):
@@ -349,8 +373,7 @@ class StateBuilder:
         operator = {k: op.get(k) for k in OPERATOR_KEYS if k in op}
         approvers = fleet.id_list(cfg, "approvers")
         rms = fleet.id_list(cfg, "release_managers")
-        if approvers:
-            operator["approver_ids"] = approvers
+        operator["approver_ids"] = approvers  # empty = nobody may answer (fails closed)
         operator["release_manager_ids"] = rms
         usage = read_json(self.p("usage.json"))
         if isinstance(usage, dict):
@@ -472,55 +495,53 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_json(exc.status, {"error": exc.error, "detail": exc.detail})
 
     # -- who is asking
-    def is_forwarded(self):
-        return any(self.headers.get(h) is not None for h in FORWARD_HEADERS)
-
     def check_host(self):
-        """Only our own host names: blocks DNS rebinding from a hostile page."""
+        """Only our own Host names (blocks DNS rebinding). Returns the allowed origins."""
         host = (self.headers.get("Host") or "").strip().lower()
-        name, _, port = host.rpartition(":") if not host.endswith("]") else (host, "", "")
-        if not name:
-            name, port = host, ""
-        cfg = self.server.cfg
-        if name in LOOPBACK_HOSTS and port == str(self.server.server_address[1]):
-            return host
-        if name in cfg["hostnames"] and port in ("", "443"):
-            return host
-        raise Refused(421, "bad_host", "Host %r is not served here (serve.hostnames)" % host)
+        srv = self.server
+        if srv.kind == "local":
+            port = srv.server_address[1]
+            allowed = {"127.0.0.1:%d" % port: "http://127.0.0.1:%d" % port,
+                       "localhost:%d" % port: "http://localhost:%d" % port}
+            origins = set(allowed.values())
+        else:
+            name = srv.cfg["hostname"]
+            allowed = {name: "https://" + name, name + ":443": "https://" + name}
+            origins = {"https://" + name}
+        if host not in allowed:
+            raise Refused(421, "bad_host", "Host %r is not served on this listener" % host)
+        return origins
 
     def identity(self):
-        """Returns (identity, via). Raises Refused."""
-        cfg = self.server.cfg
-        peer = self.client_address[0]
-        if peer in LOOPBACK_PEERS and not self.is_forwarded():
+        """Returns (identity, via). Raises Refused.
+
+        local listener: "local", but only for a direct request (no proxy/Cloudflare headers).
+        tunnel listener: the email of a verified Cloudflare Access JWT; never "local". The
+        Cf-Access-Authenticated-User-Email header alone is ignored."""
+        srv = self.server
+        if srv.kind == "local":
+            if self.client_address[0] not in LOOPBACK_PEERS:
+                raise Refused(403, "forbidden", "not a loopback peer")
+            fwd = [h for h in FORWARD_HEADERS if self.headers.get(h) is not None]
+            if fwd:
+                raise Refused(403, "forwarded_refused",
+                              "the local listener only serves a browser on this machine (got %s)" % fwd[0])
             return "local", "loopback"
         jwt = self.headers.get("Cf-Access-Jwt-Assertion")
-        hdr_email = (self.headers.get("Cf-Access-Authenticated-User-Email") or "").strip().lower()
-        if cfg["team_domain"] and cfg["aud"] and self.server.jwks is not None:
-            if not jwt:
-                raise Refused(401, "unauthenticated", "Cloudflare Access token missing")
-            try:
-                claims = verify_jwt(jwt, self.server.jwks, cfg["aud"], cfg["team_domain"])
-            except JwtError as exc:
-                raise Refused(401, "unauthenticated", "Cloudflare Access token rejected: %s" % exc) from exc
-            email = str(claims["email"]).strip().lower()
-            if hdr_email and hdr_email != email:
-                raise Refused(401, "unauthenticated", "email header does not match the token")
-            return email, "cf-jwt"
-        if cfg["trust_cf_headers"]:
-            if not hdr_email:
-                raise Refused(401, "unauthenticated", "Cf-Access-Authenticated-User-Email missing")
-            return hdr_email, "cf-header"
-        raise Refused(403, "remote_refused",
-                      "non-local request: configure serve.cf_access (team_domain, aud; needs the "
-                      "cryptography module) or set serve.trust_cf_headers: true")
+        if not jwt:
+            raise Refused(401, "unauthenticated", "Cloudflare Access token missing")
+        try:
+            claims = verify_jwt(jwt.strip(), srv.jwks, srv.cfg["aud"], srv.cfg["team_domain"])
+        except JwtError as exc:
+            raise Refused(401, "unauthenticated", "Cloudflare Access token rejected: %s" % exc) from exc
+        return str(claims["email"]).strip().lower(), "cf-jwt"
 
-    def check_csrf(self, host):
+    def check_csrf(self, origins):
         if self.headers.get("X-Board") != "1":
             raise Refused(403, "csrf", "X-Board: 1 header required")
-        origin = self.headers.get("Origin")
-        if not origin or urllib.parse.urlsplit(origin).netloc.lower() != host:
-            raise Refused(403, "csrf", "cross-origin request refused")
+        origin = (self.headers.get("Origin") or "").strip().lower()
+        if origin not in origins:  # also rejects a missing Origin and "null"
+            raise Refused(403, "csrf", "Origin must be this board's own origin")
 
     def read_body(self):
         ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
@@ -547,7 +568,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         ev.update(kw)
         append_event(self.server.home, ev)
 
-    # -- GET
+    # -- methods
+    def not_allowed(self):
+        self.send_json(405, {"error": "method_not_allowed"}, {"Allow": "GET, HEAD, POST"})
+
+    do_OPTIONS = do_PUT = do_DELETE = do_PATCH = do_TRACE = do_CONNECT = not_allowed
+
     def do_HEAD(self):
         self.do_GET()
 
@@ -627,9 +653,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
     # -- POST
     def do_POST(self):
         try:
-            host = self.check_host()
+            origins = self.check_host()
             ident, via = self.identity()
-            self.check_csrf(host)
+            self.check_csrf(origins)
             path = urllib.parse.urlsplit(self.path).path
             m = re.fullmatch(r"/api/decisions/([^/]+)/answer", path)
             if m:
@@ -655,8 +681,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return r.returncode, r.stdout.strip(), r.stderr.strip()
 
     def answer(self, did, body, ident, via):
-        if not ID_RE.match(did):
+        if not DEC_ID_RE.match(did):
             raise Refused(400, "bad_id", "invalid decision id")
+        # Fails closed: with nobody listed in approvers, nobody answers from the board.
+        if not fleet.id_list(fleet.load_fleet(), "approvers"):
+            self.audit(ident, via, "answer", id=did, result="refused", reason="no approvers configured")
+            raise Refused(403, "no_approvers", "fleet.yaml approvers is empty: nobody may answer")
         answer = body.get("answer")
         if not isinstance(answer, str) or not answer.strip() or len(answer) > MAX_ANSWER:
             raise Refused(400, "bad_answer", "answer must be a non-empty string (max %d chars)" % MAX_ANSWER)
@@ -672,6 +702,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 raise Refused(409, "gone", "decision is already %s" % dec.get("status"))
             if kind == "permission" and answer not in ("allow", "deny"):
                 raise Refused(400, "bad_answer", "a permission answer is allow or deny")
+            if kind == "permission" and answer == "allow" and dec.get("summary_truncated"):
+                self.audit(ident, via, "answer", id=did, result="refused", reason="summary truncated")
+                raise Refused(409, "review_in_session",
+                              "the request is only partly shown here: review and allow it in the session")
             code = dec.get("from")
             if kind == "permission" and not code:
                 snap = read_json(os.path.join(home, "snapshot.json")) or {}
@@ -732,16 +766,15 @@ class Server(http.server.ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, port, home, cfg, quiet=False):
+    def __init__(self, kind, port, home, cfg, hub, write_lock, quiet=False):
         super().__init__(("127.0.0.1", port), Handler)
+        self.kind = kind  # "local" | "tunnel"
         self.home = home
         self.cfg = cfg
         self.quiet = quiet
-        self.write_lock = threading.Lock()
-        self.hub = Hub(home)
-        self.jwks = None
-        if cfg["team_domain"] and cfg["aud"] and have_crypto():
-            self.jwks = Jwks(cfg["certs_url"])
+        self.write_lock = write_lock
+        self.hub = hub
+        self.jwks = Jwks(cfg["certs_url"]) if kind == "tunnel" else None
 
 
 def actionable(home):
@@ -784,7 +817,7 @@ def watch(home, once=False, tick_s=480):
 def main(argv):
     import argparse
     ap = argparse.ArgumentParser(prog="board-serve", description=__doc__.split("\n\n")[0])
-    ap.add_argument("--port", type=int, help="port (default: fleet.yaml serve.port or %d)" % DEFAULT_PORT)
+    ap.add_argument("--port", type=int, help="local port (default: fleet.yaml serve.port or %d)" % DEFAULT_PORT)
     ap.add_argument("--check", action="store_true", help="print the resolved settings and exit")
     ap.add_argument("--quiet", action="store_true", help="no access log")
     ap.add_argument("--watch", action="store_true",
@@ -802,29 +835,47 @@ def main(argv):
     if args.port:
         cfg["port"] = args.port
     home = fleet.board_home()
-    jwt_mode = "off"
-    if cfg["team_domain"] and cfg["aud"]:
-        jwt_mode = "verify (RS256, %s)" % cfg["certs_url"] if have_crypto() else "UNAVAILABLE (no cryptography module)"
-    remote = ("JWT-verified" if jwt_mode.startswith("verify") else
-              "trusted Cf-Access-Authenticated-User-Email header" if cfg["trust_cf_headers"] else "refused")
-    info = ["listen   http://127.0.0.1:%d" % cfg["port"], "home     %s" % home,
-            "config   %s" % fleet.config_dir(), "hosts    %s" % (", ".join(cfg["hostnames"]) or "(loopback only)"),
-            "cf jwt   %s" % jwt_mode, "remote   %s" % remote]
+    problems = tunnel_problems(cfg) if cfg["tunnel"] else []
+    info = ["local    http://127.0.0.1:%d   (identity: local)" % cfg["port"], "home     %s" % home,
+            "config   %s" % fleet.config_dir()]
+    if not cfg["tunnel"]:
+        info.append("tunnel   off (serve.tunnel.enabled)")
+    elif problems:
+        info.append("tunnel   REFUSED: " + "; ".join(problems))
+    else:
+        info.append("tunnel   http://127.0.0.1:%d   Host %s, identity: verified Access JWT "
+                    "(aud %s..., keys %s)" % (cfg["tunnel_port"], cfg["hostname"], cfg["aud"][:8], cfg["certs_url"]))
+    approvers = fleet.id_list(fleet.load_fleet(), "approvers")
+    info.append("answers  %s" % ("approvers: " + ", ".join(approvers) if approvers
+                                 else "REFUSED: fleet.yaml approvers is empty"))
     if args.check:
         print("\n".join(info))
-        return 0
+        return 2 if problems else 0
+    if problems:
+        sys.stderr.write("board-serve: the tunnel listener refuses to start:\n  - %s\n"
+                         "Fix fleet.yaml serve.tunnel, or set serve.tunnel.enabled: false.\n"
+                         % "\n  - ".join(problems))
+        return 2
     os.umask(0o077)  # everything under BOARD_HOME is private to this user
     os.makedirs(home, exist_ok=True)
-    srv = Server(cfg["port"], home, cfg, quiet=args.quiet)
-    threading.Thread(target=srv.hub.run, daemon=True).start()
+    hub, lock = Hub(home), threading.Lock()
+    servers = [Server("local", cfg["port"], home, cfg, hub, lock, quiet=args.quiet)]
+    if cfg["tunnel"]:
+        servers.append(Server("tunnel", cfg["tunnel_port"], home, cfg, hub, lock, quiet=args.quiet))
+    threading.Thread(target=hub.run, daemon=True).start()
+    for srv in servers[1:]:
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
     sys.stderr.write("board-serve: " + "\nboard-serve: ".join(info) + "\n")
     try:
-        srv.serve_forever()
+        servers[0].serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
-        srv.hub.stop()
-        srv.server_close()
+        hub.stop()
+        for srv in servers[1:]:
+            srv.shutdown()
+        for srv in servers:
+            srv.server_close()
     return 0
 
 

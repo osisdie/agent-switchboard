@@ -25,7 +25,7 @@ export CLAUDE_SETTINGS="$T/settings.json"
 unset TMUX_PANE
 while IFS= read -r v; do unset "$v"; done < <(compgen -e | grep -E '^(SLACK_|SMTP_|ALERT_|LINE_|AWS_)')
 export ALERT_DESKTOP=0
-mkdir -p "$BOARD_HOME"/{state,decisions,tasks,messages/m-1/replies} "$BOARD_CONFIG_DIR" "$CLAUDE_SESSIONS_DIR" "$T/bin"
+mkdir -p "$BOARD_HOME"/{state,decisions,tasks,messages/m-1-a/replies} "$BOARD_CONFIG_DIR" "$CLAUDE_SESSIONS_DIR" "$T/bin"
 
 pass=0; fail=0
 ok() { pass=$((pass + 1)); [ "$VERBOSE" = 1 ] && echo "  ok   $1"; return 0; }
@@ -49,20 +49,20 @@ dec() {  # dec ID KIND EXTRA_JSON
       answer: null, answered_by: null, answered_at: null, relayed_at: null, created_at: $now} + $x' \
     > "$BOARD_HOME/decisions/$1.json"
 }
-dec d-q1 question
-dec d-q2 question
-dec d-q3 question
-dec d-gate question '{"task_id":"t-1","stage":"build","gate":"owner","options":["approve","request changes"]}'
-dec d-prod question '{"task_id":"t-1","stage":"production","gate":"production","options":["approve","request changes"]}'
-dec d-perm permission "{\"from\":null,\"session_id\":\"$SID\",\"tool_use_id\":\"tu_1\",\"tool_name\":\"Bash\"}"
+dec d-1-q1 question
+dec d-1-q2 question
+dec d-1-q3 question
+dec d-1-gate question '{"task_id":"t-1","stage":"build","gate":"owner","options":["approve","request changes"]}'
+dec d-1-prod question '{"task_id":"t-1","stage":"production","gate":"production","options":["approve","request changes"]}'
+dec d-1-perm permission "{\"from\":null,\"session_id\":\"$SID\",\"tool_use_id\":\"tu_1\",\"tool_name\":\"Bash\"}"
 cat > "$BOARD_HOME/tasks/t-1.json" <<EOF
-{"id":"t-1","title":"Ship it","owner":"CP","stage":"build","artifacts":{},"gates":[{"stage":"build","gate":"owner","status":"pending","decision_id":"d-gate"}],"updated_at":$NOW}
+{"id":"t-1","title":"Ship it","owner":"CP","stage":"build","artifacts":{},"gates":[{"stage":"build","gate":"owner","status":"pending","decision_id":"d-1-gate"}],"updated_at":$NOW}
 EOF
 printf '%s\n' '{"ts":1,"type":"hook","event":"Stop"}' \
-  '{"ts":2,"type":"approval","decision_id":"d-old","task_id":"t-1","stage":"plan","gate":"owner","answer":"approve","result":"approved","answered_by":"local","answered_at":2,"relayed_at":null}' \
+  '{"ts":2,"type":"approval","decision_id":"d-1-old","task_id":"t-1","stage":"plan","gate":"owner","answer":"approve","result":"approved","answered_by":"local","answered_at":2,"relayed_at":null}' \
   > "$BOARD_HOME/events.jsonl"
-echo '{"id":"m-1","to":"CP","body":"hello","by":"local","created_at":1,"status":"replied"}' > "$BOARD_HOME/messages/m-1.json"
-echo '{"from":"CP","body":"hi back","created_at":2}' > "$BOARD_HOME/messages/m-1/replies/r-1.json"
+echo '{"id":"m-1-a","to":"CP","body":"hello","by":"local","created_at":1,"status":"replied"}' > "$BOARD_HOME/messages/m-1-a.json"
+echo '{"from":"CP","body":"hi back","created_at":2}' > "$BOARD_HOME/messages/m-1-a/replies/r-1.json"
 echo '{"five_hour":{"pct":42,"resets_at":1},"seven_day":{"pct":7,"resets_at":2},"updated_at":3,"session_id":"x"}' > "$BOARD_HOME/usage.json"
 echo "{\"heartbeat_at\":$NOW,\"operator_session\":\"BOARD\",\"version\":\"t\",\"secret_field\":\"no\"}" > "$BOARD_HOME/operator.json"
 
@@ -82,20 +82,22 @@ printf ' Bash command\n   rm -rf build\n Do you want to proceed?\n ❯ 1. Yes\n 
 export PATH="$T/bin:$PATH"
 "$REPO/bin/board-collect" --once --no-notify >/dev/null 2>&1
 
-PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')"
+free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
+PORT="$(free_port)"; TPORT="$(free_port)"
 B="http://127.0.0.1:$PORT"
+TB="http://127.0.0.1:$TPORT"
 ORIGIN="Origin: $B"
+TUNNEL_HDRS=(-H 'Host: board.example.com' -H 'Origin: https://board.example.com')
 
-write_cfg() {  # write_cfg EXTRA_SERVE_YAML
+write_cfg() {  # write_cfg EXTRA_SERVE_YAML [APPROVERS_YAML]
   cat > "$BOARD_CONFIG_DIR/fleet.yaml" <<EOF
-approvers: [local, boss@example.com]
+approvers: ${2:-[local, boss@example.com]}
 release_managers: [rm@example.com]
 sessions:
   - code: CP
     cwd: /w
 serve:
   port: $PORT
-  hostnames: [board.example.com]
 $1
 EOF
 }
@@ -131,13 +133,13 @@ eq "me is local on loopback" "$(body .me)" "local"
 eq "mode local" "$(body .mode)" "local"
 eq "session CP needs-you" "$(body '.sessions[] | select(.code=="CP") | .state')" "needs-you"
 eq "session fields are an allowlist (no cwd/pid)" "$(body '[.sessions[] | has("cwd") or has("pid") or has("session_id")] | any')" "false"
-eq "permission decision gets its from" "$(body '.decisions[] | select(.id=="d-perm") | .from')" "CP"
+eq "permission decision gets its from" "$(body '.decisions[] | select(.id=="d-1-perm") | .from')" "CP"
 eq "decisions omit session_id" "$(body '[.decisions[] | has("session_id")] | any')" "false"
 eq "tasks" "$(body '.tasks[0].title')" "Ship it"
 eq "approvals from events.jsonl" "$(body '.approvals | length')" "1"
-eq "approval row" "$(body '.approvals[0].decision_id + "/" + .approvals[0].result')" "d-old/approved"
+eq "approval row" "$(body '.approvals[0].decision_id + "/" + .approvals[0].result')" "d-1-old/approved"
 eq "messages" "$(body '.messages[0].body')" "hello"
-eq "replies" "$(body '.replies["m-1"][0].body')" "hi back"
+eq "replies" "$(body '.replies["m-1-a"][0].body')" "hi back"
 eq "operator heartbeat" "$(body '.operator.heartbeat_at')" "$NOW"
 eq "operator fields are an allowlist" "$(body '.operator | has("secret_field")')" "false"
 eq "usage pct" "$(body '.operator.usage.five_hour.pct')" "42"
@@ -160,15 +162,27 @@ for p in /../../etc/passwd /%2e%2e/%2e%2e/etc/passwd /artifact/board.html /lib/s
 done
 eq "decision id with traversal refused" "$(post '/api/decisions/..%2F..%2Fevil/answer' '{"answer":"A"}')" "400"
 eq "dotted decision id refused" "$(post '/api/decisions/../answer' '{"answer":"A"}')" "400"
-eq "unknown decision 404" "$(post '/api/decisions/d-nope/answer' '{"answer":"A"}')" "404"
+eq "unknown decision 404" "$(post '/api/decisions/d-1-nope/answer' '{"answer":"A"}')" "404"
 eq "foreign Host refused (DNS rebinding)" "$(req GET /api/state -H 'Host: evil.example:'"$PORT")" "421"
-eq "configured hostname is accepted" "$(req GET /api/state -H 'Host: board.example.com')" "200"
+eq "localhost:port is accepted" "$(req GET /api/state -H "Host: localhost:$PORT")" "200"
+eq "loopback name on another port refused" "$(req GET /api/state -H 'Host: 127.0.0.1:1')" "421"
+eq "the tunnel hostname is not served on the local listener" "$(req GET /api/state -H 'Host: board.example.com')" "421"
+eq "POST with a foreign Host refused" "$(post /api/messages '{"to":"CP","body":"x"}' -H 'Host: evil.example')" "421"
 
 # ---------------------------------------------------------------- CSRF + body checks
 echo "csrf:"
 eq "POST without X-Board refused" "$(req POST /api/messages -H 'Content-Type: application/json' -H "$ORIGIN" --data-binary '{"to":"CP","body":"x"}')" "403"
 eq "  error csrf" "$(body .error)" "csrf"
 eq "POST without Origin refused" "$(req POST /api/messages -H 'Content-Type: application/json' -H 'X-Board: 1' --data-binary '{"to":"CP","body":"x"}')" "403"
+eq "POST with Origin null refused" "$(req POST /api/messages -H 'Content-Type: application/json' -H 'X-Board: 1' -H 'Origin: null' --data-binary '{"to":"CP","body":"x"}')" "403"
+eq "POST with Origin of the other loopback name accepted" "$(req POST /api/messages -H 'Content-Type: application/json' -H 'X-Board: 1' -H "Origin: http://localhost:$PORT" --data-binary '{"to":"CP","body":"via localhost"}')" "201"
+rm -f "$BOARD_HOME/messages/$(body .id).json"
+eq "POST with an https origin on the local listener refused" "$(req POST /api/messages -H 'Content-Type: application/json' -H 'X-Board: 1' -H "Origin: https://127.0.0.1:$PORT" --data-binary '{"to":"CP","body":"x"}')" "403"
+eq "OPTIONS is 405" "$(req OPTIONS /api/messages -H "$ORIGIN" -H 'Access-Control-Request-Method: POST' -D "$T/hdr")" "405"
+grep -qi '^access-control-' "$T/hdr" && bad "no Access-Control-* headers" "$(cat "$T/hdr")" || ok "no Access-Control-* headers"
+eq "PUT is 405" "$(req PUT /api/messages)" "405"
+req GET /api/state -D "$T/hdr" >/dev/null
+grep -qi '^access-control-' "$T/hdr" && bad "no Access-Control-* headers on GET" || ok "no Access-Control-* headers on GET"
 eq "POST cross-origin refused" "$(req POST /api/messages -H 'Content-Type: application/json' -H 'X-Board: 1' -H 'Origin: https://evil.example' --data-binary '{"to":"CP","body":"x"}')" "403"
 eq "POST text/plain refused" "$(req POST /api/messages -H 'Content-Type: text/plain' -H 'X-Board: 1' -H "$ORIGIN" --data-binary '{"to":"CP","body":"x"}')" "415"
 big="$(python3 -c 'import json; print(json.dumps({"to":"CP","body":"x"*20000}))')"
@@ -208,8 +222,8 @@ def event():
             return data
 first = event()
 print("first", len(first["messages"]))
-with open(os.path.join(home, "messages", "m-sse.json"), "w") as fh:
-    json.dump({"id": "m-sse", "to": "all", "body": "sse!", "by": "local", "created_at": int(time.time() * 1000), "status": "new"}, fh)
+with open(os.path.join(home, "messages", "m-2-sse.json"), "w") as fh:
+    json.dump({"id": "m-2-sse", "to": "all", "body": "sse!", "by": "local", "created_at": int(time.time() * 1000), "status": "new"}, fh)
 t0 = time.time()
 second = event()
 print("second", [m["id"] for m in second["messages"]][0], "%.1f" % (time.time() - t0))
@@ -219,68 +233,95 @@ for _ in $(seq 1 80); do kill -0 "$sse_pid" 2>/dev/null || break; sleep 0.1; don
 kill "$sse_pid" 2>/dev/null
 grep -q '^ctype text/event-stream' "$T/sse.out" && ok "SSE content type" || bad "SSE content type" "$(cat "$T/sse.out")"
 grep -q '^first 2$' "$T/sse.out" && ok "SSE sends the state at once" || bad "SSE sends the state at once" "$(cat "$T/sse.out")"
-grep -q '^second m-sse ' "$T/sse.out" && ok "SSE pushes a change" || bad "SSE pushes a change" "$(cat "$T/sse.out")"
+grep -q '^second m-2-sse ' "$T/sse.out" && ok "SSE pushes a change" || bad "SSE pushes a change" "$(cat "$T/sse.out")"
 
 # ---------------------------------------------------------------- answers (loopback)
 echo "answers:"
-eq "answer from loopback 200" "$(post /api/decisions/d-q1/answer '{"answer":"A"}')" "200"
-eq "  status answered" "$(jq -r '.status + "/" + .answered_by + "/" + .answer' "$BOARD_HOME/decisions/d-q1.json")" "answered/local/A"
+eq "answer from loopback 200" "$(post /api/decisions/d-1-q1/answer '{"answer":"A"}')" "200"
+eq "  status answered" "$(jq -r '.status + "/" + .answered_by + "/" + .answer' "$BOARD_HOME/decisions/d-1-q1.json")" "answered/local/A"
 eq "  answer logged with identity" "$(jq -s -r '[.[] | select(.type=="serve" and .action=="answer")] | last | .by + "/" + .result' "$BOARD_HOME/events.jsonl")" "local/answered"
-eq "gate answer 200" "$(post /api/decisions/d-gate/answer '{"answer":"approve"}')" "200"
+eq "gate answer 200" "$(post /api/decisions/d-1-gate/answer '{"answer":"approve"}')" "200"
 eq "  gate approved on the task" "$(jq -r '.gates[0].status + "/" + .gates[0].approved_by' "$BOARD_HOME/tasks/t-1.json")" "approved/local"
-eq "  approval shows up in state" "$(req GET /api/state >/dev/null; body '[.approvals[].decision_id] | index("d-gate") != null')" "true"
-eq "production gate by local refused (release_managers)" "$(post /api/decisions/d-prod/answer '{"answer":"approve"}')" "403"
+eq "  approval shows up in state" "$(req GET /api/state >/dev/null; body '[.approvals[].decision_id] | index("d-1-gate") != null')" "true"
+eq "production gate by local refused (release_managers)" "$(post /api/decisions/d-1-prod/answer '{"answer":"approve"}')" "403"
 eq "  error not_approver" "$(body .error)" "not_approver"
-eq "  marked unauthorized" "$(jq -r .status "$BOARD_HOME/decisions/d-prod.json")" "unauthorized"
-eq "empty answer refused" "$(post /api/decisions/d-q2/answer '{"answer":"  "}')" "400"
-eq "permission answer must be allow/deny" "$(post /api/decisions/d-perm/answer '{"answer":"maybe"}')" "400"
+eq "  marked unauthorized" "$(jq -r .status "$BOARD_HOME/decisions/d-1-prod.json")" "unauthorized"
+eq "empty answer refused" "$(post /api/decisions/d-1-q2/answer '{"answer":"  "}')" "400"
+eq "permission answer must be allow/deny" "$(post /api/decisions/d-1-perm/answer '{"answer":"maybe"}')" "400"
 
 # ---------------------------------------------------------------- permission -> board press
 echo "permission:"
 : > "$FAKE_TMUX_LOG"
-eq "permission allow 200" "$(post /api/decisions/d-perm/answer '{"answer":"allow"}')" "200"
+eq "permission allow 200" "$(post /api/decisions/d-1-perm/answer '{"answer":"allow"}')" "200"
 eq "  status relayed" "$(body .status)" "relayed"
 grep -q '^send-keys -t %42 1$' "$FAKE_TMUX_LOG" && ok "  board press sent the allow key" || bad "  board press sent the allow key" "$(cat "$FAKE_TMUX_LOG")"
-eq "  decision file relayed" "$(jq -r .status "$BOARD_HOME/decisions/d-perm.json")" "relayed"
+eq "  decision file relayed" "$(jq -r .status "$BOARD_HOME/decisions/d-1-perm.json")" "relayed"
 eq "  press logged with identity" "$(jq -s -r '[.[] | select(.type=="serve" and .action=="press")] | last | .by + "/" + .result' "$BOARD_HOME/events.jsonl")" "local/sent"
-eq "answering a relayed decision again 409" "$(post /api/decisions/d-perm/answer '{"answer":"deny"}')" "409"
+eq "answering a relayed decision again 409" "$(post /api/decisions/d-1-perm/answer '{"answer":"deny"}')" "409"
 : > "$FAKE_TMUX_LOG"
 # A new prompt (tu_2) that is no longer on screen when the answer arrives.
 jq '.pending.tool_use_id = "tu_2"' "$BOARD_HOME/state/$SID.json" > "$T/st" && mv "$T/st" "$BOARD_HOME/state/$SID.json"
-dec d-perm2 permission "{\"from\":null,\"session_id\":\"$SID\",\"tool_use_id\":\"tu_2\",\"tool_name\":\"Bash\"}"
+dec d-1-permb permission "{\"from\":null,\"session_id\":\"$SID\",\"tool_use_id\":\"tu_2\",\"tool_name\":\"Bash\"}"
 echo '$ just a shell' > "$FAKE_TMUX_SCREEN"
-eq "stale permission (prompt gone from the pane) 409" "$(post /api/decisions/d-perm2/answer '{"answer":"allow"}')" "409"
+eq "stale permission (prompt gone from the pane) 409" "$(post /api/decisions/d-1-permb/answer '{"answer":"allow"}')" "409"
 eq "  error stale" "$(body .error)" "stale"
 grep -q 'send-keys' "$FAKE_TMUX_LOG" && bad "  no keys sent on stale" "$(cat "$FAKE_TMUX_LOG")" || ok "  no keys sent on stale"
-eq "  decision file stale" "$(jq -r .status "$BOARD_HOME/decisions/d-perm2.json")" "stale"
+eq "  decision file stale" "$(jq -r .status "$BOARD_HOME/decisions/d-1-permb.json")" "stale"
 
-# ---------------------------------------------------------------- non-loopback (forwarded)
-echo "remote:"
-CF_EMAIL='Cf-Access-Authenticated-User-Email: boss@example.com'
-eq "forwarded GET refused without CF config" "$(req GET /api/state -H 'X-Forwarded-For: 203.0.113.9')" "403"
-eq "  error remote_refused" "$(body .error)" "remote_refused"
-eq "forwarded GET / refused too" "$(req GET / -H 'Cf-Connecting-Ip: 203.0.113.9')" "403"
-eq "CF email header alone is not trusted by default" "$(post /api/decisions/d-q2/answer '{"answer":"A"}' -H "$CF_EMAIL")" "403"
-eq "  decision untouched" "$(jq -r .status "$BOARD_HOME/decisions/d-q2.json")" "pending"
+# ---------------------------------------------------------------- local listener: forwarded = refused
+echo "local listener:"
+for hd in 'Cf-Connecting-IP: 203.0.113.9' 'Cf-Ray: 1-x' 'X-Forwarded-For: 203.0.113.9' 'Forwarded: for=203.0.113.9' \
+          'Cf-Access-Authenticated-User-Email: boss@example.com' 'Cf-Access-Jwt-Assertion: a.b.c'; do
+  eq "GET with '${hd%%:*}' refused" "$(req GET /api/state -H "$hd")" "403"
+done
+eq "  error forwarded_refused" "$(body .error)" "forwarded_refused"
+eq "GET / with X-Forwarded-For refused" "$(req GET / -H 'X-Forwarded-For: 203.0.113.9')" "403"
+eq "answer with a Cloudflare email header refused" "$(post /api/decisions/d-1-q2/answer '{"answer":"A"}' -H 'Cf-Access-Authenticated-User-Email: boss@example.com')" "403"
+eq "  decision untouched" "$(jq -r .status "$BOARD_HOME/decisions/d-1-q2.json")" "pending"
 
-write_cfg "  trust_cf_headers: true"
+# ---------------------------------------------------------------- approvers fail closed
+echo "approvers:"
+write_cfg "" "[]"
 start
-eq "trusted CF header: state as that email" "$(req GET /api/state -H "$CF_EMAIL" -H 'X-Forwarded-For: 203.0.113.9' >/dev/null; body .me)" "boss@example.com"
-eq "trusted CF header: approver answers" "$(post /api/decisions/d-q2/answer '{"answer":"B"}' -H "$CF_EMAIL")" "200"
-eq "  answered_by is the email" "$(jq -r .answered_by "$BOARD_HOME/decisions/d-q2.json")" "boss@example.com"
-eq "  logged via cf-header" "$(jq -s -r '[.[] | select(.type=="serve" and .action=="answer")] | last | .via' "$BOARD_HOME/events.jsonl")" "cf-header"
-eq "trusted CF header: non-approver refused" "$(post /api/decisions/d-q3/answer '{"answer":"A"}' -H 'Cf-Access-Authenticated-User-Email: intruder@example.com')" "403"
+eq "empty approvers: answer refused" "$(post /api/decisions/d-1-q2/answer '{"answer":"A"}')" "403"
+eq "  error no_approvers" "$(body .error)" "no_approvers"
+eq "  decision untouched" "$(jq -r .status "$BOARD_HOME/decisions/d-1-q2.json")" "pending"
+eq "  state says nobody is an approver" "$(req GET /api/state >/dev/null; body '.operator.approver_ids | length')" "0"
+eq "  --check says answers are refused" "$("$REPO/bin/board-serve" --check | grep -c 'answers  REFUSED')" "1"
+write_cfg "" "[boss@example.com]"
+start
+eq "approvers without local: loopback answer refused" "$(post /api/decisions/d-1-q2/answer '{"answer":"A"}')" "403"
 eq "  error not_approver" "$(body .error)" "not_approver"
-eq "  marked unauthorized" "$(jq -r '.status + "/" + .answered_by' "$BOARD_HOME/decisions/d-q3.json")" "unauthorized/intruder@example.com"
-eq "forwarded without email refused" "$(req GET /api/state -H 'X-Forwarded-For: 203.0.113.9')" "401"
-eq "release manager answers the production gate" "$(post /api/decisions/d-prod/answer '{"answer":"approve"}' -H 'Cf-Access-Authenticated-User-Email: rm@example.com')" "200"
+dec d-1-q2 question
+write_cfg ""
+start
+dec d-1-trunc permission "{\"from\":\"CP\",\"session_id\":\"$SID\",\"tool_use_id\":\"tu_2\",\"tool_name\":\"Bash\",\"summary_truncated\":true}"
+: > "$FAKE_TMUX_LOG"
+eq "allow on a truncated summary refused" "$(post /api/decisions/d-1-trunc/answer '{"answer":"allow"}')" "409"
+eq "  error review_in_session" "$(body .error)" "review_in_session"
+grep -q send-keys "$FAKE_TMUX_LOG" && bad "  nothing pressed" || ok "  nothing pressed"
+eq "  still pending" "$(jq -r .status "$BOARD_HOME/decisions/d-1-trunc.json")" "pending"
+rm -f "$BOARD_HOME/decisions/d-1-trunc.json"
 
-# ---------------------------------------------------------------- Cloudflare Access JWT
-echo "jwt:"
+# ---------------------------------------------------------------- tunnel listener (Cloudflare Access)
+echo "tunnel listener:"
+tunnel_cfg() {  # tunnel_cfg [AUD]
+  write_cfg "  tunnel:
+    enabled: true
+    port: $TPORT
+    hostname: board.example.com
+    team_domain: team.example.com
+    aud: ${1-AUD123}
+    certs_url: file://$T/certs.json"
+}
+tunnel_cfg ""
+"$REPO/bin/board-serve" --quiet >"$T/refuse.out" 2>&1; rc=$?
+eq "tunnel without aud refuses to start" "$rc" "2"
+grep -q 'aud is missing' "$T/refuse.out" && ok "  clear error" || bad "  clear error" "$(cat "$T/refuse.out")"
 if python3 -c 'import cryptography' 2>/dev/null; then
   python3 - "$T" <<'EOF'
 import base64, json, sys, time
-from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 t = sys.argv[1]
 def b64(b): return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
@@ -295,39 +336,56 @@ def tok(claims, k=key, kid="k1", alg="RS256"):
     return h + "." + p + "." + b64(s)
 now = int(time.time())
 base = {"aud": ["AUD123"], "iss": "https://team.example.com", "exp": now + 600, "iat": now, "email": "boss@example.com"}
+none_alg = b64(json.dumps({"alg": "none", "kid": "k1"}).encode()) + "." + b64(json.dumps(base).encode()) + "."
 toks = {"good": tok(base), "badsig": tok(base, k=other), "wrongaud": tok(dict(base, aud=["X"])),
-        "expired": tok(dict(base, exp=now - 3600)), "wrongiss": tok(dict(base, iss="https://evil.example")),
-        "nobody": tok(dict(base, email="intruder@example.com"))}
+        "expired": tok(dict(base, exp=now - 3600)), "future": tok(dict(base, nbf=now + 3600)),
+        "wrongiss": tok(dict(base, iss="https://evil.example")), "unknownkid": tok(base, kid="k9"),
+        "nobody": tok(dict(base, email="intruder@example.com")), "noemail": tok({k: v for k, v in base.items() if k != "email"}),
+        "rm": tok(dict(base, email="rm@example.com")), "alg_none": none_alg}
 for k, v in toks.items():
     open("%s/jwt.%s" % (t, k), "w").write(v)
 EOF
-  write_cfg "  cf_access:
-    team_domain: team.example.com
-    aud: AUD123
-    certs_url: file://$T/certs.json"
+  tunnel_cfg
   start
+  eq "--check shows the tunnel" "$("$REPO/bin/board-serve" --check | grep -c "^tunnel   http://127.0.0.1:$TPORT")" "1"
   jwt() { echo "Cf-Access-Jwt-Assertion: $(cat "$T/jwt.$1")"; }
-  eq "valid JWT: identity from the token" "$(req GET /api/state -H "$(jwt good)" >/dev/null; body .me)" "boss@example.com"
-  eq "bad signature refused" "$(req GET /api/state -H "$(jwt badsig)")" "401"
-  eq "wrong audience refused" "$(req GET /api/state -H "$(jwt wrongaud)")" "401"
-  eq "expired refused" "$(req GET /api/state -H "$(jwt expired)")" "401"
-  eq "wrong issuer refused" "$(req GET /api/state -H "$(jwt wrongiss)")" "401"
-  eq "garbage token refused" "$(req GET /api/state -H 'Cf-Access-Jwt-Assertion: a.b.c')" "401"
-  eq "email header without JWT refused" "$(req GET /api/state -H "$CF_EMAIL")" "401"
-  eq "email header must match the JWT" "$(req GET /api/state -H "$(jwt good)" -H 'Cf-Access-Authenticated-User-Email: rm@example.com')" "401"
-  dec d-q4 question
-  eq "valid JWT answers" "$(post /api/decisions/d-q4/answer '{"answer":"A"}' -H "$(jwt good)")" "200"
+  treq() { local m="$1" p="$2"; shift 2; curl -s --path-as-is -o "$T/body" -w '%{http_code}' -X "$m" "$@" "$TB$p"; }
+  tpost() { local p="$1" d="$2"; shift 2; treq POST "$p" -H 'Content-Type: application/json' -H 'X-Board: 1' --data-binary "$d" "$@"; }
+  eq "no JWT: refused (never local)" "$(treq GET /api/state "${TUNNEL_HDRS[@]}")" "401"
+  eq "email header alone: refused" "$(treq GET /api/state "${TUNNEL_HDRS[@]}" -H 'Cf-Access-Authenticated-User-Email: boss@example.com')" "401"
+  for k in badsig wrongaud expired future wrongiss unknownkid noemail alg_none; do
+    eq "JWT $k refused" "$(treq GET /api/state "${TUNNEL_HDRS[@]}" -H "$(jwt "$k")")" "401"
+  done
+  eq "garbage JWT refused" "$(treq GET /api/state "${TUNNEL_HDRS[@]}" -H 'Cf-Access-Jwt-Assertion: a.b.c')" "401"
+  eq "valid JWT: identity from the token" "$(treq GET /api/state "${TUNNEL_HDRS[@]}" -H "$(jwt good)" >/dev/null; body .me)" "boss@example.com"
+  eq "the email header cannot override the token" "$(treq GET /api/state "${TUNNEL_HDRS[@]}" -H "$(jwt good)" -H 'Cf-Access-Authenticated-User-Email: rm@example.com' >/dev/null; body .me)" "boss@example.com"
+  eq "tunnel: loopback Host refused" "$(treq GET /api/state -H "Host: 127.0.0.1:$TPORT" -H "$(jwt good)")" "421"
+  eq "tunnel: foreign Host refused" "$(treq GET /api/state -H 'Host: evil.example' -H "$(jwt good)")" "421"
+  eq "tunnel: page served" "$(treq GET / "${TUNNEL_HDRS[@]}" -H "$(jwt good)")" "200"
+  dec d-1-q4 question
+  eq "tunnel: local Origin refused" "$(tpost /api/decisions/d-1-q4/answer '{"answer":"A"}' -H 'Host: board.example.com' -H "Origin: http://127.0.0.1:$TPORT" -H "$(jwt good)")" "403"
+  eq "tunnel: missing Origin refused" "$(tpost /api/decisions/d-1-q4/answer '{"answer":"A"}' -H 'Host: board.example.com' -H "$(jwt good)")" "403"
+  eq "tunnel: http:// origin refused" "$(tpost /api/decisions/d-1-q4/answer '{"answer":"A"}' -H 'Host: board.example.com' -H 'Origin: http://board.example.com' -H "$(jwt good)")" "403"
+  eq "tunnel: approver answers" "$(tpost /api/decisions/d-1-q4/answer '{"answer":"A"}' "${TUNNEL_HDRS[@]}" -H "$(jwt good)")" "200"
+  eq "  answered_by is the token's email" "$(jq -r .answered_by "$BOARD_HOME/decisions/d-1-q4.json")" "boss@example.com"
   eq "  logged via cf-jwt" "$(jq -s -r '[.[] | select(.type=="serve" and .action=="answer")] | last | .by + "/" + .via' "$BOARD_HOME/events.jsonl")" "boss@example.com/cf-jwt"
-  dec d-q5 question
-  eq "valid JWT of a non-approver refused" "$(post /api/decisions/d-q5/answer '{"answer":"A"}' -H "$(jwt nobody)")" "403"
-  eq "loopback still local with JWT configured" "$(req GET /api/state >/dev/null; body .me)" "local"
+  dec d-1-q5 question
+  eq "tunnel: non-approver refused" "$(tpost /api/decisions/d-1-q5/answer '{"answer":"A"}' "${TUNNEL_HDRS[@]}" -H "$(jwt nobody)")" "403"
+  eq "  marked unauthorized" "$(jq -r '.status + "/" + .answered_by' "$BOARD_HOME/decisions/d-1-q5.json")" "unauthorized/intruder@example.com"
+  dec d-1-prod2 question '{"task_id":"t-1","stage":"production","gate":"production","options":["approve","request changes"]}'
+  eq "tunnel: an approver is not a release manager" "$(tpost /api/decisions/d-1-prod2/answer '{"answer":"approve"}' "${TUNNEL_HDRS[@]}" -H "$(jwt good)")" "403"
+  dec d-1-prod2 question '{"task_id":"t-1","stage":"production","gate":"production","options":["approve","request changes"]}'
+  eq "tunnel: the release manager approves production" "$(tpost /api/decisions/d-1-prod2/answer '{"answer":"approve"}' "${TUNNEL_HDRS[@]}" -H "$(jwt rm)")" "200"
+  eq "tunnel: messages carry the email" "$(tpost /api/messages '{"to":"CP","body":"from phone"}' "${TUNNEL_HDRS[@]}" -H "$(jwt good)" >/dev/null; jq -r .by "$BOARD_HOME/messages/$(body .id).json")" "boss@example.com"
+  eq "local listener still local with the tunnel on" "$(req GET /api/state >/dev/null; body .me)" "local"
+  eq "local listener still refuses forwarded requests" "$(req GET /api/state -H "$(jwt good)")" "403"
 else
   echo "  (skipped: python3 cryptography module not installed)"
 fi
 
 # ---------------------------------------------------------------- misc
 echo "misc:"
-eq "--check prints the listen address" "$("$REPO/bin/board-serve" --check | sed -n 's/^listen *//p')" "http://127.0.0.1:$PORT"
+eq "--check prints the local address" "$("$REPO/bin/board-serve" --check | sed -n 's/^local *\([^ ]*\).*/\1/p')" "http://127.0.0.1:$PORT"
 eq "listens on loopback only" "$(python3 - "$PORT" <<'EOF'
 import socket, sys
 ips = {a[4][0] for a in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)} - {"127.0.0.1", "127.0.1.1"}
@@ -359,14 +417,14 @@ for f in glob.glob(os.path.join(h, "messages", "*.json")):
 print("".join(l + "," for _, l in sorted(out)), end="")
 EOF2
 )"
-grep -q '^decision d-perm' <<<"$w" && bad "--watch skips permission decisions" "$w" || ok "--watch skips permission decisions"
-grep -q '^message m-1 ' <<<"$w" && bad "--watch skips replied messages" "$w" || ok "--watch skips replied messages"
+grep -q '^decision d-1-perm' <<<"$w" && bad "--watch skips permission decisions" "$w" || ok "--watch skips permission decisions"
+grep -q '^message m-1-a ' <<<"$w" && bad "--watch skips replied messages" "$w" || ok "--watch skips replied messages"
 "$REPO/bin/board-serve" --watch --tick 1 > "$T/watch.out" & wpid=$!
 sleep 0.5
-echo '{"id":"m-late","to":"CP","body":"x","by":"local","created_at":9,"status":"new"}' > "$BOARD_HOME/messages/m-late.json"
+echo '{"id":"m-3-late","to":"CP","body":"x","by":"local","created_at":9,"status":"new"}' > "$BOARD_HOME/messages/m-3-late.json"
 sleep 2.2
 kill "$wpid" 2>/dev/null; wait "$wpid" 2>/dev/null
-eq "--watch prints a new message once" "$(grep -c '^message m-late new$' "$T/watch.out")" "1"
+eq "--watch prints a new message once" "$(grep -c '^message m-3-late new$' "$T/watch.out")" "1"
 grep -q '^tick$' "$T/watch.out" && ok "--watch ticks" || bad "--watch ticks" "$(cat "$T/watch.out")"
 
 # ---------------------------------------------------------------- fleet-up
@@ -404,36 +462,64 @@ grep -q " serve: \|-n serve" <<<"$out" && bad "serve off by default" "$out" || o
 
 # ---------------------------------------------------------------- expose-cloudflare.sh
 echo "expose-cloudflare:"
-mkdir -p "$T/cfbin"
-printf '#!/usr/bin/env bash\necho "$*" >> "%s/cloudflared.log"\n' "$T" > "$T/cfbin/cloudflared"
-chmod +x "$T/cfbin/cloudflared"
-cat > "$T/cf.yml" <<'EOF2'
-tunnel: t1
+CFD="$T/cfdir"; mkdir -p "$CFD" "$T/cfbin"
+cat > "$T/cfbin/cloudflared" <<EOF2
+#!/usr/bin/env bash
+echo "\$*" >> "$T/cloudflared.log"
+case "\$*" in
+  "tunnel list --output json") echo '[{"id":"1111-aaaa","name":"other"},{"id":"2222-bbbb","name":"board"}]' ;;
+esac
+exit 0
+EOF2
+cat > "$T/cfbin/curl" <<EOF2
+#!/usr/bin/env bash
+echo "\$*" >> "$T/curl.log"
+cat "$T/access-apps.json"
+EOF2
+chmod +x "$T/cfbin/cloudflared" "$T/cfbin/curl"
+echo '{}' > "$CFD/2222-bbbb.json"; echo '{}' > "$CFD/1111-aaaa.json"
+cat > "$CFD/config.yml" <<'EOF2'
+tunnel: other
 credentials-file: /dev/null
 ingress:
   - hostname: other.example.com
     service: http://127.0.0.1:8080
   - service: http_status:404
 EOF2
-sum0="$(cksum < "$T/cf.yml")"
-xc() { PATH="$T/cfbin:$PATH" "$REPO/scripts/expose-cloudflare.sh" --config "$T/cf.yml" --port 39410 "$@" 2>&1; }
-out="$(xc --hostname board.example.com --tunnel t1)"
-eq "dry run by default leaves the config alone" "$(cksum < "$T/cf.yml")" "$sum0"
-[ ! -e "$T/cloudflared.log" ] && ok "dry run runs no cloudflared command" || bad "dry run runs no cloudflared command" "$(cat "$T/cloudflared.log")"
-grep -q "service: http://127.0.0.1:39410" <<<"$out" && grep -q "cloudflared tunnel route dns t1 board.example.com" <<<"$out" \
+sum0="$(cksum < "$CFD/config.yml")"
+xc() { CLOUDFLARED_DIR="$CFD" PATH="$T/cfbin:$PATH" "$REPO/scripts/expose-cloudflare.sh" --port 39411 "$@" 2>&1; }
+OUTF="$CFD/agent-switchboard-board.yml"
+out="$(xc --hostname board.example.com --tunnel board)"
+[ ! -e "$OUTF" ] && [ ! -e "$T/cloudflared.log" ] && ok "dry run by default writes and runs nothing" || bad "dry run writes and runs nothing"
+grep -q "service: http://127.0.0.1:39411" <<<"$out" && grep -q "cloudflared tunnel route dns board board.example.com" <<<"$out" \
   && grep -q "Self-hosted" <<<"$out" && grep -q "aud: <Application Audience" <<<"$out" \
-  && ok "dry run prints ingress, DNS and Access steps" || bad "dry run prints ingress, DNS and Access steps" "$out"
-out="$(xc --hostname board.example.com --tunnel t1 --dry-run)"
-eq "--dry-run leaves the config alone" "$(cksum < "$T/cf.yml")" "$sum0"
-xc --hostname 'bad host;rm' --tunnel t1 >/dev/null; eq "bad host name refused" "$?" "1"
-out="$(xc --hostname board.example.com --tunnel t1 --apply)"
-eq "--apply inserts before the catch-all" "$(python3 -c 'import sys,yaml; print([r.get("hostname","*") for r in yaml.safe_load(open(sys.argv[1]))["ingress"]])' "$T/cf.yml")" \
-  "['other.example.com', 'board.example.com', '*']"
-ls "$T"/cf.yml.bak.* >/dev/null 2>&1 && ok "--apply keeps a backup" || bad "--apply keeps a backup"
-grep -q '^tunnel route dns t1 board.example.com$' "$T/cloudflared.log" && ok "--apply routes DNS" || bad "--apply routes DNS" "$(cat "$T/cloudflared.log" 2>/dev/null)"
-sum1="$(cksum < "$T/cf.yml")"
-out="$(xc --hostname board.example.com --tunnel t1 --apply)"
-eq "--apply twice adds nothing" "$(cksum < "$T/cf.yml")" "$sum1"
+  && ok "dry run prints config, commands, Access steps and fleet.yaml" || bad "dry run prints everything" "$out"
+xc --hostname 'bad host;rm' --tunnel board >/dev/null; eq "bad host name refused" "$?" "1"
+out="$(xc --hostname board.example.com --tunnel board --apply)"; rc=$?
+eq "--apply without an Access check refused" "$rc" "1"
+grep -q "Access application covers" <<<"$out" && ok "  says to verify Access" || bad "  says to verify Access" "$out"
+[ ! -e "$OUTF" ] && ok "  nothing written" || bad "  nothing written"
+echo '{"success":true,"result":[{"domain":"other.example.com","aud":"zzz"}]}' > "$T/access-apps.json"
+out="$(CLOUDFLARE_API_TOKEN=t CLOUDFLARE_ACCOUNT_ID=acc1 xc --hostname board.example.com --tunnel board --apply)"; rc=$?
+eq "--apply refused when the API shows no Access app for the host" "$rc" "1"
+[ ! -e "$OUTF" ] && ok "  nothing written" || bad "  nothing written"
+out="$(xc --hostname board.example.com --tunnel other --apply --access-checked)"; rc=$?
+eq "--apply refuses a tunnel another config uses" "$rc" "1"
+grep -q "already used by" <<<"$out" && ok "  says why" || bad "  says why" "$out"
+echo "keep me" > "$T/foreign.yml"
+out="$(xc --hostname board.example.com --tunnel board --apply --access-checked --out "$T/foreign.yml")"; rc=$?
+eq "--apply refuses an --out file it did not write" "$rc$(cat "$T/foreign.yml")" "1keep me"
+echo '{"success":true,"result":[{"domain":"board.example.com/*","aud":"AUDX"}]}' > "$T/access-apps.json"
+out="$(CLOUDFLARE_API_TOKEN=t CLOUDFLARE_ACCOUNT_ID=acc1 xc --hostname board.example.com --tunnel board --apply)"; rc=$?
+eq "--apply with an Access app found through the API" "$rc" "0"
+grep -q "AUD AUDX" <<<"$out" && ok "  shows the app's AUD" || bad "  shows the app's AUD" "$out"
+eq "  writes its own config file" "$(python3 -c 'import sys,yaml; c=yaml.safe_load(open(sys.argv[1])); print(c["tunnel"], [r.get("hostname","*")+">"+r["service"] for r in c["ingress"]])' "$OUTF")" \
+  "2222-bbbb ['board.example.com>http://127.0.0.1:39411', '*>http_status:404']"
+eq "  config.yml untouched" "$(cksum < "$CFD/config.yml")" "$sum0"
+grep -q '^tunnel route dns board board.example.com$' "$T/cloudflared.log" && ok "  routes DNS" || bad "  routes DNS" "$(cat "$T/cloudflared.log")"
+grep -q -- '--config '"$OUTF"' ingress validate' "$T/cloudflared.log" && ok "  validates its own file" || bad "  validates its own file"
+out="$(xc --hostname board.example.com --tunnel board --apply --access-checked)"; rc=$?
+eq "--apply again (own file, --access-checked) ok" "$rc" "0"
 
 echo
 echo "passed: $pass  failed: $fail"
