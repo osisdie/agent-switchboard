@@ -371,7 +371,7 @@ overrides the file). All of them are listed in `.env.example`.
 |---|---|---|
 | `slack` | `SLACK_WEBHOOK_URL`, `SLACK_MENTION` (`<@your member id>`) | The mention is what makes your phone buzz. Titles and bodies are **escaped** (`&`, `<`, `>`), so text from a session can't inject mentions or links. Only `SLACK_MENTION` from your own config is sent as markup, and only plain `http(s)` URLs become links |
 | `desktop` | nothing; `ALERT_DESKTOP=0` turns it off | WSL (`powershell.exe` toast), `notify-send` on Linux, or macOS notifications. Best effort, never blocks |
-| `email` | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, `ALERT_EMAIL_TO` | Any SMTP server, **TLS only**: port 465 uses SSL, and any other port requires STARTTLS. If the server doesn't offer STARTTLS, nothing is sent. `SMTP_SECURITY=ssl\|starttls` forces a mode. `none` (plaintext) is accepted only **without** credentials, and a login is never sent unencrypted |
+| `email` | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, `ALERT_EMAIL_TO` | Any SMTP server, **TLS only**: port 465 uses SSL, and any other port requires STARTTLS. If the server doesn't offer STARTTLS, nothing is sent. `SMTP_SECURITY=ssl\|starttls` forces a mode. `none` (plaintext) is accepted only **without** credentials, and a login is never sent unencrypted. **Breaking change:** a server without STARTTLS on a port other than 465 used to get plaintext mail (and the login); it now fails until you set `SMTP_SECURITY=none` and remove the credentials, or switch to TLS |
 | `line` | `LINE_CHANNEL_ACCESS_TOKEN`, `LINE_TO` (user or group id) | LINE Messaging API push. Mind your plan's monthly push quota |
 | `sns` | `AWS_SNS_TOPIC_ARN`, plus a configured `aws` CLI | Subscribe SMS or email to the topic |
 | `webhook` | `ALERT_WEBHOOK_URL`, optional `ALERT_WEBHOOK_AUTH` | Generic JSON POST: a push service, an incident tool's events bridge, your own relay |
@@ -551,6 +551,10 @@ show either of them.
 - **No approvers configured = nothing gets decided.** With an empty `approvers` list, `board answer`
   refuses every answer (exit 4) and the decision stays pending. That applies to permission prompts
   too, so `board press` never sends keys. Fill in `approvers` before relying on the board.
+- **`board answer --by` is trusted locally.** The CLI cannot verify who typed it: anyone who can run
+  `board` as your user can claim any id. The barrier is the file permissions on `$BOARD_HOME` (0700)
+  and your user account, plus the operator, which only mirrors answers whose `answered_by` came from
+  the board's db (`user.id()`).
 
 ## Secrets & sanitization
 
@@ -570,6 +574,8 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
   staged diff and the banned-terms check (added lines and file paths). A hit blocks the commit, and
   so does a missing gitleaks.
 - `.githooks/commit-msg` runs the same secret and banned-terms checks on the commit **message**.
+- If `tmp-local/banned-terms.txt` is missing, **both hooks skip the banned-terms check** (with a
+  warning) and still run the secret checks. Create the list in every clone.
 - `.github/workflows/ci.yml` runs gitleaks, shellcheck and the tests on every push and pull
   request, so a commit made without the hook is still caught. Actions are pinned by commit SHA.
   Organization-owned forks need a free `GITLEAKS_LICENSE` secret.
@@ -596,7 +602,8 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `snippets/worker-protocol.md` | Paste-in block for every worker session's `CLAUDE.md` |
 | `playbook/` | Lessons for running many Claude Code sessions: SDLC delivery harness, collaboration, publishing, repo hygiene, CLAUDE.md template |
 | `scripts/` | `install.sh`, `setup-dev.sh` (git hooks + gitleaks) and helpers |
-| `.githooks/pre-commit` | gitleaks on staged changes + banned-terms check |
+| `.githooks/pre-commit` | refuses `tmp*/` paths; gitleaks on staged changes + banned-terms check |
+| `.githooks/commit-msg` | secret patterns + banned terms in the commit message |
 | `.github/workflows/ci.yml` | CI: gitleaks, shellcheck, tests |
 | `.gitleaks.toml` | gitleaks default rules plus a narrow allowlist for test fixtures |
 | `tests/` | Tests for the hook, collector and CLI |
