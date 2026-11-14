@@ -147,6 +147,35 @@ def tunnel_problems(cfg):
     return out
 
 
+def is_production(dec):
+    """Same rule as bin/board: gate or stage, trimmed and lowercased, is "production"."""
+    return any(str(dec.get(k) or "").strip().lower() == "production" for k in ("gate", "stage"))
+
+
+def allowed_ids(cfg, dec):
+    """Who may answer this decision (the rule of bin/board allowed_ids). Empty = nobody."""
+    if is_production(dec):
+        return fleet.id_list(cfg, "release_managers") or fleet.id_list(cfg, "approvers")
+    return fleet.id_list(cfg, "approvers")
+
+
+def deciders(cfg):
+    """approvers ∪ release_managers: who may act on the board at all."""
+    return set(fleet.id_list(cfg, "approvers")) | set(fleet.id_list(cfg, "release_managers"))
+
+
+def tunnel_allowed(cfg):
+    """Emails the tunnel listener serves: serve.tunnel.allowed_emails, else approvers ∪
+    release_managers (emails only; "local" never applies on the tunnel)."""
+    s = cfg.get("serve") if isinstance(cfg.get("serve"), dict) else {}
+    t = s.get("tunnel") if isinstance(s.get("tunnel"), dict) else {}
+    explicit = t.get("allowed_emails")
+    if isinstance(explicit, str):
+        explicit = [explicit]
+    ids = explicit if isinstance(explicit, list) else sorted(deciders(cfg))
+    return {str(x).strip().lower() for x in ids if "@" in str(x or "")}
+
+
 def have_crypto():
     try:
         import cryptography.hazmat.primitives.asymmetric.rsa  # noqa: F401
@@ -534,7 +563,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             claims = verify_jwt(jwt.strip(), srv.jwks, srv.cfg["aud"], srv.cfg["team_domain"])
         except JwtError as exc:
             raise Refused(401, "unauthenticated", "Cloudflare Access token rejected: %s" % exc) from exc
-        return str(claims["email"]).strip().lower(), "cf-jwt"
+        email = str(claims["email"]).strip().lower()
+        # Access already filters people; this is the second gate, on our own list.
+        if email not in tunnel_allowed(fleet.load_fleet()):
+            raise Refused(403, "not_allowed", "%s is not allowed on this board "
+                                              "(serve.tunnel.allowed_emails / approvers)" % email)
+        return email, "cf-jwt"
 
     def check_csrf(self, origins):
         if self.headers.get("X-Board") != "1":
@@ -602,7 +636,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def state_for(self, ident):
         with self.server.hub.cond:
             state = dict(self.server.hub.state)
-        state.update({"mode": "local", "me": ident, "writable": True})
+        state.update({"mode": "local", "me": ident, "writable": True,
+                      "can_message": ident in deciders(fleet.load_fleet())})
         return state
 
     def page(self):
@@ -683,8 +718,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def answer(self, did, body, ident, via):
         if not DEC_ID_RE.match(did):
             raise Refused(400, "bad_id", "invalid decision id")
+        cfg = fleet.load_fleet()
         # Fails closed: with nobody listed in approvers, nobody answers from the board.
-        if not fleet.id_list(fleet.load_fleet(), "approvers"):
+        if not fleet.id_list(cfg, "approvers"):
             self.audit(ident, via, "answer", id=did, result="refused", reason="no approvers configured")
             raise Refused(403, "no_approvers", "fleet.yaml approvers is empty: nobody may answer")
         answer = body.get("answer")
@@ -697,6 +733,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not isinstance(dec, dict):
                 raise Refused(404, "not_found", "no such decision")
             kind = dec.get("kind")
+            # Check the identity first, with the rule of `board answer`, so that a refused answer
+            # never touches the file (it must not cancel an approver's answer awaiting relay).
+            allowed = allowed_ids(cfg, dec)
+            if not allowed:
+                self.audit(ident, via, "answer", id=did, result="refused", reason="nobody configured")
+                raise Refused(403, "no_approvers", "nobody may answer this decision (fleet.yaml)")
+            if ident not in allowed:
+                self.audit(ident, via, "answer", id=did, result="refused", reason="not an approver")
+                raise Refused(403, "not_approver", "%s may not answer %s (%s)" % (
+                    ident, did, "release_managers" if is_production(dec) else "approvers"))
             if dec.get("status") not in ("pending", "unauthorized", "answered"):
                 self.audit(ident, via, "answer", id=did, result="gone", status=dec.get("status"))
                 raise Refused(409, "gone", "decision is already %s" % dec.get("status"))
@@ -752,6 +798,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             raise Refused(400, "bad_to", "to must be a session code or \"all\"")
         if not isinstance(text, str) or not text.strip() or len(text) > MAX_MESSAGE:
             raise Refused(400, "bad_body", "body must be a non-empty string (max %d chars)" % MAX_MESSAGE)
+        if ident not in deciders(fleet.load_fleet()):
+            self.audit(ident, via, "message", result="refused", reason="not an approver")
+            raise Refused(403, "not_approver", "only approvers and release managers send messages")
         now = now_ms()
         mid = "m-%d-%s" % (now, secrets.token_hex(3))
         d = os.path.join(self.server.home, "messages")
@@ -848,7 +897,10 @@ def main(argv):
     else:
         info.append("tunnel   http://127.0.0.1:%d   Host %s, identity: verified Access JWT "
                     "(aud %s..., keys %s)" % (cfg["tunnel_port"], cfg["hostname"], cfg["aud"][:8], cfg["certs_url"]))
-    approvers = fleet.id_list(fleet.load_fleet(), "approvers")
+    fcfg = fleet.load_fleet()
+    approvers = fleet.id_list(fcfg, "approvers")
+    if cfg["tunnel"]:
+        info.append("emails   %s" % (", ".join(sorted(tunnel_allowed(fcfg))) or "(none: every tunnel request refused)"))
     info.append("answers  %s" % ("approvers: " + ", ".join(approvers) if approvers
                                  else "REFUSED: fleet.yaml approvers is empty"))
     if args.check:

@@ -154,7 +154,15 @@ for app in data.get("result") or []:
         print("ok " + str(app.get("aud") or "")); sys.exit()
 print("none")' "$host" <<<"$apps")"
   case "$match" in
-    ok*) echo "  Access application found for $host (AUD ${match#ok })" ;;
+    ok*) app_aud="${match#ok }"
+         echo "  Access application found for $host (AUD $app_aud)"
+         cfg_aud="$(python3 "$REPO/lib/fleet.py" get serve.tunnel.aud "" 2>/dev/null)"
+         if [ -z "$cfg_aud" ]; then
+           echo "  NOTE: set fleet.yaml serve.tunnel.aud to this AUD; until then the tunnel listener refuses to start"
+         elif [ "$cfg_aud" != "$app_aud" ]; then
+           echo "  WARNING: fleet.yaml serve.tunnel.aud ($cfg_aud) does not match this Access application's AUD"
+           echo "           ($app_aud): every request through the tunnel will be refused until they match"
+         fi ;;
     none) die "no Access application covers $host (all paths): create it first (step 3)" ;;
     *) die "could not read the Access applications (check the token's Access: Apps read permission)" ;;
   esac

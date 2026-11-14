@@ -652,7 +652,13 @@ The tunnel listener **refuses to start** without `hostname`, `team_domain`, `aud
   ever sent.
 - Decision and message ids are checked against a strict pattern before any path is built, and
   `board` is called with an argv list, never through a shell.
-- **With empty `approvers`, every answer is refused.**
+- **With empty `approvers`, every answer is refused.** The identity is checked against
+  `approvers` / `release_managers` before anything is written, so a refused answer never touches
+  the decision. In particular, it can't cancel an approver's answer that is waiting to be relayed.
+  Only approvers and release managers send messages.
+- On the tunnel, a verified email must also be in `serve.tunnel.allowed_emails` (default: the
+  emails in `approvers` ∪ `release_managers`). Everyone else gets 403, even for reading. Add a
+  read-only viewer there if you want one.
 - Sessions are sent with an allowlist of fields (no `cwd`, pid or session id).
 - Every write is logged to `events.jsonl` as `type: "serve"`, with the identity and `via`
   (`loopback` or `cf-jwt`).

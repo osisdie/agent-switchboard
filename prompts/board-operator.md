@@ -376,7 +376,7 @@ of your Artifact-mode jobs disappear:
   <identity>` itself, where the identity is `local` (a browser on this machine) or the email that
   Cloudflare Access verified. So a decision you see as `answered` has already passed the
   `approvers` / `release_managers` check, and its gate and approval event are already recorded. A
-  refused answer is already `unauthorized`. Never run `board answer` again for it.
+  refused answer never reaches the file at all. Never run `board answer` again for it.
 - **Permission prompts are already pressed.** `board-serve` runs
   `board press <CODE> allow|deny --expect <tool_use_id>` itself and marks the decision `relayed` or
   `stale`. Ignore `kind: "permission"` decisions.

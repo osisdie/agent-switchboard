@@ -128,7 +128,7 @@ start
 # ---------------------------------------------------------------- state
 echo "state:"
 eq "GET /api/state 200" "$(req GET /api/state)" "200"
-eq "state keys" "$(body 'keys | join(",")')" "approvals,decisions,generated_at,ledger,me,messages,mode,operator,replies,sessions,tasks,writable"
+eq "state keys" "$(body 'keys | join(",")')" "approvals,can_message,decisions,generated_at,ledger,me,messages,mode,operator,replies,sessions,tasks,writable"
 eq "me is local on loopback" "$(body .me)" "local"
 eq "mode local" "$(body .mode)" "local"
 eq "session CP needs-you" "$(body '.sessions[] | select(.code=="CP") | .state')" "needs-you"
@@ -245,7 +245,12 @@ eq "  gate approved on the task" "$(jq -r '.gates[0].status + "/" + .gates[0].ap
 eq "  approval shows up in state" "$(req GET /api/state >/dev/null; body '[.approvals[].decision_id] | index("d-1-gate") != null')" "true"
 eq "production gate by local refused (release_managers)" "$(post /api/decisions/d-1-prod/answer '{"answer":"approve"}')" "403"
 eq "  error not_approver" "$(body .error)" "not_approver"
-eq "  marked unauthorized" "$(jq -r .status "$BOARD_HOME/decisions/d-1-prod.json")" "unauthorized"
+eq "  file untouched (still pending)" "$(jq -r .status "$BOARD_HOME/decisions/d-1-prod.json")" "pending"
+eq "  refusal audited" "$(jq -s -r '[.[] | select(.type=="serve" and .action=="answer")] | last | .result + "/" + .reason' "$BOARD_HOME/events.jsonl")" "refused/not an approver"
+eq "a free-text answer '--help' is recorded literally" "$(post /api/decisions/d-1-q3/answer '{"answer":"--help"}')" "200"
+eq "  answer is --help" "$(jq -r '.status + "/" + .answer' "$BOARD_HOME/decisions/d-1-q3.json")" "answered/--help"
+dec d-1-q3 question
+eq "can_message for an approver" "$(req GET /api/state >/dev/null; body .can_message)" "true"
 eq "empty answer refused" "$(post /api/decisions/d-1-q2/answer '{"answer":"  "}')" "400"
 eq "permission answer must be allow/deny" "$(post /api/decisions/d-1-perm/answer '{"answer":"maybe"}')" "400"
 
@@ -292,6 +297,23 @@ write_cfg "" "[boss@example.com]"
 start
 eq "approvers without local: loopback answer refused" "$(post /api/decisions/d-1-q2/answer '{"answer":"A"}')" "403"
 eq "  error not_approver" "$(body .error)" "not_approver"
+eq "  file untouched" "$(jq -r '.status + "/" + (.answered_by // "none")' "$BOARD_HOME/decisions/d-1-q2.json")" "pending/none"
+eq "  message refused for a non-approver" "$(post /api/messages '{"to":"CP","body":"x"}')" "403"
+eq "  can_message false" "$(req GET /api/state >/dev/null; body .can_message)" "false"
+# MUST-FIX: a non-approver must never cancel an approver's answer that waits for the relay.
+dec d-1-q6 question
+BOARD_HOME="$BOARD_HOME" "$REPO/bin/board" answer d-1-q6 "ship it" --by boss@example.com >/dev/null
+eq "approver's answer recorded" "$(jq -r '.status + "/" + .answered_by' "$BOARD_HOME/decisions/d-1-q6.json")" "answered/boss@example.com"
+eq "non-approver (local) posts on it: refused" "$(post /api/decisions/d-1-q6/answer '{"answer":"no"}')" "403"
+eq "  still answered by the approver" "$(jq -r '.status + "/" + .answered_by + "/" + .answer' "$BOARD_HOME/decisions/d-1-q6.json")" "answered/boss@example.com/ship it"
+BOARD_HOME="$BOARD_HOME" "$REPO/bin/board" answer d-1-q6 "no" --by intruder@example.com >/dev/null 2>&1; rc=$?
+eq "board answer by a non-approver on an answered decision exits 4" "$rc" "4"
+eq "  no write" "$(jq -r '.status + "/" + .answered_by + "/" + .answer' "$BOARD_HOME/decisions/d-1-q6.json")" "answered/boss@example.com/ship it"
+eq "  attempt logged" "$(jq -s -r '[.[] | select(.type=="unauthorized" and .id=="d-1-q6")] | last | .by' "$BOARD_HOME/events.jsonl")" "intruder@example.com"
+dec d-1-q7 question
+BOARD_HOME="$BOARD_HOME" "$REPO/bin/board" answer d-1-q7 --help --by boss@example.com >/dev/null; rc=$?
+eq "board answer ID --help --by WHO records '--help'" "$rc/$(jq -r .answer "$BOARD_HOME/decisions/d-1-q7.json")" "0/--help"
+eq "board answer --help still prints help" "$("$REPO/bin/board" answer --help | head -1 | cut -c1-12)" "usage: board"
 dec d-1-q2 question
 write_cfg ""
 start
@@ -383,13 +405,29 @@ EOF
   eq "  answered_by is the token's email" "$(jq -r .answered_by "$BOARD_HOME/decisions/d-1-q4.json")" "boss@example.com"
   eq "  logged via cf-jwt" "$(jq -s -r '[.[] | select(.type=="serve" and .action=="answer")] | last | .by + "/" + .via' "$BOARD_HOME/events.jsonl")" "boss@example.com/cf-jwt"
   dec d-1-q5 question
-  eq "tunnel: non-approver refused" "$(tpost /api/decisions/d-1-q5/answer '{"answer":"A"}' "${TUNNEL_HDRS[@]}" -H "$(jwt nobody)")" "403"
-  eq "  marked unauthorized" "$(jq -r '.status + "/" + .answered_by' "$BOARD_HOME/decisions/d-1-q5.json")" "unauthorized/intruder@example.com"
+  eq "tunnel: a verified email outside the list gets 403 on state" "$(treq GET /api/state "${TUNNEL_HDRS[@]}" -H "$(jwt nobody)")" "403"
+  eq "  error not_allowed" "$(body .error)" "not_allowed"
+  eq "  ... and on the page" "$(treq GET / "${TUNNEL_HDRS[@]}" -H "$(jwt nobody)")" "403"
+  eq "  ... and on answers" "$(tpost /api/decisions/d-1-q5/answer '{"answer":"A"}' "${TUNNEL_HDRS[@]}" -H "$(jwt nobody)")" "403"
+  eq "  file untouched" "$(jq -r .status "$BOARD_HOME/decisions/d-1-q5.json")" "pending"
   dec d-1-prod2 question '{"task_id":"t-1","stage":"production","gate":"production","options":["approve","request changes"]}'
   eq "tunnel: an approver is not a release manager" "$(tpost /api/decisions/d-1-prod2/answer '{"answer":"approve"}' "${TUNNEL_HDRS[@]}" -H "$(jwt good)")" "403"
   dec d-1-prod2 question '{"task_id":"t-1","stage":"production","gate":"production","options":["approve","request changes"]}'
   eq "tunnel: the release manager approves production" "$(tpost /api/decisions/d-1-prod2/answer '{"answer":"approve"}' "${TUNNEL_HDRS[@]}" -H "$(jwt rm)")" "200"
   eq "tunnel: messages carry the email" "$(tpost /api/messages '{"to":"CP","body":"from phone"}' "${TUNNEL_HDRS[@]}" -H "$(jwt good)" >/dev/null; jq -r .by "$BOARD_HOME/messages/$(body .id).json")" "boss@example.com"
+  # serve.tunnel.allowed_emails lets a viewer in who is not an approver: they read, never decide.
+  tunnel_cfg
+  printf '    allowed_emails: [boss@example.com, intruder@example.com, rm@example.com]\n' >> "$BOARD_CONFIG_DIR/fleet.yaml"
+  start
+  eq "allowed_emails: a listed viewer reads the state" "$(treq GET /api/state "${TUNNEL_HDRS[@]}" -H "$(jwt nobody)")" "200"
+  eq "  can_message false" "$(body .can_message)" "false"
+  dec d-1-q8 question
+  BOARD_HOME="$BOARD_HOME" "$REPO/bin/board" answer d-1-q8 "go" --by boss@example.com >/dev/null
+  eq "  a viewer's answer on an approver-answered decision: 403" "$(tpost /api/decisions/d-1-q8/answer '{"answer":"stop"}' "${TUNNEL_HDRS[@]}" -H "$(jwt nobody)")" "403"
+  eq "  error not_approver" "$(body .error)" "not_approver"
+  eq "  still the approver's answer" "$(jq -r '.status + "/" + .answered_by + "/" + .answer' "$BOARD_HOME/decisions/d-1-q8.json")" "answered/boss@example.com/go"
+  eq "  a viewer's message: 403" "$(tpost /api/messages '{"to":"CP","body":"x"}' "${TUNNEL_HDRS[@]}" -H "$(jwt nobody)")" "403"
+  eq "  --check lists the allowed emails" "$("$REPO/bin/board-serve" --check | grep -c '^emails .*intruder@example.com')" "1"
   eq "local listener still local with the tunnel on" "$(req GET /api/state >/dev/null; body .me)" "local"
   eq "local listener still refuses forwarded requests" "$(req GET /api/state -H "$(jwt good)")" "403"
 else
@@ -526,6 +564,13 @@ echo '{"success":true,"result":[{"domain":"board.example.com/*","aud":"AUDX"}]}'
 out="$(CLOUDFLARE_API_TOKEN=t CLOUDFLARE_ACCOUNT_ID=acc1 xc --hostname board.example.com --tunnel board --apply)"; rc=$?
 eq "--apply with an Access app found through the API" "$rc" "0"
 grep -q "AUD AUDX" <<<"$out" && ok "  shows the app's AUD" || bad "  shows the app's AUD" "$out"
+grep -q "set fleet.yaml serve.tunnel.aud" <<<"$out" && ok "  says to set the AUD when it is not configured" || bad "  says to set the AUD" "$out"
+printf 'serve:\n  tunnel:\n    aud: OTHER\n' > "$BOARD_CONFIG_DIR/fleet.yaml"
+out="$(CLOUDFLARE_API_TOKEN=t CLOUDFLARE_ACCOUNT_ID=acc1 xc --hostname board.example.com --tunnel board --apply)"
+grep -q "WARNING: fleet.yaml serve.tunnel.aud (OTHER) does not match" <<<"$out" && ok "  warns when the AUD does not match" || bad "  warns when the AUD does not match" "$out"
+printf 'serve:\n  tunnel:\n    aud: AUDX\n' > "$BOARD_CONFIG_DIR/fleet.yaml"
+out="$(CLOUDFLARE_API_TOKEN=t CLOUDFLARE_ACCOUNT_ID=acc1 xc --hostname board.example.com --tunnel board --apply)"
+grep -q "WARNING\|NOTE: set" <<<"$out" && bad "  quiet when the AUD matches" "$out" || ok "  quiet when the AUD matches"
 eq "  writes its own config file" "$(python3 -c 'import sys,yaml; c=yaml.safe_load(open(sys.argv[1])); print(c["tunnel"], [r.get("hostname","*")+">"+r["service"] for r in c["ingress"]])' "$OUTF")" \
   "2222-bbbb ['board.example.com>http://127.0.0.1:39411', '*>http_status:404']"
 eq "  config.yml untouched" "$(cksum < "$CFD/config.yml")" "$sum0"

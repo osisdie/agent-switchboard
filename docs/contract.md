@@ -118,6 +118,10 @@ of `claude.use("db")`. It runs one or two listeners, both on `127.0.0.1`:
 | local | `127.0.0.1:serve.port` (39410) | `127.0.0.1:<port>`, `localhost:<port>` | `local`, but only for a direct request. Any `Cf-Connecting-IP`, `Cf-Ray`, `X-Forwarded-*`, `Forwarded`, `X-Real-IP` or `Cf-Access-*` header → 403 `forwarded_refused` |
 | tunnel | `127.0.0.1:serve.tunnel.port` (port + 1), when `serve.tunnel.enabled` | `serve.tunnel.hostname` (or `:443`) | the `email` claim of a **verified** `Cf-Access-Jwt-Assertion` (RS256 against `https://<team_domain>/cdn-cgi/access/certs`, cached; `aud` = `serve.tunnel.aud`, `iss` = `https://<team_domain>`, `exp`/`nbf`). Never `local`. The `Cf-Access-Authenticated-User-Email` header alone is ignored. Missing or invalid token → 401 |
 
+On the tunnel listener a verified email must also be in `serve.tunnel.allowed_emails` (default:
+the emails in `approvers` ∪ `release_managers`), or every route, `/api/state` included, answers
+403 `not_allowed`. Listing a viewer there lets them read the board; only approvers decide.
+
 The cloudflared ingress points at the **tunnel** listener only. The tunnel listener refuses to start
 (exit 2, with the reason) without `hostname`, `team_domain`, `aud` and the python `cryptography`
 module. There is no unverified-header mode.
@@ -138,8 +142,8 @@ $BOARD_HOME/
 | `GET /` | the board page (nonce CSP, `no-store`) |
 | `GET /api/state` | the state below, built from `$BOARD_HOME` |
 | `GET /api/events` | `text/event-stream`: `event: state` with the full state at once and after every change (1 s mtime poll; only when the state differs), `: keepalive` every 25 s |
-| `POST /api/decisions/<id>/answer` `{answer}` | `<id>` must match `^d-[0-9]+-[a-z0-9]+$`. With empty `approvers` → 403 `no_approvers` (fails closed). Otherwise `board answer <id> <answer> --by <identity>` (argv, no shell) → 200 `{status: "answered"}`; exit 4 → 403 `not_approver` (the decision is `unauthorized`). For `kind: "permission"` (`answer` = `allow`\|`deny`; `allow` with `summary_truncated` → 409 `review_in_session`), it then runs `board press <from> <answer> --expect <tool_use_id>` → 200 `{status: "relayed"}`; exit 3 → 409 `stale`. A decision already `relayed`/`stale`/`timeout` → 409 `gone`. |
-| `POST /api/messages` `{to, body}` | writes `messages/<id>.json` (`^m-[0-9]+-[a-z0-9]+$`) with `status: "new"`, `by: <identity>` → 201 `{id}` |
+| `POST /api/decisions/<id>/answer` `{answer}` | `<id>` must match `^d-[0-9]+-[a-z0-9]+$`. With empty `approvers` → 403 `no_approvers` (fails closed). The identity is then checked **before anything is written**, with the rule of `board answer` (`approvers`; for a production decision, gate or stage, `release_managers`, falling back to `approvers`): not allowed → 403 `not_approver`, audited, file untouched (so it can never cancel an approver's answer that waits for the relay). Otherwise `board answer <id> <answer> --by <identity>` (argv, no shell; an answer such as `--help` is recorded literally) → 200 `{status: "answered"}`. For `kind: "permission"` (`answer` = `allow`\|`deny`; `allow` with `summary_truncated` → 409 `review_in_session`), it then runs `board press <from> <answer> --expect <tool_use_id>` → 200 `{status: "relayed"}`; exit 3 → 409 `stale`; exit 4 → 403 `press_refused`. A decision already `relayed`/`stale`/`timeout` → 409 `gone`. |
+| `POST /api/messages` `{to, body}` | only for `approvers` ∪ `release_managers` (else 403 `not_approver`); writes `messages/<id>.json` (`^m-[0-9]+-[a-z0-9]+$`) with `status: "new"`, `by: <identity>` → 201 `{id}` |
 
 Every request: `Host` from the listener's allowlist, else 421. POST: `X-Board: 1` and an `Origin`
 from the listener's allowlist (`http://127.0.0.1:<port>`, `http://localhost:<port>` /
@@ -151,7 +155,7 @@ from the listener's allowlist (`http://127.0.0.1:<port>`, `http://localhost:<por
 State (`/api/state` and every SSE frame):
 
 ```json
-{ "mode": "local", "me": "local|<email>", "writable": true, "generated_at": 0,
+{ "mode": "local", "me": "local|<email>", "writable": true, "can_message": true|false, "generated_at": 0,
   "sessions":  [ {code, aliases, state, status, task, tmux, remote_url, pending, updated_at} ],
   "decisions": [ decision files, newest 200, without session_id/tmux_pane ],
   "tasks":     [ task files, newest 50 ],

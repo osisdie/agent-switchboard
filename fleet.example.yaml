@@ -27,6 +27,7 @@ serve:
   #   hostname: board.example.com
   #   team_domain: yourteam.cloudflareaccess.com
   #   aud: "<Application Audience (AUD) Tag>"   # needs python3 cryptography to verify tokens
+  #   allowed_emails: [viewer@example.com]     # who may open it at all (default: approvers ∪ release_managers)
 
 # `board press` safety settings: a key is only sent when the last `lines` lines of the pane
 # match `prompt_regex`.
