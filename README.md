@@ -173,7 +173,7 @@ scripts/expose-cloudflare.sh --hostname board.example.com --tunnel board        
    identity provider. Copy its **AUD tag**.
 2. Add to `fleet.yaml` and run `fleet-up` (or `bin/board-serve`):
    ```yaml
-   approvers: [local, you@example.com]   # "local" = a browser on this machine
+   approvers: [local, you@example.com]   # "local" = anything on this machine (single-user hosts only)
    serve:
      enabled: true
      port: 39410                         # local listener: http://127.0.0.1:39410
@@ -579,7 +579,7 @@ So the same page gives you two channels:
 | **Token cost** | Zero to show live state and to press permission prompts. The operator spends tokens only to relay questions and messages | The operator spends tokens mirroring every change, plus its cron ticks |
 | **Works under usage limits** | Yes: live state, and Allow/Deny is pressed at once. Questions wait for the operator | Frozen (stale-data banner). Answers queue until an operator returns |
 | **Reachable when the machine is off** | No | No: the page opens, but it shows the last mirrored state and nothing is relayed |
-| **Auth model** | Cloudflare Access (email one-time PIN or your IdP) → the email in a verified Access JWT, checked against `approvers`. `local` for a browser on this machine | claude.ai sharing. Approvers are Contributors who write only their own `answers/<user id>/`. The operator takes the identity from that path |
+| **Auth model** | Cloudflare Access (email one-time PIN or your IdP) → the email in a verified Access JWT, checked against `approvers`. `local` for any process on this machine (single-user hosts only) | claude.ai sharing. Approvers are Contributors who write only their own `answers/<user id>/`. The operator takes the identity from that path |
 | **Setup effort** | About 15 minutes: a dedicated tunnel, an Access application, `fleet.yaml` (`scripts/expose-cloudflare.sh` prints every step) | Publish once through the operator, then share the link |
 
 Neither channel works while the machine is off, because the sessions, `$BOARD_HOME` and the
@@ -627,7 +627,7 @@ Or let `fleet-up` start it in tmux session `switchboard`, window `serve` (`serve
 
 | listener | port | who reaches it | identity |
 |---|---|---|---|
-| local | `serve.port` (39410) | a browser on this machine | `local`. A request with any proxy or Cloudflare header (`X-Forwarded-For`, `Forwarded`, `Cf-Connecting-IP`, `Cf-Ray`, ...) is refused |
+| local | `serve.port` (39410) | any process on this machine: your browser, scripts, other OS users | `local`. A request with any proxy or Cloudflare header (`X-Forwarded-For`, `Forwarded`, `Cf-Connecting-IP`, `Cf-Ray`, ...) is refused |
 | tunnel | `serve.tunnel.port` (39411) | cloudflared only (point the ingress here) | the `email` of a **verified** `Cf-Access-Jwt-Assertion`: RS256 against your team's keys, with audience (`aud`), issuer and expiry checks. Never `local`. The email header alone counts for nothing |
 
 The tunnel listener **refuses to start** without `hostname`, `team_domain`, `aud` and the python
@@ -663,6 +663,18 @@ The tunnel listener **refuses to start** without `hostname`, `team_domain`, `aud
 - Every write is logged to `events.jsonl` as `type: "serve"`, with the identity and `via`
   (`loopback` or `cf-jwt`).
 - The page is served with a nonce-based CSP, `frame-ancestors 'none'` and `no-store`.
+- Each listener takes at most 64 connections and 32 update streams, so the tunnel can't lock out
+  the local browser. Idle or stuck connections are dropped after 60 s.
+- Errors sent to the browser are generic. The details (Access token reasons, `board` output) go
+  to `board-serve`'s stderr.
+- Emails and `local` in `approvers`, `release_managers` and `allowed_emails` are compared
+  case-insensitively. `answered_by` keeps the spelling from `fleet.yaml`.
+
+**What `local` really means.** `local` is not a person. It is **any process on this machine** that
+reaches 127.0.0.1:`serve.port` and sends the right `Origin` and `X-Board: 1` headers, and that
+includes scripts and **other OS users** on a shared host. On a single-user workstation that is you.
+On a **multi-user host, don't list `local`** in `approvers` or `release_managers`. Use your email
+there and answer through the tunnel (Access-verified), or don't run `board-serve` there at all.
 
 **Who is an approver: two namespaces.** On the self-hosted board, `approvers` and
 `release_managers` hold **emails**, from Cloudflare Access, and the literal **`local`**, a browser on
@@ -710,7 +722,7 @@ release_managers: [you@example.com, <your claude.ai user id>]
 - **`board answer --by` is trusted locally.** The CLI cannot verify who typed it: anyone who can run
   `board` as your user can claim any id. The barrier is the file permissions on `$BOARD_HOME` (0700)
   and your user account. Beyond that, the operator passes only an id taken from the path of a db
-  answer (`answers/<user id>/`), and `board-serve` passes only `local` (a direct local request) or
+  answer (`answers/<user id>/`), and `board-serve` passes only `local` (any direct request from this machine) or
   a verified Access email.
 - **Self-hosted board.** `board-serve` binds to 127.0.0.1. Remote access goes only through the
   tunnel listener, and only with a verified Cloudflare Access token (see

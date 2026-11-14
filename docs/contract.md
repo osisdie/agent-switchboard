@@ -145,7 +145,11 @@ $BOARD_HOME/
 | `POST /api/decisions/<id>/answer` `{answer}` | `<id>` must match `^d-[0-9]+-[a-z0-9]+$`. With empty `approvers` → 403 `no_approvers` (fails closed). The identity is then checked **before anything is written**, with the rule of `board answer` (`approvers`; for a production decision, gate or stage, `release_managers`, falling back to `approvers`): not allowed → 403 `not_approver`, audited, file untouched (so it can never cancel an approver's answer that waits for the relay). Otherwise `board answer <id> <answer> --by <identity>` (argv, no shell; an answer such as `--help` is recorded literally) → 200 `{status: "answered"}`. For `kind: "permission"` (`answer` = `allow`\|`deny`; `allow` with `summary_truncated` → 409 `review_in_session`), it then runs `board press <from> <answer> --expect <tool_use_id>` → 200 `{status: "relayed"}`; exit 3 → 409 `stale`; exit 4 → 403 `press_refused`. A decision already `relayed`/`stale`/`timeout` → 409 `gone`. |
 | `POST /api/messages` `{to, body}` | only for `approvers` ∪ `release_managers` (else 403 `not_approver`); writes `messages/<id>.json` (`^m-[0-9]+-[a-z0-9]+$`) with `status: "new"`, `by: <identity>` → 201 `{id}` |
 
-Every request: `Host` from the listener's allowlist, else 421. POST: `X-Board: 1` and an `Origin`
+Every request: `Host` from the listener's allowlist, else 421. Per listener, at most 64
+connections (more get a bare 503) and 32 SSE streams (503 `too_many_streams`); the socket times
+out after 60 s. Error bodies are generic `{error, detail}`. Token reasons and `board` output are
+logged to stderr only. Identities are matched against `approvers` / `release_managers` /
+`allowed_emails` case-insensitively, and `--by` gets the configured spelling. POST: `X-Board: 1` and an `Origin`
 from the listener's allowlist (`http://127.0.0.1:<port>`, `http://localhost:<port>` /
 `https://<hostname>`; missing or `null` → 403 `csrf`), `Content-Type: application/json` (else
 415), at most 16 KiB (else 413). `OPTIONS` and every other method → 405, and no
@@ -222,7 +226,9 @@ Contract additions:
 - **Two id namespaces.** In Artifact mode, `approvers` / `release_managers` hold claude.ai user ids
   (the page's `user.id()`), which are opaque and scoped to the artifact's organization. The
   self-hosted board (`board-serve`) uses **emails** (verified by Cloudflare Access) and the literal
-  `local` (a browser on this machine), which counts only when it is listed. An id from one
+  `local`, which counts only when it is listed. `local` means **any process on this machine** that
+  reaches the local listener with the right `Origin` and `X-Board` headers, other OS users
+  included. Never list it on a multi-user host. An id from one
   namespace never matches the other. If you run both channels, list both forms for the same person.
 - The page shows non-approvers a note that their answer will not be relayed.
 

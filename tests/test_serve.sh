@@ -259,6 +259,7 @@ echo "permission:"
 : > "$FAKE_TMUX_LOG"
 eq "permission allow 200" "$(post /api/decisions/d-1-perm/answer '{"answer":"allow"}')" "200"
 eq "  status relayed" "$(body .status)" "relayed"
+eq "  no CLI output in the response" "$(body 'has("note")')" "false"
 grep -q '^send-keys -t %42 1$' "$FAKE_TMUX_LOG" && ok "  board press sent the allow key" || bad "  board press sent the allow key" "$(cat "$FAKE_TMUX_LOG")"
 eq "  decision file relayed" "$(jq -r .status "$BOARD_HOME/decisions/d-1-perm.json")" "relayed"
 eq "  press logged with identity" "$(jq -s -r '[.[] | select(.type=="serve" and .action=="press")] | last | .by + "/" + .result' "$BOARD_HOME/events.jsonl")" "local/sent"
@@ -270,6 +271,8 @@ dec d-1-permb permission "{\"from\":null,\"session_id\":\"$SID\",\"tool_use_id\"
 echo '$ just a shell' > "$FAKE_TMUX_SCREEN"
 eq "stale permission (prompt gone from the pane) 409" "$(post /api/decisions/d-1-permb/answer '{"answer":"allow"}')" "409"
 eq "  error stale" "$(body .error)" "stale"
+grep -qE 'pane|%4|board press|tmux' "$T/body" && bad "  no board/tmux internals in the error" "$(cat "$T/body")" || ok "  no board/tmux internals in the error"
+grep -q 'board press d-1-permb' "$T/serve.err" && ok "  details logged on stderr" || bad "  details logged on stderr"
 grep -q 'send-keys' "$FAKE_TMUX_LOG" && bad "  no keys sent on stale" "$(cat "$FAKE_TMUX_LOG")" || ok "  no keys sent on stale"
 eq "  decision file stale" "$(jq -r .status "$BOARD_HOME/decisions/d-1-permb.json")" "stale"
 
@@ -401,6 +404,8 @@ EOF
   eq "tunnel: local Origin refused" "$(tpost /api/decisions/d-1-q4/answer '{"answer":"A"}' -H 'Host: board.example.com' -H "Origin: http://127.0.0.1:$TPORT" -H "$(jwt good)")" "403"
   eq "tunnel: missing Origin refused" "$(tpost /api/decisions/d-1-q4/answer '{"answer":"A"}' -H 'Host: board.example.com' -H "$(jwt good)")" "403"
   eq "tunnel: http:// origin refused" "$(tpost /api/decisions/d-1-q4/answer '{"answer":"A"}' -H 'Host: board.example.com' -H 'Origin: http://board.example.com' -H "$(jwt good)")" "403"
+  eq "expired JWT: generic error text" "$(treq GET /api/state "${TUNNEL_HDRS[@]}" -H "$(jwt expired)" >/dev/null; body .detail)" "Cloudflare Access token rejected"
+  grep -q 'Access token rejected (expired)' "$T/serve.err" && ok "  reason logged on stderr" || bad "  reason logged on stderr"
   eq "tunnel: approver answers" "$(tpost /api/decisions/d-1-q4/answer '{"answer":"A"}' "${TUNNEL_HDRS[@]}" -H "$(jwt good)")" "200"
   eq "  answered_by is the token's email" "$(jq -r .answered_by "$BOARD_HOME/decisions/d-1-q4.json")" "boss@example.com"
   eq "  logged via cf-jwt" "$(jq -s -r '[.[] | select(.type=="serve" and .action=="answer")] | last | .by + "/" + .via' "$BOARD_HOME/events.jsonl")" "boss@example.com/cf-jwt"
@@ -433,6 +438,59 @@ EOF
 else
   echo "  (skipped: python3 cryptography module not installed)"
 fi
+
+# ---------------------------------------------------------------- email case
+echo "email case:"
+if python3 -c 'import cryptography' 2>/dev/null; then
+  tunnel_cfg
+  sed -i 's/^approvers: .*/approvers: [LOCAL, Boss@Example.COM]/' "$BOARD_CONFIG_DIR/fleet.yaml"
+  start
+  dec d-1-c1 question
+  eq "mixed-case approver email matches the token's email" "$(tpost /api/decisions/d-1-c1/answer '{"answer":"A"}' "${TUNNEL_HDRS[@]}" -H "$(jwt good)")" "200"
+  eq "  answered_by keeps the configured spelling" "$(jq -r .answered_by "$BOARD_HOME/decisions/d-1-c1.json")" "Boss@Example.COM"
+  eq "  the tunnel lets the email in" "$(treq GET /api/state "${TUNNEL_HDRS[@]}" -H "$(jwt good)" >/dev/null; body .can_message)" "true"
+  dec d-1-c2 question
+  eq "'LOCAL' in approvers matches local" "$(post /api/decisions/d-1-c2/answer '{"answer":"A"}')" "200"
+else
+  echo "  (skipped: python3 cryptography module not installed)"
+fi
+
+# ---------------------------------------------------------------- connection limits (in-process)
+echo "limits:"
+kill "$SRV_PID" 2>/dev/null; wait "$SRV_PID" 2>/dev/null; SRV_PID=""
+lim="$(python3 - "$REPO" "$BOARD_HOME" <<'EOF'
+import socket, sys, threading, time
+sys.path.insert(0, sys.argv[1] + "/lib")
+import serve
+print("timeout", serve.Handler.timeout)
+serve.MAX_CONN, serve.MAX_SSE = 2, 1
+home = sys.argv[2]
+cfg = serve.settings(); hub = serve.Hub(home); lock = threading.Lock()
+a = serve.Server("local", 0, home, cfg, hub, lock, quiet=True)
+b = serve.Server("local", 0, home, cfg, hub, lock, quiet=True)
+for s in (a, b):
+    threading.Thread(target=s.serve_forever, daemon=True).start()
+def get(srv, path, read=True):
+    c = socket.create_connection(("127.0.0.1", srv.server_address[1]), timeout=5)
+    c.sendall(("GET %s HTTP/1.1\r\nHost: 127.0.0.1:%d\r\n\r\n" % (path, srv.server_address[1])).encode())
+    return c, (c.recv(64).decode(errors="replace").split("\r\n")[0] if read else "")
+# per-listener SSE cap: one stream on a, a second on a is refused, b still serves one
+s1, l1 = get(a, "/api/events"); time.sleep(0.2)
+s2, l2 = get(a, "/api/events")
+s3, l3 = get(b, "/api/events")
+print("sse", l1.split(" ")[1], l2.split(" ")[1], l3.split(" ")[1])
+for x in (s1, s2, s3): x.close()
+time.sleep(0.3)
+# connection guard: two idle connections hold both slots; the third gets 503
+i1 = socket.create_connection(("127.0.0.1", a.server_address[1])); i2 = socket.create_connection(("127.0.0.1", a.server_address[1]))
+time.sleep(0.3)
+c3, l4 = get(a, "/api/state")
+print("conn", l4.split(" ")[1] if l4 else "closed")
+EOF
+)"
+eq "Handler socket timeout is 60 s" "$(sed -n 's/^timeout //p' <<<"$lim")" "60"
+eq "SSE cap is per listener" "$(sed -n 's/^sse //p' <<<"$lim")" "200 503 200"
+eq "connections over the cap get 503" "$(sed -n 's/^conn //p' <<<"$lim")" "503"
 
 # ---------------------------------------------------------------- misc
 echo "misc:"

@@ -16,7 +16,8 @@ release_managers: []
 
 # Self-hosted board (bin/board-serve, 127.0.0.1 only); fleet-up starts it when enabled.
 # Its approvers / release_managers are emails (verified by Cloudflare Access) and "local"
-# (a browser on this machine, only when listed); the Artifact board uses claude.ai user ids.
+# (any process on this machine, other OS users included: only list it on a single-user host);
+# the Artifact board uses claude.ai user ids.
 # Empty approvers = every answer refused. See README "Two channels".
 serve:
   enabled: false

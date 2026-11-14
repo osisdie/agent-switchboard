@@ -92,11 +92,14 @@ while IFS= read -r line; do
     log "$code: tmux session exists — skip"
     continue
   fi
-  [ -n "$cwd" ] && [ -d "$cwd" ] || { log "$code: cwd '$cwd' missing — skip"; continue; }
+  if [ -z "$cwd" ] || [ ! -d "$cwd" ]; then
+    log "$code: cwd '$cwd' missing — skip"
+    continue
+  fi
 
   q_code="$(printf '%q' "$code")"
   base="$claude_bin -n $q_code --remote-control $q_code"
-  [ -n "$extra" ] && base_extra="$base $extra" || base_extra="$base"
+  if [ -n "$extra" ]; then base_extra="$base $extra"; else base_extra="$base"; fi
   fresh="$base_extra"
   [ -n "$prompt" ] && fresh="$fresh $(sq "$prompt")"
   if [ -n "$resume" ]; then

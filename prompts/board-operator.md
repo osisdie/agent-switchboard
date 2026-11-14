@@ -373,7 +373,7 @@ of your Artifact-mode jobs disappear:
   `snapshot.json`.
 - **No cron.** Relaying is event-driven (below). Delete any 3-minute cron left from Artifact mode.
 - **Approver checks happen at the source.** `board-serve` runs `board answer <id> <answer> --by
-  <identity>` itself, where the identity is `local` (a browser on this machine) or the email that
+  <identity>` itself, where the identity is `local` (any direct request from this machine) or the email that
   Cloudflare Access verified. So a decision you see as `answered` has already passed the
   `approvers` / `release_managers` check, and its gate and approval event are already recorded. A
   refused answer never reaches the file at all. Never run `board answer` again for it.

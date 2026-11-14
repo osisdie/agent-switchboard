@@ -7,7 +7,9 @@ Usage: serve.py [--port PORT] [--check] [--quiet]
 Serves the board page and a small JSON API from $BOARD_HOME, on 127.0.0.1 only, through two
 listeners (docs/contract.md, "Local adapter API"):
 
-  local   127.0.0.1:serve.port         identity "local"; a browser on this machine only
+  local   127.0.0.1:serve.port         identity "local": any direct request from this machine
+                                       (other OS users included; list "local" only on a
+                                       single-user host)
   tunnel  127.0.0.1:serve.tunnel.port  (serve.tunnel.enabled) the cloudflared ingress target;
                                        identity = the email in a verified Cloudflare Access JWT,
                                        never "local"
@@ -48,7 +50,9 @@ DEFAULT_PORT = 39410
 MAX_BODY = 16 * 1024
 MAX_ANSWER = 500
 MAX_MESSAGE = 4000
-MAX_SSE = 32
+MAX_SSE = 32            # per listener, so the tunnel can't starve the local browser
+MAX_CONN = 64           # concurrent connections per listener (SSE streams included)
+SOCKET_TIMEOUT_S = 60   # per-connection socket timeout (SSE writes every <= 25 s)
 KEEPALIVE_S = 25
 POLL_S = 1.0
 LOOPBACK_PEERS = ("127.0.0.1", "::ffff:127.0.0.1")
@@ -66,6 +70,10 @@ DECISION_KEYS = ("id", "kind", "from", "question", "options", "context", "tool_u
                  "created_at", "updated_at", "task_id", "stage", "gate", "artifact_ref",
                  "escalation_level", "notified_via", "summary_truncated")
 OPERATOR_KEYS = ("heartbeat_at", "version", "operator_session", "account_hint")
+
+
+def log(msg):
+    sys.stderr.write("board-serve: %s\n" % msg)
 
 
 def now_ms():
@@ -152,6 +160,13 @@ def is_production(dec):
     return any(str(dec.get(k) or "").strip().lower() == "production" for k in ("gate", "stage"))
 
 
+def match_id(ident, ids):
+    """The entry of ids that is ident, compared case-insensitively (emails, "local"); else None.
+    Returns the configured spelling, which is what `board answer` compares exactly."""
+    want = str(ident or "").strip().lower()
+    return next((i for i in ids if str(i).strip().lower() == want), None) if want else None
+
+
 def allowed_ids(cfg, dec):
     """Who may answer this decision (the rule of bin/board allowed_ids). Empty = nobody."""
     if is_production(dec):
@@ -229,8 +244,9 @@ class Jwks:
                 try:
                     self._fetch()
                 except Exception as exc:  # noqa: BLE001
+                    log("cannot fetch Access signing keys from %s: %r" % (self.url, exc))
                     if not self.keys:
-                        raise JwtError("cannot fetch signing keys: %s" % exc) from exc
+                        raise JwtError("signing keys unavailable") from exc
             key = self.keys.get(kid)
         if key is None:
             raise JwtError("unknown signing key")
@@ -428,7 +444,6 @@ class Hub:
         self.state_json = None
         self.sig = None
         self.stopping = False
-        self.sse_count = 0
         self.refresh(force=True)
 
     def refresh(self, force=False):
@@ -496,6 +511,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     server_version = "board-serve"
     sys_version = ""
     protocol_version = "HTTP/1.1"
+    timeout = SOCKET_TIMEOUT_S  # slow or stuck clients are dropped
 
     # -- plumbing
     def log_message(self, fmt, *args):  # noqa: D401 - quieter access log on stderr
@@ -554,7 +570,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             fwd = [h for h in FORWARD_HEADERS if self.headers.get(h) is not None]
             if fwd:
                 raise Refused(403, "forwarded_refused",
-                              "the local listener only serves a browser on this machine (got %s)" % fwd[0])
+                              "the local listener only serves direct requests from this machine")
             return "local", "loopback"
         jwt = self.headers.get("Cf-Access-Jwt-Assertion")
         if not jwt:
@@ -562,12 +578,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         try:
             claims = verify_jwt(jwt.strip(), srv.jwks, srv.cfg["aud"], srv.cfg["team_domain"])
         except JwtError as exc:
-            raise Refused(401, "unauthenticated", "Cloudflare Access token rejected: %s" % exc) from exc
+            log("tunnel: Access token rejected (%s)" % exc)
+            raise Refused(401, "unauthenticated", "Cloudflare Access token rejected") from exc
         email = str(claims["email"]).strip().lower()
         # Access already filters people; this is the second gate, on our own list.
         if email not in tunnel_allowed(fleet.load_fleet()):
-            raise Refused(403, "not_allowed", "%s is not allowed on this board "
-                                              "(serve.tunnel.allowed_emails / approvers)" % email)
+            log("tunnel: %s is not in serve.tunnel.allowed_emails / approvers" % email)
+            raise Refused(403, "not_allowed", "not allowed on this board")
         return email, "cf-jwt"
 
     def check_csrf(self, origins):
@@ -637,7 +654,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         with self.server.hub.cond:
             state = dict(self.server.hub.state)
         state.update({"mode": "local", "me": ident, "writable": True,
-                      "can_message": ident in deciders(fleet.load_fleet())})
+                      "can_message": match_id(ident, sorted(deciders(fleet.load_fleet()))) is not None})
         return state
 
     def page(self):
@@ -653,11 +670,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(data)
 
     def events(self, ident):
-        hub = self.server.hub
-        with hub.cond:
-            if hub.sse_count >= MAX_SSE:
+        hub, srv = self.server.hub, self.server
+        with srv.sse_lock:
+            if srv.sse_count >= MAX_SSE:
                 return self.send_json(503, {"error": "too_many_streams"})
-            hub.sse_count += 1
+            srv.sse_count += 1
         try:
             self.close_connection = True
             self.send_response(200)
@@ -682,8 +699,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, TimeoutError, OSError):
             return None
         finally:
-            with hub.cond:
-                hub.sse_count -= 1
+            with srv.sse_lock:
+                srv.sse_count -= 1
 
     # -- POST
     def do_POST(self):
@@ -703,7 +720,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except Refused as exc:
             return self.refuse(exc)
         except Exception as exc:  # noqa: BLE001 - answer with JSON, never drop the connection
-            sys.stderr.write("board-serve: %s %s failed: %r\n" % (self.command, self.path, exc))
+            log("%s %s failed: %r" % (self.command, self.path, exc))
             return self.send_json(500, {"error": "internal"})
 
     def board(self, *args):
@@ -739,10 +756,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not allowed:
                 self.audit(ident, via, "answer", id=did, result="refused", reason="nobody configured")
                 raise Refused(403, "no_approvers", "nobody may answer this decision (fleet.yaml)")
-            if ident not in allowed:
+            by = match_id(ident, allowed)
+            if by is None:
                 self.audit(ident, via, "answer", id=did, result="refused", reason="not an approver")
-                raise Refused(403, "not_approver", "%s may not answer %s (%s)" % (
-                    ident, did, "release_managers" if is_production(dec) else "approvers"))
+                raise Refused(403, "not_approver", "you may not answer this decision")
             if dec.get("status") not in ("pending", "unauthorized", "answered"):
                 self.audit(ident, via, "answer", id=did, result="gone", status=dec.get("status"))
                 raise Refused(409, "gone", "decision is already %s" % dec.get("status"))
@@ -757,17 +774,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 snap = read_json(os.path.join(home, "snapshot.json")) or {}
                 code = next((s.get("code") for s in snap.get("sessions") or []
                              if isinstance(s, dict) and s.get("session_id") == dec.get("session_id")), None)
-            rc, out, err = self.board("answer", did, answer, "--by", ident)
+            rc, out, err = self.board("answer", did, answer, "--by", by)
             if rc == 4:
+                log("board answer %s refused: %s" % (did, err))
                 self.audit(ident, via, "answer", id=did, result="unauthorized")
-                raise Refused(403, "not_approver", err or "not an approver")
-            if rc != 0:
+                raise Refused(403, "not_approver", "you may not answer this decision")
+            # Never report success unless the file really holds this answer by this person.
+            rec = read_json(os.path.join(home, "decisions", did + ".json")) or {}
+            if rc != 0 or rec.get("status") != "answered" or rec.get("answer") != answer \
+                    or rec.get("answered_by") != by:
+                log("board answer %s failed (rc %d): %s %s" % (did, rc, err, out))
                 self.audit(ident, via, "answer", id=did, result="error", rc=rc)
-                raise Refused(500, "answer_failed", err or out)
+                raise Refused(500, "answer_failed", "the answer could not be recorded")
             if kind != "permission":
                 self.hub_kick()
                 self.audit(ident, via, "answer", id=did, result="answered")
-                return self.send_json(200, {"id": did, "status": "answered", "note": out})
+                return self.send_json(200, {"id": did, "status": "answered"})
             if not code or not dec.get("tool_use_id"):
                 self.board("mark", did, "stale")
                 self.audit(ident, via, "press", id=did, result="stale", reason="no session or tool_use_id")
@@ -776,15 +798,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.hub_kick()
             if rc == 0:
                 self.audit(ident, via, "press", id=did, code=code, key=answer, result="sent")
-                return self.send_json(200, {"id": did, "status": "relayed", "note": out})
+                return self.send_json(200, {"id": did, "status": "relayed"})
+            log("board press %s %s (rc %d): %s %s" % (did, answer, rc, err, out))
             if rc == 3:
                 self.audit(ident, via, "press", id=did, code=code, key=answer, result="stale")
-                raise Refused(409, "stale", err or "the prompt is no longer showing")
+                raise Refused(409, "stale", "the prompt is no longer showing; answer it in the session")
             if rc == 4:  # board press: no matching approver answer, or a truncated summary
                 self.audit(ident, via, "press", id=did, code=code, key=answer, result="refused")
-                raise Refused(403, "press_refused", err or "board press refused this answer")
+                raise Refused(403, "press_refused", "the key press was refused; answer it in the session")
             self.audit(ident, via, "press", id=did, code=code, key=answer, result="error", rc=rc)
-            raise Refused(502, "press_failed", err or out)
+            raise Refused(502, "press_failed", "the key press failed; answer it in the session")
 
     def hub_kick(self):
         try:
@@ -798,7 +821,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             raise Refused(400, "bad_to", "to must be a session code or \"all\"")
         if not isinstance(text, str) or not text.strip() or len(text) > MAX_MESSAGE:
             raise Refused(400, "bad_body", "body must be a non-empty string (max %d chars)" % MAX_MESSAGE)
-        if ident not in deciders(fleet.load_fleet()):
+        if match_id(ident, sorted(deciders(fleet.load_fleet()))) is None:
             self.audit(ident, via, "message", result="refused", reason="not an approver")
             raise Refused(403, "not_approver", "only approvers and release managers send messages")
         now = now_ms()
@@ -827,6 +850,38 @@ class Server(http.server.ThreadingHTTPServer):
         self.write_lock = write_lock
         self.hub = hub
         self.jwks = Jwks(cfg["certs_url"]) if kind == "tunnel" else None
+        self.slots = threading.BoundedSemaphore(MAX_CONN)
+        self.sse_lock = threading.Lock()
+        self.sse_count = 0
+
+    def process_request(self, request, client_address):
+        """At most MAX_CONN connections per listener; the rest get a 503 and are closed."""
+        if not self.slots.acquire(blocking=False):
+            try:
+                request.sendall(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n"
+                                b"Connection: close\r\n\r\n")
+            except OSError:
+                pass
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self.slots.release()
+            raise
+
+    def handle_error(self, request, client_address):
+        """One line instead of a traceback; dropped and timed-out clients are routine."""
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (ConnectionError, TimeoutError)):
+            return
+        log("request from %s failed: %r" % (client_address[0], exc))
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.slots.release()
 
 
 def actionable(home):

@@ -41,7 +41,9 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-[ -n "$host" ] && [ -n "$tunnel" ] || die "--hostname and --tunnel are required (see --help)"
+if [ -z "$host" ] || [ -z "$tunnel" ]; then
+  die "--hostname and --tunnel are required (see --help)"
+fi
 host="${host,,}"
 [[ "$host" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ ]] || die "not a host name: $host"
 [[ "$tunnel" =~ ^[A-Za-z0-9._-]+$ ]] || die "not a tunnel name: $tunnel"
@@ -106,10 +108,11 @@ cat <<EOF
      (<team>.cloudflareaccess.com) is in the Zero Trust settings.
 
 == 4. fleet.yaml (your config dir)
-  approvers: [local, you@example.com]   # emails come from Access; "local" only if you list it
+  approvers: [local, you@example.com]   # emails come from Access; "local" = anything on this
+                                        # machine: leave it out on a multi-user host
   serve:
     enabled: true
-    port: $((port - 1))                       # local listener (browser on this machine)
+    port: $((port - 1))                       # local listener (any process on this machine)
     tunnel:
       enabled: true
       port: $port                       # the tunnel listener = the ingress target above
