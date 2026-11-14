@@ -1,0 +1,44 @@
+# fleet.yaml — copy to your config dir ($BOARD_CONFIG_DIR, <repo>/tmp-local/ or
+# ~/.config/agent-switchboard/) and edit.
+
+# Run the collector (board-collect) in tmux session "switchboard" from fleet-up.
+collector: true
+poll_interval: 3              # seconds between snapshot rebuilds
+decision_timeout_hours: 24    # pending decisions older than this become "timeout"
+notify_cooldown_minutes: 10   # per-session Slack cooldown
+resume_fallback_seconds: 15   # fleet-up: start fresh only if `claude -r NAME` exits this fast
+
+# Who may decide (board user ids, e.g. from the artifact page's user.id()).
+# Empty `approvers` = not checked locally. A gate:production decision needs `release_managers`
+# (falls back to `approvers`; refused when both are empty).
+approvers: []
+release_managers: []
+
+# `board press` safety settings: a key is only sent when the last `lines` lines of the pane
+# match `prompt_regex`.
+press:
+  prompt_regex: 'Do you want to (proceed|make this edit|create|overwrite|allow)'
+  lines: 30
+  allow_keys: ["1"]
+  deny_keys: ["Escape"]
+
+# One entry per Claude Code session. `code` is the tmux session name and the session's
+# short name on the board.
+sessions:
+  - code: BOARD
+    cwd: ~/work
+    autostart: true
+    resume_name: BOARD        # `claude -r BOARD`, falling back to a fresh session
+    extra_args: "--verbose"
+  - code: API
+    cwd: ~/work/api
+    autostart: false
+    resume_name: API
+    aliases: [api-main]       # registry names that also mean this session
+  - code: WEB
+    cwd: ~/work/web
+    autostart: false
+
+# Aliases can also be given here: CODE -> [alias, ...]
+# aliases:
+#   WEB: [frontend]

@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# board-collect — keep $BOARD_HOME/snapshot.json up to date (see docs/contract.md).
+#
+# Usage: board-collect [--once] [--no-notify] [--verbose] [--interval SECONDS]
+#
+#   --once         build the snapshot once and exit (for tests / cron)
+#   --no-notify    never send notifications
+#   --verbose      print what changed
+#   --interval N   poll interval in seconds (default: poll_interval in fleet.yaml, else 3)
+#
+# Uses inotifywait as a fast path when installed, otherwise plain polling.
+# Only one looping collector runs per BOARD_HOME (flock on collect.lock).
+#
+# Env: BOARD_HOME, BOARD_CONFIG_DIR, CLAUDE_SESSIONS_DIR
+set -u
+
+REPO="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+BOARD_HOME="${BOARD_HOME:-$HOME/.agent-switchboard}"
+export BOARD_HOME
+
+once=0; interval=""; pyargs=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --once) once=1 ;;
+    --no-notify) pyargs+=(--no-notify) ;;
+    -v|--verbose) pyargs+=(--verbose) ;;
+    --interval) shift; interval="${1:-}" ;;
+    -h|--help) awk 'NR > 1 && !/^#/ { exit } NR > 1 && !/shellcheck/ { sub(/^# ?/, ""); print }' "$0"; exit 0 ;;
+    *) echo "board-collect: unknown argument: $1" >&2; exit 2 ;;
+  esac
+  shift
+done
+
+mkdir -p "$BOARD_HOME/state" "$BOARD_HOME/decisions" "$BOARD_HOME/outbox"
+
+collect() { python3 "$REPO/lib/collect.py" "${pyargs[@]}"; }
+
+if [ "$once" = 1 ]; then
+  collect
+  exit $?
+fi
+
+exec 9>>"$BOARD_HOME/collect.lock"
+if ! flock -n 9; then
+  echo "board-collect: another collector is already running for $BOARD_HOME" >&2
+  exit 1
+fi
+echo "$$" > "$BOARD_HOME/collect.pid"
+
+[ -n "$interval" ] || interval="$(python3 "$REPO/lib/fleet.py" get poll_interval 3)"
+case "$interval" in ''|*[!0-9]*) interval=3 ;; esac
+[ "$interval" -ge 1 ] || interval=1
+
+sessions_dir="${CLAUDE_SESSIONS_DIR:-$HOME/.claude/sessions}"
+have_inotify=0
+command -v inotifywait >/dev/null 2>&1 && have_inotify=1
+
+trap 'rm -f "$BOARD_HOME/collect.pid"; exit 0' INT TERM
+
+while :; do
+  collect || echo "board-collect: collect failed ($(date -Is))" >&2
+  if [ "$have_inotify" = 1 ]; then
+    inotifywait -qq -t "$interval" -e close_write,moved_to,delete \
+      "$BOARD_HOME/state" "$BOARD_HOME/decisions" "$sessions_dir" >/dev/null 2>&1
+    rc=$?
+    if [ "$rc" = 1 ]; then sleep "$interval"; else sleep 0.3; fi  # error → poll; else coalesce bursts
+  else
+    sleep "$interval"
+  fi
+done

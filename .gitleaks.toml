@@ -1,0 +1,12 @@
+# gitleaks configuration: the default rule set, plus a narrow allowlist for test fixtures.
+# Do not widen the allowlist to get a commit through: fix the content instead.
+title = "agent-switchboard"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Synthetic values in test fixtures"
+paths = [
+  '''^tests/fixtures/''',
+]

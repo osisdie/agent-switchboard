@@ -1,0 +1,1630 @@
+<title>Switchboard</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..100,500..800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: a patch panel. Masthead with the lamp counter, a decision strip on top, four jack columns, the message line at the foot. */
+:root {
+  --paper: #edf0f4;
+  --panel: #fbfcfd;
+  --ink: #16202c;
+  --muted: #586477;
+  --rule: #d3d9e2;
+  --cord: #1d5bb8;
+  --cord-ink: #ffffff;
+  --cord-soft: #e2ebf9;
+  --lamp: #a96400;
+  --lamp-glow: #ffb020;
+  --lamp-soft: #fff0d3;
+  --lamp-ink: #573400;
+  --work: #0d6f80;
+  --work-soft: #ddf1f3;
+  --ok: #2a7548;
+  --ok-soft: #e0f1e6;
+  --off: #737d8c;
+  --off-soft: #e5e8ed;
+  --deny: #b42318;
+  --deny-soft: #fde6e3;
+  --shadow: 0 1px 2px rgb(22 32 44 / .06), 0 3px 10px rgb(22 32 44 / .05);
+  --heat: #b8430c;
+  --heat-soft: #ffe6d6;
+  --gate-bg: #18212c;
+  --gate-ink: #eef2f7;
+  --gate-muted: #a9b4c3;
+  --gate-line: #18212c;
+  --f-display: "Archivo", "Arial Narrow", system-ui, sans-serif;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --r: 6px;
+  --gutter-l: max(16px, env(safe-area-inset-left, 0px));
+  --gutter-r: max(16px, env(safe-area-inset-right, 0px));
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --paper: #0f141a; --panel: #161d25; --ink: #e5eaf1; --muted: #98a4b5; --rule: #2a3440;
+    --cord: #7aa9ff; --cord-ink: #0b1220; --cord-soft: #1a2940;
+    --lamp: #ffb84a; --lamp-glow: #ffc35c; --lamp-soft: #33250f; --lamp-ink: #ffdca3;
+    --work: #54c4d5; --work-soft: #12303a; --ok: #63cf8d; --ok-soft: #14301f;
+    --off: #8b95a4; --off-soft: #222a34; --deny: #ff8f82; --deny-soft: #3b1a17;
+    --shadow: 0 1px 0 rgb(255 255 255 / .03);
+    --gate-bg: #05080b; --gate-ink: #e5eaf1; --gate-muted: #98a4b5; --gate-line: #3a4656;
+    --heat: #ff9a5c; --heat-soft: #3a2014;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --paper: #0f141a; --panel: #161d25; --ink: #e5eaf1; --muted: #98a4b5; --rule: #2a3440;
+  --cord: #7aa9ff; --cord-ink: #0b1220; --cord-soft: #1a2940;
+  --lamp: #ffb84a; --lamp-glow: #ffc35c; --lamp-soft: #33250f; --lamp-ink: #ffdca3;
+  --work: #54c4d5; --work-soft: #12303a; --ok: #63cf8d; --ok-soft: #14301f;
+  --off: #8b95a4; --off-soft: #222a34; --deny: #ff8f82; --deny-soft: #3b1a17;
+  --shadow: 0 1px 0 rgb(255 255 255 / .03);
+  --gate-bg: #05080b; --gate-ink: #e5eaf1; --gate-muted: #98a4b5; --gate-line: #3a4656;
+  --heat: #ff9a5c; --heat-soft: #3a2014;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; scroll-padding-top: calc(env(safe-area-inset-top, 0px) + 64px); }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--f-body);
+  font-size: 15px;
+  line-height: 1.5;
+  padding-left: var(--gutter-l);
+  padding-right: var(--gutter-r);
+  padding-block: 0 48px;
+  overflow-x: hidden;
+}
+body::before {
+  content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px);
+  z-index: 10; background: var(--paper);
+}
+.wrap { max-width: 1360px; margin-inline: auto; display: grid; gap: 28px; }
+h1, h2, h3 { font-family: var(--f-display); text-wrap: balance; margin: 0; }
+a { color: var(--cord); }
+:focus-visible { outline: 2px solid var(--cord); outline-offset: 2px; border-radius: 3px; }
+.mono { font-family: var(--f-mono); }
+.zh { font-family: var(--f-body); font-weight: 500; color: var(--muted); font-size: 12px; letter-spacing: .04em; }
+.muted { color: var(--muted); }
+.eyebrow { font-family: var(--f-mono); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+time { font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* ---------- lamps ---------- */
+.lamp { width: 10px; height: 10px; border-radius: 50%; flex: none; background: var(--off); display: inline-block; }
+.lamp.needs { background: var(--lamp-glow); box-shadow: 0 0 0 3px color-mix(in srgb, var(--lamp-glow) 28%, transparent), 0 0 10px var(--lamp-glow); animation: pulse 1.6s ease-in-out infinite; }
+.lamp.working { background: var(--work); }
+.lamp.done { background: var(--ok); }
+.lamp.offline { background: transparent; box-shadow: inset 0 0 0 2px var(--off); }
+@keyframes pulse { 50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--lamp-glow) 12%, transparent), 0 0 4px var(--lamp-glow); } }
+@media (prefers-reduced-motion: reduce) { .lamp.needs { animation: none; } }
+
+/* ---------- masthead ---------- */
+.mast { display: flex; flex-wrap: wrap; gap: 20px 32px; align-items: stretch; justify-content: space-between; padding-top: 28px; }
+.brand { display: grid; gap: 10px; align-content: start; min-width: 0; }
+.brand-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
+.brand h1 { font-size: 40px; line-height: 1; font-weight: 780; font-stretch: 82%; letter-spacing: -.01em; }
+.brand p { margin: 0; color: var(--muted); max-width: 52ch; }
+.pill { display: inline-flex; align-items: center; gap: 8px; padding: 4px 10px 4px 9px; border-radius: 999px; font-size: 13px; font-weight: 500; border: 1px solid var(--rule); background: var(--panel); white-space: nowrap; }
+.pill.live { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--rule)); background: var(--ok-soft); }
+.pill.live .lamp { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+.pill.stale { color: var(--deny); border-color: color-mix(in srgb, var(--deny) 40%, var(--rule)); background: var(--deny-soft); }
+.pill.stale .lamp { background: var(--deny); }
+.pill.unknown { color: var(--muted); }
+.demo-tag { font-family: var(--f-mono); font-weight: 600; font-size: 12px; letter-spacing: .14em; padding: 4px 9px; border-radius: 4px; background: var(--lamp-ink); color: var(--lamp-soft); }
+
+.meters { display: flex; flex-wrap: wrap; gap: 12px; align-items: stretch; }
+.meter-group { display: grid; grid-template-columns: repeat(3, auto); gap: 0; border: 1px solid var(--rule); border-radius: var(--r); background: var(--panel); }
+.meter { display: grid; gap: 2px; padding: 10px 16px; align-content: center; }
+.meter + .meter { border-left: 1px solid var(--rule); }
+.meter .n { font-family: var(--f-display); font-size: 26px; font-weight: 700; font-stretch: 85%; line-height: 1; font-variant-numeric: tabular-nums; display: flex; align-items: center; gap: 8px; }
+.meter .l { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.needs-tile { display: grid; grid-template-columns: auto 1fr; gap: 2px 14px; align-items: center; padding: 10px 18px 10px 14px; border-radius: var(--r); background: var(--lamp-soft); color: var(--lamp-ink); border: 1px solid color-mix(in srgb, var(--lamp) 35%, transparent); text-decoration: none; }
+.needs-tile .big { grid-row: span 2; font-family: var(--f-display); font-size: 56px; font-weight: 800; font-stretch: 78%; line-height: .9; color: var(--lamp); font-variant-numeric: tabular-nums; }
+.needs-tile .t { font-family: var(--f-display); font-weight: 700; font-size: 18px; font-stretch: 90%; }
+.needs-tile .s { font-size: 12px; }
+.needs-tile.zero { background: var(--panel); color: var(--muted); border-color: var(--rule); }
+.needs-tile.zero .big { color: var(--off); }
+
+/* ---------- section nav ---------- */
+.secnav { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--paper); border-bottom: 1px solid var(--rule); }
+.secnav-in { max-width: 1360px; margin-inline: auto; display: flex; align-items: center; gap: 8px; min-height: 48px; }
+.secnav ul { list-style: none; display: flex; gap: 4px; margin: 0; padding: 0; flex: 1; min-width: 0; }
+.secnav a { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 5px; color: var(--muted); text-decoration: none; font-weight: 500; font-size: 14px; white-space: nowrap; }
+.secnav a:hover { color: var(--ink); background: var(--panel); }
+.secnav a[aria-current="true"] { color: var(--ink); background: var(--panel); box-shadow: inset 0 -2px 0 var(--cord); }
+.secnav .badge { font-family: var(--f-mono); font-size: 11px; padding: 0 6px; border-radius: 9px; background: var(--off-soft); color: var(--muted); }
+.secnav .badge.hot { background: var(--lamp-soft); color: var(--lamp-ink); }
+.secnav .nav-toggle { display: none; }
+.icon-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 34px; padding: 0 12px; border-radius: 17px; border: 1px solid var(--rule); background: var(--panel); color: var(--ink); font: inherit; font-size: 13px; font-weight: 500; cursor: pointer; white-space: nowrap; }
+.icon-btn:hover { border-color: var(--cord); }
+@media (max-width: 860px) {
+  .secnav .nav-toggle { display: inline-flex; }
+  .secnav-in { flex-wrap: wrap; justify-content: space-between; }
+  .secnav ul { display: none; flex-basis: 100%; flex-direction: column; padding-bottom: 8px; }
+  .secnav.open ul { display: flex; }
+  .secnav ul { order: 3; }
+}
+
+/* ---------- banners ---------- */
+.banner { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; padding: 12px 16px; border-radius: var(--r); border: 1px solid var(--rule); background: var(--panel); }
+.banner strong { font-family: var(--f-display); font-stretch: 90%; font-size: 16px; }
+.banner p { margin: 0; color: var(--muted); flex: 1 1 280px; }
+.banner.demo { border: 1px dashed color-mix(in srgb, var(--lamp) 60%, var(--rule)); background: var(--panel); }
+.banner.demo strong { font-family: var(--f-mono); font-size: 13px; letter-spacing: .12em; color: var(--lamp); }
+.banner.warn { border-color: color-mix(in srgb, var(--deny) 40%, var(--rule)); }
+.banners { display: grid; gap: 10px; }
+.banners:empty { display: none; }
+
+/* ---------- sections ---------- */
+.sec { display: grid; gap: 14px; }
+.sec-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
+.sec-head h2 { font-size: 24px; font-weight: 720; font-stretch: 85%; }
+.sec-head .hint { color: var(--muted); font-size: 14px; flex: 1 1 260px; }
+.empty { border: 1px dashed var(--rule); border-radius: var(--r); padding: 18px; color: var(--muted); background: color-mix(in srgb, var(--panel) 50%, transparent); }
+.empty strong { color: var(--ink); display: block; font-weight: 600; margin-bottom: 2px; }
+
+/* ---------- buttons ---------- */
+.btn { font: inherit; font-size: 14px; font-weight: 500; display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 36px; padding: 6px 14px; border-radius: 5px; border: 1px solid var(--rule); background: var(--panel); color: var(--ink); cursor: pointer; text-align: left; }
+.btn:hover:not(:disabled) { border-color: var(--cord); color: var(--cord); }
+.btn:disabled { opacity: .55; cursor: not-allowed; }
+.btn.primary { background: var(--cord); border-color: var(--cord); color: var(--cord-ink); }
+.btn.primary:hover:not(:disabled) { color: var(--cord-ink); filter: brightness(1.08); }
+.btn.allow { border-color: color-mix(in srgb, var(--ok) 55%, var(--rule)); color: var(--ok); }
+.btn.allow.solid { background: var(--ok); color: var(--panel); border-color: var(--ok); }
+.btn.deny { border-color: color-mix(in srgb, var(--deny) 55%, var(--rule)); color: var(--deny); }
+.btn.deny.solid { background: var(--deny); color: var(--panel); border-color: var(--deny); }
+.btn.option { border-color: color-mix(in srgb, var(--cord) 40%, var(--rule)); background: var(--cord-soft); }
+.linkout { font-size: 13px; font-weight: 500; text-decoration: none; white-space: nowrap; }
+.linkout:hover { text-decoration: underline; }
+
+/* ---------- decisions ---------- */
+.dgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 380px), 1fr)); gap: 14px; }
+.dcard { display: grid; gap: 12px; align-content: start; padding: 16px; border-radius: var(--r); background: var(--panel); border: 1px solid color-mix(in srgb, var(--lamp) 45%, var(--rule)); box-shadow: var(--shadow); min-width: 0; }
+.dcard.permission { border-color: color-mix(in srgb, var(--deny) 35%, var(--rule)); }
+.dmeta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 13px; color: var(--muted); }
+.kind { font-family: var(--f-mono); font-size: 11px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; color: var(--lamp-ink); background: var(--lamp-soft); padding: 2px 7px; border-radius: 3px; }
+.dcard.permission .kind { color: var(--deny); background: var(--deny-soft); }
+.code-chip { font-family: var(--f-mono); font-weight: 600; font-size: 13px; color: var(--ink); background: var(--off-soft); padding: 1px 7px; border-radius: 3px; }
+.dcard h3 { font-size: 18px; font-weight: 650; font-stretch: 92%; line-height: 1.3; overflow-wrap: anywhere; }
+.dcard .ctx { margin: 0; color: var(--muted); font-size: 14px; overflow-wrap: anywhere; }
+.cmd { margin: 0; font-family: var(--f-mono); font-size: 13px; line-height: 1.45; padding: 10px 12px; border-radius: 5px; background: var(--paper); border: 1px solid var(--rule); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; }
+.cmd b { color: var(--cord); font-weight: 600; }
+.opts { display: flex; flex-wrap: wrap; gap: 8px; }
+.free { display: flex; gap: 8px; flex-wrap: wrap; }
+.free input { flex: 1 1 200px; min-width: 0; font: inherit; font-size: 14px; padding: 7px 10px; border-radius: 5px; border: 1px solid var(--rule); background: var(--paper); color: var(--ink); }
+.confirm-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.confirm-row .q { font-size: 14px; font-weight: 600; flex-basis: 100%; }
+.dfoot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; align-items: center; font-size: 13px; color: var(--muted); border-top: 1px solid var(--rule); padding-top: 10px; }
+.saving { font-size: 13px; color: var(--muted); }
+.history { border: 1px solid var(--rule); border-radius: var(--r); background: var(--panel); }
+.history summary { cursor: pointer; padding: 10px 14px; font-weight: 500; font-size: 14px; color: var(--muted); }
+.history ul { list-style: none; margin: 0; padding: 0 14px 10px; display: grid; }
+.history li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px 10px; align-items: baseline; padding: 8px 0; border-top: 1px solid var(--rule); font-size: 14px; }
+.history .what { min-width: 0; overflow-wrap: anywhere; }
+.history .ans { font-family: var(--f-mono); font-size: 13px; }
+.status { font-family: var(--f-mono); font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; padding: 1px 6px; border-radius: 3px; background: var(--off-soft); color: var(--muted); white-space: nowrap; }
+.status.answered, .status.new { background: var(--cord-soft); color: var(--cord); }
+.status.relayed { background: var(--work-soft); color: var(--work); }
+.status.replied { background: var(--ok-soft); color: var(--ok); }
+.status.stale, .status.timeout { background: var(--off-soft); color: var(--muted); }
+.status.pending { background: var(--lamp-soft); color: var(--lamp-ink); }
+
+/* ---------- board ---------- */
+.board { display: grid; grid-template-columns: 1.25fr 1fr 1fr 1fr; gap: 14px; align-items: start; }
+@media (max-width: 1100px) { .board { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 680px) { .board { grid-template-columns: 1fr; } }
+.col { display: grid; gap: 10px; align-content: start; padding: 12px; border-radius: var(--r); background: color-mix(in srgb, var(--panel) 55%, var(--paper)); border: 1px solid var(--rule); min-width: 0; }
+.col.needs { background: var(--lamp-soft); border-color: color-mix(in srgb, var(--lamp) 40%, var(--rule)); }
+.col-head { display: flex; align-items: center; gap: 8px; padding: 2px 4px 4px; }
+.col-head h3 { font-size: 16px; font-weight: 700; font-stretch: 88%; }
+.col-head .count { margin-left: auto; font-family: var(--f-mono); font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.col.needs .col-head h3 { color: var(--lamp-ink); }
+.col .cards { display: grid; gap: 10px; }
+.col .none { font-size: 13px; color: var(--muted); padding: 6px 4px; }
+.scard { display: grid; gap: 8px; padding: 12px; border-radius: 5px; background: var(--panel); border: 1px solid var(--rule); min-width: 0; }
+.col.needs .scard { box-shadow: var(--shadow); }
+.scard-top { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.scard-top .code { font-family: var(--f-mono); font-weight: 600; font-size: 15px; }
+.scard-top .aka { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.scard-top time { margin-left: auto; font-size: 12px; color: var(--muted); }
+.scard .task { margin: 0; font-size: 14px; overflow-wrap: anywhere; }
+.scard .task.none { color: var(--muted); font-style: italic; }
+.scard .pend { display: grid; gap: 4px; padding: 8px 10px; border-radius: 4px; background: var(--lamp-soft); color: var(--lamp-ink); font-size: 13px; }
+.scard .pend .tool { font-family: var(--f-mono); font-weight: 600; }
+.scard .pend code { font-family: var(--f-mono); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.jack { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 10px; font-size: 12px; color: var(--muted); }
+.jack .tmux { font-family: var(--f-mono); overflow-wrap: anywhere; }
+.jack .tmux::before { content: "tmux "; font-family: var(--f-body); letter-spacing: .04em; opacity: .8; }
+
+/* ---------- messages ---------- */
+.msg-layout { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 18px; align-items: start; }
+@media (max-width: 900px) { .msg-layout { grid-template-columns: 1fr; } }
+.composer { display: grid; gap: 10px; padding: 16px; border-radius: var(--r); background: var(--panel); border: 1px solid var(--rule); position: relative; }
+.composer label { font-weight: 600; font-size: 14px; }
+.composer textarea { font: inherit; font-size: 15px; width: 100%; min-height: 110px; resize: vertical; padding: 10px 12px; border-radius: 5px; border: 1px solid var(--rule); background: var(--paper); color: var(--ink); }
+.composer .row { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; }
+.composer .help { font-size: 13px; color: var(--muted); }
+.composer .err { font-size: 13px; color: var(--deny); min-height: 1em; margin: 0; }
+.mention-list { position: absolute; left: 16px; right: 16px; z-index: 4; list-style: none; margin: 0; padding: 4px; border-radius: 6px; background: var(--panel); border: 1px solid var(--cord); box-shadow: 0 8px 24px rgb(0 0 0 / .18); max-height: 260px; overflow: auto; }
+.mention-list li { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 4px; cursor: pointer; font-size: 14px; }
+.mention-list li[aria-selected="true"] { background: var(--cord-soft); }
+.mention-list .c { font-family: var(--f-mono); font-weight: 600; }
+.mention-list .d { color: var(--muted); font-size: 12px; margin-left: auto; text-align: right; }
+.threads { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.thread { display: grid; gap: 8px; padding: 12px 14px; border-radius: var(--r); background: var(--panel); border: 1px solid var(--rule); min-width: 0; }
+.thread-top { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 13px; color: var(--muted); }
+.thread-top .to { font-family: var(--f-mono); font-weight: 600; color: var(--cord); font-size: 14px; }
+.thread-top time { margin-left: auto; }
+.thread .body { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.thread .relay { font-size: 12px; color: var(--muted); }
+.replies { list-style: none; margin: 0; padding: 0 0 0 12px; display: grid; gap: 8px; border-left: 2px solid var(--rule); }
+.replies li { display: grid; gap: 2px; font-size: 14px; }
+.replies .from { font-family: var(--f-mono); font-weight: 600; font-size: 12px; display: flex; gap: 8px; align-items: baseline; }
+.replies .from time { font-family: var(--f-body); font-weight: 400; color: var(--muted); }
+.replies p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.readonly-note { font-size: 14px; color: var(--muted); padding: 12px 14px; border: 1px dashed var(--rule); border-radius: var(--r); }
+
+/* ---------- info dialog ---------- */
+dialog.info { width: min(980px, calc(100vw - 24px)); max-height: calc(100vh - 48px); padding: 0; border: 1px solid var(--rule); border-radius: 10px; background: var(--panel); color: var(--ink); }
+dialog.info::backdrop { background: rgb(10 14 20 / .45); }
+.info-in { display: grid; grid-template-columns: minmax(0, 1fr); gap: 22px; padding: 20px max(16px, 3vw) 24px; }
+.info-in > * { min-width: 0; }
+dialog.info { overflow-x: hidden; }
+.info-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.info-head h2 { font-size: 22px; font-stretch: 88%; }
+.info h3 { font-size: 17px; font-stretch: 90%; margin-bottom: 8px; }
+.tbl-wrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 6px; }
+table.ledger { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 860px; }
+.ledger th, .ledger td { padding: 7px 9px; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: top; }
+.ledger thead th { font-weight: 600; background: var(--paper); white-space: nowrap; }
+.ledger td:nth-child(2) { white-space: nowrap; }
+.ledger td.num, .ledger th.num { text-align: right; font-variant-numeric: tabular-nums; font-family: var(--f-mono); white-space: nowrap; }
+.ledger tfoot td { font-weight: 600; background: var(--paper); border-bottom: 0; }
+.flow { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; align-items: stretch; counter-reset: step; }
+.flow li { counter-increment: step; flex: 1 1 150px; display: grid; gap: 4px; align-content: start; padding: 10px 12px; border-radius: 6px; border: 1px solid var(--rule); background: var(--paper); font-size: 13px; position: relative; }
+.flow li b { font-family: var(--f-display); font-stretch: 90%; font-size: 15px; }
+.flow li b::before { content: counter(step) " · "; font-family: var(--f-mono); color: var(--muted); font-weight: 500; font-size: 12px; }
+.flow li span { color: var(--muted); }
+.info-meta { font-size: 13px; color: var(--muted); }
+.info-op { margin: 0; font-size: 14px; }
+.info-op b { font-family: var(--f-mono); font-weight: 600; }
+
+/* ---------- operator down / approvals notes on decisions ---------- */
+.banner.down { background: var(--deny-soft); border: 1px solid var(--deny); padding: 14px 18px; align-items: flex-start; }
+.banner.down strong { color: var(--deny); font-size: 18px; }
+.banner.down p { color: var(--ink); }
+.banner.down .lim { flex-basis: 100%; font-family: var(--f-mono); font-size: 13px; color: var(--ink); }
+.banner .lamp { margin-top: 6px; }
+.banner.down .lamp { background: var(--deny); box-shadow: 0 0 8px var(--deny); }
+.dcard.queued .opts .btn, .dcard.queued .free .btn, .dcard.queued .confirm-row .btn { filter: grayscale(.85); opacity: .62; }
+.dcard.queued .opts .btn:hover, .dcard.queued .free .btn:hover { opacity: .9; }
+.note { margin: 0; font-size: 13px; padding: 7px 10px; border-radius: 4px; }
+.note.queue { background: var(--off-soft); color: var(--muted); }
+.note.noappr { background: var(--deny-soft); color: var(--deny); }
+.note.unauth { background: var(--deny-soft); color: var(--ink); }
+.status.unauthorized, .status.rejected { background: var(--deny-soft); color: var(--deny); }
+.status.approved { background: var(--ok-soft); color: var(--ok); }
+.dcard.gatecard { border-color: color-mix(in srgb, var(--cord) 45%, var(--rule)); }
+.dcard.gatecard .kind { color: var(--cord); background: var(--cord-soft); }
+.gatestrip { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 13px; color: var(--muted); }
+.gatestrip b { color: var(--ink); font-weight: 600; }
+.gatestrip svg { color: var(--lamp); }
+
+/* ---------- lifecycle ---------- */
+.tasks { display: grid; gap: 14px; }
+.tcard { display: grid; gap: 14px; padding: 16px; border-radius: var(--r); background: var(--panel); border: 1px solid var(--rule); min-width: 0; }
+.task-top { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+.task-top h3 { font-size: 17px; font-weight: 680; font-stretch: 92%; overflow-wrap: anywhere; }
+.task-top .tid { font-family: var(--f-mono); font-size: 12px; color: var(--muted); }
+.task-top .now { font-size: 12px; font-weight: 600; color: var(--cord); background: var(--cord-soft); padding: 1px 8px; border-radius: 999px; }
+.task-top time { margin-left: auto; font-size: 12px; color: var(--muted); }
+.rail { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
+.stage { position: relative; display: grid; gap: 8px; align-content: start; padding: 10px; border-radius: 6px; border: 1px solid transparent; min-width: 0; }
+.rail .stage::after { content: ""; position: absolute; top: 19px; left: 30px; right: -22px; height: 2px; background: var(--rule); }
+.rail .stage:last-child::after { display: none; }
+.rail .stage.done::after { background: var(--ok); }
+.rail .stage.skipped::after { background: repeating-linear-gradient(90deg, var(--off) 0 5px, transparent 5px 9px); }
+.stage-head { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; position: relative; z-index: 1; }
+.stage.wide .stage-head { flex-direction: row; align-items: center; gap: 8px; }
+.node { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; flex: none; background: var(--panel); border: 2px solid var(--rule); color: var(--panel); }
+.node svg { display: block; }
+.stage.done .node { background: var(--ok); border-color: var(--ok); }
+.stage.current .node { background: var(--cord); border-color: var(--cord); box-shadow: 0 0 0 4px color-mix(in srgb, var(--cord) 22%, transparent); }
+.stage.skipped .node { border-style: dashed; border-color: var(--off); }
+.stage-name { font-weight: 600; font-size: 14px; }
+.stage.upcoming .stage-name, .stage.skipped .stage-name { color: var(--muted); }
+.stage.current { background: var(--cord-soft); border-color: color-mix(in srgb, var(--cord) 35%, var(--rule)); }
+.stage.skipped { border: 1px dashed var(--off); }
+.skipnote { font-size: 12px; color: var(--muted); font-style: italic; }
+.chip { display: inline-flex; align-items: center; gap: 4px; justify-self: start; max-width: 100%; font-family: var(--f-mono); font-size: 12px; padding: 2px 8px; border-radius: 4px; border: 1px solid var(--rule); background: var(--paper); color: var(--ink); text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+a.chip { color: var(--cord); border-color: color-mix(in srgb, var(--cord) 40%, var(--rule)); }
+a.chip:hover { text-decoration: underline; }
+.chip .ref { color: var(--muted); }
+.chip.missing { color: var(--muted); border-style: dashed; background: transparent; }
+.gate { display: inline-flex; align-items: center; gap: 5px; justify-self: start; max-width: 100%; font-size: 12px; line-height: 1.35; padding: 3px 9px 3px 7px; border-radius: 10px; background: var(--off-soft); color: var(--muted); }
+.gate svg { flex: none; }
+.gate b { font-weight: 600; white-space: nowrap; }
+.gate.pending { background: var(--lamp-soft); color: var(--lamp-ink); }
+.gate.pending svg { color: var(--lamp); }
+.gate.approved { background: var(--ok-soft); color: var(--ok); }
+.gate.rejected { background: var(--deny-soft); color: var(--deny); }
+.gate a { color: inherit; font-weight: 600; }
+.prodgate { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 12px 16px; border-radius: 6px; background: var(--gate-bg); color: var(--gate-ink); border: 1px solid var(--gate-line); }
+.prodgate > svg { color: var(--lamp-glow); flex: none; }
+.prodgate strong { font-family: var(--f-display); font-stretch: 88%; font-size: 16px; letter-spacing: .01em; }
+.prodgate .who { color: var(--gate-muted); font-size: 13px; }
+.prodgate .gate { margin-left: auto; }
+.prodgate.current { box-shadow: 0 0 0 2px var(--lamp-glow); }
+.prodgate.done .gate { background: var(--ok); color: var(--gate-bg); }
+.stage.wide { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+@media (max-width: 900px) {
+  .rail { grid-template-columns: 1fr; gap: 10px; }
+  .rail .stage::after { top: 30px; left: 19px; right: auto; bottom: -22px; width: 2px; height: auto; }
+  .rail .stage.skipped::after { background: repeating-linear-gradient(180deg, var(--off) 0 5px, transparent 5px 9px); }
+  .stage { grid-template-columns: auto minmax(0, 1fr); column-gap: 10px; }
+  .stage > :not(.stage-head) { grid-column: 2; }
+  .stage-head { grid-column: 1 / -1; flex-direction: row; align-items: center; gap: 10px; }
+  .prodgate .gate { margin-left: 0; }
+}
+
+/* ---------- approvals log ---------- */
+table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 720px; background: var(--panel); }
+.log th, .log td { padding: 8px 10px; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: top; }
+.log thead th { font-weight: 600; background: var(--paper); white-space: nowrap; font-size: 12px; color: var(--muted); letter-spacing: .03em; }
+.log tbody tr:last-child td { border-bottom: 0; }
+.log .mono { font-size: 12px; }
+.log .ans.approve, .log .ans.allow { color: var(--ok); font-weight: 600; }
+.log .ans.reject, .log .ans.deny, .log .ans.changes { color: var(--deny); font-weight: 600; }
+.log time { color: var(--muted); }
+
+/* ---------- usage meters + escalation ---------- */
+.usage { display: grid; gap: 8px; align-content: center; padding: 10px 14px; border: 1px solid var(--rule); border-radius: var(--r); background: var(--panel); min-width: 230px; }
+.usage .u-title { font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; gap: 8px; }
+.u-row { display: grid; grid-template-columns: 26px minmax(60px, 1fr) 42px; align-items: center; gap: 2px 8px; --u: var(--off); }
+.u-k { font-family: var(--f-mono); font-size: 12px; font-weight: 600; color: var(--muted); }
+.u-bar { height: 8px; border-radius: 4px; background: var(--off-soft); overflow: hidden; }
+.u-bar > span { display: block; height: 100%; border-radius: 4px; background: var(--u); }
+.u-p { font-family: var(--f-mono); font-size: 13px; font-weight: 600; text-align: right; font-variant-numeric: tabular-nums; color: var(--ink); }
+.u-r { grid-column: 2 / -1; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.u-row.lvl-ok { --u: var(--cord); }
+.u-row.lvl-amber { --u: var(--lamp-glow); }
+.u-row.lvl-amber .u-p { color: var(--lamp); }
+.u-row.lvl-orange { --u: var(--heat); }
+.u-row.lvl-orange .u-p { color: var(--heat); }
+.u-row.lvl-red { --u: var(--deny); }
+.u-row.lvl-red .u-p { color: var(--deny); }
+.u-row.none .u-p { color: var(--muted); }
+.banner.prep { background: var(--lamp-soft); border-color: color-mix(in srgb, var(--lamp) 50%, var(--rule)); }
+.banner.prep strong, .banner.prep p { color: var(--lamp-ink); }
+.banner .golink { font: inherit; font-size: 14px; font-weight: 600; color: var(--cord); background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline; white-space: nowrap; }
+.banner.down .golink { color: var(--deny); }
+.esc { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; padding: 1px 8px; border-radius: 999px; white-space: nowrap; }
+.esc.warn { background: var(--lamp-soft); color: var(--lamp-ink); }
+.esc.high { background: var(--heat-soft); color: var(--heat); }
+.esc.urgent { background: var(--deny); color: var(--panel); }
+.esc .via { font-weight: 500; }
+.failover ol { margin: 0; padding-left: 20px; display: grid; gap: 6px; max-width: 72ch; }
+.failover p { margin: 0 0 8px; color: var(--muted); max-width: 72ch; }
+.thresholds { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+
+/* ---------- toast ---------- */
+.toasts { position: fixed; z-index: 20; left: 50%; transform: translateX(-50%); bottom: calc(16px + env(safe-area-inset-bottom, 0px)); display: grid; gap: 8px; width: min(520px, calc(100vw - 32px)); pointer-events: none; }
+.toast { pointer-events: auto; padding: 10px 14px; border-radius: 6px; background: var(--ink); color: var(--paper); font-size: 14px; box-shadow: 0 6px 20px rgb(0 0 0 / .25); }
+.toast.bad { background: var(--deny); color: #fff; }
+@media (max-width: 480px) {
+  .brand h1 { font-size: 34px; }
+  .meters, .meter-group, .needs-tile, .usage { width: 100%; }
+  .meter-group { grid-template-columns: repeat(3, 1fr); }
+  .meter { padding: 10px 12px; }
+}
+</style>
+
+<div class="wrap">
+  <header class="mast" id="top">
+    <div class="brand">
+      <div class="brand-row">
+        <h1>Switchboard</h1>
+        <span class="demo-tag" id="demo-tag" hidden>DEMO DATA</span>
+        <span class="pill unknown" id="op-pill"><span class="lamp"></span><span id="op-text">Connecting…</span></span>
+      </div>
+      <p>Every Claude Code session on one panel. Answer what is waiting, see who is working, and send a note to any session.</p>
+    </div>
+    <div class="meters">
+      <a class="needs-tile zero" id="needs-tile" href="#decisions">
+        <span class="big" id="needs-n">0</span>
+        <span class="t">Needs you <span class="zh">待你處理</span></span>
+        <span class="s" id="needs-sub">Nothing waiting</span>
+      </a>
+      <div class="meter-group" aria-label="Sessions by state">
+        <div class="meter"><span class="n"><span class="lamp working"></span><span id="m-working">0</span></span><span class="l">Working 執行中</span></div>
+        <div class="meter"><span class="n"><span class="lamp done"></span><span id="m-done">0</span></span><span class="l">Done / idle 閒置</span></div>
+        <div class="meter"><span class="n"><span class="lamp offline"></span><span id="m-offline">0</span></span><span class="l">Offline 離線</span></div>
+      </div>
+      <div class="usage" id="usage" aria-label="Claude usage against limits">
+        <div class="u-title"><span>Claude usage 用量</span><span id="u-upd"></span></div>
+        <div class="u-row none" id="u-5h"><span class="u-k">5h</span><span class="u-bar" role="meter" aria-label="5-hour usage" aria-valuemin="0" aria-valuemax="100"><span style="width:0%"></span></span><span class="u-p">—</span><span class="u-r">not reported</span></div>
+        <div class="u-row none" id="u-7d"><span class="u-k">7d</span><span class="u-bar" role="meter" aria-label="Weekly usage" aria-valuemin="0" aria-valuemax="100"><span style="width:0%"></span></span><span class="u-p">—</span><span class="u-r">not reported</span></div>
+      </div>
+    </div>
+  </header>
+
+  <nav class="secnav" id="secnav" aria-label="Sections">
+    <div class="secnav-in">
+      <button class="icon-btn nav-toggle" id="nav-toggle" type="button" aria-expanded="false" aria-controls="nav-list">Sections ▾</button>
+      <ul id="nav-list">
+        <li><a href="#decisions" data-spy="decisions">Decisions <span class="zh">決策</span> <span class="badge" id="nav-dec">0</span></a></li>
+        <li><a href="#lifecycle" data-spy="lifecycle">Lifecycle <span class="zh">流程</span> <span class="badge" id="nav-life">0</span></a></li>
+        <li><a href="#board" data-spy="board">Board <span class="zh">看板</span> <span class="badge" id="nav-board">0</span></a></li>
+        <li><a href="#messages" data-spy="messages">Messages <span class="zh">訊息</span> <span class="badge" id="nav-msg">0</span></a></li>
+        <li><a href="#approvals" data-spy="approvals">Approvals <span class="zh">核准紀錄</span> <span class="badge" id="nav-appr">0</span></a></li>
+      </ul>
+      <button class="icon-btn" id="info-btn" type="button" aria-haspopup="dialog" title="Versions, cost and how this works">ⓘ Info</button>
+    </div>
+  </nav>
+
+  <div class="banners" id="banners" aria-live="polite"></div>
+
+  <section class="sec" id="decisions" aria-labelledby="h-decisions">
+    <div class="sec-head">
+      <h2 id="h-decisions">Decisions</h2>
+      <span class="hint">Questions and permission prompts that sessions are waiting on. Your answer is relayed to the session.</span>
+    </div>
+    <div class="empty" id="dec-empty"><strong>Nothing needs you.</strong>When a session asks a question or hits a permission prompt, it appears here with buttons to answer.</div>
+    <div class="dgrid" id="dec-list"></div>
+    <details class="history" id="dec-history" hidden>
+      <summary id="dec-history-sum">Recent decisions</summary>
+      <ul id="dec-history-list"></ul>
+    </details>
+  </section>
+
+  <section class="sec" id="lifecycle" aria-labelledby="h-lifecycle">
+    <div class="sec-head">
+      <h2 id="h-lifecycle">Lifecycle</h2>
+      <span class="hint">Each task moves Plan → Design → Build → Test → Deploy. Every stage commits an artifact and waits at a human gate. Agents stop at the production gate.</span>
+    </div>
+    <div class="empty" id="task-empty"><strong>No tasks yet.</strong>A task appears here when a session starts one with <span class="mono">board task new</span>.</div>
+    <div class="tasks" id="tasks"></div>
+  </section>
+
+  <section class="sec" id="board" aria-labelledby="h-board">
+    <div class="sec-head">
+      <h2 id="h-board">Board</h2>
+      <span class="hint">One card per session, filed by what it is doing now.</span>
+    </div>
+    <div class="empty" id="board-empty" hidden><strong>No sessions yet.</strong>The operator adds a card for each running session the next time it syncs.</div>
+    <div class="board" id="board-cols"></div>
+  </section>
+
+  <section class="sec" id="messages" aria-labelledby="h-messages">
+    <div class="sec-head">
+      <h2 id="h-messages">Messages</h2>
+      <span class="hint">Mention a session to send it a note. Replies come back into the thread.</span>
+    </div>
+    <div class="msg-layout">
+      <div>
+        <form class="composer" id="composer" autocomplete="off">
+          <label for="msg-input">New message <span class="zh">新訊息</span></label>
+          <textarea id="msg-input" placeholder="@API please rebase on main and rerun the tests" aria-autocomplete="list" aria-controls="mention-list" aria-expanded="false"></textarea>
+          <ul class="mention-list" id="mention-list" role="listbox" aria-label="Sessions" hidden></ul>
+          <p class="err" id="msg-err" role="alert"></p>
+          <div class="row">
+            <span class="help">Type <span class="mono">@</span> to pick a session, or <span class="mono">@all</span>. Ctrl+Enter sends.</span>
+            <button class="btn primary" id="msg-send" type="submit">Send</button>
+          </div>
+        </form>
+        <p class="readonly-note" id="msg-readonly" hidden>You can read the threads. Only editors of this board can send messages.</p>
+      </div>
+      <div>
+        <div class="empty" id="msg-empty"><strong>No messages yet.</strong>Type @ and a session code on the left to send the first one.</div>
+        <ol class="threads" id="threads"></ol>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec" id="approvals" aria-labelledby="h-approvals">
+    <div class="sec-head">
+      <h2 id="h-approvals">Approvals</h2>
+      <span class="hint">Every human approval is recorded, newest first. 每一筆人工核准都有紀錄。</span>
+    </div>
+    <div class="empty" id="appr-empty"><strong>No approvals recorded yet.</strong>Each gate decision an approver answers is logged here once the operator relays it.</div>
+    <div class="tbl-wrap" id="appr-wrap" hidden>
+      <table class="log">
+        <thead><tr><th>Answered</th><th>Task</th><th>Stage</th><th>Gate</th><th>Answer</th><th>By</th><th>Relayed</th></tr></thead>
+        <tbody id="appr-body"></tbody>
+      </table>
+    </div>
+  </section>
+</div>
+
+<dialog class="info" id="info" aria-labelledby="info-title">
+  <div class="info-in">
+    <div class="info-head">
+      <h2 id="info-title">About this board</h2>
+      <button class="icon-btn" id="info-close" type="button">Close</button>
+    </div>
+    <p class="info-op" id="info-operator"></p>
+    <section>
+      <h3>版本與花費 <span class="zh">Versions and cost</span></h3>
+      <div id="ledger"></div>
+    </section>
+    <section class="failover" id="failover">
+      <h3>Switching accounts <span class="zh">切換帳號</span></h3>
+      <p>The operator is a Claude session, so it stops when its account reaches the 5-hour or weekly limit. Alerts keep going out without it.</p>
+      <ol>
+        <li>At 90% in either window, finish or park long tasks and pick a backup account that can edit this board.</li>
+        <li>In a Claude Code session on that account, run the operator prompt (<span class="mono">prompts/board-operator.md</span>) with this board's link. It takes over the heartbeat.</li>
+        <li>When the original operator comes back and sees a fresher heartbeat from another session, it stays passive.</li>
+        <li>Answers given here while nobody operates the board are saved and relayed by the next operator, oldest first.</li>
+      </ol>
+      <div class="thresholds">
+        <span class="esc warn">80% · heads-up</span><span class="esc high">90% · prepare to switch</span><span class="esc urgent">95% or limit hit · switch now</span>
+      </div>
+    </section>
+    <section>
+      <h3>How this works <span class="zh">運作方式</span></h3>
+      <ol class="flow">
+        <li><b>Hooks</b><span>Each session's hook writes a small state file on every event: working, needs you, done or offline.</span></li>
+        <li><b>Collector</b><span>Merges the state files with the live session list and tmux into one snapshot.</span></li>
+        <li><b>Operator</b><span>A dedicated session syncs that snapshot to this board and keeps a heartbeat.</span></li>
+        <li><b>Board</b><span>You answer decisions and write messages here. Answers are saved to the board's data.</span></li>
+        <li><b>Relay</b><span>The operator picks up answers and messages, presses the prompt or messages the session, and posts replies back.</span></li>
+      </ol>
+    </section>
+    <p class="info-meta" id="info-meta"></p>
+  </div>
+</dialog>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
+<script>
+(() => {
+  'use strict';
+
+  /* ------------------------------------------------------------------ setup */
+  const params = new URLSearchParams(location.search);
+  const STALE_MS = 10 * 60 * 1000;
+  const MAX_THREADS = 20;
+  const LOAD_TIMEOUT_MS = 10000;
+
+  const S = {
+    mode: 'connecting',          // connecting | live | offline | demo
+    demo: false,
+    sessions: [], decisions: [], messages: [], tasks: [], approvals: [],
+    operator: null, ledger: null,
+    replies: new Map(),
+    got: { sessions: false, decisions: false, messages: false, tasks: false, approvals: false, operator: false },
+    slow: false, feedError: null,
+    me: null, userReady: false, writable: null,   // writable: true | false | null (unknown → let writes decide)
+    canSend: 'off',
+    confirm: null,               // { id, choice }
+    busy: new Set(),
+    drafts: {},
+  };
+  let db = null, userNs = null, room = null;
+  const replySubs = new Map();
+
+  const $ = (sel, root = document) => root.querySelector(sel);
+  function h(tag, props, ...kids) {
+    const el = document.createElement(tag);
+    if (props) for (const [k, v] of Object.entries(props)) {
+      if (v == null || v === false) continue;
+      if (k === 'class') el.className = v;
+      else if (k === 'text') el.textContent = v;
+      else if (k === 'dataset') Object.assign(el.dataset, v);
+      else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2), v);
+      else el.setAttribute(k, v === true ? '' : String(v));
+    }
+    for (const c of kids.flat()) {
+      if (c == null || c === false) continue;
+      el.append(c instanceof Node ? c : String(c));
+    }
+    return el;
+  }
+  const str = (v) => (typeof v === 'string' ? v : v == null ? '' : String(v));
+  function ts(v) {
+    if (typeof v === 'number' && isFinite(v)) return v < 1e12 ? v * 1000 : v;
+    if (typeof v === 'string' && v) { const n = Number(v); if (isFinite(n)) return ts(n); const p = Date.parse(v); return isNaN(p) ? 0 : p; }
+    return 0;
+  }
+  function rel(t) {
+    if (!t) return '—';
+    const s = Math.round((Date.now() - t) / 1000);
+    if (s < 45) return 'just now';
+    const m = Math.round(s / 60); if (m < 60) return m + 'm ago';
+    const hr = Math.round(m / 60); if (hr < 36) return hr + 'h ago';
+    return Math.round(hr / 24) + 'd ago';
+  }
+  function timeEl(v) {
+    const t = ts(v);
+    return h('time', { dataset: { ts: String(t) }, datetime: t ? new Date(t).toISOString() : null, title: t ? new Date(t).toLocaleString() : null, text: rel(t) });
+  }
+  function safeUrl(u) {
+    if (typeof u !== 'string') return null;
+    if (/^https:\/\/[^\s"'<>]+$/i.test(u)) return u;
+    if (S.demo && u.startsWith('#')) return u;
+    return null;
+  }
+  const rand = () => Math.random().toString(36).slice(2, 8);
+  const lc = (s) => str(s).toLowerCase();
+  function findSession(name) {
+    const n = lc(name);
+    return S.sessions.find((s) => lc(s.code) === n) || S.sessions.find((s) => (s.aliases || []).some((a) => lc(a) === n)) || null;
+  }
+  function canAnswer() { return S.userReady && S.writable !== false && (S.mode === 'live' || S.mode === 'demo'); }
+  function hhmm(t) {
+    const d = new Date(t), now = new Date();
+    const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+    return d.toDateString() === now.toDateString() ? time : d.toLocaleDateString([], { weekday: 'short' }) + ' ' + time;
+  }
+  function dur(ms) {
+    if (ms <= 0) return 'now';
+    const m = Math.round(ms / 60000); if (m < 60) return m + 'm';
+    const hh = Math.floor(m / 60); if (hh < 48) return hh + 'h ' + (m % 60) + 'm';
+    return Math.floor(hh / 24) + 'd ' + (hh % 24) + 'h';
+  }
+  // The page never assumes the operator is alive: everything below is derived from db snapshots.
+  function operatorOffline() {
+    if (S.mode === 'demo') return !ts(S.operator && S.operator.heartbeat_at) || Date.now() - ts(S.operator.heartbeat_at) > STALE_MS;
+    if (S.mode !== 'live' || !S.got.operator) return false;
+    const hb = ts(S.operator && S.operator.heartbeat_at);
+    return !hb || Date.now() - hb > STALE_MS;
+  }
+  // true / false when meta/operator.approver_ids is known, null when it is not.
+  function approverState() {
+    const ids = S.operator && S.operator.approver_ids;
+    if (!Array.isArray(ids)) return null;
+    return !!S.me && ids.includes(S.me);
+  }
+  function limitText() {
+    const L = S.operator && S.operator.limit;
+    if (!L || typeof L !== 'object') return null;
+    const kind = { '5h': '5-hour', weekly: 'weekly' }[str(L.kind)] || 'unknown';
+    const r = ts(L.resets_at);
+    let when = 'reset time unknown';
+    if (r) when = r > Date.now() ? 'resets ~' + hhmm(r) + ' (in ' + dur(r - Date.now()) + ')' : 'should have reset at ' + hhmm(r);
+    return { text: 'Usage limit (' + kind + ') · ' + when + (L.note ? ' · ' + str(L.note) : ''), future: r ? r > Date.now() : Date.now() - ts(L.hit_at) < 5 * 3600 * 1000 };
+  }
+  const WINDOWS = [{ key: 'five_hour', short: '5h', name: '5h', el: '#u-5h' }, { key: 'seven_day', short: '7d', name: 'weekly', el: '#u-7d' }];
+  function usageOf(key) {
+    const u = S.operator && S.operator.usage && S.operator.usage[key];
+    if (!u || typeof u !== 'object') return null;
+    let pct = Number(u.pct != null ? u.pct : u.used_percentage);
+    if (!isFinite(pct)) return null;
+    if (pct > 0 && pct <= 1 && !Number.isInteger(pct)) pct *= 100;
+    return { pct: Math.max(0, Math.min(100, Math.round(pct))), resets: ts(u.resets_at) };
+  }
+  const usageLevel = (p) => (p >= 95 ? 'red' : p >= 90 ? 'orange' : p >= 80 ? 'amber' : 'ok');
+  function renderUsage() {
+    const live = S.mode === 'live' || S.mode === 'demo';
+    for (const w of WINDOWS) {
+      const row = $(w.el), u = live ? usageOf(w.key) : null;
+      const bar = row.querySelector('.u-bar'), fill = bar.firstElementChild;
+      if (!u) {
+        row.className = 'u-row none'; fill.style.width = '0%'; bar.removeAttribute('aria-valuenow');
+        row.querySelector('.u-p').textContent = '—'; row.querySelector('.u-r').textContent = 'not reported';
+        continue;
+      }
+      row.className = 'u-row lvl-' + usageLevel(u.pct);
+      fill.style.width = u.pct + '%';
+      bar.setAttribute('aria-valuenow', String(u.pct));
+      row.querySelector('.u-p').textContent = u.pct + '%';
+      row.querySelector('.u-r').textContent = u.resets ? (u.resets > Date.now() ? 'resets in ' + dur(u.resets - Date.now()) + ' · ~' + hhmm(u.resets) : 'reset due ' + hhmm(u.resets)) : 'reset time unknown';
+    }
+    const upd = ts(S.operator && S.operator.usage && S.operator.usage.updated_at);
+    $('#u-upd').textContent = upd ? rel(upd) : '';
+  }
+  // Worst usage window for the switch-account banners: { level: 'prep'|'switch', text } or null.
+  function switchAdvice() {
+    if (!(S.mode === 'live' || S.mode === 'demo')) return null;
+    let worst = null;
+    for (const w of WINDOWS) { const u = usageOf(w.key); if (u && (!worst || u.pct > worst.u.pct)) worst = { w, u }; }
+    const describe = (x) => x.w.name + ' usage ' + x.u.pct + '%' + (x.u.resets ? ', resets ~' + hhmm(x.u.resets) : '');
+    const L = S.operator && S.operator.limit;
+    if (L && typeof L === 'object') return { level: 'switch', text: 'Switch account now — usage limit hit (' + ({ '5h': '5h', weekly: 'weekly' }[str(L.kind)] || 'unknown window') + ')' + (ts(L.resets_at) ? ', resets ~' + hhmm(ts(L.resets_at)) : '') };
+    if (worst && worst.u.pct >= 95) return { level: 'switch', text: 'Switch account now — ' + describe(worst) };
+    if (worst && worst.u.pct >= 90) return { level: 'prep', text: 'Prepare to switch account — ' + describe(worst) };
+    return null;
+  }
+  function openInfo(sectionId) {
+    renderLedger();
+    const d = $('#info');
+    if (!d.open) { if (typeof d.showModal === 'function') d.showModal(); else d.setAttribute('open', ''); }
+    if (sectionId) { const t = document.getElementById(sectionId); if (t) t.scrollIntoView({ block: 'start', inline: 'nearest' }); }
+  }
+  const SVGNS = 'http://www.w3.org/2000/svg';
+  function icon(kind, size) {
+    const s = document.createElementNS(SVGNS, 'svg');
+    s.setAttribute('viewBox', '0 0 16 16'); s.setAttribute('width', String(size || 12)); s.setAttribute('height', String(size || 12)); s.setAttribute('aria-hidden', 'true');
+    s.innerHTML = kind === 'lock'
+      ? '<rect x="3" y="7" width="10" height="7.5" rx="1.6" fill="currentColor"/><path d="M5.3 7V5.2a2.7 2.7 0 0 1 5.4 0V7" fill="none" stroke="currentColor" stroke-width="1.7"/>'
+      : '<path d="M3.5 8.4l2.9 2.9 6-6.6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>';
+    return s;
+  }
+
+  /* ----------------------------------------------------- lifecycle model */
+  const STAGES = [
+    { key: 'plan', name: 'Plan', art: 'intent', file: 'intent.md', role: 'owner approves the plan' },
+    { key: 'design', name: 'Design', art: 'spec', file: 'spec.md', role: 'owner signs off' },
+    { key: 'build', name: 'Build', art: 'plan', file: 'plan.md + code', role: 'engineer / tech lead' },
+    { key: 'test', name: 'Test', art: 'evals', file: 'evals', role: 'code owner reviews results' },
+    { key: 'deploy', name: 'Deploy', art: 'review', file: 'review-findings.md', role: 'code owner' },
+    { key: 'production', name: 'Production gate', art: null, file: null, role: 'release manager authorizes' },
+    { key: 'maintain', name: 'Maintain', art: 'maintain', file: 'intent.md (new)', role: 'service owner triages' },
+  ];
+  function stageIndex(k) {
+    let v = lc(k).replace(/[\s_]+/g, '-');
+    if (v === 'production-gate' || v === 'gate' || v === 'prod' || v === 'release') v = 'production';
+    return STAGES.findIndex((s) => s.key === v);
+  }
+  const stageName = (k) => { const i = stageIndex(k); return i >= 0 ? STAGES[i].name : str(k) || '—'; };
+  function artChip(file, ref) {
+    ref = typeof ref === 'string' ? ref.trim() : '';
+    if (!ref) return h('span', { class: 'chip missing', title: 'Not committed yet', text: file });
+    const u = safeUrl(ref);
+    const sha = /^[0-9a-f]{7,40}$/i.test(ref) ? ref.slice(0, 7) : null;
+    const kids = [h('span', { text: file })];
+    if (sha) kids.push(h('span', { class: 'ref', text: '@' + sha }));
+    if (u) return h('a', { class: 'chip', href: u, target: u.startsWith('#') ? null : '_blank', rel: 'noopener noreferrer', title: ref }, kids, ' ↗');
+    return h('span', { class: 'chip', title: ref }, kids);
+  }
+  const GATE_LABEL = { pending: 'awaiting', approved: 'approved', rejected: 'changes requested', skipped: 'skipped', none: 'not reached', norecord: 'no record' };
+  function gatePill(stage, g, state) {
+    const st = g ? (str(g.status) || 'pending') : state === 'skipped' ? 'skipped' : state === 'done' ? 'norecord' : 'none';
+    const pill = h('span', { class: 'gate ' + st, title: (g && g.gate ? 'Gate "' + str(g.gate) + '" · ' : '') + stage.role },
+      icon('lock', 11), h('span', { text: stage.role }), h('b', { text: '· ' + (GATE_LABEL[st] || st) }));
+    if (g && st === 'pending' && g.decision_id && S.decisions.some((d) => d.id === g.decision_id && (d.status === 'pending' || d.status === 'unauthorized'))) {
+      pill.append(' ', h('a', { href: '#dec-' + g.decision_id, text: 'answer ↑' }));
+    }
+    return pill;
+  }
+
+  function use(name) {
+    const c = window.claude;
+    if (!c || typeof c.use !== 'function') return Promise.resolve(null);
+    let p;
+    try { p = Promise.resolve(c.use(name)).catch(() => null); } catch (e) { return Promise.resolve(null); }
+    return Promise.race([p, new Promise((r) => setTimeout(() => r(null), LOAD_TIMEOUT_MS))]);
+  }
+
+  /* ------------------------------------------------------------------ toasts */
+  function toast(text, bad) {
+    const el = h('div', { class: 'toast' + (bad ? ' bad' : ''), role: bad ? 'alert' : 'status', text });
+    $('#toasts').append(el);
+    setTimeout(() => el.remove(), bad ? 7000 : 4500);
+  }
+
+  /* -------------------------------------------------------- keyed rendering */
+  function reconcile(container, items, keyFn, sigFn, build) {
+    const old = new Map();
+    for (const el of [...container.children]) if (el.dataset.key) old.set(el.dataset.key, el);
+    const keep = new Set();
+    let prev = null;
+    for (const it of items) {
+      const k = keyFn(it), sig = sigFn(it);
+      let el = old.get(k);
+      if (!el || el.dataset.sig !== sig) {
+        const focusKey = el && el.contains(document.activeElement) ? document.activeElement.dataset.focus : null;
+        const nu = build(it);
+        nu.dataset.key = k; nu.dataset.sig = sig;
+        if (el) el.replaceWith(nu);
+        el = nu;
+        if (focusKey) {
+          requestAnimationFrame(() => {
+            const t = el.querySelector('[data-focus="' + focusKey + '"]');
+            if (t) { t.focus(); if (typeof t.value === 'string' && t.setSelectionRange) t.setSelectionRange(t.value.length, t.value.length); }
+          });
+        }
+      }
+      keep.add(k);
+      const ref = prev ? prev.nextSibling : container.firstChild;
+      if (el !== ref) container.insertBefore(el, ref);
+      prev = el;
+    }
+    for (const [k, el] of old) if (!keep.has(k)) el.remove();
+  }
+
+  /* ------------------------------------------------------------- derived */
+  const COLS = [
+    { key: 'needs', title: 'Needs you', zh: '待你處理', lamp: 'needs', states: ['needs-you'], none: 'No session is blocked.' },
+    { key: 'working', title: 'Working', zh: '執行中', lamp: 'working', states: ['working'], none: 'No session is working right now.' },
+    { key: 'done', title: 'Done / idle', zh: '完成・閒置', lamp: 'done', states: ['done', 'rest'], none: 'No idle sessions.' },
+    { key: 'offline', title: 'Offline', zh: '離線', lamp: 'offline', states: ['offline'], none: 'Every known session is running.' },
+  ];
+  function colOf(s) { const st = str(s.state); for (const c of COLS) if (c.states.includes(st)) return c.key; return 'done'; }
+  const isOpen = (d) => d.status === 'pending' || d.status === 'unauthorized';
+  const pendingDecisions = () => S.decisions.filter(isOpen).sort((a, b) => ts(a.created_at) - ts(b.created_at));
+  function attention() {
+    const pend = pendingDecisions();
+    const fromCodes = new Set(pend.map((d) => lc(d.from)));
+    const waitingSessions = S.sessions.filter((s) => s.state === 'needs-you' && !fromCodes.has(lc(s.code)) && !(s.aliases || []).some((a) => fromCodes.has(lc(a))));
+    return { decisions: pend.length, sessions: waitingSessions.length, total: pend.length + waitingSessions.length };
+  }
+
+  /* --------------------------------------------------------------- header */
+  function renderHeader() {
+    $('#demo-tag').hidden = !S.demo;
+    const pill = $('#op-pill'), txt = $('#op-text');
+    let cls = 'unknown', label;
+    if (S.mode === 'connecting') label = 'Connecting…';
+    else if (S.mode === 'offline') label = 'Board data unavailable';
+    else {
+      const hb = ts(S.operator && S.operator.heartbeat_at);
+      if (!S.got.operator && S.mode === 'live') { label = 'checking operator…'; }
+      else if (!hb) { cls = 'stale'; label = 'operator not seen yet'; }
+      else if (Date.now() - hb > STALE_MS) { cls = 'stale'; label = 'operator offline since ' + hhmm(hb); }
+      else { cls = 'live'; label = 'operator live · ' + rel(hb); }
+    }
+    pill.className = 'pill ' + cls; txt.textContent = label;
+    renderUsage();
+
+    const counts = { needs: 0, working: 0, done: 0, offline: 0 };
+    for (const s of S.sessions) counts[colOf(s)]++;
+    $('#m-working').textContent = counts.working;
+    $('#m-done').textContent = counts.done;
+    $('#m-offline').textContent = counts.offline;
+    const a = attention();
+    $('#needs-n').textContent = a.total;
+    $('#needs-tile').classList.toggle('zero', a.total === 0);
+    const parts = [];
+    if (a.decisions) parts.push(a.decisions + (a.decisions === 1 ? ' decision' : ' decisions'));
+    if (a.sessions) parts.push(a.sessions + (a.sessions === 1 ? ' blocked session' : ' blocked sessions'));
+    $('#needs-sub').textContent = parts.length ? parts.join(' · ') : 'Nothing waiting';
+    const nd = $('#nav-dec'); nd.textContent = a.decisions; nd.classList.toggle('hot', a.decisions > 0);
+    $('#nav-board').textContent = S.sessions.length;
+    $('#nav-msg').textContent = S.messages.length;
+    $('#nav-life').textContent = S.tasks.length;
+    $('#nav-appr').textContent = S.approvals.length;
+    document.title = a.total ? '(' + a.total + ') Switchboard' : 'Switchboard';
+  }
+
+  function renderBanners() {
+    const box = $('#banners'); box.textContent = '';
+    const lim = limitText();
+    if (operatorOffline()) {
+      const hb = ts(S.operator && S.operator.heartbeat_at);
+      box.append(h('div', { class: 'banner down', role: 'alert' }, h('span', { class: 'lamp', 'aria-hidden': 'true' }),
+        h('strong', { text: hb ? 'Operator offline since ' + hhmm(hb) : 'Operator has not checked in' }),
+        h('p', { text: 'Board data may be stale; Slack keeps alerting, so check Slack or tmux. Answers you give here are saved and relayed when the operator returns.' }),
+        lim ? h('span', { class: 'lim', text: lim.text }) : null));
+    }
+    const adv = switchAdvice();
+    if (adv) {
+      const sw = adv.level === 'switch';
+      box.append(h('div', { class: 'banner ' + (sw ? 'down' : 'prep'), role: sw ? 'alert' : 'status' },
+        h('span', { class: 'lamp' + (sw ? '' : ' needs'), 'aria-hidden': 'true' }),
+        h('strong', { text: adv.text }),
+        h('p', { text: sw ? 'Start the operator on a backup account so the board keeps running. Alerts still go out meanwhile.' : 'Pick a backup account that can edit this board and wrap up long tasks before the limit hits.' }),
+        h('button', { class: 'golink', type: 'button', onclick: () => openInfo('failover'), text: 'How to switch accounts →' })));
+    }
+    if (S.demo) {
+      box.append(h('div', { class: 'banner demo' }, h('strong', { text: 'DEMO DATA' }),
+        h('p', { text: 'Sample sessions, decisions and messages for preview. None of it is real, and nothing you do here is saved or sent.' })));
+    }
+    if (S.mode === 'offline') {
+      box.append(h('div', { class: 'banner warn' }, h('strong', { text: 'Live board unavailable' }),
+        h('p', { text: 'This page reads its data through the claude.ai viewer. Open it from its claude.ai link while signed in to see your sessions.' }),
+        h('button', { class: 'btn', type: 'button', onclick: enterDemo, text: 'Preview with demo data' })));
+    }
+    if (S.mode === 'live' && S.slow) {
+      box.append(h('div', { class: 'banner warn' }, h('strong', { text: 'Waiting for board data' }),
+        h('p', { text: 'The board data has not answered yet. Keep this page open; it fills in when the connection comes back.' })));
+    }
+    if (S.feedError) {
+      box.append(h('div', { class: 'banner warn' }, h('strong', { text: 'Live updates stopped' }),
+        h('p', { text: S.feedError })));
+    }
+    if (S.mode === 'live' && S.userReady && S.writable === false) {
+      box.append(h('div', { class: 'banner' }, h('strong', { text: 'Read-only' }),
+        h('p', { text: 'You can see everything on this board. Only its editors can answer decisions or send messages.' })));
+    }
+  }
+
+  /* ------------------------------------------------------------ decisions */
+  function sessionLink(code, label) {
+    const s = findSession(code);
+    const u = s && safeUrl(s.remote_url);
+    if (!u) return null;
+    return h('a', { class: 'linkout', href: u, target: u.startsWith('#') ? null : '_blank', rel: 'noopener noreferrer', text: label + ' ↗' });
+  }
+
+  const isGateDecision = (d) => !!(d.gate || d.stage);
+  const isProdGate = (d) => stageIndex(d.gate) === 5 || stageIndex(d.stage) === 5;
+  function optionClass(o) {
+    const v = lc(o);
+    if (/^(approve|approved|allow|yes|ship)/.test(v)) return 'allow';
+    if (/^(request changes|reject|deny|no|block)/.test(v)) return 'deny';
+    return 'option';
+  }
+  function buildDecision(d) {
+    const isPerm = d.kind === 'permission';
+    const isGate = isGateDecision(d);
+    const busy = S.busy.has(d.id);
+    const conf = S.confirm && S.confirm.id === d.id ? S.confirm.choice : null;
+    const offline = operatorOffline();
+    const appr = approverState();
+    const kindLabel = isGate ? (isProdGate(d) ? 'Production gate' : 'Gate') : isPerm ? 'Permission' : 'Question';
+    const card = h('article', { id: 'dec-' + d.id, class: 'dcard ' + (isGate ? 'gatecard' : isPerm ? 'permission' : 'question') + (offline ? ' queued' : ''), 'aria-label': kindLabel + ' from ' + str(d.from) });
+    card.append(h('div', { class: 'dmeta' },
+      h('span', { class: 'lamp needs', 'aria-hidden': 'true' }),
+      h('span', { class: 'kind', text: kindLabel }),
+      h('span', { class: 'code-chip', text: str(d.from) || '?' }),
+      d.status === 'unauthorized' ? h('span', { class: 'status unauthorized', text: 'unauthorized' }) : null,
+      escChip(d),
+      timeEl(d.created_at)));
+    if (isGate) {
+      const task = S.tasks.find((t) => t.id === d.task_id);
+      card.append(h('div', { class: 'gatestrip' }, icon('lock', 13),
+        h('span', null, 'Stage ', h('b', { text: stageName(d.stage || d.gate) })),
+        d.gate ? h('span', null, 'gate ', h('b', { text: str(d.gate) })) : null,
+        task ? h('span', { text: str(task.title) }) : d.task_id ? h('span', { class: 'mono', text: str(d.task_id) }) : null,
+        d.artifact_ref ? artChip(str(d.artifact_ref).split(/[\/#?]/).filter(Boolean).pop() || 'artifact', str(d.artifact_ref)) : null));
+    }
+    const title = str(d.question) || (isPerm ? (str(d.tool_name) || 'A tool') + ' wants to run' : isGate ? 'Approve ' + stageName(d.stage || d.gate) + '?' : 'Question');
+    card.append(h('h3', { text: title }));
+    if (d.context) card.append(h('p', { class: 'ctx', text: str(d.context) }));
+    if (isPerm) {
+      card.append(h('pre', { class: 'cmd' }, h('b', { text: str(d.tool_name) || 'tool' }), d.summary ? '\n' + str(d.summary) : ''));
+    }
+    if (d.status === 'unauthorized') {
+      card.append(h('p', { class: 'note unauth', text: 'Answered by someone who is not an approver, so the operator did not relay it. An approver can still answer.' }));
+    }
+
+    let tip = null;
+    if (busy) {
+      card.append(h('p', { class: 'saving', text: 'Saving your answer…' }));
+    } else if (canAnswer()) {
+      if (appr === false) { tip = 'You are not an approver — your answer won\'t be relayed'; card.append(h('p', { class: 'note noappr', text: 'You are not an approver — your answer won\'t be relayed.' })); }
+      if (offline) { tip = tip || 'Answers will queue until the operator returns'; card.append(h('p', { class: 'note queue', text: 'Operator offline — answers are saved and queued until the operator returns.' })); }
+      const opts = isPerm ? ['allow', 'deny'] : Array.isArray(d.options) && d.options.length ? d.options.map(str).filter(Boolean) : isGate ? ['approve', 'request changes'] : [];
+      const needsConfirm = isPerm || isProdGate(d);
+      if (conf) {
+        const cls = optionClass(conf);
+        const q = isPerm ? (conf === 'allow' ? 'Allow ' + (str(d.tool_name) || 'this') + ' to run?' : 'Deny this request?')
+          : 'Answer "' + conf + '" at the production gate?';
+        card.append(h('div', { class: 'confirm-row' },
+          h('span', { class: 'q', text: q }),
+          h('button', { class: 'btn solid ' + (cls === 'option' ? 'allow' : cls), type: 'button', dataset: { focus: 'confirm' },
+            onclick: () => answerDecision(d, conf), text: 'Yes, ' + conf }),
+          h('button', { class: 'btn', type: 'button', onclick: () => { S.confirm = null; renderDecisions(); }, text: 'Cancel' })));
+      } else if (opts.length) {
+        card.append(h('div', { class: 'opts', role: 'group', 'aria-label': 'Options' },
+          opts.map((o) => h('button', { class: 'btn ' + optionClass(o), type: 'button',
+            onclick: () => (needsConfirm ? askConfirm(d.id, o) : answerDecision(d, o)),
+            text: isPerm ? (o === 'allow' ? 'Allow' : 'Deny') : o }))));
+      }
+      if (!isPerm && !conf) {
+        const input = h('input', { id: 'ans-' + d.id, type: 'text', placeholder: opts.length ? (isGate ? 'Or write what to change' : 'Or type a different answer') : 'Type your answer', 'aria-label': 'Answer for ' + str(d.from), dataset: { focus: 'answer' } });
+        input.value = S.drafts[d.id] || '';
+        input.addEventListener('input', () => { S.drafts[d.id] = input.value; });
+        const submit = () => { const v = input.value.trim(); if (!v) { input.focus(); return; } answerDecision(d, v); };
+        input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } });
+        card.append(h('div', { class: 'free' }, input, h('button', { class: 'btn primary', type: 'button', onclick: submit, text: 'Send answer' })));
+      }
+      if (tip) for (const b of card.querySelectorAll('.opts .btn, .free .btn, .confirm-row .btn')) b.title = tip;
+    }
+    const link = sessionLink(d.from, 'Answer in session');
+    card.append(h('div', { class: 'dfoot' },
+      h('span', { text: isPerm ? 'Allow or Deny is pressed in the session by the operator.' : isGate ? 'Approvals are logged in Approvals below.' : 'Your answer is relayed to ' + (str(d.from) || 'the session') + '.' }),
+      link));
+    return card;
+  }
+
+  const CHANNEL = { slack: 'Slack', desktop: 'desktop', email: 'email', line: 'LINE', sns: 'SNS', webhook: 'webhook' };
+  function escChip(d) {
+    const lvl = lc(d.escalation_level);
+    if (!['warn', 'high', 'urgent'].includes(lvl)) return null;
+    const via = (Array.isArray(d.notified_via) ? d.notified_via : []).map((c) => CHANNEL[lc(c)] || str(c)).filter(Boolean);
+    return h('span', { class: 'esc ' + lvl, title: 'Escalation level: ' + lvl + (via.length ? ' · notified via ' + via.join(', ') : '') },
+      lvl, h('span', { class: 'via', text: via.length ? ' · escalated → ' + via.join(', ') : ' · escalated' }));
+  }
+  function askConfirm(id, choice) {
+    S.confirm = { id, choice, at: Date.now() };
+    renderDecisions();
+    const myConfirm = S.confirm;
+    setTimeout(() => { if (S.confirm === myConfirm) { S.confirm = null; renderDecisions(); } }, 8000);
+  }
+
+  function renderDecisions() {
+    const pend = pendingDecisions();
+    $('#dec-empty').hidden = pend.length > 0;
+    if (!pend.length) {
+      const e = $('#dec-empty');
+      e.textContent = '';
+      if (S.mode === 'connecting' || (S.mode === 'live' && !S.got.decisions)) e.append(h('strong', { text: 'Loading decisions…' }), 'Checking what the sessions are waiting on.');
+      else if (S.mode === 'offline') e.append(h('strong', { text: 'No board data.' }), 'Decisions appear here once the page can reach the board.');
+      else e.append(h('strong', { text: 'Nothing needs you.' }), 'When a session asks a question, hits a permission prompt or reaches a gate, it appears here with buttons to answer.');
+    }
+    const ctx = [canAnswer() ? 'w' : 'r', operatorOffline() ? 'off' : 'on', String(approverState())].join('|');
+    reconcile($('#dec-list'), pend, (d) => d.id,
+      (d) => JSON.stringify(d) + '|' + ctx + '|' + (S.busy.has(d.id) ? 'b' : '') + '|' + (S.confirm && S.confirm.id === d.id ? S.confirm.choice : '') + '|' + str(findSession(d.from) && findSession(d.from).remote_url) + '|' + str((S.tasks.find((t) => t.id === d.task_id) || {}).title),
+      buildDecision);
+
+    const past = S.decisions.filter((d) => !isOpen(d))
+      .sort((a, b) => (ts(b.answered_at) || ts(b.created_at)) - (ts(a.answered_at) || ts(a.created_at))).slice(0, 12);
+    const hist = $('#dec-history');
+    hist.hidden = past.length === 0;
+    $('#dec-history-sum').textContent = 'Recent decisions (' + past.length + ') · answered, relayed or expired';
+    reconcile($('#dec-history-list'), past, (d) => d.id, (d) => JSON.stringify(d), (d) => h('li', null,
+      h('span', { class: 'status ' + str(d.status), text: str(d.status) || 'unknown' }),
+      h('span', { class: 'what' },
+        h('span', { class: 'code-chip', text: str(d.from) || '?' }), ' ',
+        str(d.question) || (d.kind === 'permission' ? (str(d.tool_name) || 'tool') + ' permission' : isGateDecision(d) ? stageName(d.stage || d.gate) + ' gate' : 'Question'),
+        d.answer != null && d.answer !== '' ? h('span', null, ' → ', h('span', { class: 'ans', text: str(d.answer) })) : null),
+      timeEl(d.answered_at || d.relayed_at || d.created_at)));
+  }
+
+  /* ----------------------------------------------------------- lifecycle */
+  function buildTask(t) {
+    const cur = stageIndex(t.stage);
+    const arts = t.artifacts && typeof t.artifacts === 'object' ? t.artifacts : {};
+    const gates = Array.isArray(t.gates) ? t.gates : [];
+    const gateFor = (i) => { for (let j = gates.length - 1; j >= 0; j--) if (gates[j] && stageIndex(gates[j].stage) === i) return gates[j]; return null; };
+    function stateOf(i) {
+      const g = gateFor(i);
+      if (g && g.status === 'skipped') return 'skipped';
+      if (i === 1 && cur > 1 && !arts.spec && !(g && g.status === 'approved')) return 'skipped';
+      if (cur < 0) return 'upcoming';
+      return i < cur ? 'done' : i === cur ? 'current' : 'upcoming';
+    }
+    function stageBlock(i, tag, extra) {
+      const st = STAGES[i], state = stateOf(i), g = gateFor(i);
+      const node = h('span', { class: 'node', 'aria-hidden': 'true' }, state === 'done' ? icon('check', 12) : null);
+      return h(tag, { class: 'stage ' + state + (extra ? ' ' + extra : ''), 'aria-label': st.name + ': ' + state },
+        h('div', { class: 'stage-head' }, node, h('span', { class: 'stage-name', text: st.name })),
+        state === 'skipped' && i === 1 ? h('span', { class: 'skipnote', text: 'simple fix skips design' }) : null,
+        st.file ? artChip(st.file, arts[st.art]) : null,
+        gatePill(st, g, state));
+    }
+    const curName = cur >= 0 ? STAGES[cur].name : (str(t.stage) || 'unknown stage');
+    const pg = gateFor(5), pgState = stateOf(5);
+    const pgStatus = pg ? (str(pg.status) || 'pending') : 'none';
+    return h('article', { class: 'tcard', 'aria-label': 'Task ' + str(t.title) },
+      h('div', { class: 'task-top' },
+        h('h3', { text: str(t.title) || 'Untitled task' }),
+        h('span', { class: 'tid', text: str(t.id) }),
+        t.owner ? h('span', { class: 'code-chip', title: 'Owner session', text: str(t.owner) }) : null,
+        h('span', { class: 'now', text: 'now: ' + curName }),
+        timeEl(t.updated_at)),
+      h('ol', { class: 'rail', 'aria-label': 'Stages before production' }, [0, 1, 2, 3, 4].map((i) => stageBlock(i, 'li'))),
+      h('div', { class: 'prodgate ' + pgState, role: 'group', 'aria-label': 'Production gate' },
+        icon('lock', 18),
+        h('strong', { text: 'Production gate — agent stops here' }),
+        h('span', { class: 'who', text: 'release manager authorizes' }),
+        h('span', { class: 'gate ' + pgStatus }, h('b', { text: pgState === 'done' && pgStatus === 'none' ? 'passed' : GATE_LABEL[pgStatus] || pgStatus }),
+          pg && pgStatus === 'pending' && pg.decision_id && S.decisions.some((d) => d.id === pg.decision_id && isOpen(d)) ? h('a', { href: '#dec-' + pg.decision_id, text: ' answer ↑' }) : null)),
+      stageBlock(6, 'div', 'wide'));
+  }
+  function renderTasks() {
+    const list = S.tasks.slice().sort((a, b) => ts(b.updated_at) - ts(a.updated_at));
+    const e = $('#task-empty');
+    e.hidden = list.length > 0;
+    if (!list.length) {
+      e.textContent = '';
+      if (S.mode === 'connecting' || (S.mode === 'live' && !S.got.tasks)) e.append(h('strong', { text: 'Loading tasks…' }));
+      else if (S.mode === 'offline') e.append(h('strong', { text: 'No board data.' }), 'Tasks appear here once the page can reach the board.');
+      else e.append(h('strong', { text: 'No tasks yet.' }), 'A task appears here when a session starts one with ', h('span', { class: 'mono', text: 'board task new' }), '.');
+    }
+    const ctx = S.decisions.filter(isOpen).map((d) => d.id).join(',');
+    reconcile($('#tasks'), list, (t) => t.id, (t) => JSON.stringify(t) + '|' + ctx, buildTask);
+  }
+
+  /* ----------------------------------------------------------- approvals */
+  function renderApprovals() {
+    const rows = S.approvals.slice().sort((a, b) => ts(b.answered_at) - ts(a.answered_at));
+    const e = $('#appr-empty');
+    e.hidden = rows.length > 0;
+    $('#appr-wrap').hidden = rows.length === 0;
+    if (!rows.length) {
+      e.textContent = '';
+      if (S.mode === 'connecting' || (S.mode === 'live' && !S.got.approvals)) e.append(h('strong', { text: 'Loading approvals…' }));
+      else if (S.mode === 'offline') e.append(h('strong', { text: 'No board data.' }), 'The approvals log appears here once the page can reach the board.');
+      else e.append(h('strong', { text: 'No approvals recorded yet.' }), 'Each gate decision an approver answers is logged here once the operator relays it.');
+    }
+    const appr = S.operator && Array.isArray(S.operator.approver_ids) ? S.operator.approver_ids : null;
+    const by = (id) => !id ? '—' : (S.me && id === S.me ? 'you' : appr ? (appr.includes(id) ? 'an approver' : 'not an approver') : 'an editor');
+    reconcile($('#appr-body'), rows, (r) => r.id, (r) => JSON.stringify(r) + '|' + (S.me || '') + '|' + str(appr) + '|' + str((S.tasks.find((t) => t.id === r.task_id) || {}).title), (r) => {
+      const task = S.tasks.find((t) => t.id === r.task_id);
+      const ans = str(r.answer);
+      return h('tr', null,
+        h('td', null, timeEl(r.answered_at)),
+        h('td', null, task ? h('span', { text: str(task.title) + ' ' }) : null, h('span', { class: 'mono muted', text: str(r.task_id) || '—' })),
+        h('td', { text: stageName(r.stage) }),
+        h('td', { class: 'mono', text: str(r.gate) || '—' }),
+        h('td', { class: 'ans ' + optionClass(ans).replace('option', '').replace('allow', 'approve').replace('deny', 'changes'), text: ans || '—' }),
+        h('td', { text: by(r.answered_by) }),
+        h('td', null, r.relayed_at ? timeEl(r.relayed_at) : '—'));
+    });
+  }
+
+  /* --------------------------------------------------------------- board */
+  function buildSession(s) {
+    const col = colOf(s);
+    const lampCls = { needs: 'needs', working: 'working', done: 'done', offline: 'offline' }[col];
+    const aliases = (Array.isArray(s.aliases) ? s.aliases : []).map(str).filter((a) => a && lc(a) !== lc(s.code));
+    const card = h('article', { class: 'scard', 'aria-label': 'Session ' + s.code });
+    card.append(h('div', { class: 'scard-top' },
+      h('span', { class: 'lamp ' + lampCls, title: str(s.state) || 'unknown', 'aria-label': 'state ' + (str(s.state) || 'unknown') }),
+      h('span', { class: 'code', text: s.code }),
+      aliases.length ? h('span', { class: 'aka', text: 'aka ' + aliases.join(', ') }) : null,
+      timeEl(s.updated_at)));
+    const task = str(s.task);
+    card.append(h('p', { class: 'task' + (task ? '' : ' none'), text: task || 'No task summary yet' }));
+    const p = s.pending && typeof s.pending === 'object' ? s.pending : null;
+    if (p && (p.tool_name || p.summary)) {
+      card.append(h('div', { class: 'pend' },
+        h('span', null, 'Waiting on ', h('span', { class: 'tool', text: str(p.tool_name) || 'a tool' })),
+        p.summary ? h('code', { text: str(p.summary) }) : null));
+    }
+    const link = sessionLink(s.code, 'Open session');
+    if (s.tmux || link) card.append(h('div', { class: 'jack' }, s.tmux ? h('span', { class: 'tmux', text: str(s.tmux) }) : h('span'), link));
+    return card;
+  }
+
+  function renderBoard() {
+    const host = $('#board-cols');
+    const known = S.mode === 'demo' || (S.mode === 'live' && S.got.sessions);
+    const empty = $('#board-empty');
+    empty.hidden = known && S.sessions.length > 0;
+    empty.textContent = '';
+    if (S.mode === 'connecting' || (S.mode === 'live' && !S.got.sessions)) empty.append(h('strong', { text: 'Loading sessions…' }), 'Cards appear as soon as the board data answers.');
+    else if (S.mode === 'offline') empty.append(h('strong', { text: 'No board data.' }), 'Session cards appear here once the page can reach the board.');
+    else empty.append(h('strong', { text: 'No sessions yet.' }), 'The operator adds a card for each running session the next time it syncs.');
+    host.hidden = !(known && S.sessions.length > 0);
+    if (host.hidden) return;
+    if (!host.children.length) {
+      for (const c of COLS) {
+        host.append(h('div', { class: 'col ' + c.key, dataset: { col: c.key } },
+          h('div', { class: 'col-head' }, h('span', { class: 'lamp ' + c.lamp, 'aria-hidden': 'true' }), h('h3', null, c.title, ' ', h('span', { class: 'zh', text: c.zh })), h('span', { class: 'count', text: '0' })),
+          h('div', { class: 'cards' }), h('p', { class: 'none', text: c.none })));
+      }
+    }
+    for (const c of COLS) {
+      const colEl = host.querySelector('[data-col="' + c.key + '"]');
+      const items = S.sessions.filter((s) => colOf(s) === c.key)
+        .sort((a, b) => c.key === 'needs' ? ts(a.updated_at) - ts(b.updated_at) : ts(b.updated_at) - ts(a.updated_at));
+      colEl.querySelector('.count').textContent = items.length;
+      colEl.querySelector('.none').hidden = items.length > 0;
+      reconcile(colEl.querySelector('.cards'), items, (s) => s.code, (s) => JSON.stringify(s), buildSession);
+    }
+  }
+
+  /* ------------------------------------------------------------ messages */
+  function whoLabel(by) {
+    if (!by) return 'someone';
+    if (S.me && by === S.me) return 'you';
+    return 'an editor';
+  }
+  function buildThread(m) {
+    const replies = S.replies.get(m.id) || [];
+    const relayedTo = Array.isArray(m.relayed_to) ? m.relayed_to.map(str).filter(Boolean) : [];
+    return h('li', { class: 'thread' },
+      h('div', { class: 'thread-top' },
+        h('span', { class: 'to', text: '→ @' + (str(m.to) || '?') }),
+        h('span', { class: 'status ' + str(m.status), text: str(m.status) || 'new' }),
+        h('span', { text: 'from ' + whoLabel(m.by) }),
+        timeEl(m.created_at)),
+      h('p', { class: 'body', text: str(m.body) }),
+      relayedTo.length || m.relayed_at ? h('span', { class: 'relay' }, 'Relayed' + (relayedTo.length ? ' to ' + relayedTo.join(', ') : ''), m.relayed_at ? ' · ' : '', m.relayed_at ? timeEl(m.relayed_at) : null) : null,
+      replies.length ? h('ol', { class: 'replies', 'aria-label': 'Replies' }, replies.map((r) => h('li', null,
+        h('span', { class: 'from' }, h('span', { text: str(r.from) || '?' }), timeEl(r.created_at)),
+        h('p', { text: str(r.body) })))) : null);
+  }
+  function renderMessages() {
+    const list = S.messages.slice(0, MAX_THREADS);
+    const e = $('#msg-empty');
+    e.hidden = list.length > 0;
+    e.textContent = '';
+    if (S.mode === 'connecting' || (S.mode === 'live' && !S.got.messages)) e.append(h('strong', { text: 'Loading messages…' }));
+    else if (S.mode === 'offline') e.append(h('strong', { text: 'No board data.' }), 'Threads appear here once the page can reach the board.');
+    else e.append(h('strong', { text: 'No messages yet.' }), canAnswer() ? 'Type @ and a session code to send the first one.' : 'Messages that editors send to sessions appear here.');
+    reconcile($('#threads'), list, (m) => m.id, (m) => JSON.stringify(m) + JSON.stringify(S.replies.get(m.id) || []) + (S.me || ''), buildThread);
+    const ok = canAnswer();
+    $('#composer').hidden = !ok;
+    $('#msg-readonly').hidden = ok || !(S.mode === 'live' && S.userReady);
+  }
+
+  function renderAll() { renderHeader(); renderBanners(); renderDecisions(); renderTasks(); renderBoard(); renderMessages(); renderApprovals(); if ($('#info').open) renderLedger(); }
+
+  /* ------------------------------------------------------- writes + relay */
+  function fastPath(kind, id, extra) {
+    if (!room) return null;
+    if (S.canSend !== 'available' && S.canSend !== 'available_if_summoned') return null;
+    try {
+      return room.sendToClaudeSession(Object.assign({ label: 'Switchboard', kind, id }, extra || {}), { deliver: 'send' });
+    } catch (e) { return Promise.reject(e); }
+  }
+  async function settle(writeP, sendP, okText) {
+    try { await writeP; } catch (e) { handleWriteError(e); return false; }
+    let sent = false;
+    if (sendP) { try { await sendP; sent = true; } catch (e) { sent = false; } }
+    toast(okText + (operatorOffline() ? ' · queued until the operator returns.' : sent ? ' · Sent to operator.' : ' · Queued — operator checks every few minutes.'));
+    return true;
+  }
+  function handleWriteError(e, gone) {
+    const code = e && e.code;
+    if (gone) { toast('That decision was already handled or removed.', true); return; }
+    if (code === 'invalid_argument' || code === 'not_granted') {
+      S.writable = false; renderAll();
+      toast('This board is read-only for you. Only its editors can answer or send messages.', true);
+    } else if (code === 'quota_exceeded') toast('The board\'s storage is full. Ask the owner to clear old messages.', true);
+    else if (code === 'revoked') toast('Your access to this board changed. Reload to see the current view.', true);
+    else toast('Couldn\'t save. Check your connection and try again.', true);
+  }
+  function relayNote(demo) {
+    const appr = approverState();
+    if (appr === false) return 'Not relayed: you are not an approver.';
+    if (operatorOffline()) return 'Queued until the operator returns.';
+    return demo ? 'Nothing was saved or sent.' : '';
+  }
+  async function myId() { return S.me || (userNs ? await userNs.id() : null); }
+
+  // Called synchronously from a click / key press. Nothing is awaited before
+  // room.sendToClaudeSession so the viewer's gesture still counts.
+  function answerDecision(d, answer) {
+    if (!canAnswer()) return;
+    if (S.demo) {
+      const i = S.decisions.findIndex((x) => x.id === d.id);
+      if (i >= 0) S.decisions[i] = Object.assign({}, d, { status: 'answered', answer, answered_by: S.me, answered_at: Date.now() });
+      S.confirm = null; delete S.drafts[d.id];
+      renderAll(); toast('Demo: answer shown on this page only. ' + relayNote(true));
+      return;
+    }
+    const offline = operatorOffline(), appr = approverState();
+    let writeP;
+    try {
+      const ref = db.doc('decisions/' + d.id);
+      const patch = (by) => ref.update({ status: 'answered', answer, answered_by: by, answered_at: Date.now() });
+      writeP = S.me ? patch(S.me) : myId().then(patch);
+    } catch (e) { writeP = Promise.reject(e); }
+    // Nothing to ping when the operator is down or the answer will not be relayed.
+    const sendP = offline || appr === false ? null : fastPath('decision', d.id);
+    S.busy.add(d.id); S.confirm = null;
+    renderDecisions();
+    writeP.catch(() => {});
+    (async () => {
+      let ok = true;
+      try { await writeP; } catch (e) { ok = false; handleWriteError(e, !S.decisions.some((x) => x.id === d.id && isOpen(x))); }
+      S.busy.delete(d.id);
+      if (ok) {
+        delete S.drafts[d.id];
+        let sent = false;
+        if (sendP) { try { await sendP; sent = true; } catch (e) { sent = false; } }
+        toast('Answer saved · ' + (appr === false ? 'not relayed: you are not an approver.' : offline ? 'queued until the operator returns.' : sent ? 'Sent to operator.' : 'Queued — operator checks every few minutes.'));
+      }
+      renderDecisions();
+    })();
+  }
+
+  /* ------------------------------------------------------------ composer */
+  const ta = $('#msg-input'), mlist = $('#mention-list'), merr = $('#msg-err');
+  let mState = null; // { start, items, idx }
+
+  function parseMentions(raw) {
+    const m = raw.match(/^\s*((?:@[A-Za-z0-9_.\-]+[\s,]*)+)/);
+    if (!m) return { error: 'Start with @ and a session code, or @all.' };
+    const names = [...m[1].matchAll(/@([A-Za-z0-9_.\-]+)/g)].map((x) => x[1]);
+    const body = raw.slice(m[0].length).trim();
+    if (!body) return { error: 'Add your message after the mention.' };
+    const targets = [];
+    for (const n of names) {
+      if (lc(n) === 'all') { targets.push('all'); continue; }
+      const s = findSession(n);
+      if (!s) return { error: 'No session called @' + n + '. Pick one from the list that opens when you type @.' };
+      if (!targets.includes(s.code)) targets.push(s.code);
+    }
+    return { targets: targets.includes('all') ? ['all'] : targets, body };
+  }
+
+  function mentionContext() {
+    const pos = ta.selectionStart;
+    if (pos !== ta.selectionEnd) return null;
+    const m = ta.value.slice(0, pos).match(/(^|[\s,])@([A-Za-z0-9_.\-]*)$/);
+    return m ? { start: pos - m[2].length - 1, end: pos, q: m[2] } : null;
+  }
+  function closeMentions() { mState = null; mlist.hidden = true; ta.setAttribute('aria-expanded', 'false'); ta.removeAttribute('aria-activedescendant'); }
+  function updateMentions() {
+    const ctx = mentionContext();
+    if (!ctx) return closeMentions();
+    const q = lc(ctx.q);
+    const all = [{ code: 'all', desc: 'every session' }].concat(S.sessions.map((s) => ({
+      code: s.code,
+      desc: [(Array.isArray(s.aliases) ? s.aliases.filter((a) => lc(a) !== lc(s.code)).join(', ') : ''), str(s.state)].filter(Boolean).join(' · '),
+      keys: [s.code].concat(Array.isArray(s.aliases) ? s.aliases : []),
+    })));
+    const items = all.filter((it) => !q || (it.keys || [it.code]).some((k) => lc(k).startsWith(q))).slice(0, 8);
+    if (!items.length) return closeMentions();
+    mState = { start: ctx.start, end: ctx.end, items, idx: Math.min(mState ? mState.idx : 0, items.length - 1) };
+    drawMentions();
+  }
+  function drawMentions() {
+    mlist.textContent = '';
+    mState.items.forEach((it, i) => {
+      const li = h('li', { id: 'mopt-' + i, role: 'option', 'aria-selected': i === mState.idx ? 'true' : 'false' },
+        h('span', { class: 'c', text: '@' + it.code }), h('span', { class: 'd', text: it.desc || '' }));
+      li.addEventListener('mousedown', (e) => { e.preventDefault(); pickMention(i); });
+      mlist.append(li);
+    });
+    mlist.style.top = (ta.offsetTop + ta.offsetHeight + 4) + 'px';
+    mlist.hidden = false;
+    ta.setAttribute('aria-expanded', 'true');
+    ta.setAttribute('aria-activedescendant', 'mopt-' + mState.idx);
+  }
+  function pickMention(i) {
+    const it = mState.items[i];
+    const v = ta.value;
+    const insert = '@' + it.code + ' ';
+    ta.value = v.slice(0, mState.start) + insert + v.slice(mState.end).replace(/^\s+/, '');
+    const pos = mState.start + insert.length;
+    ta.setSelectionRange(pos, pos);
+    closeMentions(); ta.focus();
+    merr.textContent = '';
+  }
+  ta.addEventListener('input', () => { merr.textContent = ''; updateMentions(); });
+  ta.addEventListener('click', updateMentions);
+  ta.addEventListener('blur', () => setTimeout(closeMentions, 120));
+  ta.addEventListener('keydown', (e) => {
+    if (mState && !mlist.hidden) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); mState.idx = (mState.idx + 1) % mState.items.length; drawMentions(); return; }
+      if (e.key === 'ArrowUp') { e.preventDefault(); mState.idx = (mState.idx - 1 + mState.items.length) % mState.items.length; drawMentions(); return; }
+      if ((e.key === 'Enter' && !e.ctrlKey && !e.metaKey) || e.key === 'Tab') { e.preventDefault(); pickMention(mState.idx); return; }
+      if (e.key === 'Escape') { e.preventDefault(); closeMentions(); return; }
+    }
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendMessage(); }
+  });
+  $('#composer').addEventListener('submit', (e) => { e.preventDefault(); sendMessage(); });
+
+  // Synchronous from the gesture: writes are kicked off, then the fast path is called.
+  function sendMessage() {
+    if (!canAnswer()) return;
+    const raw = ta.value;
+    const p = parseMentions(raw);
+    if (p.error) { merr.textContent = p.error; ta.focus(); return; }
+    const now = Date.now();
+    const ids = p.targets.map(() => 'm-' + now + '-' + rand());
+    if (S.demo) {
+      p.targets.forEach((to, i) => S.messages.unshift({ id: ids[i], to, body: p.body, by: S.me, created_at: now, status: 'new' }));
+      ta.value = ''; closeMentions(); renderAll();
+      toast('Demo: message shown on this page only. Nothing was saved or sent.');
+      return;
+    }
+    let writeP;
+    try {
+      const refs = ids.map((id) => db.doc('messages/' + id));
+      const write = (by) => Promise.all(refs.map((r, i) => r.set({ to: p.targets[i], body: p.body, by, created_at: now, status: 'new' })));
+      writeP = S.me ? write(S.me) : myId().then(write);
+    } catch (e) { writeP = Promise.reject(e); }
+    const sendP = operatorOffline() ? null : fastPath('message', ids[0], ids.length > 1 ? { also: ids.slice(1) } : null);
+    ta.value = ''; closeMentions();
+    const btn = $('#msg-send'); btn.disabled = true; btn.textContent = 'Sending…';
+    settle(writeP, sendP, ids.length > 1 ? ids.length + ' messages saved' : 'Message saved').then((ok) => {
+      btn.disabled = false; btn.textContent = 'Send';
+      if (!ok && !ta.value) ta.value = raw;
+    });
+  }
+
+  /* ---------------------------------------------------------- info dialog */
+  const fmt = (v) => (typeof v === 'number' && isFinite(v) ? v.toLocaleString('en-US') : v == null || v === '' ? '—' : str(v));
+  function renderLedger() {
+    const box = $('#ledger'); box.textContent = '';
+    const L = S.ledger || {};
+    const rows = Array.isArray(L.rows) ? L.rows : [];
+    if (!rows.length) {
+      box.append(h('p', { class: 'muted', text: S.mode === 'offline' ? '尚無紀錄 · board data unavailable' : '尚無紀錄' }));
+    } else {
+      const leadKeys = ['input', 'cache_read', 'cache_write', 'output', 'total'];
+      const sums = { input: 0, cache_read: 0, cache_write: 0, output: 0, total: 0 };
+      let mateSum = 0, mateAllNum = true;
+      const body = rows.map((r) => {
+        const lead = r && typeof r.lead === 'object' && r.lead ? r.lead : {};
+        for (const k of leadKeys) if (typeof lead[k] === 'number') sums[k] += lead[k];
+        if (typeof r.teammate === 'number') mateSum += r.teammate; else if (r.teammate != null && r.teammate !== '') mateAllNum = false;
+        return h('tr', null,
+          h('td', { text: fmt(r.version) }), h('td', { text: fmt(r.date) }), h('td', { text: fmt(r.what) }), h('td', { text: fmt(r.review) }),
+          leadKeys.map((k) => h('td', { class: 'num', text: fmt(lead[k]) })),
+          h('td', { class: typeof r.teammate === 'number' ? 'num' : null, text: fmt(r.teammate) }),
+          h('td', { text: fmt(r.note) }));
+      });
+      const T = L.total && typeof L.total === 'object' ? L.total : null;
+      const tLead = T ? (T.lead && typeof T.lead === 'object' ? T.lead : T) : sums;
+      const tMate = T && T.teammate != null ? T.teammate : (mateAllNum ? mateSum : '—');
+      const table = h('table', { class: 'ledger' },
+        h('thead', null,
+          h('tr', null, h('th', { rowspan: '2', text: '版本' }), h('th', { rowspan: '2', text: '日期' }), h('th', { rowspan: '2', text: '做了什麼' }), h('th', { rowspan: '2', text: 'review' }),
+            h('th', { colspan: '5', class: 'num', style: 'text-align:center', text: 'lead tokens' }), h('th', { rowspan: '2', text: 'teammate' }), h('th', { rowspan: '2', text: '備註' })),
+          h('tr', null, ['input', 'cache read', 'cache write', 'output', '小計'].map((t) => h('th', { class: 'num', text: t })))),
+        h('tbody', null, body),
+        h('tfoot', null, h('tr', null, h('td', { colspan: '4', text: '累計' }), leadKeys.map((k) => h('td', { class: 'num', text: fmt(tLead[k]) })), h('td', { class: 'num', text: fmt(tMate) }), h('td'))));
+      box.append(h('div', { class: 'tbl-wrap' }, table));
+    }
+    const op = S.operator || {};
+    const ioe = $('#info-operator'); ioe.textContent = '';
+    if (op.operator_session || op.account_hint) {
+      ioe.append('Operated by ', h('b', { text: str(op.operator_session) || 'an unnamed session' }), op.account_hint ? ' · ' + str(op.account_hint) : '', '.');
+    } else ioe.append('The operator has not identified itself yet.');
+    const appr = approverState();
+    if (Array.isArray(op.approver_ids)) ioe.append(' ' + op.approver_ids.length + (op.approver_ids.length === 1 ? ' approver' : ' approvers') + '; ' + (appr ? 'you are one of them.' : 'you are not an approver, so your decision answers are not relayed.'));
+    $('#info-meta').textContent = S.demo ? 'Showing demo data.' :
+      (op.version ? 'Operator version ' + str(op.version) + '. ' : '') + (ts(op.heartbeat_at) ? 'Last heartbeat ' + rel(ts(op.heartbeat_at)) + '.' : 'No operator heartbeat yet.');
+  }
+  $('#info-btn').addEventListener('click', () => openInfo());
+  $('#info-close').addEventListener('click', () => { const d = $('#info'); if (typeof d.close === 'function') d.close(); else d.removeAttribute('open'); });
+  $('#info').addEventListener('click', (e) => { if (e.target === e.currentTarget) e.currentTarget.close(); });
+
+  /* ------------------------------------------------------- nav + scrollspy */
+  const nav = $('#secnav');
+  $('#nav-toggle').addEventListener('click', () => {
+    const open = !nav.classList.contains('open');
+    nav.classList.toggle('open', open);
+    $('#nav-toggle').setAttribute('aria-expanded', String(open));
+  });
+  nav.addEventListener('click', (e) => { if (e.target.closest('a')) { nav.classList.remove('open'); $('#nav-toggle').setAttribute('aria-expanded', 'false'); } });
+  const spyLinks = [...document.querySelectorAll('[data-spy]')];
+  function spy() {
+    const line = nav.getBoundingClientRect().bottom + 24;
+    let current = 'decisions';
+    for (const id of ['decisions', 'lifecycle', 'board', 'messages', 'approvals']) { const el = document.getElementById(id); if (el && el.getBoundingClientRect().top <= line) current = id; }
+    if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4) current = 'approvals';
+    for (const a of spyLinks) a.setAttribute('aria-current', a.dataset.spy === current ? 'true' : 'false');
+  }
+  window.addEventListener('scroll', spy, { passive: true });
+  window.addEventListener('resize', spy);
+
+  /* ----------------------------------------------------------- live data */
+  function docs(snap) { return snap.docs.filter((d) => d.exists).map((d) => Object.assign({ id: d.id }, d.data())); }
+  let loadTimer = null;
+  function feedFailed(what) {
+    return (e) => {
+      clearTimeout(loadTimer); S.slow = false;
+      if (e && e.code === 'revoked') S.feedError = 'This view no longer has access to the board data.';
+      else S.feedError = 'Updates for ' + what + ' stopped. Reload the page to reconnect.';
+      renderAll();
+    };
+  }
+  function maybeLoaded(snap) {
+    if (!snap.metadata || !snap.metadata.fromCache) {
+      if (S.got.sessions && S.got.decisions) { clearTimeout(loadTimer); if (S.slow) { S.slow = false; renderBanners(); } }
+    }
+  }
+  function subscribe() {
+    loadTimer = setTimeout(() => { S.slow = true; renderBanners(); }, LOAD_TIMEOUT_MS);
+    try {
+      db.collection('sessions').onSnapshot((snap) => {
+        S.sessions = docs(snap).map((s) => Object.assign({}, s, { code: str(s.code) || s.id }));
+        S.got.sessions = true; maybeLoaded(snap); renderAll();
+      }, feedFailed('sessions'));
+      db.collection('decisions').orderBy('created_at', 'desc').limit(200).onSnapshot((snap) => {
+        S.decisions = docs(snap);
+        S.got.decisions = true; maybeLoaded(snap); renderHeader(); renderDecisions(); renderTasks();
+      }, feedFailed('decisions'));
+      db.collection('messages').orderBy('created_at', 'desc').limit(MAX_THREADS).onSnapshot((snap) => {
+        S.messages = docs(snap); S.got.messages = true;
+        syncReplySubs(); renderHeader(); renderMessages();
+      }, feedFailed('messages'));
+      db.doc('meta/operator').onSnapshot((snap) => { S.operator = snap.exists ? snap.data() : null; S.got.operator = true; renderAll(); }, feedFailed('operator status'));
+      db.collection('tasks').orderBy('updated_at', 'desc').limit(50).onSnapshot((snap) => {
+        S.tasks = docs(snap); S.got.tasks = true; renderHeader(); renderTasks(); renderDecisions(); renderApprovals();
+      }, feedFailed('tasks'));
+      db.collection('approvals').orderBy('answered_at', 'desc').limit(100).onSnapshot((snap) => {
+        S.approvals = docs(snap); S.got.approvals = true; renderHeader(); renderApprovals();
+      }, feedFailed('approvals'));
+      db.doc('meta/ledger').onSnapshot((snap) => { S.ledger = snap.exists ? snap.data() : null; if ($('#info').open) renderLedger(); }, () => {});
+    } catch (e) {
+      feedFailed('the board')(e);
+    }
+  }
+  function syncReplySubs() {
+    const want = new Set(S.messages.slice(0, MAX_THREADS).map((m) => m.id));
+    for (const [id, un] of replySubs) if (!want.has(id)) { un(); replySubs.delete(id); S.replies.delete(id); }
+    for (const id of want) {
+      if (replySubs.has(id)) continue;
+      try {
+        const un = db.collection('messages/' + id + '/replies').orderBy('created_at').limit(50).onSnapshot((snap) => {
+          S.replies.set(id, docs(snap)); renderMessages();
+        }, () => { replySubs.delete(id); });
+        replySubs.set(id, un);
+      } catch (e) { /* malformed id: skip its replies */ }
+    }
+  }
+
+  async function refreshCanSend() {
+    if (!room || typeof room.canSendToClaudeSession !== 'function') { S.canSend = 'off'; return; }
+    try { S.canSend = await room.canSendToClaudeSession(); } catch (e) { S.canSend = 'off'; }
+  }
+
+  /* ---------------------------------------------------------------- demo */
+  function enterDemo() {
+    const now = Date.now(), min = 60000;
+    S.demo = true; S.mode = 'demo'; S.me = 'u_demo_you'; S.userReady = true; S.writable = true; S.feedError = null; S.slow = false;
+    const frozen = params.get('offline') === '1';
+    S.operator = { heartbeat_at: now - (frozen ? 47 : 2) * min, version: 'demo', owner_id: 'u_demo_you', approver_ids: ['u_demo_you', 'u_demo_lead'],
+      operator_session: 'BOARD', account_hint: 'primary team account',
+      limit: frozen ? { hit_at: now - 48 * min, kind: '5h', resets_at: now + 115 * min, note: 'demo' } : null,
+      usage: { five_hour: { pct: frozen ? 100 : 91, resets_at: now + 95 * min }, seven_day: { pct: 63, resets_at: now + (3 * 24 * 60 + 260) * min }, updated_at: now - 1 * min } };
+    S.sessions = [
+      { code: 'API', aliases: ['API', 'backend'], state: 'needs-you', status: 'busy', task: 'Adding pagination to the orders endpoint', tmux: 'API:@1.%3', remote_url: '#demo-session-api', pending: { tool_name: 'Bash', summary: 'npm run migrate -- --env staging', tool_use_id: 'toolu_demo1' }, updated_at: now - 4 * min },
+      { code: 'WEB', aliases: ['WEB', 'frontend'], state: 'needs-you', status: 'idle', task: 'Redesigning the settings page layout', tmux: 'WEB:@2.%5', remote_url: '#demo-session-web', pending: null, updated_at: now - 9 * min },
+      { code: 'DOCS', aliases: ['DOCS'], state: 'working', status: 'busy', task: 'Writing the upgrade guide for v2', tmux: 'DOCS:@1.%8', remote_url: null, pending: null, updated_at: now - 1 * min },
+      { code: 'OPS', aliases: ['OPS', 'infra'], state: 'working', status: 'busy', task: 'Rotating staging certificates', tmux: 'OPS:@4.%11', remote_url: '#demo-session-ops', pending: null, updated_at: now - 3 * min },
+      { code: 'QA', aliases: ['QA'], state: 'done', status: 'idle', task: 'Flaky test triage finished: 3 fixed, 1 quarantined', tmux: 'QA:@1.%2', remote_url: null, pending: null, updated_at: now - 26 * min },
+      { code: 'DATA', aliases: ['DATA'], state: 'rest', status: 'idle', task: '', tmux: 'DATA:@1.%14', remote_url: null, pending: null, updated_at: now - 70 * min },
+      { code: 'MOBILE', aliases: ['MOBILE', 'app'], state: 'offline', status: 'idle', task: 'Release notes draft', tmux: null, remote_url: null, pending: null, updated_at: now - 5 * 60 * min },
+    ];
+    S.decisions = [
+      { id: 'd-demo-1', kind: 'permission', from: 'API', question: 'Run the staging migration?', tool_use_id: 'toolu_demo1', tool_name: 'Bash', summary: 'npm run migrate -- --env staging', status: 'pending', answer: null, created_at: now - 4 * min, escalation_level: 'warn', notified_via: ['slack', 'desktop'] },
+      { id: 'd-demo-2', kind: 'question', from: 'WEB', question: 'Keep the old settings URL as a redirect, or remove it?', options: ['Keep redirect', 'Remove it'], context: 'Two external links still point at /settings/legacy.', status: 'pending', answer: null, created_at: now - 9 * min },
+      { id: 'd-demo-3', kind: 'question', from: 'QA', question: 'Quarantine the flaky upload test?', options: ['Yes', 'No'], status: 'relayed', answer: 'Yes', answered_by: 'u_demo_you', answered_at: now - 30 * min, relayed_at: now - 29 * min, created_at: now - 34 * min },
+      { id: 'd-demo-4', kind: 'permission', from: 'OPS', tool_name: 'Bash', summary: 'kubectl rollout restart deploy/web', status: 'stale', answer: null, created_at: now - 3 * 60 * min },
+      { id: 'd-demo-5', kind: 'question', from: 'API', question: 'Test results for order pagination are in. Approve and move to Deploy?', options: ['approve', 'request changes'], context: '412 tests pass; 2 evals regressed by under 1%.', task_id: 't-101', stage: 'test', gate: 'test-review', artifact_ref: '#demo-evals', status: 'pending', answer: null, created_at: now - 6 * min },
+      { id: 'd-demo-6', kind: 'question', from: 'OPS', question: 'Release the certificate rotation to production?', options: ['approve', 'request changes'], task_id: 't-103', stage: 'production', gate: 'production', artifact_ref: '#demo-review-findings', status: 'pending', answer: null, created_at: now - 15 * min, escalation_level: 'urgent', notified_via: ['slack', 'desktop', 'email', 'line'] },
+      { id: 'd-demo-7', kind: 'question', from: 'WEB', question: 'Sign off the settings page spec?', options: ['approve', 'request changes'], task_id: 't-102', stage: 'design', gate: 'design-signoff', artifact_ref: '#demo-spec', status: 'unauthorized', answer: 'approve', answered_by: 'u_demo_other', answered_at: now - 18 * min, created_at: now - 25 * min },
+    ];
+    S.tasks = [
+      { id: 't-101', title: 'Paginate the orders endpoint', owner: 'API', stage: 'test', updated_at: now - 6 * min,
+        artifacts: { intent: '3f9c2a1', plan: 'e41b7d0', evals: '#demo-evals' },
+        gates: [{ stage: 'plan', gate: 'plan', status: 'approved' }, { stage: 'design', gate: 'design', status: 'skipped' }, { stage: 'build', gate: 'build-review', status: 'approved' }, { stage: 'test', gate: 'test-review', status: 'pending', decision_id: 'd-demo-5' }] },
+      { id: 't-102', title: 'Settings page redesign', owner: 'WEB', stage: 'design', updated_at: now - 18 * min,
+        artifacts: { intent: '#demo-intent', spec: '#demo-spec' },
+        gates: [{ stage: 'plan', gate: 'plan', status: 'approved' }, { stage: 'design', gate: 'design-signoff', status: 'pending', decision_id: 'd-demo-7' }] },
+      { id: 't-103', title: 'Rotate staging and production certificates', owner: 'OPS', stage: 'production', updated_at: now - 15 * min,
+        artifacts: { intent: '9a0c1f2', plan: '77d2e9b', evals: '#demo-evals-ops', review: '#demo-review-findings' },
+        gates: [{ stage: 'plan', status: 'approved' }, { stage: 'design', status: 'skipped' }, { stage: 'build', status: 'approved' }, { stage: 'test', status: 'approved' }, { stage: 'deploy', status: 'approved' }, { stage: 'production', gate: 'production', status: 'pending', decision_id: 'd-demo-6' }] },
+      { id: 't-099', title: 'Fix the flaky upload test', owner: 'QA', stage: 'maintain', updated_at: now - 26 * 60 * min,
+        artifacts: { intent: 'c0ffee1', plan: 'b4d5e6f', evals: '#demo-evals-qa', review: '#demo-review-qa' },
+        gates: [{ stage: 'plan', status: 'approved' }, { stage: 'design', status: 'skipped' }, { stage: 'build', status: 'approved' }, { stage: 'test', status: 'approved' }, { stage: 'deploy', status: 'approved' }, { stage: 'production', status: 'approved' }] },
+    ];
+    S.approvals = [
+      { id: 'a-6', decision_id: 'd-demo-x6', task_id: 't-103', stage: 'deploy', gate: 'deploy-review', answer: 'approve', answered_by: 'u_demo_you', answered_at: now - 22 * min, relayed_at: now - 21 * min },
+      { id: 'a-5', decision_id: 'd-demo-x5', task_id: 't-101', stage: 'build', gate: 'build-review', answer: 'approve', answered_by: 'u_demo_lead', answered_at: now - 75 * min, relayed_at: now - 74 * min },
+      { id: 'a-4', decision_id: 'd-demo-x4', task_id: 't-102', stage: 'plan', gate: 'plan', answer: 'approve', answered_by: 'u_demo_you', answered_at: now - 3 * 60 * min, relayed_at: now - 3 * 60 * min + 40000 },
+      { id: 'a-3', decision_id: 'd-demo-x3', task_id: 't-103', stage: 'test', gate: 'test-review', answer: 'request changes', answered_by: 'u_demo_lead', answered_at: now - 5 * 60 * min, relayed_at: now - 5 * 60 * min + 60000 },
+      { id: 'a-2', decision_id: 'd-demo-x2', task_id: 't-099', stage: 'production', gate: 'production', answer: 'approve', answered_by: 'u_demo_you', answered_at: now - 27 * 60 * min, relayed_at: now - 27 * 60 * min + 30000 },
+    ];
+    S.messages = [
+      { id: 'm-demo-2', to: 'all', body: 'Pause any deploys until 15:00, staging is being rebuilt.', by: 'u_demo_you', created_at: now - 12 * min, status: 'relayed', relayed_to: ['API', 'WEB', 'DOCS', 'OPS', 'QA', 'DATA'], relayed_at: now - 11 * min },
+      { id: 'm-demo-1', to: 'DOCS', body: 'Add a section on the new config flags to the upgrade guide.', by: 'u_demo_editor', created_at: now - 40 * min, status: 'replied', relayed_to: ['DOCS'], relayed_at: now - 39 * min },
+    ];
+    S.replies = new Map([['m-demo-1', [{ id: 'r1', from: 'DOCS', body: 'Added under "Configuration changes", with a table of old and new flag names.', created_at: now - 31 * min }]]]);
+    S.ledger = { rows: [
+      { version: 'v1', date: '2026-01-05', what: 'Demo row: first version', review: '2 rounds · LGTM', lead: { input: 1200, cache_read: 480000, cache_write: 52000, output: 21000, total: 554200 }, teammate: 310000, note: 'demo' },
+    ] };
+    renderAll(); spy();
+  }
+
+  /* ---------------------------------------------------------------- boot */
+  let wasOffline = false;
+  setInterval(() => {
+    for (const t of document.querySelectorAll('time[data-ts]')) t.textContent = rel(Number(t.dataset.ts));
+    const off = operatorOffline();
+    if (off !== wasOffline) { wasOffline = off; renderAll(); } else { renderHeader(); renderBanners(); }
+  }, 30000);
+  setInterval(() => { if (room) refreshCanSend(); }, 20000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && room) refreshCanSend(); });
+
+  async function boot() {
+    renderAll(); spy();
+    if (params.get('demo') === '1') { enterDemo(); return; }
+    use('room').then((r) => { if (S.demo) return; room = r; refreshCanSend(); });
+    use('user').then(async (u) => {
+      if (S.demo) return;
+      userNs = u;
+      if (u) {
+        try { S.me = await u.id(); } catch (e) { S.me = null; }
+        try { S.writable = (await u.canEdit()) ? true : false; } catch (e) { S.writable = null; }
+      } else S.writable = null;
+      S.userReady = true;
+      renderAll();
+    });
+    const dbNs = await use('db');
+    if (S.demo) return;
+    if (!dbNs) { S.mode = 'offline'; renderAll(); return; }
+    db = dbNs; S.mode = 'live';
+    renderAll();
+    subscribe();
+  }
+  boot();
+})();
+</script>

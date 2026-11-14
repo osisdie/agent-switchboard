@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# pre-commit — block commits that add secrets or banned (machine/company-specific) terms.
+#
+#   1. gitleaks on the staged changes (`gitleaks git --staged`, or `protect --staged` on older
+#      versions), using .gitleaks.toml.
+#   2. Banned terms: every line of tmp-local/banned-terms.txt (one term or extended regex per
+#      line, '#' starts a comment) is matched case-insensitively against the staged ADDED lines
+#      and staged file paths, excluding tmp*/ paths. Missing list → warning, check skipped.
+#
+# Enable with scripts/setup-dev.sh (git config core.hooksPath .githooks).
+# Fix the content when this blocks a commit; do not bypass it with --no-verify.
+set -u
+
+root="$(git rev-parse --show-toplevel)" || exit 1
+cd "$root" || exit 1
+fail=0
+
+# ---- 1. gitleaks
+if command -v gitleaks >/dev/null 2>&1; then
+  cfg=()
+  [ -f .gitleaks.toml ] && cfg=(--config .gitleaks.toml)
+  if gitleaks git --help >/dev/null 2>&1; then
+    gitleaks git --staged --redact --verbose --no-banner --log-level warn "${cfg[@]}" . || fail=1
+  else
+    gitleaks protect --staged --redact --verbose --no-banner --log-level warn "${cfg[@]}" || fail=1
+  fi
+  [ "$fail" = 0 ] || echo "pre-commit: gitleaks found secrets in the staged changes (see above)." >&2
+else
+  echo "pre-commit: gitleaks is not installed — run scripts/setup-dev.sh for instructions." >&2
+  fail=1
+fi
+
+# ---- 2. banned terms
+terms_file="tmp-local/banned-terms.txt"
+if [ ! -f "$terms_file" ]; then
+  echo "pre-commit: warning: $terms_file not found — banned-terms check skipped." >&2
+else
+  work="$(mktemp -d)"
+  trap 'rm -rf "$work"' EXIT
+  # Patterns: drop comments ('#' at line start or after whitespace), trim, skip blanks/invalid.
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%%[[:space:]]#*}"
+    case "$line" in \#*) continue ;; esac
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [ -n "$line" ] || continue
+    if grep -qE -- "$line" </dev/null 2>/dev/null; [ $? -eq 2 ]; then
+      echo "pre-commit: warning: invalid pattern in $terms_file skipped: $line" >&2
+      continue
+    fi
+    printf '%s\n' "$line" >> "$work/patterns"
+  done < "$terms_file"
+
+  if [ -s "$work/patterns" ]; then
+    # Staged added lines as "file:line" (meta) + text (content), one record per line.
+    git diff --cached --no-color --no-ext-diff --no-prefix -U0 --diff-filter=ACMR \
+      | awk -v meta="$work/meta" -v content="$work/content" '
+          function skip(f) { return f ~ /(^|\/)tmp[^\/]*\// }
+          /^\+\+\+ / { file = substr($0, 5); sub(/\t.*$/, "", file); next }
+          /^--- / { next }
+          /^@@ / { split($3, a, ","); ln = substr(a[1], 2) + 0; next }
+          /^\+/ { if (!skip(file)) { print file ":" ln > meta; print substr($0, 2) > content }; ln++; next }
+        '
+    git diff --cached --name-only --diff-filter=ACMR | while IFS= read -r f; do
+      case "$f" in tmp*/*|*/tmp*/*) continue ;; esac
+      printf '%s:(path)\n' "$f" >> "$work/meta"
+      printf '%s\n' "$f" >> "$work/content"
+    done
+    if [ -s "$work/content" ]; then
+      hits="$(grep -n -i -E -f "$work/patterns" "$work/content" | cut -d: -f1)"
+      if [ -n "$hits" ]; then
+        echo "pre-commit: banned terms found in staged changes ($terms_file):" >&2
+        for n in $hits; do
+          printf '  %s: %s\n' "$(sed -n "${n}p" "$work/meta")" "$(sed -n "${n}p" "$work/content" | cut -c1-160)" >&2
+        done
+        fail=1
+      fi
+    fi
+  fi
+fi
+
+if [ "$fail" != 0 ]; then
+  echo "pre-commit: commit blocked. Fix the content (don't use --no-verify)." >&2
+  exit 1
+fi
+exit 0

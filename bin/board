@@ -1,0 +1,658 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2016  # jq programs are single-quoted on purpose
+# board — agent-switchboard command line.
+#
+# Usage:
+#   board ls [--refresh]                       table of sessions from snapshot.json
+#   board snapshot [--refresh]                 print snapshot.json
+#   board ask --from CODE "question" [--option X]... [--context T]
+#             [--task ID] [--stage S] [--gate G] [--artifact REF]
+#                                              create a question (or gate) decision, print its id
+#   board decisions [--status S] [--json]      list decisions
+#   board answer ID ANSWER --by WHO            mark a decision answered (mirrors the board db);
+#                                              WHO must be in approvers (release_managers for
+#                                              gate:production), else it is marked unauthorized
+#   board mark ID relayed|stale|timeout|unauthorized
+#                                              set a decision's status
+#   board task new --owner CODE "title" [--stage S]   create a task, print its id
+#   board task stage ID STAGE [--artifact key=ref]... move a task to a stage
+#   board task ls [--json] | board task show ID
+#                                              stages: plan design build test deploy production
+#                                              maintain; artifacts: intent spec plan evals review
+#   board limit [--json|--clear]               show (or end) the current usage-limit episode
+#   board press CODE allow|deny --expect TOOL_USE_ID
+#                                              answer a permission prompt via tmux, after checks
+#   board notify "text"                        send a Slack message (SLACK_WEBHOOK_URL)
+#   board doctor                               check dependencies and installation
+#
+# Env: BOARD_HOME (default ~/.agent-switchboard), BOARD_CONFIG_DIR (default <repo>/tmp-local
+#      if it exists, else ~/.config/agent-switchboard), CLAUDE_SESSIONS_DIR, CLAUDE_SETTINGS.
+#
+# Exit codes: 0 ok, 1 error, 2 usage, 3 press refused (no keys were sent),
+#             4 answer refused (not an approver / release manager).
+set -u
+
+REPO="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+BOARD_HOME="${BOARD_HOME:-$HOME/.agent-switchboard}"
+export BOARD_HOME
+FLEET="$REPO/lib/fleet.py"
+
+die() { echo "board: $*" >&2; exit 1; }
+usage() { awk 'NR > 1 && !/^#/ { exit } NR > 1 && !/shellcheck/ { sub(/^# ?/, ""); print }' "$0"; }
+need_jq() { command -v jq >/dev/null 2>&1 || die "jq is required"; }
+
+now_ms() { local t="${EPOCHREALTIME/./}"; echo $(( t / 1000 )); }
+
+config_dir() { python3 "$FLEET" config-dir; }
+cfg_get() { python3 "$FLEET" get "$@"; }
+
+log_event() {  # log_event JSON
+  mkdir -p "$BOARD_HOME"
+  printf '%s\n' "$1" >> "$BOARD_HOME/events.jsonl"
+}
+
+write_atomic() {  # write_atomic PATH CONTENT
+  local tmp="$1.tmp.$$"
+  printf '%s\n' "$2" > "$tmp" && mv -f "$tmp" "$1"
+}
+
+dec_path() {
+  case "$1" in ''|*[!A-Za-z0-9._-]*) die "invalid decision id: $1" ;; esac
+  echo "$BOARD_HOME/decisions/$1.json"
+}
+
+refresh() { "$REPO/bin/board-collect" --once --no-notify >/dev/null || true; }
+
+snapshot_file() {
+  local f="$BOARD_HOME/snapshot.json"
+  [ -f "$f" ] || refresh
+  [ -f "$f" ] || die "no snapshot at $f (is board-collect running?)"
+  echo "$f"
+}
+
+# ---------------------------------------------------------------- per-command help
+sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
+  case "$1${2:+ $2}" in
+    ls) echo "usage: board ls [--refresh]"
+        echo "  table of sessions (code, state, status, age, task stage, pending tool) from snapshot.json" ;;
+    snapshot) echo "usage: board snapshot [--refresh]"
+        echo "  print snapshot.json (--refresh rebuilds it first)" ;;
+    ask) echo "usage: board ask --from CODE \"question\" [--option X]... [--context T]"
+        echo "                 [--task ID] [--stage S] [--gate G] [--artifact REF]"
+        echo "  create a decision and print its id. With --task/--gate it is a gate decision"
+        echo "  (defaults: stage = the task's stage, gate = owner, options = approve / request changes)."
+        echo "  stages: $STAGES" ;;
+    decisions) echo "usage: board decisions [--status pending|answered|relayed|stale|timeout|unauthorized] [--json]" ;;
+    answer) echo "usage: board answer ID ANSWER --by WHO"
+        echo "  mark a decision answered. WHO must be in approvers (gate:production: release_managers,"
+        echo "  falling back to approvers; refused when both are empty). Otherwise the decision is marked"
+        echo "  unauthorized and the command exits 4. Empty approvers = not checked (non-production)."
+        echo "  For a gate decision, these answers count as approved (case-insensitive, whole answer):"
+        local w out=""
+        for w in "${APPROVE_WORDS[@]}"; do out="${out:+$out, }$w"; done
+        echo "    $out"
+        echo "  anything else (e.g. \"request changes\") records the gate as rejected." ;;
+    mark) echo "usage: board mark ID relayed|stale|timeout|unauthorized" ;;
+    press) echo "usage: board press CODE allow|deny --expect TOOL_USE_ID"
+        echo "  send the allow/deny keys to CODE's tmux pane, only if the hook state shows that"
+        echo "  tool_use_id pending and the pane shows a permission prompt; exit 3 otherwise" ;;
+    task) echo "usage: board task new|stage|ls|show ..."
+        echo "  board task new --owner CODE \"title\" [--stage S]"
+        echo "  board task stage ID STAGE [--artifact key=ref]..."
+        echo "  board task ls [--json]"
+        echo "  board task show ID"
+        echo "  stages: $STAGES; artifact keys: $ARTIFACT_KEYS" ;;
+    "task new") echo "usage: board task new --owner CODE \"title\" [--stage S]   (prints the task id)" ;;
+    "task stage") echo "usage: board task stage ID STAGE [--artifact key=ref]..."
+        echo "  stages: $STAGES; artifact keys: $ARTIFACT_KEYS" ;;
+    "task ls") echo "usage: board task ls [--json]" ;;
+    "task show") echo "usage: board task show ID" ;;
+    limit) echo "usage: board limit [--json|--clear]"
+        echo "  show (or end) the current usage-limit episode (\$BOARD_HOME/limit.json)" ;;
+    notify) echo "usage: board notify \"text\""
+        echo "  post to SLACK_WEBHOOK_URL (env or <config dir>/.env); silent no-op when unset" ;;
+    doctor) echo "usage: board doctor"
+        echo "  check dependencies, config, hook installation and the collector" ;;
+    *) usage ;;
+  esac
+}
+
+wants_help() {  # true when any argument is -h/--help
+  local a
+  for a in "$@"; do case "$a" in -h|--help) return 0 ;; esac; done
+  return 1
+}
+
+# ---------------------------------------------------------------- ls / snapshot
+cmd_ls() {
+  need_jq
+  [ "${1:-}" = "--refresh" ] && refresh
+  local f; f="$(snapshot_file)" || exit 1
+  local now; now="$(now_ms)"
+  {
+    printf 'CODE\tSTATE\tSTATUS\tAGE\tSTAGE\tPENDING\tREMOTE\tCWD\n'
+    jq -r --argjson now "$now" '
+      def age: if (. // 0) == 0 then "-" else (($now - .) / 1000 | floor) as $s
+        | if $s < 60 then "\($s)s" elif $s < 3600 then "\($s/60|floor)m"
+          elif $s < 86400 then "\($s/3600|floor)h" else "\($s/86400|floor)d" end end;
+      .sessions[] | [ .code, .state, (.status // "-"), (.updated_at | age), (.stage // "-"),
+        (if .pending then ((.pending.tool_name // "?") + ": " + ((.pending.summary // "") | gsub("[\t\n]"; " ") | .[0:40])) else "-" end),
+        (if .remote_url then "yes" else "-" end), (.cwd // "-") ] | @tsv' "$f"
+  } | column -t -s $'\t'
+  local n; n="$(jq '[.decisions[] | select(.status == "pending")] | length' "$f")"
+  [ "$n" -gt 0 ] && echo && echo "$n pending decision(s) — see: board decisions --status pending"
+  if [ "$(jq '.limit != null' "$f")" = true ]; then
+    echo; echo "USAGE LIMIT ACTIVE — $(python3 "$REPO/lib/limit.py" show | head -1)"
+  fi
+  return 0
+}
+
+cmd_snapshot() {
+  [ "${1:-}" = "--refresh" ] && refresh
+  cat "$(snapshot_file)"
+}
+
+# ---------------------------------------------------------------- decisions
+STAGES="plan design build test deploy production maintain"
+ARTIFACT_KEYS="intent spec plan evals review"
+# Gate answers that count as "approved" (case-insensitive, whole answer). Single source for both
+# the matcher below and `board answer --help`.
+APPROVE_WORDS=(approve approved yes y allow ok lgtm go ship "ship it")
+approve_re() { local IFS='|'; printf '^[[:space:]]*(%s)[[:space:]]*$' "${APPROVE_WORDS[*]}"; }
+
+valid_stage() { case " $STAGES " in *" $1 "*) return 0 ;; esac; return 1; }
+
+task_path() {
+  case "$1" in ''|*[!A-Za-z0-9._-]*) die "invalid task id: $1" ;; esac
+  echo "$BOARD_HOME/tasks/$1.json"
+}
+
+new_id() {  # new_id PREFIX NOW_MS
+  printf '%s-%s-%04x%04x\n' "$1" "$(( $2 / 1000 ))" "$RANDOM" "$RANDOM"
+}
+
+cmd_ask() {
+  need_jq
+  local from="" question="" context="" task="" stage="" gate="" artifact="" opts=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --from) shift; from="${1:-}" ;;
+      --option) shift; opts+=("${1:-}") ;;
+      --context) shift; context="${1:-}" ;;
+      --task) shift; task="${1:-}" ;;
+      --stage) shift; stage="${1:-}" ;;
+      --gate) shift; gate="${1:-}" ;;
+      --artifact) shift; artifact="${1:-}" ;;
+      -*) die "ask: unknown option $1" ;;
+      *) [ -z "$question" ] || die "ask: only one question"; question="$1" ;;
+    esac
+    shift
+  done
+  [ -n "$from" ] && [ -n "$question" ] || {
+    sub_usage ask >&2
+    exit 2
+  }
+  [ -z "$stage" ] || valid_stage "$stage" || die "ask: unknown stage '$stage' (one of: $STAGES)"
+  local tf=""
+  if [ -n "$task" ]; then
+    tf="$(task_path "$task")"
+    [ -f "$tf" ] || die "ask: no such task: $task"
+    [ -n "$stage" ] || stage="$(jq -r '.stage // empty' "$tf")"
+    [ -n "$gate" ] || gate="owner"
+  fi
+  local now id opts_json
+  now="$(now_ms)"
+  id="$(new_id d "$now")"
+  if [ ${#opts[@]} -gt 0 ]; then
+    opts_json="$(printf '%s\n' "${opts[@]}" | jq -R . | jq -sc .)"
+  elif [ -n "$gate" ]; then
+    opts_json='["approve","request changes"]'
+  else
+    opts_json="[]"
+  fi
+  mkdir -p "$BOARD_HOME/decisions"
+  write_atomic "$(dec_path "$id")" "$(jq -n --arg id "$id" --arg from "$from" --arg q "$question" \
+    --arg ctx "$context" --argjson opts "$opts_json" --argjson now "$now" \
+    --arg task "$task" --arg stage "$stage" --arg gate "$gate" --arg art "$artifact" '
+    def nz: if . == "" then null else . end;
+    { id: $id, kind: "question", from: $from, question: $q, options: $opts,
+      context: ($ctx | nz),
+      status: "pending", answer: null, answered_by: null, answered_at: null, relayed_at: null,
+      created_at: $now }
+    + (if $task != "" or $gate != "" then
+         { task_id: ($task | nz), stage: ($stage | nz), gate: ($gate | nz), artifact_ref: ($art | nz) }
+       else {} end)')"
+  if [ -n "$tf" ]; then
+    write_atomic "$tf" "$(jq --arg id "$id" --arg stage "$stage" --arg gate "$gate" --argjson now "$now" '
+      .gates = ((.gates // []) + [{ stage: $stage, gate: $gate, status: "pending", decision_id: $id,
+                                    approved_by: null, approved_at: null }])
+      | .updated_at = $now' "$tf")"
+  fi
+  log_event "$(jq -cn --arg id "$id" --arg from "$from" --arg task "$task" --arg gate "$gate" --argjson now "$now" \
+    '{ts: $now, type: "ask", id: $id, from: $from} + (if $task == "" then {} else {task_id: $task} end)
+     + (if $gate == "" then {} else {gate: $gate} end)')"
+  echo "$id"
+}
+
+cmd_decisions() {
+  need_jq
+  local status="" json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --status) shift; status="${1:-}" ;;
+      --json) json=1 ;;
+      *) die "decisions: unknown option $1" ;;
+    esac
+    shift
+  done
+  local files=("$BOARD_HOME"/decisions/*.json)
+  [ -e "${files[0]}" ] || { [ "$json" = 1 ] && echo "[]"; return 0; }
+  local all
+  all="$(jq -s --arg s "$status" '[ .[] | select($s == "" or .status == $s) ] | sort_by(.created_at)' "${files[@]}")"
+  if [ "$json" = 1 ]; then echo "$all"; return 0; fi
+  {
+    printf 'ID\tKIND\tFROM\tSTATUS\tGATE\tANSWER\tQUESTION\n'
+    jq -r '.[] | [ .id, .kind, (.from // "-"), .status,
+      (if .gate then ((.stage // "?") + "/" + .gate) else "-" end), (.answer // "-"),
+      ((if .kind == "permission" then ((.tool_name // "?") + ": " + (.summary // "")) else .question end)
+        | gsub("[\t\n]"; " ") | .[0:60]) ] | @tsv' <<<"$all"
+  } | column -t -s $'\t'
+}
+
+update_decision() {  # update_decision ID JQ_FILTER [jq args...]
+  local id="$1" filter="$2"; shift 2
+  local f; f="$(dec_path "$id")"
+  [ -f "$f" ] || die "no such decision: $id"
+  local out
+  out="$(jq "$@" "$filter" "$f")" || die "failed to update $id"
+  write_atomic "$f" "$out"
+}
+
+# Prints the ids allowed to answer decision file $1, one per line; prints nothing when unchecked.
+# Exit 1 when a production gate has nobody configured.
+allowed_ids() {
+  local gate list
+  gate="$(jq -r '.gate // empty' "$1")"
+  if [ "$gate" = production ]; then
+    list="$(cfg_get release_managers)"
+    [ "$(jq 'length' <<<"${list:-[]}")" -gt 0 ] || list="$(cfg_get approvers)"
+    [ "$(jq 'length' <<<"${list:-[]}")" -gt 0 ] || return 1
+  else
+    list="$(cfg_get approvers)"
+  fi
+  jq -r '.[]? | tostring' <<<"${list:-[]}"
+}
+
+cmd_answer() {
+  need_jq
+  local id="${1:-}" answer="${2:-}" by=""
+  if [ $# -ge 2 ]; then shift 2; else set --; fi
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --by) shift; by="${1:-}" ;;
+      *) die "answer: unknown option $1" ;;
+    esac
+    shift
+  done
+  [ -n "$id" ] && [ -n "$answer" ] && [ -n "$by" ] || { sub_usage answer >&2; exit 2; }
+  local f; f="$(dec_path "$id")"
+  [ -f "$f" ] || die "no such decision: $id"
+  local cur; cur="$(jq -r '.status' "$f")"
+  case "$cur" in
+    pending|answered|unauthorized) ;;
+    *) die "decision $id is already $cur" ;;
+  esac
+  local now; now="$(now_ms)"
+
+  local allowed
+  if ! allowed="$(allowed_ids "$f")"; then
+    log_event "$(jq -cn --arg id "$id" --arg by "$by" --argjson now "$now" \
+      '{ts: $now, type: "unauthorized", id: $id, by: $by, reason: "no release_managers or approvers configured"}')"
+    echo "board answer: refused — gate:production needs release_managers (or approvers) in fleet.yaml" >&2
+    exit 4
+  fi
+  if [ -n "$allowed" ] && ! grep -qxF -- "$by" <<<"$allowed"; then
+    update_decision "$id" '.status = "unauthorized" | .answer = $a | .answered_by = $by | .answered_at = $now | .updated_at = $now' \
+      --arg a "$answer" --arg by "$by" --argjson now "$now"
+    log_event "$(jq -cn --arg id "$id" --arg by "$by" --argjson now "$now" '{ts: $now, type: "unauthorized", id: $id, by: $by}')"
+    echo "board answer: refused — $by may not answer $id (not in $(jq -r 'if .gate == "production" then "release_managers/approvers" else "approvers" end' "$f")); marked unauthorized" >&2
+    exit 4
+  fi
+
+  update_decision "$id" '.status = "answered" | .answer = $a | .answered_by = $by | .answered_at = $now | .updated_at = $now' \
+    --arg a "$answer" --arg by "$by" --argjson now "$now"
+  log_event "$(jq -cn --arg id "$id" --arg by "$by" --argjson now "$now" '{ts: $now, type: "answer", id: $id, by: $by}')"
+
+  local gate task_id
+  gate="$(jq -r '.gate // empty' "$f")"
+  task_id="$(jq -r '.task_id // empty' "$f")"
+  if [ -n "$gate" ]; then
+    local result=rejected
+    if grep -qiE -- "$(approve_re)" <<<"$answer"; then
+      result=approved
+    fi
+    log_event "$(jq -c --arg result "$result" --argjson now "$now" \
+      '{ts: $now, type: "approval", decision_id: .id, task_id: (.task_id // null), stage: (.stage // null),
+        gate: .gate, answer: .answer, result: $result, answered_by: .answered_by, answered_at: .answered_at,
+        relayed_at: null}' "$f")"
+    if [ -n "$task_id" ]; then
+      local tf; tf="$(task_path "$task_id")"
+      if [ -f "$tf" ]; then
+        write_atomic "$tf" "$(jq --arg id "$id" --arg result "$result" --arg by "$by" --argjson now "$now" '
+          .gates = [ (.gates // [])[] | if .decision_id == $id then
+                       .status = $result
+                       | .approved_by = (if $result == "approved" then $by else null end)
+                       | .approved_at = (if $result == "approved" then $now else null end)
+                       | .answered_by = $by
+                     else . end ]
+          | .updated_at = $now' "$tf")"
+      fi
+    fi
+    echo "$id answered ($gate gate $result)"
+  else
+    echo "$id answered"
+  fi
+}
+
+mark_status() {  # mark_status ID STATUS [reason]
+  local id="$1" st="$2" reason="${3:-}" now
+  now="$(now_ms)"
+  update_decision "$id" '.status = $st | .updated_at = $now | (if $st == "relayed" then .relayed_at = $now else . end)' \
+    --arg st "$st" --argjson now "$now"
+  log_event "$(jq -cn --arg id "$id" --arg st "$st" --arg r "$reason" --argjson now "$now" \
+    '{ts: $now, type: "mark", id: $id, status: $st} + (if $r == "" then {} else {reason: $r} end)')"
+}
+
+cmd_mark() {
+  need_jq
+  local id="${1:-}" st="${2:-}"
+  case "$st" in
+    relayed|stale|timeout|unauthorized) ;;
+    *) sub_usage mark >&2; exit 2 ;;
+  esac
+  mark_status "$id" "$st"
+  echo "$id $st"
+}
+
+# ---------------------------------------------------------------- tasks
+cmd_task() {
+  need_jq
+  local sub="${1:-}"
+  [ $# -gt 0 ] && shift
+  case "$sub" in
+    new) task_new "$@" ;;
+    stage) task_stage "$@" ;;
+    ls) task_ls "$@" ;;
+    show) [ -n "${1:-}" ] || { sub_usage task show >&2; exit 2; }
+          local tf; tf="$(task_path "$1")"; [ -f "$tf" ] || die "no such task: $1"; jq . "$tf" ;;
+    *) sub_usage task >&2; exit 2 ;;
+  esac
+}
+
+task_new() {
+  local owner="" title="" stage="plan"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --owner) shift; owner="${1:-}" ;;
+      --stage) shift; stage="${1:-}" ;;
+      -*) die "task new: unknown option $1" ;;
+      *) [ -z "$title" ] || die "task new: only one title"; title="$1" ;;
+    esac
+    shift
+  done
+  [ -n "$owner" ] && [ -n "$title" ] || { sub_usage task new >&2; exit 2; }
+  valid_stage "$stage" || die "task new: unknown stage '$stage' (one of: $STAGES)"
+  local now id
+  now="$(now_ms)"
+  id="$(new_id t "$now")"
+  mkdir -p "$BOARD_HOME/tasks"
+  write_atomic "$(task_path "$id")" "$(jq -n --arg id "$id" --arg title "$title" --arg owner "$owner" \
+    --arg stage "$stage" --argjson now "$now" '
+    { id: $id, title: $title, owner: $owner, stage: $stage,
+      artifacts: { intent: null, spec: null, plan: null, evals: null, review: null },
+      gates: [], created_at: $now, updated_at: $now }')"
+  log_event "$(jq -cn --arg id "$id" --arg owner "$owner" --arg stage "$stage" --argjson now "$now" \
+    '{ts: $now, type: "task", id: $id, owner: $owner, stage: $stage, action: "new"}')"
+  echo "$id"
+}
+
+task_stage() {
+  local id="${1:-}" stage="${2:-}" arts=()
+  if [ $# -ge 2 ]; then shift 2; else set --; fi
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --artifact) shift; arts+=("${1:-}") ;;
+      *) die "task stage: unknown option $1" ;;
+    esac
+    shift
+  done
+  [ -n "$id" ] && [ -n "$stage" ] || { sub_usage task stage >&2; exit 2; }
+  valid_stage "$stage" || die "task stage: unknown stage '$stage' (one of: $STAGES)"
+  local tf; tf="$(task_path "$id")"
+  [ -f "$tf" ] || die "no such task: $id"
+  local a key arts_json="{}"
+  for a in "${arts[@]+"${arts[@]}"}"; do
+    key="${a%%=*}"
+    [ "$key" != "$a" ] && [ -n "${a#*=}" ] || die "task stage: --artifact needs key=ref"
+    case " $ARTIFACT_KEYS " in *" $key "*) ;; *) die "task stage: unknown artifact '$key' (one of: $ARTIFACT_KEYS)" ;; esac
+    arts_json="$(jq -c --arg k "$key" --arg v "${a#*=}" '.[$k] = $v' <<<"$arts_json")"
+  done
+  local now; now="$(now_ms)"
+  write_atomic "$tf" "$(jq --arg stage "$stage" --argjson arts "$arts_json" --argjson now "$now" \
+    '.stage = $stage | .artifacts = ((.artifacts // {}) + $arts) | .updated_at = $now' "$tf")"
+  log_event "$(jq -cn --arg id "$id" --arg stage "$stage" --argjson arts "$arts_json" --argjson now "$now" \
+    '{ts: $now, type: "task", id: $id, stage: $stage, artifacts: $arts, action: "stage"}')"
+  echo "$id $stage"
+}
+
+task_ls() {
+  local json=0
+  [ "${1:-}" = "--json" ] && json=1
+  local files=("$BOARD_HOME"/tasks/*.json)
+  if [ ! -e "${files[0]}" ]; then
+    if [ "$json" = 1 ]; then echo "[]"; else echo "no tasks"; fi
+    return 0
+  fi
+  local all; all="$(jq -s 'sort_by(.updated_at)' "${files[@]}")"
+  if [ "$json" = 1 ]; then echo "$all"; return 0; fi
+  {
+    printf 'ID\tOWNER\tSTAGE\tGATES\tARTIFACTS\tTITLE\n'
+    jq -r '.[] | [ .id, .owner, .stage,
+      ((.gates // []) | if length == 0 then "-" else map(.stage + "/" + .gate + ":" + .status) | join(",") end),
+      ((.artifacts // {}) | to_entries | map(select(.value != null) | .key) | if length == 0 then "-" else join(",") end),
+      (.title | gsub("[\t\n]"; " ") | .[0:50]) ] | @tsv' <<<"$all"
+  } | column -t -s $'\t'
+}
+
+# ---------------------------------------------------------------- limit
+cmd_limit() {
+  case "${1:-}" in
+    "") python3 "$REPO/lib/limit.py" show ;;
+    --json) python3 "$REPO/lib/limit.py" show --json ;;
+    --clear) python3 "$REPO/lib/limit.py" clear >/dev/null; echo "usage-limit episode cleared" ;;
+    *) sub_usage limit >&2; exit 2 ;;
+  esac
+}
+
+# ---------------------------------------------------------------- press
+cmd_press() {
+  need_jq
+  local code="${1:-}" action="${2:-}" expect=""
+  if [ $# -ge 2 ]; then shift 2; else set --; fi
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --expect) shift; expect="${1:-}" ;;
+      *) die "press: unknown option $1" ;;
+    esac
+    shift
+  done
+  case "$action" in allow|deny) ;; *) code="" ;; esac
+  [ -n "$code" ] && [ -n "$expect" ] || { sub_usage press >&2; exit 2; }
+
+  local now; now="$(now_ms)"
+  local dec_id=""
+  if compgen -G "$BOARD_HOME/decisions/*.json" >/dev/null; then
+    dec_id="$(jq -rs --arg t "$expect" '[ .[] | select(.kind == "permission" and .tool_use_id == $t) ]
+      | sort_by(.created_at) | last | .id // empty' "$BOARD_HOME"/decisions/*.json 2>/dev/null)"
+  fi
+
+  attempt() {  # attempt RESULT REASON [pane]
+    log_event "$(jq -cn --argjson now "$now" --arg code "$code" --arg action "$action" --arg exp "$expect" \
+      --arg result "$1" --arg reason "$2" --arg pane "${3:-}" --arg dec "$dec_id" \
+      '{ts: $now, type: "press", code: $code, action: $action, expect: $exp, result: $result, reason: $reason}
+       + (if $pane == "" then {} else {pane: $pane} end) + (if $dec == "" then {} else {decision: $dec} end)')"
+  }
+  refuse() {
+    echo "board press: refused — $1" >&2
+    attempt refused "$1" "${2:-}"
+    [ -n "$dec_id" ] && mark_status "$dec_id" stale "press refused: $1" >/dev/null 2>&1
+    exit 3
+  }
+
+  refresh
+  local snap="$BOARD_HOME/snapshot.json"
+  [ -f "$snap" ] || refuse "no snapshot"
+  local row
+  row="$(jq -c --arg c "$code" '[ .sessions[] | select(.code == $c or ((.aliases // []) | index($c))) ] | first // empty' "$snap")"
+  [ -n "$row" ] || refuse "unknown session $code"
+  local sid pane tmux_target
+  sid="$(jq -r '.session_id // empty' <<<"$row")"
+  pane="$(jq -r '.tmux_pane // empty' <<<"$row")"
+  tmux_target="$(jq -r '.tmux // empty' <<<"$row")"
+  [ -n "$sid" ] || refuse "session $code is not running"
+  [ -n "$pane" ] || refuse "session $code has no tmux pane"
+
+  local sf="$BOARD_HOME/state/$sid.json"
+  [ -f "$sf" ] || refuse "no hook state for $code (is the hook installed?)" "$pane"
+  local st_state st_pending st_pane
+  st_state="$(jq -r '.state // empty' "$sf")"
+  st_pending="$(jq -r '.pending.tool_use_id // empty' "$sf")"
+  st_pane="$(jq -r '.tmux_pane // empty' "$sf")"
+  [ "$st_state" = "needs-you" ] || refuse "$code state is '$st_state', not needs-you" "$pane"
+  [ "$st_pending" = "$expect" ] || refuse "pending tool_use_id is '${st_pending:-none}', expected '$expect'" "$pane"
+  if [ -n "$st_pane" ] && [ "$st_pane" != "$pane" ]; then
+    refuse "pane mismatch: hook saw $st_pane, registry says $pane" "$pane"
+  fi
+  if [ -n "$tmux_target" ]; then
+    local pane_sess
+    pane_sess="$(tmux display-message -p -t "$pane" '#{session_name}' 2>/dev/null)" || refuse "tmux pane $pane not found" "$pane"
+    [ "$pane_sess" = "${tmux_target%%:*}" ] || refuse "pane $pane belongs to tmux session '$pane_sess', expected '${tmux_target%%:*}'" "$pane"
+  fi
+
+  local regex lines screen
+  regex="$(cfg_get press.prompt_regex)"
+  lines="$(cfg_get press.lines 30)"
+  case "$lines" in ''|*[!0-9]*) lines=30 ;; esac
+  screen="$(tmux capture-pane -p -t "$pane" 2>/dev/null | sed -e :a -e '/^[[:space:]]*$/{$d;N;ba' -e '}' | tail -n "$lines")" \
+    || refuse "capture-pane failed for $pane" "$pane"
+  grep -Eq -- "$regex" <<<"$screen" || refuse "no permission prompt visible in pane $pane" "$pane"
+
+  local keys_json key
+  if [ "$action" = allow ]; then keys_json="$(cfg_get press.allow_keys)"; else keys_json="$(cfg_get press.deny_keys)"; fi
+  local keys=()
+  while IFS= read -r key; do [ -n "$key" ] && keys+=("$key"); done < <(jq -r '.[]' <<<"$keys_json" 2>/dev/null)
+  [ ${#keys[@]} -gt 0 ] || refuse "no keys configured for $action" "$pane"
+
+  tmux send-keys -t "$pane" "${keys[@]}" || { attempt failed "send-keys failed" "$pane"; exit 1; }
+  attempt sent "ok" "$pane"
+  [ -n "$dec_id" ] && mark_status "$dec_id" relayed >/dev/null 2>&1
+  echo "pressed $action (${keys[*]}) in $code pane $pane"
+}
+
+# ---------------------------------------------------------------- notify
+cmd_notify() {
+  local text="${1:-}"
+  [ -n "$text" ] || { sub_usage notify >&2; exit 2; }
+  local url="${SLACK_WEBHOOK_URL:-}"
+  local envf; envf="$(config_dir)/.env"
+  if [ -z "$url" ] && [ -f "$envf" ]; then
+    url="$(sed -n -E 's/^[[:space:]]*(export[[:space:]]+)?SLACK_WEBHOOK_URL[[:space:]]*=[[:space:]]*//p' "$envf" | tail -n 1)"
+    url="${url%\"}"; url="${url#\"}"; url="${url%\'}"; url="${url#\'}"
+  fi
+  [ -n "$url" ] || return 0
+  command -v curl >/dev/null 2>&1 || return 0
+  local payload
+  payload="$(jq -cn --arg t "$text" '{text: $t}')"
+  local code
+  code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -H 'content-type: application/json' --data-binary "$payload" "$url" 2>/dev/null)"
+  log_event "$(jq -cn --argjson now "$(now_ms)" --arg c "${code:-000}" '{ts: $now, type: "notify", http: $c}')"
+  [ "${code:-000}" = 200 ] || echo "board notify: webhook returned ${code:-000}" >&2
+  return 0
+}
+
+# ---------------------------------------------------------------- doctor
+cmd_doctor() {
+  local bad=0
+  ok() { printf '  ok    %s\n' "$*"; }
+  warn() { printf '  warn  %s\n' "$*"; }
+  fail() { printf '  FAIL  %s\n' "$*"; bad=1; }
+  echo "dependencies:"
+  local c
+  for c in jq tmux python3 curl flock column; do
+    if command -v "$c" >/dev/null 2>&1; then ok "$c"; else fail "$c not found"; fi
+  done
+  if python3 -c 'import yaml' 2>/dev/null; then ok "python3 yaml"; else fail "python3 yaml (pip install pyyaml)"; fi
+  if command -v inotifywait >/dev/null 2>&1; then ok "inotifywait (fast path)"; else warn "inotifywait not installed — polling"; fi
+
+  echo "config:"
+  local cd; cd="$(config_dir)"
+  if [ -f "$cd/fleet.yaml" ]; then
+    if python3 -c 'import sys,yaml; yaml.safe_load(open(sys.argv[1]))' "$cd/fleet.yaml" 2>/dev/null; then
+      ok "fleet.yaml ($cd)"
+    else fail "fleet.yaml does not parse ($cd)"; fi
+  else warn "no fleet.yaml in $cd"; fi
+  if [ -n "${SLACK_WEBHOOK_URL:-}" ] || grep -q '^[[:space:]]*\(export[[:space:]]\+\)\?SLACK_WEBHOOK_URL=..' "$cd/.env" 2>/dev/null; then
+    ok "SLACK_WEBHOOK_URL set"
+  else warn "SLACK_WEBHOOK_URL not set — notify is a no-op"; fi
+
+  echo "install:"
+  local settings="${CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"
+  if [ -f "$settings" ] && jq -e '[.hooks // {} | .[][]?.hooks[]?.command // empty | select(test("board-hook\\.sh"))] | length > 0' "$settings" >/dev/null 2>&1; then
+    local evs
+    evs="$(jq -r '[.hooks | to_entries[] | select([.value[]?.hooks[]?.command // empty | select(test("board-hook\\.sh"))] | length > 0) | .key] | join(",")' "$settings")"
+    ok "hook installed for: $evs"
+  else fail "board-hook.sh not in $settings (run scripts/install.sh)"; fi
+  if command -v board >/dev/null 2>&1; then ok "board on PATH"; else warn "board not on PATH (~/.local/bin)"; fi
+  if [ -d "$BOARD_HOME" ] && [ -w "$BOARD_HOME" ]; then ok "BOARD_HOME $BOARD_HOME"; else fail "BOARD_HOME $BOARD_HOME missing or not writable"; fi
+  local sd="${CLAUDE_SESSIONS_DIR:-$HOME/.claude/sessions}"
+  if [ -d "$sd" ]; then ok "session registry $sd"; else fail "no session registry at $sd"; fi
+
+  echo "runtime:"
+  if [ -f "$BOARD_HOME/collect.lock" ] && ! flock -n "$BOARD_HOME/collect.lock" true 2>/dev/null; then
+    ok "collector running (pid $(cat "$BOARD_HOME/collect.pid" 2>/dev/null || echo '?'))"
+  else warn "collector not running (fleet-up starts it in tmux session 'switchboard')"; fi
+  if [ -f "$BOARD_HOME/snapshot.json" ]; then
+    local age=$(( ( $(now_ms) - $(jq '.generated_at // 0' "$BOARD_HOME/snapshot.json") ) / 1000 ))
+    ok "snapshot.json generated ${age}s ago"
+  else warn "no snapshot.json yet"; fi
+  return "$bad"
+}
+
+# ---------------------------------------------------------------- main
+sub="${1:-}"
+[ $# -gt 0 ] && shift
+case "$sub" in
+  ls|snapshot|ask|decisions|answer|mark|press|limit|notify|doctor)
+    if wants_help "$@"; then sub_usage "$sub"; exit 0; fi ;;
+  task)
+    if wants_help "$@"; then
+      case "${1:-}" in new|stage|ls|show) sub_usage task "$1" ;; *) sub_usage task ;; esac
+      exit 0
+    fi ;;
+esac
+case "$sub" in
+  ls) cmd_ls "$@" ;;
+  snapshot) cmd_snapshot "$@" ;;
+  ask) cmd_ask "$@" ;;
+  decisions) cmd_decisions "$@" ;;
+  answer) cmd_answer "$@" ;;
+  mark) cmd_mark "$@" ;;
+  press) cmd_press "$@" ;;
+  task) cmd_task "$@" ;;
+  limit) cmd_limit "$@" ;;
+  notify) cmd_notify "$@" ;;
+  doctor) cmd_doctor "$@" ;;
+  -h|--help|help) usage ;;
+  "") usage; exit 2 ;;
+  *) echo "board: unknown command '$sub'" >&2; usage >&2; exit 2 ;;
+esac

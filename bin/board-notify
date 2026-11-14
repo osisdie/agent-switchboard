@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# board-notify — PagerDuty-style alerting for agent-switchboard (see docs/contract.md).
+#
+# Usage:
+#   board-notify send --level info|warn|high|urgent --key KEY --title T [--body B] [--url U]
+#   board-notify ack KEY [KEY...]          stop escalation (glob allowed: 'session:API:*')
+#   board-notify tick                      escalation pass (the collector runs this each loop)
+#   board-notify test --channel slack|desktop|email|line|sns|webhook
+#   board-notify status [--json]           open alerts and which channels are enabled
+#
+# Channels are configured in $BOARD_CONFIG_DIR/.env; routing, quiet hours, repeat and
+# thresholds in the `alerting:` block of fleet.yaml (or alerting.yaml next to it).
+#
+# Env: BOARD_HOME, BOARD_CONFIG_DIR, BOARD_NOW_MS (tests: fake clock, epoch ms)
+set -u
+
+case "${1:-}" in
+  -h|--help|"")
+    awk 'NR > 1 && !/^#/ { exit } NR > 1 && !/shellcheck/ { sub(/^# ?/, ""); print }' "$0"
+    [ -n "${1:-}" ] && exit 0 || exit 2 ;;
+esac
+
+REPO="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+exec python3 "$REPO/lib/notify.py" "$@"

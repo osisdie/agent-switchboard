@@ -1,0 +1,22 @@
+# systemd --user unit: start the Claude Code fleet (tmux sessions + collector) at login.
+#
+#   mkdir -p ~/.config/systemd/user
+#   cp autostart/claude-fleet.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now claude-fleet.service
+#
+# Assumes scripts/install.sh linked fleet-up into ~/.local/bin.
+[Unit]
+Description=agent-switchboard: start Claude Code fleet in tmux
+After=default.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# A login shell so PATH (claude, node, pyenv, ...) matches an interactive terminal.
+ExecStart=/bin/bash -lc '"$HOME/.local/bin/fleet-up"'
+# The tmux server outlives this oneshot; do not kill it when the unit stops.
+KillMode=process
+
+[Install]
+WantedBy=default.target

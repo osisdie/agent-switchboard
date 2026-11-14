@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# fleet-up — start the Claude Code fleet in tmux (idempotent).
+#
+# Usage: fleet-up [--dry-run] [--only CODE]
+#
+# Reads fleet.yaml from the config dir. For every session with `autostart: true` that has no
+# tmux session yet, creates `tmux new-session -d -s CODE -c CWD` and types (into the pane's
+# POSIX shell):
+#   t0=$(date +%s); claude -n CODE --remote-control CODE -r RESUME EXTRA;
+#   [ $(( $(date +%s) - t0 )) -lt 15 ] && claude -n CODE --remote-control CODE EXTRA
+# i.e. a fresh session is started only when the resume attempt ends within
+# resume_fallback_seconds (default 15: "no such session"), never after a real session exits.
+# Without resume_name it just runs `claude -n CODE --remote-control CODE EXTRA`. With `collector: true` (default) it also makes sure a
+# tmux session `switchboard` runs board-collect.
+#
+#   --dry-run    print what would be done, change nothing
+#   --only CODE  start just this session (even if autostart is false)
+#
+# Log: $BOARD_HOME/fleet-up.log
+set -u
+
+REPO="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+BOARD_HOME="${BOARD_HOME:-$HOME/.agent-switchboard}"
+export BOARD_HOME
+FLEET="$REPO/lib/fleet.py"
+
+dry=0; only=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run|-n) dry=1 ;;
+    --only) shift; only="${1:-}" ;;
+    -h|--help) awk 'NR > 1 && !/^#/ { exit } NR > 1 && !/shellcheck/ { sub(/^# ?/, ""); print }' "$0"; exit 0 ;;
+    *) echo "fleet-up: unknown argument: $1" >&2; exit 2 ;;
+  esac
+  shift
+done
+
+mkdir -p "$BOARD_HOME"
+LOG="$BOARD_HOME/fleet-up.log"
+log() { local m; m="$(date '+%F %T') $*"; echo "$m"; [ "$dry" = 1 ] || echo "$m" >> "$LOG"; }
+run() { if [ "$dry" = 1 ]; then echo "  would run: $*"; else "$@"; fi; }
+
+for c in tmux python3 jq; do
+  command -v "$c" >/dev/null 2>&1 || { log "fleet-up: $c not found"; exit 1; }
+done
+
+log "fleet-up start (config: $(python3 "$FLEET" config-dir))"
+
+claude_bin="${CLAUDE_BIN:-claude}"
+fallback_s="$(python3 "$FLEET" get resume_fallback_seconds 15)"
+case "$fallback_s" in ''|*[!0-9]*) fallback_s=15 ;; esac
+started=0
+while IFS= read -r line; do
+  [ -n "$line" ] || continue
+  code="$(jq -r '.code' <<<"$line")"
+  cwd="$(jq -r '.cwd // empty' <<<"$line")"
+  auto="$(jq -r '.autostart' <<<"$line")"
+  resume="$(jq -r '.resume_name // empty' <<<"$line")"
+  extra="$(jq -r '.extra_args // ""' <<<"$line")"
+  if [ -n "$only" ]; then
+    [ "$code" = "$only" ] || continue
+  else
+    [ "$auto" = true ] || continue
+  fi
+  if tmux has-session -t "=$code" 2>/dev/null; then
+    log "$code: tmux session exists — skip"
+    continue
+  fi
+  [ -n "$cwd" ] && [ -d "$cwd" ] || { log "$code: cwd '$cwd' missing — skip"; continue; }
+
+  q_code="$(printf '%q' "$code")"
+  base="$claude_bin -n $q_code --remote-control $q_code"
+  [ -n "$extra" ] && base_extra="$base $extra" || base_extra="$base"
+  if [ -n "$resume" ]; then
+    # shellcheck disable=SC2016  # expanded by the pane's shell, not here
+    cmd='_fleet_t0=$(date +%s); '"$base -r $(printf '%q' "$resume")${extra:+ $extra}"'; [ $(( $(date +%s) - _fleet_t0 )) -lt '"$fallback_s"' ] && '"$base_extra"
+  else
+    cmd="$base_extra"
+  fi
+  log "$code: starting in $cwd: $cmd"
+  run tmux new-session -d -s "$code" -c "$cwd"
+  run tmux send-keys -t "=$code:" -l "$cmd"
+  run tmux send-keys -t "=$code:" Enter
+  started=$((started + 1))
+done < <(python3 "$FLEET" sessions)
+
+if [ -z "$only" ] && [ "$(python3 "$FLEET" get collector true)" = true ]; then
+  collector_running=0
+  if [ -f "$BOARD_HOME/collect.lock" ] && ! flock -n "$BOARD_HOME/collect.lock" true 2>/dev/null; then
+    collector_running=1
+  fi
+  if [ "$collector_running" = 1 ]; then
+    log "collector: already running"
+  else
+    collect_cmd="BOARD_HOME=$(printf '%q' "$BOARD_HOME")"
+    [ -n "${BOARD_CONFIG_DIR:-}" ] && collect_cmd="$collect_cmd BOARD_CONFIG_DIR=$(printf '%q' "$BOARD_CONFIG_DIR")"
+    collect_cmd="$collect_cmd $(printf '%q' "$REPO/bin/board-collect")"
+    if tmux has-session -t "=switchboard" 2>/dev/null; then
+      log "collector: starting in new window of tmux session switchboard"
+      run tmux new-window -t "=switchboard:" -n collector "$collect_cmd"
+    else
+      log "collector: starting tmux session switchboard"
+      run tmux new-session -d -s switchboard -n collector "$collect_cmd"
+    fi
+  fi
+fi
+
+log "fleet-up done ($started session(s) started)"
+exit 0
