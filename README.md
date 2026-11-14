@@ -598,6 +598,13 @@ operator all live on it. That would take a cloud variant, which doesn't exist ye
   `board-serve --watch`. If the claude.ai account hits its limit or loses access, your phone keeps
   working.
 
+**Not yet (future work):**
+
+- **Approver messaging on the Artifact board.** Messages are shared documents, so there only Editors
+  send them, while approvers (Contributors) can only answer. A `messages/{self}` outbox, which the
+  operator copies into `messages/`, would let approvers message without becoming Editors.
+- **A cloud variant** that keeps the board reachable while the machine is off.
+
 ### The self-hosted board
 
 ```bash
