@@ -17,6 +17,8 @@
 # With `collector: true` (default) it also makes sure a tmux session `switchboard` runs
 # board-collect, after `board-collect --baseline` when $BOARD_HOME/alerts.json does not exist
 # yet (no alert storm for conditions already open).
+# With `serve.enabled: true` it also runs bin/board-serve (the self-hosted board, 127.0.0.1 only)
+# in window "serve" of that tmux session, unless serve.port already answers.
 #
 # Only one fleet-up runs at a time ($BOARD_HOME/fleet-up.lock); a second one exits 0 at once,
 # silently, so it is safe to call from a shell rc file, systemd and a logon task together.
@@ -137,6 +139,28 @@ if [ -z "$only" ] && [ "$(python3 "$FLEET" get collector true)" = true ]; then
     else
       log "collector: starting tmux session switchboard"
       run tmux new-session -d -s switchboard -n collector "$collect_cmd"
+    fi
+  fi
+fi
+
+# The self-hosted board (bin/board-serve) in window "serve" of tmux session switchboard.
+if [ -z "$only" ] && [ "$(python3 "$FLEET" get serve.enabled false)" = true ]; then
+  serve_port="$(python3 "$FLEET" get serve.port 39410)"
+  case "$serve_port" in ''|*[!0-9]*) serve_port=39410 ;; esac
+  if (exec 3<>"/dev/tcp/127.0.0.1/$serve_port") 2>/dev/null; then
+    log "serve: port $serve_port already answers — skip"
+  elif tmux list-windows -t "=switchboard" -F '#{window_name}' 2>/dev/null 8>&- | grep -qx serve; then
+    log "serve: window switchboard:serve exists — skip"
+  else
+    serve_cmd="BOARD_HOME=$(printf '%q' "$BOARD_HOME")"
+    [ -n "${BOARD_CONFIG_DIR:-}" ] && serve_cmd="$serve_cmd BOARD_CONFIG_DIR=$(printf '%q' "$BOARD_CONFIG_DIR")"
+    serve_cmd="$serve_cmd $(printf '%q' "$REPO/bin/board-serve")"
+    if tmux has-session -t "=switchboard" 2>/dev/null 8>&-; then
+      log "serve: starting board-serve on 127.0.0.1:$serve_port in new window of tmux session switchboard"
+      run tmux new-window -d -t "=switchboard:" -n serve "$serve_cmd"
+    else
+      log "serve: starting board-serve on 127.0.0.1:$serve_port in tmux session switchboard"
+      run tmux new-session -d -s switchboard -n serve "$serve_cmd"
     fi
   fi
 fi
