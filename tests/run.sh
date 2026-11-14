@@ -534,6 +534,13 @@ sessions:
   - code: OFF
     cwd: $T
     autostart: false
+  - code: FRESH
+    cwd: $T
+    autostart: true
+    resume: false
+    resume_name: FRESH
+    extra_args: "--verbose"
+    initial_prompt: "You're the \$OPERATOR; read \`x\` and \\"go\\""
 EOF
 cat > "$T/bin/tmux" <<'EOF'
 #!/usr/bin/env bash
@@ -543,13 +550,21 @@ EOF
 : > "$FAKE_TMUX_LOG"
 out="$(PATH="$T/bin:$PATH" "$REPO/bin/fleet-up" --dry-run)"
 grep -q "would run: tmux new-session -d -s NEW" <<<"$out" && ok "starts missing session" || bad "starts missing session" "$out"
-grep -qF '_fleet_t0=$(date +%s); claude -n NEW --remote-control NEW -r NEW --verbose; [ $(( $(date +%s) - _fleet_t0 )) -lt 15 ] && claude -n NEW --remote-control NEW --verbose' <<<"$out" \
+grep -qF '_fleet_t0=$(date +%s); claude -n NEW --remote-control NEW -r '\''NEW'\'' --verbose; [ $(( $(date +%s) - _fleet_t0 )) -lt 15 ] && claude -n NEW --remote-control NEW --verbose' <<<"$out" \
   && ok "resume, fresh only on fast exit" || bad "resume, fresh only on fast exit" "$out"
 grep -q "CP: tmux session exists" <<<"$out" && ok "skips existing session" || bad "skips existing session"
 grep -q "OFF" <<<"$out" && bad "skips autostart:false" || ok "skips autostart:false"
 grep -q "would run: tmux new-session -d -s switchboard" <<<"$out" && ok "starts collector" || bad "starts collector" "$out"
 grep -q '^new-session' "$FAKE_TMUX_LOG" && bad "dry-run changes nothing" || ok "dry-run changes nothing"
 grep -q "would run: .*board-collect --baseline" <<<"$out" && bad "no baseline when alerts.json exists" "$out" || ok "no baseline when alerts.json exists"
+fresh_cmd="$(sed -n 's/^.*FRESH: starting in [^:]*: //p' <<<"$out")"
+case "$fresh_cmd" in *" -r "*|*_fleet_t0*) bad "resume: false starts fresh" "$fresh_cmd" ;; *) ok "resume: false starts fresh" ;; esac
+printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "$@"' > "$T/bin/fake-claude"; chmod +x "$T/bin/fake-claude"
+got="$(sh -c "$T/bin/fake-claude ${fresh_cmd#claude }")"
+want="$(printf '%s\n' -n FRESH --remote-control FRESH --verbose "You're the \$OPERATOR; read \`x\` and \"go\"")"
+eq "initial_prompt passed as one shell-safe argument" "$got" "$want"
+resume_cmd="$(sed -n 's/^.*NEW: starting in [^:]*: //p' <<<"$out")"
+case "$resume_cmd" in *"&& claude -n NEW --remote-control NEW --verbose") ok "no prompt on sessions without initial_prompt" ;; *) bad "no prompt on sessions without initial_prompt" "$resume_cmd" ;; esac
 out="$(BOARD_HOME="$T/home4" PATH="$T/bin:$PATH" "$REPO/bin/fleet-up" --dry-run)"
 grep -q "would run: .*board-collect --baseline" <<<"$out" && ok "fleet-up takes a baseline when alerts.json is missing" || bad "fleet-up baseline" "$out"
 

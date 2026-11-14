@@ -88,6 +88,8 @@ def load_fleet():
             "autostart": bool(s.get("autostart", False)),
             "resume_name": s.get("resume_name") or None,
             "extra_args": str(s.get("extra_args") or ""),
+            "resume": s.get("resume", True) is not False,
+            "initial_prompt": str(s.get("initial_prompt") or ""),
             "aliases": [str(a) for a in (s.get("aliases") or [])],
         })
     # Top-level `aliases: {CODE: [alias, ...]}` is also accepted.
@@ -99,7 +101,7 @@ def load_fleet():
                 match[0]["aliases"] = sorted(set(match[0]["aliases"]) | {str(a) for a in al or []})
             else:
                 sessions.append({"code": str(code), "cwd": None, "autostart": False, "resume_name": None,
-                                 "extra_args": "", "aliases": [str(a) for a in al or []], "listed": False})
+                                 "extra_args": "", "resume": True, "initial_prompt": "", "aliases": [str(a) for a in al or []], "listed": False})
     cfg["sessions"] = sessions
     return cfg
 
