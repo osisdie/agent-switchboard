@@ -47,6 +47,12 @@ for c in tmux python3 jq; do
   command -v "$c" >/dev/null 2>&1 || { log "fleet-up: $c not found"; exit 1; }
 done
 
+# systemd (at distro boot) and a Windows logon task may both run fleet-up at once: serialize.
+if [ "$dry" = 0 ]; then
+  exec 8>>"$BOARD_HOME/fleet-up.lock"
+  flock -w 120 8 || { log "fleet-up: another fleet-up is still running — giving up"; exit 1; }
+fi
+
 log "fleet-up start (config: $(python3 "$FLEET" config-dir))"
 
 claude_bin="${CLAUDE_BIN:-claude}"
@@ -87,7 +93,8 @@ while IFS= read -r line; do
     cmd="$fresh"
   fi
   log "$code: starting in $cwd: $cmd"
-  run tmux new-session -d -s "$code" -c "$cwd"
+  # A concurrent creator (e.g. another fleet-up) wins the race: never type into its pane.
+  run tmux new-session -d -s "$code" -c "$cwd" || { log "$code: tmux new-session failed — skip"; continue; }
   run tmux send-keys -t "=$code:" -l "$cmd"
   run tmux send-keys -t "=$code:" Enter
   started=$((started + 1))

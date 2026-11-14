@@ -563,6 +563,16 @@ printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "$@"' > "$T/bin/fake-claude";
 got="$(sh -c "$T/bin/fake-claude ${fresh_cmd#claude }")"
 want="$(printf '%s\n' -n FRESH --remote-control FRESH --verbose "You're the \$OPERATOR; read \`x\` and \"go\"")"
 eq "initial_prompt passed as one shell-safe argument" "$got" "$want"
+# Lost race: new-session fails (session created meanwhile) -> no keys typed into that pane.
+cat > "$T/bin/tmux" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$FAKE_TMUX_LOG"
+case "$1" in has-session) exit 1 ;; new-session) exit 1 ;; esac
+EOF
+: > "$FAKE_TMUX_LOG"
+BOARD_HOME="$T/home5" PATH="$T/bin:$PATH" "$REPO/bin/fleet-up" --only NEW >/dev/null 2>&1
+grep -q '^send-keys' "$FAKE_TMUX_LOG" && bad "no send-keys when new-session fails" "$(cat "$FAKE_TMUX_LOG")" || ok "no send-keys when new-session fails"
+grep -q "NEW: tmux new-session failed" "$T/home5/fleet-up.log" && ok "lost race logged" || bad "lost race logged"
 resume_cmd="$(sed -n 's/^.*NEW: starting in [^:]*: //p' <<<"$out")"
 case "$resume_cmd" in *"&& claude -n NEW --remote-control NEW --verbose") ok "no prompt on sessions without initial_prompt" ;; *) bad "no prompt on sessions without initial_prompt" "$resume_cmd" ;; esac
 out="$(BOARD_HOME="$T/home4" PATH="$T/bin:$PATH" "$REPO/bin/fleet-up" --dry-run)"
