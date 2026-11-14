@@ -21,6 +21,10 @@ DEFAULTS = {
     "resume_fallback_seconds": 15,
     "approvers": [],
     "release_managers": [],
+    "serve": {
+        "enabled": False,
+        "port": 39410,
+    },
     "press": {
         "prompt_regex": r"Do you want to (proceed|make this edit|create|overwrite|allow)",
         "lines": 30,

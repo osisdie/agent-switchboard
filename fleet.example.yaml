@@ -7,11 +7,28 @@ poll_interval: 3              # seconds between snapshot rebuilds
 decision_timeout_hours: 24    # pending decisions older than this become "timeout"
 resume_fallback_seconds: 15   # fleet-up: start fresh only if `claude -r NAME` exits this fast
 
-# Who may decide (board user ids, e.g. from the artifact page's user.id()).
+# Who may decide: board user ids (the artifact page's user.id()), or with the self-hosted board
+# emails and "local".
 # Empty `approvers` fails closed: every answer is refused until you add someone. A production
 # decision (gate or stage "production") needs `release_managers` (falls back to `approvers`).
 approvers: []
 release_managers: []
+
+# Self-hosted board (bin/board-serve, 127.0.0.1 only); fleet-up starts it when enabled.
+# Its approvers / release_managers are emails (verified by Cloudflare Access) and "local"
+# (any process on this machine, other OS users included: only list it on a single-user host);
+# the Artifact board uses claude.ai user ids.
+# Empty approvers = every answer refused. See README "Two channels".
+serve:
+  enabled: false
+  port: 39410                        # local listener: identity "local", direct browser only
+  # tunnel:                          # the listener cloudflared points at (never "local")
+  #   enabled: true
+  #   port: 39411
+  #   hostname: board.example.com
+  #   team_domain: yourteam.cloudflareaccess.com
+  #   aud: "<Application Audience (AUD) Tag>"   # needs python3 cryptography to verify tokens
+  #   allowed_emails: [viewer@example.com]     # who may open it at all (default: approvers ∪ release_managers)
 
 # `board press` safety settings: a key is only sent when the last `lines` lines of the pane
 # match `prompt_regex`.

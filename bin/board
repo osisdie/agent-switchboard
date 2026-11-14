@@ -342,6 +342,13 @@ cmd_answer() {
     exit 4
   fi
   if ! grep -qxF -- "$by" <<<"$allowed"; then
+    # Never let a refused answer cancel an approver's answer that is waiting to be relayed.
+    if [ "$cur" = answered ]; then
+      log_event "$(jq -cn --arg id "$id" --arg by "$by" --argjson now "$now" \
+        '{ts: $now, type: "unauthorized", id: $id, by: $by, reason: "already answered by an approver; left as is"}')"
+      echo "board answer: refused — $by may not answer $id; it keeps its approver's answer" >&2
+      exit 4
+    fi
     update_decision "$id" '.status = "unauthorized" | .answer = $a | .answered_by = $by | .answered_at = $now | .updated_at = $now' \
       --arg a "$answer" --arg by "$by" --argjson now "$now"
     log_event "$(jq -cn --arg id "$id" --arg by "$by" --argjson now "$now" '{ts: $now, type: "unauthorized", id: $id, by: $by}')"
@@ -729,7 +736,11 @@ cmd_doctor() {
 sub="${1:-}"
 [ $# -gt 0 ] && shift
 case "$sub" in
-  ls|snapshot|ask|decisions|answer|mark|press|limit|notify|doctor|ack)
+  # `answer` takes free text as its second argument, so "--help" there is an answer: only a
+  # leading -h/--help asks for help.
+  answer)
+    case "${1:-}" in -h|--help) sub_usage answer; exit 0 ;; esac ;;
+  ls|snapshot|ask|decisions|mark|press|limit|notify|doctor|ack)
     if wants_help "$@"; then sub_usage "$sub"; exit 0; fi ;;
   task)
     if wants_help "$@"; then
