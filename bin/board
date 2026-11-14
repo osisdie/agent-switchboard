@@ -20,8 +20,9 @@
 #                                              stages: plan design build test deploy production
 #                                              maintain; artifacts: intent spec plan evals review
 #   board limit [--json|--clear]               show (or end) the current usage-limit episode
-#   board press CODE allow|deny --expect TOOL_USE_ID
-#                                              answer a permission prompt via tmux, after checks
+#   board press CODE allow|deny --expect TOOL_USE_ID [--allow-truncated]
+#                                              answer a permission prompt via tmux: needs an
+#                                              approver's matching `board answer`, then checks
 #   board notify "text"                        send a Slack message (SLACK_WEBHOOK_URL)
 #   board ack KEY [KEY...]                     acknowledge alerts (board-notify ack; glob ok)
 #   board doctor                               check dependencies and installation
@@ -29,14 +30,16 @@
 # Env: BOARD_HOME (default ~/.agent-switchboard), BOARD_CONFIG_DIR (default <repo>/tmp-local
 #      if it exists, else ~/.config/agent-switchboard), CLAUDE_SESSIONS_DIR, CLAUDE_SETTINGS.
 #
-# Exit codes: 0 ok, 1 error, 2 usage, 3 press refused (no keys were sent),
-#             4 answer refused (not an approver / release manager).
+# Exit codes: 0 ok, 1 error, 2 usage, 3 press refused: screen/state mismatch (no keys sent),
+#             4 refused: not authorized (answer: not an approver; press: no approver's answer).
 set -u
 
 REPO="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 BOARD_HOME="${BOARD_HOME:-$HOME/.agent-switchboard}"
 export BOARD_HOME
 FLEET="$REPO/lib/fleet.py"
+umask 077   # everything under BOARD_HOME is private to this user
+[ -d "$BOARD_HOME" ] || { mkdir -p "$BOARD_HOME" && chmod 700 "$BOARD_HOME"; } 2>/dev/null
 
 die() { echo "board: $*" >&2; exit 1; }
 usage() { awk 'NR > 1 && !/^#/ { exit } NR > 1 && !/shellcheck/ { sub(/^# ?/, ""); print }' "$0"; }
@@ -71,6 +74,9 @@ snapshot_file() {
   echo "$f"
 }
 
+# Table cells: control characters (terminal escapes, CR, ...) become "?".
+JQ_SAFE='def safe: tostring | gsub("[\u0000-\u001f\u007f-\u009f]"; "?");'
+
 # ---------------------------------------------------------------- per-command help
 sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
   case "$1${2:+ $2}" in
@@ -85,18 +91,21 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
         echo "  stages: $STAGES" ;;
     decisions) echo "usage: board decisions [--status pending|answered|relayed|stale|timeout|unauthorized] [--json]" ;;
     answer) echo "usage: board answer ID ANSWER --by WHO"
-        echo "  mark a decision answered. WHO must be in approvers (gate:production: release_managers,"
-        echo "  falling back to approvers; refused when both are empty). Otherwise the decision is marked"
-        echo "  unauthorized and the command exits 4. Empty approvers = not checked (non-production)."
+        echo "  mark a decision answered. WHO must be in approvers (production gate or stage:"
+        echo "  release_managers, falling back to approvers). Otherwise the decision is marked"
+        echo "  unauthorized and the command exits 4. No approvers configured = refused (fails closed)."
         echo "  For a gate decision, these answers count as approved (case-insensitive, whole answer):"
         local w out=""
         for w in "${APPROVE_WORDS[@]}"; do out="${out:+$out, }$w"; done
         echo "    $out"
         echo "  anything else (e.g. \"request changes\") records the gate as rejected." ;;
     mark) echo "usage: board mark ID relayed|stale|timeout|unauthorized" ;;
-    press) echo "usage: board press CODE allow|deny --expect TOOL_USE_ID"
-        echo "  send the allow/deny keys to CODE's tmux pane, only if the hook state shows that"
-        echo "  tool_use_id pending and the pane shows a permission prompt; exit 3 otherwise" ;;
+    press) echo "usage: board press CODE allow|deny --expect TOOL_USE_ID [--allow-truncated]"
+        echo "  send the allow/deny keys to CODE's tmux pane. Exit 4 (nothing sent) unless the local"
+        echo "  permission decision is answered with this action by an approver (board answer), and"
+        echo "  its summary is complete (or --allow-truncated). Exit 3 (nothing sent, decision marked"
+        echo "  stale) unless the hook state still shows that tool_use_id pending, the pane shows a"
+        echo "  permission prompt and the start of the pending input is visible in the pane." ;;
     task) echo "usage: board task new|stage|ls|show ..."
         echo "  board task new --owner CODE \"title\" [--stage S]"
         echo "  board task stage ID STAGE [--artifact key=ref]..."
@@ -134,13 +143,13 @@ cmd_ls() {
   local now; now="$(now_ms)"
   {
     printf 'CODE\tSTATE\tSTATUS\tAGE\tSTAGE\tPENDING\tREMOTE\tCWD\n'
-    jq -r --argjson now "$now" '
+    jq -r --argjson now "$now" "$JQ_SAFE"'
       def age: if (. // 0) == 0 then "-" else (($now - .) / 1000 | floor) as $s
         | if $s < 60 then "\($s)s" elif $s < 3600 then "\($s/60|floor)m"
           elif $s < 86400 then "\($s/3600|floor)h" else "\($s/86400|floor)d" end end;
       .sessions[] | [ .code, .state, (.status // "-"), (.updated_at | age), (.stage // "-"),
         (if .pending then ((.pending.tool_name // "?") + ": " + ((.pending.summary // "") | gsub("[\t\n]"; " ") | .[0:40])) else "-" end),
-        (if .remote_url then "yes" else "-" end), (.cwd // "-") ] | @tsv' "$f"
+        (if .remote_url then "yes" else "-" end), (.cwd // "-") ] | map(safe) | @tsv' "$f"
   } | column -t -s $'\t'
   local n; n="$(jq '[.decisions[] | select(.status == "pending")] | length' "$f")"
   [ "$n" -gt 0 ] && echo && echo "$n pending decision(s) — see: board decisions --status pending"
@@ -222,7 +231,7 @@ cmd_ask() {
       context: ($ctx | nz),
       status: "pending", answer: null, answered_by: null, answered_at: null, relayed_at: null,
       created_at: $now }
-    + (if $task != "" or $gate != "" then
+    + (if $task != "" or $gate != "" or $stage != "" then
          { task_id: ($task | nz), stage: ($stage | nz), gate: ($gate | nz), artifact_ref: ($art | nz) }
        else {} end)')"
   if [ -n "$tf" ]; then
@@ -255,10 +264,10 @@ cmd_decisions() {
   if [ "$json" = 1 ]; then echo "$all"; return 0; fi
   {
     printf 'ID\tKIND\tFROM\tSTATUS\tGATE\tANSWER\tQUESTION\n'
-    jq -r '.[] | [ .id, .kind, (.from // "-"), .status,
+    jq -r "$JQ_SAFE"'.[] | [ .id, .kind, (.from // "-"), .status,
       (if .gate then ((.stage // "?") + "/" + .gate) else "-" end), (.answer // "-"),
       ((if .kind == "permission" then ((.tool_name // "?") + ": " + (.summary // "")) else .question end)
-        | gsub("[\t\n]"; " ") | .[0:60]) ] | @tsv' <<<"$all"
+        | gsub("[\t\n]"; " ") | .[0:60]) ] | map(safe) | @tsv' <<<"$all"
   } | column -t -s $'\t'
 }
 
@@ -271,19 +280,33 @@ update_decision() {  # update_decision ID JQ_FILTER [jq args...]
   write_atomic "$f" "$out"
 }
 
-# Prints the ids allowed to answer decision file $1, one per line; prints nothing when unchecked.
-# Exit 1 when a production gate has nobody configured.
+# A decision is a production decision when its gate or its stage, trimmed and lowercased, is
+# "production" (the same rule as lib/notify.py and lib/collect.py).
+is_production() {  # is_production DECISION_FILE
+  [ "$(jq -r '[.gate, .stage] | map((. // "") | tostring | ascii_downcase | gsub("^\\s+|\\s+$"; ""))
+               | any(. == "production")' "$1")" = true ]
+}
+
+# Prints the ids allowed to answer decision file $1, one per line.
+# Fails closed: exit 1 when nobody is configured (no approvers; for production no
+# release_managers and no approvers).
 allowed_ids() {
-  local gate list
-  gate="$(jq -r '.gate // empty' "$1")"
-  if [ "$gate" = production ]; then
+  local list
+  if is_production "$1"; then
     list="$(cfg_get release_managers)"
     [ "$(jq 'length' <<<"${list:-[]}")" -gt 0 ] || list="$(cfg_get approvers)"
-    [ "$(jq 'length' <<<"${list:-[]}")" -gt 0 ] || return 1
   else
     list="$(cfg_get approvers)"
   fi
+  [ "$(jq 'length' <<<"${list:-[]}")" -gt 0 ] || return 1
   jq -r '.[]? | tostring' <<<"${list:-[]}"
+}
+
+# allowed_by DECISION_FILE WHO → 0 when WHO may answer it.
+allowed_by() {
+  local allowed
+  allowed="$(allowed_ids "$1")" || return 1
+  grep -qxF -- "$2" <<<"$allowed"
 }
 
 cmd_answer() {
@@ -310,15 +333,19 @@ cmd_answer() {
   local allowed
   if ! allowed="$(allowed_ids "$f")"; then
     log_event "$(jq -cn --arg id "$id" --arg by "$by" --argjson now "$now" \
-      '{ts: $now, type: "unauthorized", id: $id, by: $by, reason: "no release_managers or approvers configured"}')"
-    echo "board answer: refused — gate:production needs release_managers (or approvers) in fleet.yaml" >&2
+      '{ts: $now, type: "unauthorized", id: $id, by: $by, reason: "no approvers configured"}')"
+    if is_production "$f"; then
+      echo "board answer: refused — production needs release_managers (or approvers) in fleet.yaml; left pending" >&2
+    else
+      echo "board answer: refused — no approvers in fleet.yaml (fails closed); left pending" >&2
+    fi
     exit 4
   fi
-  if [ -n "$allowed" ] && ! grep -qxF -- "$by" <<<"$allowed"; then
+  if ! grep -qxF -- "$by" <<<"$allowed"; then
     update_decision "$id" '.status = "unauthorized" | .answer = $a | .answered_by = $by | .answered_at = $now | .updated_at = $now' \
       --arg a "$answer" --arg by "$by" --argjson now "$now"
     log_event "$(jq -cn --arg id "$id" --arg by "$by" --argjson now "$now" '{ts: $now, type: "unauthorized", id: $id, by: $by}')"
-    echo "board answer: refused — $by may not answer $id (not in $(jq -r 'if .gate == "production" then "release_managers/approvers" else "approvers" end' "$f")); marked unauthorized" >&2
+    echo "board answer: refused — $by may not answer $id (not in $(if is_production "$f"; then echo release_managers/approvers; else echo approvers; fi)); marked unauthorized" >&2
     exit 4
   fi
 
@@ -460,10 +487,10 @@ task_ls() {
   if [ "$json" = 1 ]; then echo "$all"; return 0; fi
   {
     printf 'ID\tOWNER\tSTAGE\tGATES\tARTIFACTS\tTITLE\n'
-    jq -r '.[] | [ .id, .owner, .stage,
+    jq -r "$JQ_SAFE"'.[] | [ .id, .owner, .stage,
       ((.gates // []) | if length == 0 then "-" else map(.stage + "/" + .gate + ":" + .status) | join(",") end),
       ((.artifacts // {}) | to_entries | map(select(.value != null) | .key) | if length == 0 then "-" else join(",") end),
-      (.title | gsub("[\t\n]"; " ") | .[0:50]) ] | @tsv' <<<"$all"
+      (.title | gsub("[\t\n]"; " ") | .[0:50]) ] | map(safe) | @tsv' <<<"$all"
   } | column -t -s $'\t'
 }
 
@@ -480,11 +507,12 @@ cmd_limit() {
 # ---------------------------------------------------------------- press
 cmd_press() {
   need_jq
-  local code="${1:-}" action="${2:-}" expect=""
+  local code="${1:-}" action="${2:-}" expect="" allow_trunc=0
   if [ $# -ge 2 ]; then shift 2; else set --; fi
   while [ $# -gt 0 ]; do
     case "$1" in
       --expect) shift; expect="${1:-}" ;;
+      --allow-truncated) allow_trunc=1 ;;
       *) die "press: unknown option $1" ;;
     esac
     shift
@@ -505,12 +533,44 @@ cmd_press() {
       '{ts: $now, type: "press", code: $code, action: $action, expect: $exp, result: $result, reason: $reason}
        + (if $pane == "" then {} else {pane: $pane} end) + (if $dec == "" then {} else {decision: $dec} end)')"
   }
+  # Not authorized (no keys sent, decision left as it is): exit 4.
+  refuse_auth() {
+    echo "board press: refused — $1" >&2
+    attempt unauthorized "$1"
+    exit 4
+  }
+  # The screen / state no longer matches (no keys sent, decision marked stale): exit 3.
   refuse() {
     echo "board press: refused — $1" >&2
     attempt refused "$1" "${2:-}"
     [ -n "$dec_id" ] && mark_status "$dec_id" stale "press refused: $1" >/dev/null 2>&1
     exit 3
   }
+
+  # 1. A human approver must have answered this exact decision with this exact action.
+  [ -n "$dec_id" ] || refuse_auth "no local permission decision for tool_use_id $expect"
+  local df; df="$(dec_path "$dec_id")"
+  local d_status d_answer d_by d_trunc d_sha
+  d_status="$(jq -r '.status // empty' "$df")"
+  d_answer="$(jq -r '(.answer // "") | ascii_downcase | gsub("^\\s+|\\s+$"; "")' "$df")"
+  d_by="$(jq -r '.answered_by // empty' "$df")"
+  d_trunc="$(jq -r '.summary_truncated // false' "$df")"
+  d_sha="$(jq -r '.summary_sha256 // empty' "$df")"
+  [ "$d_status" = answered ] || refuse_auth "decision $dec_id is '$d_status', not answered (run board answer first)"
+  [ "$d_answer" = "$action" ] || refuse_auth "decision $dec_id was answered '$d_answer', not '$action'"
+  if [ -z "$d_by" ] || ! allowed_by "$df" "$d_by"; then
+    refuse_auth "answered_by '$d_by' is not an approver (or no approvers configured)"
+  fi
+  # 2. A truncated summary means the human did not see the whole input.
+  if [ "$d_trunc" = true ] && [ "$allow_trunc" = 0 ]; then
+    refuse_auth "the summary of $dec_id is truncated; read the full input in the pane, then pass --allow-truncated"
+  fi
+
+  # 3. Keys first, so a config problem never leaves a half-checked press.
+  local keys_json key keys=()
+  if [ "$action" = allow ]; then keys_json="$(cfg_get press.allow_keys)"; else keys_json="$(cfg_get press.deny_keys)"; fi
+  while IFS= read -r key; do [ -n "$key" ] && keys+=("$key"); done < <(jq -r '.[]' <<<"$keys_json" 2>/dev/null)
+  [ ${#keys[@]} -gt 0 ] || refuse "no keys configured for $action"
 
   refresh
   local snap="$BOARD_HOME/snapshot.json"
@@ -527,12 +587,14 @@ cmd_press() {
 
   local sf="$BOARD_HOME/state/$sid.json"
   [ -f "$sf" ] || refuse "no hook state for $code (is the hook installed?)" "$pane"
-  local st_state st_pending st_pane
+  local st_state st_pending st_pane st_sha
   st_state="$(jq -r '.state // empty' "$sf")"
   st_pending="$(jq -r '.pending.tool_use_id // empty' "$sf")"
   st_pane="$(jq -r '.tmux_pane // empty' "$sf")"
+  st_sha="$(jq -r '.pending.summary_sha256 // empty' "$sf")"
   [ "$st_state" = "needs-you" ] || refuse "$code state is '$st_state', not needs-you" "$pane"
   [ "$st_pending" = "$expect" ] || refuse "pending tool_use_id is '${st_pending:-none}', expected '$expect'" "$pane"
+  [ "$st_sha" = "$d_sha" ] || refuse "pending input differs from the decision's (sha256 mismatch)" "$pane"
   if [ -n "$st_pane" ] && [ "$st_pane" != "$pane" ]; then
     refuse "pane mismatch: hook saw $st_pane, registry says $pane" "$pane"
   fi
@@ -542,23 +604,45 @@ cmd_press() {
     [ "$pane_sess" = "${tmux_target%%:*}" ] || refuse "pane $pane belongs to tmux session '$pane_sess', expected '${tmux_target%%:*}'" "$pane"
   fi
 
-  local regex lines screen
+  local regex lines full screen
   regex="$(cfg_get press.prompt_regex)"
   lines="$(cfg_get press.lines 30)"
   case "$lines" in ''|*[!0-9]*) lines=30 ;; esac
-  screen="$(tmux capture-pane -p -t "$pane" 2>/dev/null | sed -e :a -e '/^[[:space:]]*$/{$d;N;ba' -e '}' | tail -n "$lines")" \
-    || refuse "capture-pane failed for $pane" "$pane"
+  full="$(tmux capture-pane -p -t "$pane" 2>/dev/null)" || refuse "capture-pane failed for $pane" "$pane"
+  screen="$(sed -e :a -e '/^[[:space:]]*$/{$d;N;ba' -e '}' <<<"$full" | tail -n "$lines")"
   grep -Eq -- "$regex" <<<"$screen" || refuse "no permission prompt visible in pane $pane" "$pane"
 
-  local keys_json key
-  if [ "$action" = allow ]; then keys_json="$(cfg_get press.allow_keys)"; else keys_json="$(cfg_get press.deny_keys)"; fi
-  local keys=()
-  while IFS= read -r key; do [ -n "$key" ] && keys+=("$key"); done < <(jq -r '.[]' <<<"$keys_json" 2>/dev/null)
-  [ ${#keys[@]} -gt 0 ] || refuse "no keys configured for $action" "$pane"
+  # 4. The prompt on screen must be about this input: the start of the summary (whitespace
+  #    removed, up to 40 characters, before any [REDACTED]) must be visible in the pane.
+  local summ bind flat
+  summ="$(jq -r '.pending.summary // ""' "$sf")"
+  bind="${summ%%\[REDACTED*}"
+  bind="$(tr -d '[:space:]' <<<"$bind")"
+  bind="${bind:0:40}"
+  flat="$(tr -d '[:space:]' <<<"$full")"
+  if [ ${#bind} -lt 8 ] && [ "$summ" != "${summ%%\[REDACTED*}" ]; then
+    refuse "too little of the summary is left before [REDACTED] to check it on screen" "$pane"
+  fi
+  [ -n "$bind" ] || refuse "empty summary; cannot check what the prompt is about" "$pane"
+  local seen=0
+  [[ $flat == *"$bind"* ]] && seen=1
+  if [ "$seen" = 0 ]; then
+    case "$summ" in
+      /*|~*) local base="${summ##*/}"
+             [ ${#base} -ge 3 ] && [[ $flat == *"$(tr -d '[:space:]' <<<"$base")"* ]] && seen=1 ;;
+    esac
+  fi
+  [ "$seen" = 1 ] || refuse "the pending input ('${bind}') is not visible in pane $pane" "$pane"
+
+  # 5. Last look at the state right before typing: abort if the pending prompt changed.
+  if [ "$(jq -r '[.state, (.pending.tool_use_id // ""), (.pending.summary_sha256 // "")] | join(" ")' "$sf")" \
+       != "needs-you $expect $st_sha" ]; then
+    refuse "pending prompt changed while checking" "$pane"
+  fi
 
   tmux send-keys -t "$pane" "${keys[@]}" || { attempt failed "send-keys failed" "$pane"; exit 1; }
   attempt sent "ok" "$pane"
-  [ -n "$dec_id" ] && mark_status "$dec_id" relayed >/dev/null 2>&1
+  mark_status "$dec_id" relayed >/dev/null 2>&1
   echo "pressed $action (${keys[*]}) in $code pane $pane"
 }
 
@@ -576,8 +660,12 @@ cmd_notify() {
   command -v curl >/dev/null 2>&1 || return 0
   local payload
   payload="$(jq -cn --arg t "$text" '{text: $t}')"
+  # The webhook URL is a secret: give it to curl in a config on stdin, never on argv.
+  cfgq() { local v="${1//\\/\\\\}"; printf '"%s"' "${v//\"/\\\"}"; }
   local code
-  code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -H 'content-type: application/json' --data-binary "$payload" "$url" 2>/dev/null)"
+  code="$(printf 'url = %s\nheader = "content-type: application/json"\ndata-binary = %s\n' \
+            "$(cfgq "$url")" "$(cfgq "$payload")" \
+          | curl -s -m 10 -o /dev/null -w '%{http_code}' -K - 2>/dev/null)"
   log_event "$(jq -cn --argjson now "$(now_ms)" --arg c "${code:-000}" '{ts: $now, type: "notify", http: $c}')"
   [ "${code:-000}" = 200 ] || echo "board notify: webhook returned ${code:-000}" >&2
   return 0

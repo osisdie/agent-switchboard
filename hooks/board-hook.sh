@@ -30,6 +30,8 @@ input="$(</dev/stdin)"
 BOARD_HOME="${BOARD_HOME:-$HOME/.agent-switchboard}"
 state_dir="$BOARD_HOME/state"
 dec_dir="$BOARD_HOME/decisions"
+umask 077   # state, decisions and events are private to this user
+[ -d "$BOARD_HOME" ] || { mkdir -p "$BOARD_HOME" && chmod 700 "$BOARD_HOME"; } 2>/dev/null || exit 0
 mkdir -p "$state_dir" "$dec_dir" 2>/dev/null || exit 0
 
 # session_id from input (no fork); only filename-safe ids are accepted.
@@ -64,12 +66,28 @@ fi
 dec_id="d-$(( now_ms / 1000 ))-$(printf '%04x%04x' "$RANDOM" "$RANDOM")"
 
 state_file="$state_dir/$sid.json"
+
 self="$(readlink -f "$0")"
 LIB="${self%/*}/../lib"
 LIMIT_RE='usage[ _]limit|rate[ _]limit|limit reached|hit your (usage )?limit|resets? at|resets [0-9]|weekly limit|5-hour limit|out of (extra )?usage'
 event_re='"hook_event_name"[[:space:]]*:[[:space:]]*"([A-Za-z]+)"'
 event=""
 [[ $input =~ $event_re ]] && event="${BASH_REMATCH[1]}"
+
+# The tool input as one string: the field a human recognizes (command, path, url, ...) or JSON.
+FULLIN='def fullin: (.tool_input // null)
+  | if . == null then ""
+    elif type == "object" then
+      (.command // .file_path // .notebook_path // .url // .pattern // .query // .description
+         // (.questions[0]?.question) // tojson)
+    else . end
+  | if type == "string" then . else tojson end;'
+full_sha=""
+case "$event" in
+  PreToolUse|PermissionRequest)
+    full_sha="$(printf '%s' "$input" | jq -j "$FULLIN fullin" 2>/dev/null | sha256sum 2>/dev/null)"
+    full_sha="${full_sha%% *}" ;;
+esac
 
 update() {
   local old="/dev/null" out st ev dec lim tmp
@@ -81,16 +99,26 @@ update() {
     --arg pane "${TMUX_PANE:-}" \
     --arg dec_id "$dec_id" \
     --arg sid "$sid" \
-    --arg limre "$LIMIT_RE" '
-    def summ: (.tool_input // null)
-      | if . == null then ""
-        elif type == "object" then
-          (.command // .file_path // .notebook_path // .url // .pattern // .query // .description
-             // (.questions[0]?.question) // tojson)
-        else . end
-      | if type == "string" then . else tojson end
-      | .[0:200];
+    --arg limre "$LIMIT_RE" \
+    --arg sha "$full_sha" "$FULLIN"'
+    # Token-like values never reach the state file, the db or Slack.
+    def redact:
+      gsub("(?<k>[Bb][Ee][Aa][Rr][Ee][Rr])\\s+[A-Za-z0-9._~+/=-]+"; "\(.k) [REDACTED]")
+      | gsub("xox[abposr]-[A-Za-z0-9-]+"; "[REDACTED]")
+      | gsub("(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})"; "[REDACTED]")
+      | gsub("A[KS]IA[0-9A-Z]{16}"; "[REDACTED]")
+      | gsub("(?<k>(?i:password|passwd|token|secret|api[_-]?key|access[_-]?key|client[_-]?secret))(?<s>\\s*[=:]\\s*)(?<v>\"[^\"]*\"|'"'"'[^'"'"']*'"'"'|[^\\s&'"'"'\"]+)";
+             "\(.k)\(.s)[REDACTED]")
+      | gsub("(?<h>\\b[0-9a-fA-F]{32,}\\b)";
+             if (.h | length) == 40 and (.h | test("^[0-9a-f]+$")) then .h else "[REDACTED]" end)
+      | gsub("(?<b>[A-Za-z0-9+/_-]{40,}={0,2})";
+             if (.b | test("[0-9]")) and (.b | test("[a-z]")) and (.b | test("[A-Z]"))
+                and ((.b | split("/") | map(length) | max) >= 24) then "[REDACTED]" else .b end);
     def clean: with_entries(select(.value != null and .value != ""));
+    def info($full; $sha):
+      ($full | redact) as $r
+      | { summary: $r[0:200], summary_truncated: (($r | length) > 200),
+          summary_len: ($full | length), summary_sha256: (if $sha == "" then null else $sha end) };
 
     select((.session_id // "") == $sid)
     | . as $in
@@ -99,16 +127,21 @@ update() {
     | ($in.notification_type // "") as $nt
     | ($in.tool_use_id // "") as $tu
     | ($in.tool_name // "") as $tn
-    | ($in | summ) as $sm
+    | (info($in | fullin; $sha)) as $si
     | ($o.recent_pre // []) as $recent
     | ($o.pending // null) as $pend
-    # Look up the PreToolUse that a permission prompt belongs to.
-    | ( if $tu != "" then {tool_use_id: $tu, tool_name: $tn, summary: $sm}
-        else ( [ $recent[] | select(.tool_name == $tn and .summary == $sm) ] | last )
-          // ( [ $recent[] | select(.tool_name == $tn) ] | last )
-          // ( if $tn == "" then ($recent | last) else null end )
-          // (if $tn != "" then {tool_use_id: null, tool_name: $tn, summary: $sm} else null end)
-        end ) as $match
+    # Which PreToolUse does a permission prompt belong to? Never guess: when several in-flight
+    # tool uses could match, the prompt is "ambiguous" and gets no pressable decision.
+    | ( if $tu != "" then {tool_use_id: $tu, tool_name: $tn} + $si
+        elif $ev == "PermissionRequest" then
+          [ $recent[] | select(.tool_name == $tn and $sha != "" and .summary_sha256 == $sha) ] as $exact
+          | [ $recent[] | select(.tool_name == $tn) ] as $named
+          | if ($exact | length) == 1 then $exact[0]
+            elif ($named | length) > 0 then {tool_use_id: null, tool_name: $tn, ambiguous: true} + $si
+            else {tool_use_id: null, tool_name: $tn} + $si end
+        elif ($recent | length) == 1 then $recent[0]
+        elif ($recent | length) > 1 then {tool_use_id: null, tool_name: null, summary: "", ambiguous: true}
+        else null end ) as $match
     | ( if $ev == "PermissionRequest" or ($ev == "Notification" and $nt == "permission_prompt") then
           ( if $pend != null and ($ev == "Notification" or $match == null
                                    or ($pend.tool_use_id // "") == ($match.tool_use_id // "")) then $pend
@@ -116,7 +149,12 @@ update() {
           | { state: "needs-you",
               pending: (if $p == null then null
                         else { tool_use_id: ($p.tool_use_id // null), tool_name: ($p.tool_name // null),
-                               summary: ($p.summary // ""), decision_id: ($p.decision_id // null) } end) }
+                               summary: ($p.summary // ""),
+                               summary_truncated: ($p.summary_truncated // false),
+                               summary_len: ($p.summary_len // null),
+                               summary_sha256: ($p.summary_sha256 // null),
+                               ambiguous: ($p.ambiguous // false),
+                               decision_id: ($p.decision_id // null) } end) }
         elif $ev == "UserPromptSubmit" then {state: "working", pending: null}
         elif $ev == "Stop" or $ev == "StopFailure" then {state: "done", pending: null}
         elif $ev == "Notification" and $nt == "idle_prompt" then {state: "done", pending: $pend}
@@ -133,10 +171,11 @@ update() {
         else {state: ($o.state // "rest"), pending: $pend} end ) as $t
     # A permission decision is created once per tool_use_id.
     | ( if $t.state == "needs-you" and $t.pending != null and ($t.pending.tool_use_id // "") != ""
-           and ($t.pending.decision_id // null) == null then $dec_id else null end ) as $new_dec
+           and ($t.pending.ambiguous | not) and ($t.pending.decision_id // null) == null
+        then $dec_id else null end ) as $new_dec
     | ( if $new_dec != null then $t.pending + {decision_id: $new_dec} else $t.pending end ) as $pending
     | ( if $ev == "PreToolUse" and $tu != "" then
-          ($recent + [{tool_use_id: $tu, tool_name: $tn, summary: $sm}]) | .[-8:]
+          ($recent + [{tool_use_id: $tu, tool_name: $tn} + $si]) | .[-8:]
         elif ($ev == "PostToolUse" or $ev == "PostToolUseFailure") and $tu != "" then
           [ $recent[] | select(.tool_use_id != $tu) ]
         elif $ev == "SessionEnd" or $ev == "Stop" or $ev == "StopFailure" then []
@@ -158,7 +197,9 @@ update() {
                question: ("Allow " + ($pending.tool_name // "tool") + "?"),
                options: ["allow", "deny"], context: null,
                tool_use_id: $pending.tool_use_id, tool_name: $pending.tool_name,
-               summary: $pending.summary, session_id: $in.session_id,
+               summary: $pending.summary, summary_truncated: $pending.summary_truncated,
+               summary_len: $pending.summary_len, summary_sha256: $pending.summary_sha256,
+               session_id: $in.session_id,
                tmux_pane: (if $pane != "" then $pane else ($o.tmux_pane // null) end),
                status: "pending", answer: null, answered_by: null, answered_at: null,
                relayed_at: null, created_at: $now } end ),

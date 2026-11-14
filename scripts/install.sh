@@ -63,6 +63,8 @@ done
 # ---- BOARD_HOME
 if [ "$uninstall" = 0 ]; then
   say "state: $BOARD_HOME"
+  run mkdir -p "$BOARD_HOME"
+  run chmod 700 "$BOARD_HOME"   # private: state, decisions, events, alerts
   run mkdir -p "$BOARD_HOME/state" "$BOARD_HOME/decisions" "$BOARD_HOME/outbox"
   run chmod +x "$HOOK" "$REPO"/bin/*
 fi
@@ -138,8 +140,8 @@ else
   else
     mkdir -p "$(dirname "$SETTINGS")"
     if [ "$sl_save" = 1 ]; then
-      mkdir -p "$BOARD_HOME"
-      jq '.statusLine // null' <<<"$current" > "$SL_PREV"
+      mkdir -p "$BOARD_HOME" && chmod 700 "$BOARD_HOME"
+      (umask 077; jq '.statusLine // null' <<<"$current" > "$SL_PREV")
     fi
     if [ -f "$SETTINGS" ]; then
       backup="$SETTINGS.bak-$(date +%Y%m%d-%H%M%S)"

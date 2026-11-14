@@ -61,7 +61,7 @@ def active():
 
 
 def write(data):
-    os.makedirs(fleet.board_home(), exist_ok=True)
+    fleet.ensure_home()
     tmp = "%s.tmp.%d" % (path(), os.getpid())
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(data, fh, ensure_ascii=False)
@@ -149,7 +149,7 @@ def fmt_time(ms, now=None):
 
 def record(event, text):
     now = now_ms()
-    text = (text or "")[:300]
+    text = fleet.safe_text(text or "")[:300]
     resets = parse_resets(text, now)
     cur = active()
     if cur:
@@ -208,9 +208,9 @@ def main(argv):
         else:
             print("usage limit hit %s (%s), resets ~%s" % (
                 dt.datetime.fromtimestamp(cur["hit_at"] / 1000).strftime("%Y-%m-%d %H:%M"),
-                cur.get("kind"), fmt_time(cur.get("resets_at"))))
+                fleet.safe_text(cur.get("kind")), fmt_time(cur.get("resets_at"))))
             if cur.get("note"):
-                print("note: %s" % cur["note"])
+                print("note: %s" % fleet.safe_text(cur["note"]))
     else:
         sys.stderr.write("unknown command: %s\n" % cmd)
         return 2

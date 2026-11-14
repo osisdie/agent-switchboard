@@ -81,6 +81,7 @@ eq "unrelated PostToolUse keeps pending" "$(st .pending.tool_use_id)" "tu_1"
 # ---- collector
 cat > "$BOARD_CONFIG_DIR/fleet.yaml" <<'EOF'
 collector: true
+approvers: [user-1]
 sessions:
   - code: CP
     cwd: /w
@@ -167,6 +168,7 @@ echo "notify:"
 # (board-notify keeps the URL and body off argv).
 cat > "$T/bin/curl" <<'EOF'
 #!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FAKE_CURL_LOG.args"
 data=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -196,6 +198,7 @@ eq "notify without webhook is a no-op" "$(wc -l < "$FAKE_CURL_LOG" | tr -d ' ')"
 echo "SLACK_WEBHOOK_URL=\"http://example.invalid/hook\"" > "$BOARD_CONFIG_DIR/.env"
 PATH="$T/bin:$PATH" "$REPO/bin/board" notify "hello"
 eq "notify posts JSON" "$(jq -r .text "$FAKE_CURL_LOG")" "hello"
+grep -q "example.invalid" "$FAKE_CURL_LOG.args" && bad "board notify: webhook URL not on curl argv" || ok "board notify: webhook URL not on curl argv"
 : > "$FAKE_CURL_LOG"
 [ -f "$BOARD_HOME/alerts.json" ] && bad "--no-notify runs leave alerts.json alone" || ok "--no-notify runs leave alerts.json alone"
 # QA goes from needs-you to busy and back: one alert, then deduped (repeat_minutes).
@@ -249,38 +252,147 @@ cat > "$T/bin/tmux" <<'EOF'
 echo "$*" >> "$FAKE_TMUX_LOG"
 case "$1" in
   display-message) echo "${FAKE_TMUX_SESSION:-CP}" ;;
-  capture-pane) printf '%s\n' "${FAKE_TMUX_SCREEN:-}" ;;
+  capture-pane)
+    # Optional side effect: the prompt changes while board press is checking.
+    if [ -n "${FAKE_TMUX_MUTATE:-}" ]; then
+      jq '.pending.tool_use_id = "tu_other"' "$FAKE_TMUX_MUTATE" > "$FAKE_TMUX_MUTATE.x" && mv "$FAKE_TMUX_MUTATE.x" "$FAKE_TMUX_MUTATE"
+    fi
+    printf '%s\n' "${FAKE_TMUX_SCREEN:-}" ;;
   send-keys) exit 0 ;;
 esac
 EOF
 chmod +x "$T/bin/tmux"
 export FAKE_TMUX_LOG="$T/tmux.log"
 : > "$FAKE_TMUX_LOG"
-PROMPT=$' Bash command\n   rm -rf build\n Do you want to proceed?\n ❯ 1. Yes\n   2. No, and tell Claude what to do differently (esc)\n'
+B="$REPO/bin/board"
+# perm CMD → a new pending permission prompt for CMD; prints "TOOL_USE_ID DECISION_ID".
+perm() {  # runs in $(...): keep the counter in a file
+  local n; n=$(( $(cat "$T/perm.n" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$T/perm.n"
+  local tu="tu_p$n" cmd="$1" d
+  hook "$(jq -cn --arg s "$SID" --arg tu "$tu" --arg c "$cmd" '{session_id: $s, hook_event_name: "PreToolUse", tool_name: "Bash", tool_use_id: $tu, tool_input: {command: $c}}')"
+  hook "$(jq -cn --arg s "$SID" --arg c "$cmd" '{session_id: $s, hook_event_name: "PermissionRequest", tool_name: "Bash", tool_input: {command: $c}}')"
+  d="$(jq -rs --arg t "$tu" '[.[] | select(.tool_use_id == $t)] | first | .id // ""' "$BOARD_HOME"/decisions/*.json)"
+  echo "$tu $d"
+}
+screen() { printf ' Bash command\n   %s\n Do you want to proceed?\n ❯ 1. Yes\n   2. No, and tell Claude what to do differently (esc)\n' "$1"; }
+press() { PATH="$T/bin:$PATH" "$B" press "$@" >/dev/null 2>&1; }
+sent_keys() { grep -c '^send-keys' "$FAKE_TMUX_LOG"; }
 
-PATH="$T/bin:$PATH" FAKE_TMUX_SCREEN="$PROMPT" "$REPO/bin/board" press CP allow --expect tu_WRONG >/dev/null 2>&1
-eq "press with wrong --expect exits 3" "$?" "3"
-if grep -q '^send-keys' "$FAKE_TMUX_LOG"; then bad "no keys sent on mismatch"; else ok "no keys sent on mismatch"; fi
-eq "refusal logged" "$(jq -s '[.[] | select(.type=="press" and .result=="refused")] | length' "$BOARD_HOME/events.jsonl")" "1"
-
-PATH="$T/bin:$PATH" FAKE_TMUX_SCREEN="just a shell prompt" "$REPO/bin/board" press CP allow --expect tu_1 >/dev/null 2>&1
-eq "press without visible prompt exits 3" "$?" "3"
-if grep -q '^send-keys' "$FAKE_TMUX_LOG"; then bad "no keys sent without prompt"; else ok "no keys sent without prompt"; fi
-eq "permission decision marked stale on refusal" "$(jq -r .status "$dec")" "stale"
-
-PATH="$T/bin:$PATH" FAKE_TMUX_SESSION=OTHER FAKE_TMUX_SCREEN="$PROMPT" "$REPO/bin/board" press CP allow --expect tu_1 >/dev/null 2>&1
-eq "press refuses pane of another tmux session" "$?" "3"
-
-PATH="$T/bin:$PATH" FAKE_TMUX_SCREEN="$PROMPT" "$REPO/bin/board" press CP allow --expect tu_1 >/dev/null 2>&1
-eq "press allow ok" "$?" "0"
+C="make deploy-staging --force"
+read -r tu d <<<"$(perm "$C")"
+[ -n "$d" ] && ok "permission decision created" || bad "permission decision created"
+FAKE_TMUX_SCREEN="$(screen "$C")" press CP allow --expect "$tu"
+eq "press before any answer -> exit 4" "$?" "4"
+eq "...no keys sent" "$(sent_keys)" "0"
+eq "...logged as unauthorized" "$(jq -s '[.[] | select(.type=="press" and .result=="unauthorized")] | length' "$BOARD_HOME/events.jsonl")" "1"
+eq "...decision left pending" "$(jq -r .status "$BOARD_HOME/decisions/$d.json")" "pending"
+"$B" answer "$d" deny --by user-1 >/dev/null
+FAKE_TMUX_SCREEN="$(screen "$C")" press CP allow --expect "$tu"
+eq "answer deny, press allow -> exit 4" "$?" "4"
+"$B" answer "$d" Allow --by user-1 >/dev/null
+FAKE_TMUX_SCREEN="$(screen "$C")" press CP allow --expect tu_WRONG
+eq "wrong --expect (no such decision) -> exit 4" "$?" "4"
+{ grep -v '^approvers:' "$BOARD_CONFIG_DIR/fleet.yaml"; printf 'approvers: [someone-else]\n'; } > "$T/fy" && mv "$T/fy" "$BOARD_CONFIG_DIR/fleet.yaml"
+FAKE_TMUX_SCREEN="$(screen "$C")" press CP allow --expect "$tu"
+eq "answered_by no longer an approver -> exit 4" "$?" "4"
+{ grep -v '^approvers:' "$BOARD_CONFIG_DIR/fleet.yaml"; printf 'approvers: [user-1]\n'; } > "$T/fy" && mv "$T/fy" "$BOARD_CONFIG_DIR/fleet.yaml"
+eq "no keys sent by any refusal so far" "$(sent_keys)" "0"
+FAKE_TMUX_SCREEN="$(screen "$C")" press CP allow --expect "$tu"
+eq "approver's allow -> press ok" "$?" "0"
 eq "allow sends 1" "$(grep '^send-keys' "$FAKE_TMUX_LOG" | tail -1)" "send-keys -t %42 1"
+eq "decision relayed" "$(jq -r .status "$BOARD_HOME/decisions/$d.json")" "relayed"
+
+read -r tu d <<<"$(perm "terraform destroy -auto-approve")"
+"$B" answer "$d" deny --by user-1 >/dev/null
 : > "$FAKE_TMUX_LOG"
-PATH="$T/bin:$PATH" FAKE_TMUX_SCREEN="$PROMPT" "$REPO/bin/board" press CP deny --expect tu_1 >/dev/null 2>&1
+FAKE_TMUX_SCREEN="$(screen "terraform destroy -auto-approve")" press CP deny --expect "$tu"
 eq "deny sends Escape" "$(grep '^send-keys' "$FAKE_TMUX_LOG" | tail -1)" "send-keys -t %42 Escape"
 
+: > "$FAKE_TMUX_LOG"
+read -r tu d <<<"$(perm "rm -rf build")"; "$B" answer "$d" allow --by user-1 >/dev/null
+FAKE_TMUX_SCREEN="just a shell prompt" press CP allow --expect "$tu"
+eq "no permission prompt visible -> exit 3" "$?" "3"
+eq "...decision marked stale" "$(jq -r .status "$BOARD_HOME/decisions/$d.json")" "stale"
+read -r tu d <<<"$(perm "rm -rf build-b")"; "$B" answer "$d" allow --by user-1 >/dev/null
+FAKE_TMUX_SESSION=OTHER FAKE_TMUX_SCREEN="$(screen "rm -rf build-b")" press CP allow --expect "$tu"
+eq "pane of another tmux session -> exit 3" "$?" "3"
+read -r tu d <<<"$(perm "rm -rf build-c")"; "$B" answer "$d" allow --by user-1 >/dev/null
+FAKE_TMUX_SCREEN="$(screen "rm -rf /")" press CP allow --expect "$tu"
+eq "prompt on screen is about other input -> exit 3" "$?" "3"
+read -r tu d <<<"$(perm "rm -rf build-d")"; "$B" answer "$d" allow --by user-1 >/dev/null
+jq '.pending.summary_sha256 = "0000"' "$BOARD_HOME/state/$SID.json" > "$T/sx" && mv "$T/sx" "$BOARD_HOME/state/$SID.json"
+FAKE_TMUX_SCREEN="$(screen "rm -rf build-d")" press CP allow --expect "$tu"
+eq "pending input sha differs from the decision -> exit 3" "$?" "3"
+read -r tu d <<<"$(perm "rm -rf build-e")"; "$B" answer "$d" allow --by user-1 >/dev/null
+FAKE_TMUX_MUTATE="$BOARD_HOME/state/$SID.json" FAKE_TMUX_SCREEN="$(screen "rm -rf build-e")" press CP allow --expect "$tu"
+eq "prompt changed while checking (re-read before send-keys) -> exit 3" "$?" "3"
+eq "no keys sent by any exit-3 refusal" "$(sent_keys)" "0"
+# A wrapped command in the pane still matches (whitespace is ignored).
+read -r tu d <<<"$(perm "kubectl rollout restart deployment/web --namespace staging")"; "$B" answer "$d" allow --by user-1 >/dev/null
+FAKE_TMUX_SCREEN="$(screen $'kubectl rollout restart deployment/web --name\n     space staging')" press CP allow --expect "$tu"
+eq "wrapped command on screen -> press ok" "$?" "0"
+
+# Truncated summaries need --allow-truncated.
+LONGC="echo $(printf 'word%.0s ' $(seq 1 60))"
+read -r tu d <<<"$(perm "$LONGC")"; "$B" answer "$d" allow --by user-1 >/dev/null
+eq "decision carries summary_truncated" "$(jq -r .summary_truncated "$BOARD_HOME/decisions/$d.json")" "true"
+eq "decision carries summary_len" "$(jq -r .summary_len "$BOARD_HOME/decisions/$d.json")" "${#LONGC}"
+eq "decision carries sha256 of the full input" "$(jq -r .summary_sha256 "$BOARD_HOME/decisions/$d.json")" "$(printf '%s' "$LONGC" | sha256sum | cut -d' ' -f1)"
+FAKE_TMUX_SCREEN="$(screen "$LONGC")" press CP allow --expect "$tu"
+eq "truncated summary -> exit 4" "$?" "4"
+FAKE_TMUX_SCREEN="$(screen "$LONGC")" press CP allow --expect "$tu" --allow-truncated
+eq "truncated + --allow-truncated -> ok" "$?" "0"
+last_tu="$tu"
+
+# Ambiguous permission prompts: never guess.
+hook "$(jq -cn --arg s "$SID" '{session_id: $s, hook_event_name: "PreToolUse", tool_name: "Bash", tool_use_id: "tu_a1", tool_input: {command: "npm test"}}')"
+hook "$(jq -cn --arg s "$SID" '{session_id: $s, hook_event_name: "PreToolUse", tool_name: "Bash", tool_use_id: "tu_a2", tool_input: {command: "npm run lint"}}')"
+nd="$(ndec)"
+hook "$(jq -cn --arg s "$SID" '{session_id: $s, hook_event_name: "PermissionRequest", tool_name: "Bash", tool_input: {command: "npm publish"}}')"
+eq "no tool_use_id, several Bash in flight -> ambiguous" "$(st .pending.ambiguous)" "true"
+eq "...no pressable decision" "$(ndec)" "$nd"
+hook "$(jq -cn --arg s "$SID" '{session_id: $s, hook_event_name: "PermissionRequest", tool_name: "Bash", tool_input: {command: "npm run lint"}}')"
+eq "exact input match among several -> bound" "$(st .pending.tool_use_id)" "tu_a2"
+hook "$(jq -cn --arg s "$SID" '{session_id: $s, hook_event_name: "PostToolUse", tool_name: "Bash", tool_use_id: "tu_a2", tool_input: {command: "npm run lint"}}')"
+hook "$(jq -cn --arg s "$SID" '{session_id: $s, hook_event_name: "PreToolUse", tool_name: "Bash", tool_use_id: "tu_a3", tool_input: {command: "npm ci"}}')"
+hook "$(jq -cn --arg s "$SID" '{session_id: $s, hook_event_name: "Notification", notification_type: "permission_prompt", message: "Claude needs your permission"}')"
+eq "notification with several in flight -> ambiguous" "$(st .pending.ambiguous)" "true"
+for t in tu_a1 tu_a3 "$last_tu"; do
+  hook "$(jq -cn --arg s "$SID" --arg t "$t" '{session_id: $s, hook_event_name: "PostToolUse", tool_name: "Bash", tool_use_id: $t, tool_input: {}}')"
+done
+hook "$(jq -cn --arg s "$SID" '{session_id: $s, hook_event_name: "UserPromptSubmit"}')"
+hook "$(jq -cn --arg s "$SID" '{session_id: $s, hook_event_name: "PreToolUse", tool_name: "Bash", tool_use_id: "tu_last", tool_input: {command: "true"}}')"
+last_tu=tu_last
+
+# Redaction and private files. Token-shaped values are assembled at runtime, so this file never
+# contains one (the gitleaks pre-commit hook scans it).
+k_aws="AKIA""ABCDEFGHIJKLMNOP"; k_gh="ghp""_abcdefghijklmnopqrstuvwxyz0123456789"; k_sl="xoxb""-1234567890-abcdefghij"
+hook "$(jq -cn --arg s "$SID" --arg c "curl -H \"Authorization: Bearer abcdef0123456789xyz\" https://api.example.test?token=s3cr3tvalue -u u:p --data password=hunter2xyz $k_aws $k_gh $k_sl" \
+  '{session_id: $s, hook_event_name: "PreToolUse", tool_name: "Bash", tool_use_id: "tu_sec", tool_input: {command: $c}}')"
+summ="$(st '.recent_pre | last | .summary')"
+for s in abcdef0123456789xyz s3cr3tvalue hunter2xyz "$k_aws" "${k_gh:0:10}" "${k_sl:0:9}"; do
+  case "$summ" in *"$s"*) bad "summary redacts ${s:0:4}…" "$summ" ;; *) ok "summary redacts ${s:0:4}…" ;; esac
+done
+case "$summ" in *"curl -H"*"https://api.example.test?token=[REDACTED]"*) ok "summary keeps the readable parts" ;; *) bad "summary keeps the readable parts" "$summ" ;; esac
+hook "$(jq -cn --arg s "$SID" '{session_id: $s, hook_event_name: "PostToolUse", tool_name: "Bash", tool_use_id: "tu_sec", tool_input: {}}')"
+eq "BOARD_HOME is 0700" "$(stat -c %a "$BOARD_HOME")" "700"
+eq "state file is 0600" "$(stat -c %a "$BOARD_HOME/state/$SID.json")" "600"
+eq "decision file is 0600" "$(stat -c %a "$BOARD_HOME/decisions/$d.json")" "600"
+H8="$T/home8"; printf '{"session_id":"s8","hook_event_name":"SessionStart"}' | BOARD_HOME="$H8" "$HOOK"
+eq "hook creates BOARD_HOME 0700" "$(stat -c %a "$H8")" "700"
+H9="$T/home9"; BOARD_HOME="$H9" "$B" ask --from CP "private?" >/dev/null
+eq "board creates BOARD_HOME 0700" "$(stat -c %a "$H9")" "700"
+
+# Control characters never reach the terminal.
+cid="$("$B" ask --from CP $'evil \e]0;pwned\a\e[2J question')"
+out="$("$B" decisions)"
+case "$out" in *$'\e'*|*$'\a'*) bad "decisions table strips control characters" ;; *) ok "decisions table strips control characters" ;; esac
+grep -q 'evil ?\]0;pwned??\[2J question' <<<"$out" && ok "control characters shown as ?" || bad "control characters shown as ?" "$out"
+"$B" mark "$cid" stale >/dev/null
+
 # ---- pending cleared after the tool ran
-hook "{\"session_id\":\"$SID\",\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Bash\",\"tool_use_id\":\"tu_1\",\"tool_input\":{\"command\":\"rm -rf build\"}}"
-eq "PostToolUse of pending tool -> working" "$(st .state)" "working"
+hook "$(jq -cn --arg s "$SID" --arg t "$last_tu" '{session_id: $s, hook_event_name: "PostToolUse", tool_name: "Bash", tool_use_id: $t, tool_input: {command: "true"}}')"
+eq "PostToolUse of the last tool -> working" "$(st .state)" "working"
 eq "pending cleared" "$(st .pending)" "null"
 hook "{\"session_id\":\"$SID\",\"hook_event_name\":\"Notification\",\"notification_type\":\"idle_prompt\"}"
 eq "idle_prompt -> done" "$(st .state)" "done"
@@ -355,12 +467,18 @@ hook "{\"session_id\":\"$SID\",\"hook_event_name\":\"Notification\",\"notificati
 eq "unrelated notification is not a limit" "$(jq -r 'has("cleared_at")' "$lim")" "true"
 hook "{\"session_id\":\"$SID\",\"hook_event_name\":\"StopFailure\",\"error\":\"overloaded_error\"}"
 eq "non-limit StopFailure is not a limit" "$(jq -r 'has("cleared_at")' "$lim")" "true"
+"$REPO/bin/board" limit --clear >/dev/null
+hook "$(jq -cn --arg s "$SID" '{session_id: $s, hook_event_name: "StopFailure", error: "usage limit reached \u001b]0;x\u0007 resets 9am"}')"
+case "$(cat "$lim")$("$REPO/bin/board" limit)" in *$'\e'*|*$'\a'*) bad "limit note strips control characters" ;; *) ok "limit note strips control characters" ;; esac
+"$REPO/bin/board" limit --clear >/dev/null
+eq "limit.json is 0600" "$(stat -c %a "$lim")" "600"
+eq "alerts.json is 0600" "$(stat -c %a "$BOARD_HOME/alerts.json")" "600"
 rm -f "$BOARD_CONFIG_DIR/.env"
 
 # ---- approvers / release managers
 echo "approvers:"
 B="$REPO/bin/board"
-cp "$BOARD_CONFIG_DIR/fleet.yaml" "$T/fleet.base.yaml"
+grep -v '^approvers:' "$BOARD_CONFIG_DIR/fleet.yaml" > "$T/fleet.base.yaml"
 { cat "$T/fleet.base.yaml"; printf 'approvers: [u-owner, u-lead]\nrelease_managers: [u-rm]\n'; } > "$BOARD_CONFIG_DIR/fleet.yaml"
 q="$("$B" ask --from CP "Merge?")"
 "$B" answer "$q" yes --by u-stranger >/dev/null 2>&1; eq "non-approver refused (exit 4)" "$?" "4"
@@ -380,9 +498,28 @@ p3="$("$B" ask --from CP "Another release?" --gate production)"
 "$B" answer "$p3" approve --by anyone >/dev/null 2>&1; eq "production with nobody configured refused" "$?" "4"
 eq "...and stays pending" "$(jq -r .status "$BOARD_HOME/decisions/$p3.json")" "pending"
 q2="$("$B" ask --from CP "Unchecked?")"
-"$B" answer "$q2" yes --by anyone >/dev/null; eq "empty approvers = unchecked" "$?" "0"
+"$B" answer "$q2" yes --by anyone >/dev/null 2>&1; eq "empty approvers fails closed for any answer" "$?" "4"
+eq "...and stays pending" "$(jq -r .status "$BOARD_HOME/decisions/$q2.json")" "pending"
 "$B" mark "$q2" relayed >/dev/null
 "$B" answer "$q2" no --by anyone >/dev/null 2>&1; eq "cannot re-answer a relayed decision" "$?" "1"
+# Production detection is normalized: gate or stage, trimmed and lowercased.
+{ cat "$T/fleet.base.yaml"; printf 'approvers: [u-owner]\nrelease_managers: [u-rm]\n'; } > "$BOARD_CONFIG_DIR/fleet.yaml"
+p4="$("$B" ask --from CP "Ship?" --gate " Production ")"
+"$B" answer "$p4" approve --by u-owner >/dev/null 2>&1; eq "gate ' Production ' is production" "$?" "4"
+p5="$("$B" ask --from CP "Ship?" --stage production)"
+eq "--stage alone is stored" "$(jq -r .stage "$BOARD_HOME/decisions/$p5.json")" "production"
+"$B" answer "$p5" approve --by u-owner >/dev/null 2>&1; eq "stage production (any gate) is production" "$?" "4"
+"$B" answer "$p5" approve --by u-rm >/dev/null; eq "...release manager may answer it" "$?" "0"
+out="$(python3 - "$REPO/lib" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import fleet, notify
+print(fleet.is_production({"gate": " PRODUCTION "}), fleet.is_production({"stage": "production"}),
+      fleet.is_production({"gate": "prod"}), notify.decision_alert({"id": "x", "stage": "Production", "kind": "question"})["level"])
+PY
+)"
+eq "python is_production + urgent alert for stage production" "$out" "True True False urgent"
+cp "$T/fleet.base.yaml" "$BOARD_CONFIG_DIR/fleet.yaml"
 
 # ---- lifecycle tasks
 echo "tasks:"
@@ -433,12 +570,13 @@ done
 echo "pre-commit:"
 R="$T/repo"
 mkdir -p "$R/.githooks" "$R/tmp-local" "$R/tmp-scratch" "$T/gl-shim"
-cp "$REPO/.githooks/pre-commit" "$R/.githooks/" && cp "$REPO/.gitleaks.toml" "$R/"
+cp "$REPO/.githooks/pre-commit" "$REPO/.githooks/commit-msg" "$R/.githooks/" && cp "$REPO/.gitleaks.toml" "$R/"
+printf 'tmp*/\n' > "$R/.gitignore"
 git -C "$R" init -q -b main
 git -C "$R" config user.email t@example.invalid && git -C "$R" config user.name t
 git -C "$R" config core.hooksPath .githooks
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$T/gl-shim/gitleaks"; chmod +x "$T/gl-shim/gitleaks"
-commit() { (cd "$R" && git add -A && PATH="${GL_PATH:-$T/gl-shim}:$PATH" git commit -q -m t >"$T/pc.out" 2>&1); }
+commit() { (cd "$R" && git add -A && PATH="${GL_PATH:-$T/gl-shim}:$PATH" git commit -q -m "${1:-t}" >"$T/pc.out" 2>&1); }
 echo "hello" > "$R/a.txt"
 commit; eq "no banned-terms file: commit allowed" "$?" "0"
 grep -q "banned-terms.txt not found" "$T/pc.out" && ok "missing list warns" || bad "missing list warns" "$(cat "$T/pc.out")"
@@ -449,8 +587,12 @@ printf 'line one\nwe work at Example-Corp\n' > "$R/c.txt"
 commit; eq "banned term (case-insensitive) blocks" "$?" "1"
 grep -q "c.txt:2: we work at Example-Corp" "$T/pc.out" && ok "hit shows file:line" || bad "hit shows file:line" "$(cat "$T/pc.out")"
 git -C "$R" reset -q; rm "$R/c.txt"
-echo "acme notes" > "$R/tmp-scratch/notes.txt"
-commit; eq "tmp*/ paths excluded" "$?" "0"
+echo "acme notes" > "$R/tmp-scratch/notes.txt"; echo "k" > "$R/k.txt"
+commit; eq "ignored tmp*/ files are not committed" "$?" "0"
+git -C "$R" add -f tmp-scratch/notes.txt
+(cd "$R" && PATH="$T/gl-shim:$PATH" git commit -q -m t >"$T/pc.out" 2>&1); eq "force-added tmp*/ path fails the commit" "$?" "1"
+grep -q "tmp-scratch/notes.txt" "$T/pc.out" && ok "...and names the path" || bad "...and names the path" "$(cat "$T/pc.out")"
+git -C "$R" reset -q
 echo "acmes are fine, the comment is not a term" > "$R/d.txt"
 commit; eq "word-boundary pattern and inline comment" "$?" "0"
 mkdir -p "$R/acme" && echo x > "$R/acme/readme.txt"
@@ -461,6 +603,24 @@ echo "y" > "$R/e.txt"
 commit; eq "gitleaks failure blocks" "$?" "1"
 git -C "$R" reset -q; rm "$R/e.txt"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$T/gl-shim/gitleaks"
+mkdir -p "$R/scripts" && cp "$REPO/scripts/setup-dev.sh" "$R/scripts/"
+out="$(cd "$R" && PATH="$T/gl-shim:$PATH" scripts/setup-dev.sh 2>&1)"
+grep -q "ok    .githooks/commit-msg installed" <<<"$out" && ok "setup-dev installs commit-msg" || bad "setup-dev installs commit-msg" "$out"
+grep -q "ok    .githooks/pre-commit installed" <<<"$out" && ok "setup-dev installs pre-commit" || bad "setup-dev installs pre-commit" "$out"
+rm -rf "$R/scripts"   # its help text contains the sample term
+# commit-msg: secrets and banned terms in the message.
+echo "z" > "$R/g.txt"
+commit "add g for example-corp"; eq "commit-msg: banned term blocks" "$?" "1"
+grep -q "banned terms in the commit message" "$T/pc.out" && ok "commit-msg: says why" || bad "commit-msg: says why" "$(cat "$T/pc.out")"
+tok="ghp_$(printf 'aB3%.0s' $(seq 1 12))"
+commit "add g with $tok"; eq "commit-msg: token-like secret blocks" "$?" "1"
+case "$(cat "$T/pc.out")" in *"$tok"*) bad "commit-msg: secret not echoed" ;; *) ok "commit-msg: secret not echoed" ;; esac
+commit "add g"; eq "commit-msg: clean message passes" "$?" "0"
+echo "z2" > "$R/g.txt"
+commit "redact password=/token=/secret= values"; eq "commit-msg: naming the keys is not a secret" "$?" "0"
+echo "z3" > "$R/g.txt"
+commit "set password=hunter2xyz for now"; eq "commit-msg: password=value blocks" "$?" "1"
+git -C "$R" reset -q
 if command -v gitleaks >/dev/null 2>&1; then
   # Build a webhook-shaped value at runtime so this file itself never contains one.
   fake="https://hooks.slack"".com/services/T$(printf 'A%.0s' $(seq 1 8))/B$(printf 'B%.0s' $(seq 1 8))/$(printf 'x7Q%.0s' $(seq 1 8))"
@@ -488,6 +648,8 @@ BIN_DIR="$T/localbin" "$REPO/scripts/install.sh" >/dev/null
 eq "install idempotent" "$(cat "$CLAUDE_SETTINGS")" "$before"
 [ -L "$T/localbin/board" ] && ok "bin symlinked" || bad "bin symlinked"
 [ -L "$T/localbin/board-notify" ] && ok "board-notify symlinked" || bad "board-notify symlinked"
+chmod 755 "$BOARD_HOME"; BIN_DIR="$T/localbin" "$REPO/scripts/install.sh" >/dev/null
+eq "install makes BOARD_HOME 0700" "$(stat -c %a "$BOARD_HOME")" "700"
 TAP="$REPO/hooks/board-statusline-tap.sh"
 eq "no previous statusline: tap installed bare" "$(jq -r .statusLine.command "$CLAUDE_SETTINGS")" "$TAP"
 BIN_DIR="$T/localbin" "$REPO/scripts/install.sh" --uninstall >/dev/null
