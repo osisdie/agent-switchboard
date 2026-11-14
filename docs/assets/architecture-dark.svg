@@ -1,0 +1,393 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000" width="1600" height="1000" role="img" aria-labelledby="t d">
+<title id="t">agent-switchboard architecture</title>
+<desc id="d">Architecture. Your machine: worker sessions (Claude Code in tmux) fire lifecycle events into hooks/board-hook.sh, which writes state files under $BOARD_HOME; bin/board-collect (bash, zero tokens) builds snapshot.json and calls lib/notify.py for Slack, email, LINE, SNS or webhook alerts. The operator session BOARD (an LLM) watches the snapshot and writes it to the Artifact board on claude.ai (write_db) across the trust boundary. A human answers on the board; the operator reads the answer (read_db) and relays it with SendMessage or a guarded bin/board press that sends keys to the worker's tmux pane.</desc>
+<style>text{font-family:ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;} text.m{font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;}</style>
+<defs>
+<linearGradient id="bg" x1="0" y1="0" x2="0.3" y2="1"><stop offset="0" stop-color="#121a27"/><stop offset="1" stop-color="#0b111b"/></linearGradient>
+<linearGradient id="front" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1e2738"/><stop offset="1" stop-color="#161e2c"/></linearGradient>
+<linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff" stop-opacity="0.28"/><stop offset="0.55" stop-color="#ffffff" stop-opacity="0"/></linearGradient>
+<pattern id="dots" width="28" height="28" patternUnits="userSpaceOnUse"><circle cx="2" cy="2" r="1.3" fill="#1e293b"/></pattern>
+<filter id="soft" x="-15%" y="-15%" width="130%" height="140%"><feGaussianBlur stdDeviation="9"/></filter>
+<marker id="m-arrow" viewBox="0 0 12 12" refX="9" refY="6" markerWidth="5" markerHeight="5" orient="auto-start-reverse" markerUnits="strokeWidth"><path d="M0,0 L12,6 L0,12 L3,6 z" fill="#b6c2d3"/></marker><marker id="m-dash" viewBox="0 0 12 12" refX="9" refY="6" markerWidth="5" markerHeight="5" orient="auto-start-reverse" markerUnits="strokeWidth"><path d="M0,0 L12,6 L0,12 L3,6 z" fill="#8d9bb0"/></marker><marker id="m-prim" viewBox="0 0 12 12" refX="9" refY="6" markerWidth="5" markerHeight="5" orient="auto-start-reverse" markerUnits="strokeWidth"><path d="M0,0 L12,6 L0,12 L3,6 z" fill="#fb923c"/></marker><marker id="m-sec" viewBox="0 0 12 12" refX="9" refY="6" markerWidth="5" markerHeight="5" orient="auto-start-reverse" markerUnits="strokeWidth"><path d="M0,0 L12,6 L0,12 L3,6 z" fill="#8d9bb0"/></marker><marker id="m-loop" viewBox="0 0 12 12" refX="9" refY="6" markerWidth="5" markerHeight="5" orient="auto-start-reverse" markerUnits="strokeWidth"><path d="M0,0 L12,6 L0,12 L3,6 z" fill="#0284c7"/></marker><marker id="m-amber" viewBox="0 0 12 12" refX="9" refY="6" markerWidth="5" markerHeight="5" orient="auto-start-reverse" markerUnits="strokeWidth"><path d="M0,0 L12,6 L0,12 L3,6 z" fill="#f59e0b"/></marker><marker id="m-bound" viewBox="0 0 12 12" refX="9" refY="6" markerWidth="5" markerHeight="5" orient="auto-start-reverse" markerUnits="strokeWidth"><path d="M0,0 L12,6 L0,12 L3,6 z" fill="#f87171"/></marker>
+<linearGradient id="pl-local" x1="0" y1="0" x2="0.4" y2="1"><stop offset="0" stop-color="#162031"/><stop offset="1" stop-color="#111a28"/></linearGradient>
+<linearGradient id="pl-cloud" x1="0" y1="0" x2="0.4" y2="1"><stop offset="0" stop-color="#1a1d3d"/><stop offset="1" stop-color="#141733"/></linearGradient>
+<linearGradient id="pl-ext" x1="0" y1="0" x2="0.4" y2="1"><stop offset="0" stop-color="#1f1838"/><stop offset="1" stop-color="#18122d"/></linearGradient>
+<linearGradient id="cyl-build" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#161e2c"/><stop offset="0.45" stop-color="#1e2738"/><stop offset="1" stop-color="#0a3d3a" stop-opacity="0.55"/></linearGradient>
+</defs>
+<rect x="0" y="0" width="1600" height="1000" rx="24" fill="url(#bg)"/>
+<rect x="0" y="0" width="1600" height="1000" rx="24" fill="url(#dots)"/>
+<rect x="1" y="1" width="1598" height="998" rx="23" fill="none" stroke="#283447" stroke-width="2"/>
+<text x="48.0" y="54.0" font-size="32" fill="#e6edf3" font-weight="800">agent-switchboard: architecture</text>
+<text x="48.0" y="84.0" font-size="19" fill="#a3b1c4">Zero-token plumbing on your machine; one LLM operator talks to the cloud board.</text>
+<path d="M960 60 H1006" stroke="#fb923c" stroke-width="5" marker-end="url(#m-prim)"/>
+<text x="1016.0" y="66.0" font-size="18" fill="#e6edf3">decision path</text>
+<path d="M1175.72 60 H1215.72" stroke="#8d9bb0" stroke-width="3.5" marker-end="url(#m-sec)"/>
+<text x="1225.7" y="66.0" font-size="18" fill="#e6edf3">other flow</text>
+<path d="M1354.1200000000001 60 H1394.1200000000001" stroke="#f87171" stroke-width="3" stroke-dasharray="8 6"/>
+<text x="1404.1" y="66.0" font-size="18" fill="#e6edf3">trust boundary</text>
+<rect x="62" y="132" width="340" height="312" rx="14" fill="#000000" fill-opacity="0.60" filter="url(#soft)"/>
+<rect x="58" y="122" width="340" height="312" rx="14" fill="#3a1d08"/>
+<rect x="57" y="121" width="340" height="312" rx="14" fill="#3a1d08"/>
+<rect x="56" y="120" width="340" height="312" rx="14" fill="#3a1d08"/>
+<rect x="55" y="119" width="340" height="312" rx="14" fill="#3a1d08"/>
+<rect x="54" y="118" width="340" height="312" rx="14" fill="#3a1d08"/>
+<rect x="53" y="117" width="340" height="312" rx="14" fill="#3a1d08"/>
+<rect x="52" y="116" width="340" height="312" rx="14" fill="#3a1d08"/>
+<rect x="51" y="115" width="340" height="312" rx="14" fill="#3a1d08"/>
+<rect x="50" y="114" width="340" height="312" rx="14" fill="#3a1d08"/>
+<rect x="49" y="113" width="340" height="312" rx="14" fill="#3a1d08"/>
+<rect x="48" y="112" width="340" height="312" rx="14" fill="url(#front)" stroke="#fb923c" stroke-width="2.5"/>
+<text x="68.0" y="152.0" font-size="22" fill="#e6edf3" font-weight="800">Decision path</text>
+<text x="68.0" y="178.0" font-size="18" fill="#a3b1c4">from blocked worker to answer</text>
+<circle cx="82" cy="214" r="16" fill="#fb923c" stroke="#121a27" stroke-width="3"/><text x="82.0" y="220.5" font-size="18" fill="#1a0d00" font-weight="900" text-anchor="middle">1</text>
+<text x="108.0" y="220.0" font-size="18" fill="#e6edf3" font-weight="500">hook writes needs-you</text>
+<circle cx="82" cy="251" r="16" fill="#fb923c" stroke="#121a27" stroke-width="3"/><text x="82.0" y="257.5" font-size="18" fill="#1a0d00" font-weight="900" text-anchor="middle">2</text>
+<text x="108.0" y="257.0" font-size="18" fill="#e6edf3" font-weight="500">collector → snapshot.json</text>
+<circle cx="82" cy="288" r="16" fill="#fb923c" stroke="#121a27" stroke-width="3"/><text x="82.0" y="294.5" font-size="18" fill="#1a0d00" font-weight="900" text-anchor="middle">3</text>
+<text x="108.0" y="294.0" font-size="18" fill="#e6edf3" font-weight="500">operator write_db → board</text>
+<circle cx="82" cy="325" r="16" fill="#fb923c" stroke="#121a27" stroke-width="3"/><text x="82.0" y="331.5" font-size="18" fill="#1a0d00" font-weight="900" text-anchor="middle">4</text>
+<text x="108.0" y="331.0" font-size="18" fill="#e6edf3" font-weight="500">you answer on the board</text>
+<circle cx="82" cy="362" r="16" fill="#fb923c" stroke="#121a27" stroke-width="3"/><text x="82.0" y="368.5" font-size="18" fill="#1a0d00" font-weight="900" text-anchor="middle">5</text>
+<text x="108.0" y="368.0" font-size="18" fill="#e6edf3" font-weight="500">operator read_db (~3 min)</text>
+<circle cx="82" cy="399" r="16" fill="#fb923c" stroke="#121a27" stroke-width="3"/><text x="82.0" y="405.5" font-size="18" fill="#1a0d00" font-weight="900" text-anchor="middle">6</text>
+<text x="108.0" y="405.0" font-size="18" fill="#e6edf3" font-weight="500">relay: SendMessage / press</text>
+<rect x="440" y="240" width="700" height="210" rx="22" fill="#000000" fill-opacity="0.60" filter="url(#soft)"/>
+<rect x="436" y="230" width="700" height="210" rx="22" fill="#0a0b1f"/>
+<rect x="435" y="229" width="700" height="210" rx="22" fill="#0a0b1f"/>
+<rect x="434" y="228" width="700" height="210" rx="22" fill="#0a0b1f"/>
+<rect x="433" y="227" width="700" height="210" rx="22" fill="#0a0b1f"/>
+<rect x="432" y="226" width="700" height="210" rx="22" fill="#0a0b1f"/>
+<rect x="431" y="225" width="700" height="210" rx="22" fill="#0a0b1f"/>
+<rect x="430" y="224" width="700" height="210" rx="22" fill="#0a0b1f"/>
+<rect x="429" y="223" width="700" height="210" rx="22" fill="#0a0b1f"/>
+<rect x="428" y="222" width="700" height="210" rx="22" fill="#0a0b1f"/>
+<rect x="427" y="221" width="700" height="210" rx="22" fill="#0a0b1f"/>
+<rect x="426" y="220" width="700" height="210" rx="22" fill="#0a0b1f"/>
+<rect x="425" y="219" width="700" height="210" rx="22" fill="#0a0b1f"/>
+<rect x="424" y="218" width="700" height="210" rx="22" fill="#0a0b1f"/>
+<rect x="423" y="217" width="700" height="210" rx="22" fill="#0a0b1f"/>
+<rect x="422" y="216" width="700" height="210" rx="22" fill="#0a0b1f"/>
+<rect x="421" y="215" width="700" height="210" rx="22" fill="#0a0b1f"/>
+<rect x="420" y="214" width="700" height="210" rx="22" fill="url(#pl-cloud)" stroke="#4f5bd5" stroke-width="2"/>
+<rect x="420" y="214" width="700" height="210" rx="22" fill="url(#dots)" opacity="0.8"/>
+<rect x="438" y="197" width="236.04" height="34" rx="17" fill="#4f5bd5"/>
+<text x="556.0" y="220.0" font-size="18" fill="#ffffff" font-weight="800" text-anchor="middle" letter-spacing="0.6">CLOUD · claude.ai</text>
+<rect x="1180" y="240" width="392" height="210" rx="22" fill="#000000" fill-opacity="0.60" filter="url(#soft)"/>
+<rect x="1176" y="230" width="392" height="210" rx="22" fill="#0c0818"/>
+<rect x="1175" y="229" width="392" height="210" rx="22" fill="#0c0818"/>
+<rect x="1174" y="228" width="392" height="210" rx="22" fill="#0c0818"/>
+<rect x="1173" y="227" width="392" height="210" rx="22" fill="#0c0818"/>
+<rect x="1172" y="226" width="392" height="210" rx="22" fill="#0c0818"/>
+<rect x="1171" y="225" width="392" height="210" rx="22" fill="#0c0818"/>
+<rect x="1170" y="224" width="392" height="210" rx="22" fill="#0c0818"/>
+<rect x="1169" y="223" width="392" height="210" rx="22" fill="#0c0818"/>
+<rect x="1168" y="222" width="392" height="210" rx="22" fill="#0c0818"/>
+<rect x="1167" y="221" width="392" height="210" rx="22" fill="#0c0818"/>
+<rect x="1166" y="220" width="392" height="210" rx="22" fill="#0c0818"/>
+<rect x="1165" y="219" width="392" height="210" rx="22" fill="#0c0818"/>
+<rect x="1164" y="218" width="392" height="210" rx="22" fill="#0c0818"/>
+<rect x="1163" y="217" width="392" height="210" rx="22" fill="#0c0818"/>
+<rect x="1162" y="216" width="392" height="210" rx="22" fill="#0c0818"/>
+<rect x="1161" y="215" width="392" height="210" rx="22" fill="#0c0818"/>
+<rect x="1160" y="214" width="392" height="210" rx="22" fill="url(#pl-ext)" stroke="#7c5ce0" stroke-width="2"/>
+<rect x="1160" y="214" width="392" height="210" rx="22" fill="url(#dots)" opacity="0.8"/>
+<rect x="1178" y="197" width="333.0" height="34" rx="17" fill="#7c5ce0"/>
+<text x="1344.5" y="220.0" font-size="18" fill="#ffffff" font-weight="800" text-anchor="middle" letter-spacing="0.6">EXTERNAL · alert channels</text>
+<rect x="56" y="512" width="1520" height="474" rx="22" fill="#000000" fill-opacity="0.60" filter="url(#soft)"/>
+<rect x="52" y="502" width="1520" height="474" rx="22" fill="#070b12"/>
+<rect x="51" y="501" width="1520" height="474" rx="22" fill="#070b12"/>
+<rect x="50" y="500" width="1520" height="474" rx="22" fill="#070b12"/>
+<rect x="49" y="499" width="1520" height="474" rx="22" fill="#070b12"/>
+<rect x="48" y="498" width="1520" height="474" rx="22" fill="#070b12"/>
+<rect x="47" y="497" width="1520" height="474" rx="22" fill="#070b12"/>
+<rect x="46" y="496" width="1520" height="474" rx="22" fill="#070b12"/>
+<rect x="45" y="495" width="1520" height="474" rx="22" fill="#070b12"/>
+<rect x="44" y="494" width="1520" height="474" rx="22" fill="#070b12"/>
+<rect x="43" y="493" width="1520" height="474" rx="22" fill="#070b12"/>
+<rect x="42" y="492" width="1520" height="474" rx="22" fill="#070b12"/>
+<rect x="41" y="491" width="1520" height="474" rx="22" fill="#070b12"/>
+<rect x="40" y="490" width="1520" height="474" rx="22" fill="#070b12"/>
+<rect x="39" y="489" width="1520" height="474" rx="22" fill="#070b12"/>
+<rect x="38" y="488" width="1520" height="474" rx="22" fill="#070b12"/>
+<rect x="37" y="487" width="1520" height="474" rx="22" fill="#070b12"/>
+<rect x="36" y="486" width="1520" height="474" rx="22" fill="url(#pl-local)" stroke="#33435c" stroke-width="2"/>
+<rect x="36" y="486" width="1520" height="474" rx="22" fill="url(#dots)" opacity="0.8"/>
+<rect x="1350.44" y="469" width="187.56" height="34" rx="17" fill="#33435c"/>
+<text x="1444.2" y="492.0" font-size="18" fill="#ffffff" font-weight="800" text-anchor="middle" letter-spacing="0.6">LOCAL MACHINE</text>
+<path d="M30 456 H1570" stroke="#f87171" stroke-width="3" stroke-dasharray="12 8"/>
+<rect x="48" y="439" width="211.28" height="34" rx="17" fill="#121a27" stroke="#f87171" stroke-width="2.5"/>
+<text x="153.6" y="462.0" font-size="18" fill="#f87171" font-weight="900" text-anchor="middle" letter-spacing="1">TRUST BOUNDARY</text>
+<rect x="466" y="266" width="650" height="150" rx="14" fill="#000000" fill-opacity="0.60" filter="url(#soft)"/>
+<rect x="462" y="256" width="650" height="150" rx="14" fill="#272274"/>
+<rect x="461" y="255" width="650" height="150" rx="14" fill="#272274"/>
+<rect x="460" y="254" width="650" height="150" rx="14" fill="#272274"/>
+<rect x="459" y="253" width="650" height="150" rx="14" fill="#272274"/>
+<rect x="458" y="252" width="650" height="150" rx="14" fill="#272274"/>
+<rect x="457" y="251" width="650" height="150" rx="14" fill="#272274"/>
+<rect x="456" y="250" width="650" height="150" rx="14" fill="#272274"/>
+<rect x="455" y="249" width="650" height="150" rx="14" fill="#272274"/>
+<rect x="454" y="248" width="650" height="150" rx="14" fill="#272274"/>
+<rect x="453" y="247" width="650" height="150" rx="14" fill="#272274"/>
+<rect x="452" y="246" width="650" height="150" rx="14" fill="url(#front)" stroke="#4f46e5" stroke-width="2.5"/>
+<path d="M452 260 a14 14 0 0 1 14 -14 H1088 a14 14 0 0 1 14 14 V256 H452 Z" fill="#4f46e5"/>
+<text x="468.0" y="290.0" font-size="21" fill="#e6edf3" font-weight="800">Artifact board</text>
+<text x="468.0" y="322.0" font-size="18" fill="#a3b1c4">db · user · room · phone-friendly</text>
+<text x="1086.0" y="290.0" font-size="18" fill="#a3b1c4" class="m" font-weight="600" text-anchor="end">artifact/board.html</text>
+<rect x="472" y="346" width="137.6" height="36" rx="8" fill="#05080f"/>
+<rect x="471" y="345" width="137.6" height="36" rx="8" fill="#05080f"/>
+<rect x="470" y="344" width="137.6" height="36" rx="8" fill="#05080f"/>
+<rect x="469" y="343" width="137.6" height="36" rx="8" fill="#05080f"/>
+<rect x="468" y="342" width="137.6" height="36" rx="8" fill="#0b1220" stroke="#3e4e68" stroke-width="1.5"/>
+<text x="481.0" y="366.3" font-size="18" fill="#e2e8f0" class="m" font-weight="600">decisions/</text>
+<rect x="621.6" y="346" width="92.96" height="36" rx="8" fill="#05080f"/>
+<rect x="620.6" y="345" width="92.96" height="36" rx="8" fill="#05080f"/>
+<rect x="619.6" y="344" width="92.96" height="36" rx="8" fill="#05080f"/>
+<rect x="618.6" y="343" width="92.96" height="36" rx="8" fill="#05080f"/>
+<rect x="617.6" y="342" width="92.96" height="36" rx="8" fill="#0b1220" stroke="#3e4e68" stroke-width="1.5"/>
+<text x="630.6" y="366.3" font-size="18" fill="#e2e8f0" class="m" font-weight="600">tasks/</text>
+<rect x="726.5600000000001" y="346" width="137.6" height="36" rx="8" fill="#05080f"/>
+<rect x="725.5600000000001" y="345" width="137.6" height="36" rx="8" fill="#05080f"/>
+<rect x="724.5600000000001" y="344" width="137.6" height="36" rx="8" fill="#05080f"/>
+<rect x="723.5600000000001" y="343" width="137.6" height="36" rx="8" fill="#05080f"/>
+<rect x="722.5600000000001" y="342" width="137.6" height="36" rx="8" fill="#0b1220" stroke="#3e4e68" stroke-width="1.5"/>
+<text x="735.6" y="366.3" font-size="18" fill="#e2e8f0" class="m" font-weight="600">approvals/</text>
+<rect x="876.1600000000001" y="346" width="126.44" height="36" rx="8" fill="#05080f"/>
+<rect x="875.1600000000001" y="345" width="126.44" height="36" rx="8" fill="#05080f"/>
+<rect x="874.1600000000001" y="344" width="126.44" height="36" rx="8" fill="#05080f"/>
+<rect x="873.1600000000001" y="343" width="126.44" height="36" rx="8" fill="#05080f"/>
+<rect x="872.1600000000001" y="342" width="126.44" height="36" rx="8" fill="#0b1220" stroke="#3e4e68" stroke-width="1.5"/>
+<text x="885.2" y="366.3" font-size="18" fill="#e2e8f0" class="m" font-weight="600">messages/</text>
+<rect x="1192" y="260" width="90.80000000000001" height="46" rx="10" fill="#4c1d95"/>
+<rect x="1191" y="259" width="90.80000000000001" height="46" rx="10" fill="#4c1d95"/>
+<rect x="1190" y="258" width="90.80000000000001" height="46" rx="10" fill="#4c1d95"/>
+<rect x="1189" y="257" width="90.80000000000001" height="46" rx="10" fill="#4c1d95"/>
+<rect x="1188" y="256" width="90.80000000000001" height="46" rx="10" fill="#4c1d95"/>
+<rect x="1187" y="255" width="90.80000000000001" height="46" rx="10" fill="#4c1d95"/>
+<rect x="1186" y="254" width="90.80000000000001" height="46" rx="10" fill="url(#front)" stroke="#8b5cf6" stroke-width="2"/>
+<text x="1231.4" y="284.0" font-size="19" fill="#e6edf3" font-weight="700" text-anchor="middle">Slack</text>
+<rect x="1296.8" y="260" width="90.80000000000001" height="46" rx="10" fill="#4c1d95"/>
+<rect x="1295.8" y="259" width="90.80000000000001" height="46" rx="10" fill="#4c1d95"/>
+<rect x="1294.8" y="258" width="90.80000000000001" height="46" rx="10" fill="#4c1d95"/>
+<rect x="1293.8" y="257" width="90.80000000000001" height="46" rx="10" fill="#4c1d95"/>
+<rect x="1292.8" y="256" width="90.80000000000001" height="46" rx="10" fill="#4c1d95"/>
+<rect x="1291.8" y="255" width="90.80000000000001" height="46" rx="10" fill="#4c1d95"/>
+<rect x="1290.8" y="254" width="90.80000000000001" height="46" rx="10" fill="url(#front)" stroke="#8b5cf6" stroke-width="2"/>
+<text x="1336.2" y="284.0" font-size="19" fill="#e6edf3" font-weight="700" text-anchor="middle">email</text>
+<rect x="1401.6" y="260" width="78.64" height="46" rx="10" fill="#4c1d95"/>
+<rect x="1400.6" y="259" width="78.64" height="46" rx="10" fill="#4c1d95"/>
+<rect x="1399.6" y="258" width="78.64" height="46" rx="10" fill="#4c1d95"/>
+<rect x="1398.6" y="257" width="78.64" height="46" rx="10" fill="#4c1d95"/>
+<rect x="1397.6" y="256" width="78.64" height="46" rx="10" fill="#4c1d95"/>
+<rect x="1396.6" y="255" width="78.64" height="46" rx="10" fill="#4c1d95"/>
+<rect x="1395.6" y="254" width="78.64" height="46" rx="10" fill="url(#front)" stroke="#8b5cf6" stroke-width="2"/>
+<text x="1434.9" y="284.0" font-size="19" fill="#e6edf3" font-weight="700" text-anchor="middle">LINE</text>
+<rect x="1192" y="330" width="66.48" height="46" rx="10" fill="#4c1d95"/>
+<rect x="1191" y="329" width="66.48" height="46" rx="10" fill="#4c1d95"/>
+<rect x="1190" y="328" width="66.48" height="46" rx="10" fill="#4c1d95"/>
+<rect x="1189" y="327" width="66.48" height="46" rx="10" fill="#4c1d95"/>
+<rect x="1188" y="326" width="66.48" height="46" rx="10" fill="#4c1d95"/>
+<rect x="1187" y="325" width="66.48" height="46" rx="10" fill="#4c1d95"/>
+<rect x="1186" y="324" width="66.48" height="46" rx="10" fill="url(#front)" stroke="#8b5cf6" stroke-width="2"/>
+<text x="1219.2" y="354.0" font-size="19" fill="#e6edf3" font-weight="700" text-anchor="middle">SNS</text>
+<rect x="1272.48" y="330" width="115.12" height="46" rx="10" fill="#4c1d95"/>
+<rect x="1271.48" y="329" width="115.12" height="46" rx="10" fill="#4c1d95"/>
+<rect x="1270.48" y="328" width="115.12" height="46" rx="10" fill="#4c1d95"/>
+<rect x="1269.48" y="327" width="115.12" height="46" rx="10" fill="#4c1d95"/>
+<rect x="1268.48" y="326" width="115.12" height="46" rx="10" fill="#4c1d95"/>
+<rect x="1267.48" y="325" width="115.12" height="46" rx="10" fill="#4c1d95"/>
+<rect x="1266.48" y="324" width="115.12" height="46" rx="10" fill="url(#front)" stroke="#8b5cf6" stroke-width="2"/>
+<text x="1324.0" y="354.0" font-size="19" fill="#e6edf3" font-weight="700" text-anchor="middle">webhook</text>
+<text x="1186.0" y="406.0" font-size="18" fill="#a3b1c4">on when its env vars are set</text>
+<rect x="1212" y="122" width="340" height="72" rx="36" fill="#000000" fill-opacity="0.60" filter="url(#soft)"/>
+<rect x="1208" y="112" width="340" height="72" rx="36" fill="#7c3a06"/>
+<rect x="1207" y="111" width="340" height="72" rx="36" fill="#7c3a06"/>
+<rect x="1206" y="110" width="340" height="72" rx="36" fill="#7c3a06"/>
+<rect x="1205" y="109" width="340" height="72" rx="36" fill="#7c3a06"/>
+<rect x="1204" y="108" width="340" height="72" rx="36" fill="#7c3a06"/>
+<rect x="1203" y="107" width="340" height="72" rx="36" fill="#7c3a06"/>
+<rect x="1202" y="106" width="340" height="72" rx="36" fill="#7c3a06"/>
+<rect x="1201" y="105" width="340" height="72" rx="36" fill="#7c3a06"/>
+<rect x="1200" y="104" width="340" height="72" rx="36" fill="url(#front)" stroke="#d97706" stroke-width="2.5"/>
+<circle cx="1242" cy="131" r="10" fill="#d97706"/><path d="M1225 159 a17 15 0 0 1 34 0 Z" fill="#d97706"/>
+<text x="1274.0" y="136.0" font-size="21" fill="#e6edf3" font-weight="800">Human approver</text>
+<text x="1274.0" y="162.0" font-size="18" fill="#a3b1c4">on the board or a phone</text>
+<rect x="102" y="544" width="230" height="150" rx="14" fill="#000000" fill-opacity="0.60" filter="url(#soft)"/>
+<rect x="98" y="534" width="230" height="150" rx="14" fill="#1e293b"/>
+<rect x="97" y="533" width="230" height="150" rx="14" fill="#1e293b"/>
+<rect x="96" y="532" width="230" height="150" rx="14" fill="#1e293b"/>
+<rect x="95" y="531" width="230" height="150" rx="14" fill="#1e293b"/>
+<rect x="94" y="530" width="230" height="150" rx="14" fill="#1e293b"/>
+<rect x="93" y="529" width="230" height="150" rx="14" fill="#1e293b"/>
+<rect x="92" y="528" width="230" height="150" rx="14" fill="#1e293b"/>
+<rect x="91" y="527" width="230" height="150" rx="14" fill="#1e293b"/>
+<rect x="90" y="526" width="230" height="150" rx="14" fill="#1e293b"/>
+<rect x="89" y="525" width="230" height="150" rx="14" fill="#1e293b"/>
+<rect x="88" y="524" width="230" height="150" rx="14" fill="url(#front)" stroke="#475569" stroke-width="2"/>
+<rect x="84" y="546" width="230" height="150" rx="14" fill="#1e293b"/>
+<rect x="83" y="545" width="230" height="150" rx="14" fill="#1e293b"/>
+<rect x="82" y="544" width="230" height="150" rx="14" fill="#1e293b"/>
+<rect x="81" y="543" width="230" height="150" rx="14" fill="#1e293b"/>
+<rect x="80" y="542" width="230" height="150" rx="14" fill="#1e293b"/>
+<rect x="79" y="541" width="230" height="150" rx="14" fill="#1e293b"/>
+<rect x="78" y="540" width="230" height="150" rx="14" fill="#1e293b"/>
+<rect x="77" y="539" width="230" height="150" rx="14" fill="#1e293b"/>
+<rect x="76" y="538" width="230" height="150" rx="14" fill="#1e293b"/>
+<rect x="75" y="537" width="230" height="150" rx="14" fill="#1e293b"/>
+<rect x="74" y="536" width="230" height="150" rx="14" fill="url(#front)" stroke="#475569" stroke-width="2"/>
+<rect x="70" y="558" width="230" height="150" rx="14" fill="#1e293b"/>
+<rect x="69" y="557" width="230" height="150" rx="14" fill="#1e293b"/>
+<rect x="68" y="556" width="230" height="150" rx="14" fill="#1e293b"/>
+<rect x="67" y="555" width="230" height="150" rx="14" fill="#1e293b"/>
+<rect x="66" y="554" width="230" height="150" rx="14" fill="#1e293b"/>
+<rect x="65" y="553" width="230" height="150" rx="14" fill="#1e293b"/>
+<rect x="64" y="552" width="230" height="150" rx="14" fill="#1e293b"/>
+<rect x="63" y="551" width="230" height="150" rx="14" fill="#1e293b"/>
+<rect x="62" y="550" width="230" height="150" rx="14" fill="#1e293b"/>
+<rect x="61" y="549" width="230" height="150" rx="14" fill="#1e293b"/>
+<rect x="60" y="548" width="230" height="150" rx="14" fill="url(#front)" stroke="#475569" stroke-width="2.5"/>
+<path d="M60 562 a14 14 0 0 1 14 -14 H276 a14 14 0 0 1 14 14 V558 H60 Z" fill="#475569"/>
+<text x="76.0" y="592.0" font-size="21" fill="#e6edf3" font-weight="800">Worker sessions</text>
+<text x="76.0" y="624.0" font-size="18" fill="#a3b1c4">Claude Code in tmux</text>
+<rect x="78" y="630" width="171.08" height="36" rx="8" fill="#05080f"/>
+<rect x="77" y="629" width="171.08" height="36" rx="8" fill="#05080f"/>
+<rect x="76" y="628" width="171.08" height="36" rx="8" fill="#05080f"/>
+<rect x="75" y="627" width="171.08" height="36" rx="8" fill="#05080f"/>
+<rect x="74" y="626" width="171.08" height="36" rx="8" fill="#0b1220" stroke="#3e4e68" stroke-width="1.5"/>
+<text x="87.0" y="650.3" font-size="18" fill="#e2e8f0" class="m" font-weight="600">API · WEB · …</text>
+<rect x="444" y="568" width="260" height="150" rx="14" fill="#000000" fill-opacity="0.60" filter="url(#soft)"/>
+<rect x="440" y="558" width="260" height="150" rx="14" fill="#1e293b"/>
+<rect x="439" y="557" width="260" height="150" rx="14" fill="#1e293b"/>
+<rect x="438" y="556" width="260" height="150" rx="14" fill="#1e293b"/>
+<rect x="437" y="555" width="260" height="150" rx="14" fill="#1e293b"/>
+<rect x="436" y="554" width="260" height="150" rx="14" fill="#1e293b"/>
+<rect x="435" y="553" width="260" height="150" rx="14" fill="#1e293b"/>
+<rect x="434" y="552" width="260" height="150" rx="14" fill="#1e293b"/>
+<rect x="433" y="551" width="260" height="150" rx="14" fill="#1e293b"/>
+<rect x="432" y="550" width="260" height="150" rx="14" fill="#1e293b"/>
+<rect x="431" y="549" width="260" height="150" rx="14" fill="#1e293b"/>
+<rect x="430" y="548" width="260" height="150" rx="14" fill="url(#front)" stroke="#475569" stroke-width="2.5"/>
+<path d="M430 562 a14 14 0 0 1 14 -14 H676 a14 14 0 0 1 14 14 V558 H430 Z" fill="#475569"/>
+<text x="446.0" y="592.0" font-size="21" fill="#e6edf3" class="m" font-weight="800">bin/board</text>
+<text x="446.0" y="624.0" font-size="18" fill="#a3b1c4">ask · answer · press</text>
+<text x="446.0" y="652.0" font-size="18" fill="#a3b1c4">keys only if guards pass</text>
+<rect x="814" y="568" width="350" height="150" rx="14" fill="#000000" fill-opacity="0.60" filter="url(#soft)"/>
+<rect x="810" y="558" width="350" height="150" rx="14" fill="#7c3a06"/>
+<rect x="809" y="557" width="350" height="150" rx="14" fill="#7c3a06"/>
+<rect x="808" y="556" width="350" height="150" rx="14" fill="#7c3a06"/>
+<rect x="807" y="555" width="350" height="150" rx="14" fill="#7c3a06"/>
+<rect x="806" y="554" width="350" height="150" rx="14" fill="#7c3a06"/>
+<rect x="805" y="553" width="350" height="150" rx="14" fill="#7c3a06"/>
+<rect x="804" y="552" width="350" height="150" rx="14" fill="#7c3a06"/>
+<rect x="803" y="551" width="350" height="150" rx="14" fill="#7c3a06"/>
+<rect x="802" y="550" width="350" height="150" rx="14" fill="#7c3a06"/>
+<rect x="801" y="549" width="350" height="150" rx="14" fill="#7c3a06"/>
+<rect x="800" y="548" width="350" height="150" rx="14" fill="url(#front)" stroke="#d97706" stroke-width="2.5"/>
+<path d="M800 562 a14 14 0 0 1 14 -14 H1136 a14 14 0 0 1 14 14 V558 H800 Z" fill="#d97706"/>
+<text x="816.0" y="592.0" font-size="21" fill="#e6edf3" font-weight="800">Operator session BOARD</text>
+<text x="816.0" y="624.0" font-size="18" fill="#a3b1c4">LLM session · Remote Control</text>
+<rect x="818" y="630" width="305.0" height="36" rx="8" fill="#05080f"/>
+<rect x="817" y="629" width="305.0" height="36" rx="8" fill="#05080f"/>
+<rect x="816" y="628" width="305.0" height="36" rx="8" fill="#05080f"/>
+<rect x="815" y="627" width="305.0" height="36" rx="8" fill="#05080f"/>
+<rect x="814" y="626" width="305.0" height="36" rx="8" fill="#0b1220" stroke="#3e4e68" stroke-width="1.5"/>
+<text x="827.0" y="650.3" font-size="18" fill="#e2e8f0" class="m" font-weight="600">prompts/board-operator.md</text>
+<rect x="74" y="804" width="260" height="150" rx="14" fill="#000000" fill-opacity="0.60" filter="url(#soft)"/>
+<rect x="70" y="794" width="260" height="150" rx="14" fill="#0a3d3a"/>
+<rect x="69" y="793" width="260" height="150" rx="14" fill="#0a3d3a"/>
+<rect x="68" y="792" width="260" height="150" rx="14" fill="#0a3d3a"/>
+<rect x="67" y="791" width="260" height="150" rx="14" fill="#0a3d3a"/>
+<rect x="66" y="790" width="260" height="150" rx="14" fill="#0a3d3a"/>
+<rect x="65" y="789" width="260" height="150" rx="14" fill="#0a3d3a"/>
+<rect x="64" y="788" width="260" height="150" rx="14" fill="#0a3d3a"/>
+<rect x="63" y="787" width="260" height="150" rx="14" fill="#0a3d3a"/>
+<rect x="62" y="786" width="260" height="150" rx="14" fill="#0a3d3a"/>
+<rect x="61" y="785" width="260" height="150" rx="14" fill="#0a3d3a"/>
+<rect x="60" y="784" width="260" height="150" rx="14" fill="url(#front)" stroke="#0d9488" stroke-width="2.5"/>
+<path d="M60 798 a14 14 0 0 1 14 -14 H306 a14 14 0 0 1 14 14 V794 H60 Z" fill="#0d9488"/>
+<text x="76.0" y="828.0" font-size="19" fill="#e6edf3" class="m" font-weight="800">hooks/board-hook.sh</text>
+<text x="76.0" y="860.0" font-size="18" fill="#a3b1c4">10 lifecycle events</text>
+<text x="76.0" y="888.0" font-size="18" fill="#a3b1c4">exit 0 · never blocks</text>
+<ellipse cx="548.0" cy="942" rx="126.0" ry="24" fill="#000000" fill-opacity="0.60" filter="url(#soft)"/>
+<path d="M420 794 V930 A120.0 18 0 0 0 660 930 V794" fill="url(#cyl-build)" stroke="#0d9488" stroke-width="2.5"/>
+<ellipse cx="540.0" cy="794" rx="120.0" ry="18" fill="#1e2738" stroke="#0d9488" stroke-width="2.5"/>
+<text x="540.0" y="850.0" font-size="21" fill="#e6edf3" class="m" font-weight="800" text-anchor="middle">$BOARD_HOME</text>
+<text x="540.0" y="882.0" font-size="18" fill="#a3b1c4" class="m" font-weight="600" text-anchor="middle">state/ decisions/</text>
+<text x="540.0" y="910.0" font-size="18" fill="#a3b1c4" class="m" font-weight="600" text-anchor="middle">events.jsonl</text>
+<rect x="774" y="804" width="270" height="150" rx="14" fill="#000000" fill-opacity="0.60" filter="url(#soft)"/>
+<rect x="770" y="794" width="270" height="150" rx="14" fill="#0a3d3a"/>
+<rect x="769" y="793" width="270" height="150" rx="14" fill="#0a3d3a"/>
+<rect x="768" y="792" width="270" height="150" rx="14" fill="#0a3d3a"/>
+<rect x="767" y="791" width="270" height="150" rx="14" fill="#0a3d3a"/>
+<rect x="766" y="790" width="270" height="150" rx="14" fill="#0a3d3a"/>
+<rect x="765" y="789" width="270" height="150" rx="14" fill="#0a3d3a"/>
+<rect x="764" y="788" width="270" height="150" rx="14" fill="#0a3d3a"/>
+<rect x="763" y="787" width="270" height="150" rx="14" fill="#0a3d3a"/>
+<rect x="762" y="786" width="270" height="150" rx="14" fill="#0a3d3a"/>
+<rect x="761" y="785" width="270" height="150" rx="14" fill="#0a3d3a"/>
+<rect x="760" y="784" width="270" height="150" rx="14" fill="url(#front)" stroke="#0d9488" stroke-width="2.5"/>
+<path d="M760 798 a14 14 0 0 1 14 -14 H1016 a14 14 0 0 1 14 14 V794 H760 Z" fill="#0d9488"/>
+<text x="776.0" y="828.0" font-size="19" fill="#e6edf3" class="m" font-weight="800">bin/board-collect</text>
+<text x="776.0" y="860.0" font-size="18" fill="#a3b1c4">bash loop · 0 tokens</text>
+<rect x="778" y="866" width="171.08" height="36" rx="8" fill="#05080f"/>
+<rect x="777" y="865" width="171.08" height="36" rx="8" fill="#05080f"/>
+<rect x="776" y="864" width="171.08" height="36" rx="8" fill="#05080f"/>
+<rect x="775" y="863" width="171.08" height="36" rx="8" fill="#05080f"/>
+<rect x="774" y="862" width="171.08" height="36" rx="8" fill="#0b1220" stroke="#3e4e68" stroke-width="1.5"/>
+<text x="787.0" y="886.3" font-size="18" fill="#e2e8f0" class="m" font-weight="600">snapshot.json</text>
+<rect x="1134" y="804" width="270" height="150" rx="14" fill="#000000" fill-opacity="0.60" filter="url(#soft)"/>
+<rect x="1130" y="794" width="270" height="150" rx="14" fill="#4c1d95"/>
+<rect x="1129" y="793" width="270" height="150" rx="14" fill="#4c1d95"/>
+<rect x="1128" y="792" width="270" height="150" rx="14" fill="#4c1d95"/>
+<rect x="1127" y="791" width="270" height="150" rx="14" fill="#4c1d95"/>
+<rect x="1126" y="790" width="270" height="150" rx="14" fill="#4c1d95"/>
+<rect x="1125" y="789" width="270" height="150" rx="14" fill="#4c1d95"/>
+<rect x="1124" y="788" width="270" height="150" rx="14" fill="#4c1d95"/>
+<rect x="1123" y="787" width="270" height="150" rx="14" fill="#4c1d95"/>
+<rect x="1122" y="786" width="270" height="150" rx="14" fill="#4c1d95"/>
+<rect x="1121" y="785" width="270" height="150" rx="14" fill="#4c1d95"/>
+<rect x="1120" y="784" width="270" height="150" rx="14" fill="url(#front)" stroke="#8b5cf6" stroke-width="2.5"/>
+<path d="M1120 798 a14 14 0 0 1 14 -14 H1376 a14 14 0 0 1 14 14 V794 H1120 Z" fill="#8b5cf6"/>
+<text x="1136.0" y="828.0" font-size="19" fill="#e6edf3" class="m" font-weight="800">lib/notify.py</text>
+<text x="1136.0" y="860.0" font-size="18" fill="#a3b1c4">via bin/board-notify</text>
+<text x="1136.0" y="888.0" font-size="18" fill="#a3b1c4">cooldown · escalation</text>
+<text x="1420.0" y="844.0" font-size="18" fill="#e6edf3" font-weight="800">0 tokens:</text>
+<text x="1420.0" y="872.0" font-size="18" fill="#a3b1c4">keeps alerting</text>
+<text x="1420.0" y="898.0" font-size="18" fill="#a3b1c4">while the</text>
+<text x="1420.0" y="924.0" font-size="18" fill="#a3b1c4">operator is</text>
+<text x="1420.0" y="950.0" font-size="18" fill="#a3b1c4">rate-limited</text>
+<path d="M332 658 H424" fill="none" stroke="#8d9bb0" stroke-width="3.5" stroke-linejoin="round" marker-end="url(#m-sec)"/>
+<text x="380.0" y="648.0" font-size="18" fill="#a3b1c4" font-weight="600" text-anchor="middle">ask</text>
+<path d="M550 710 V770" fill="none" stroke="#8d9bb0" stroke-width="3.5" stroke-linejoin="round" marker-end="url(#m-sec)"/>
+<text x="562.0" y="750.0" font-size="18" fill="#a3b1c4" class="m" font-weight="600">decisions/</text>
+<path d="M1042 864 H1114" fill="none" stroke="#8d9bb0" stroke-width="3.5" stroke-linejoin="round" marker-end="url(#m-sec)"/>
+<path d="M1200 782 V446" fill="none" stroke="#8d9bb0" stroke-width="3.5" stroke-linejoin="round" marker-end="url(#m-sec)"/>
+<text x="1214.0" y="720.0" font-size="18" fill="#a3b1c4" font-weight="600">needs-you</text>
+<text x="1214.0" y="744.0" font-size="18" fill="#a3b1c4" font-weight="600">usage limit</text>
+<path d="M1525 212 V192" fill="none" stroke="#8d9bb0" stroke-width="3.5" stroke-linejoin="round" marker-end="url(#m-sec)"/>
+<text x="1537.0" y="204.0" font-size="18" fill="#a3b1c4" font-weight="600">push</text>
+<path d="M180 710 V774" fill="none" stroke="#121a27" stroke-width="11" stroke-linecap="round" stroke-linejoin="round" opacity="0.85"/><path d="M180 710 V774" fill="none" stroke="#fb923c" stroke-width="5" stroke-linejoin="round" marker-end="url(#m-prim)"/>
+<circle cx="180" cy="744" r="16" fill="#fb923c" stroke="#121a27" stroke-width="3"/><text x="180.0" y="750.5" font-size="18" fill="#1a0d00" font-weight="900" text-anchor="middle">1</text>
+<text x="205.0" y="750.0" font-size="18" fill="#e6edf3" font-weight="600">events</text>
+<path d="M332 859 H414" fill="none" stroke="#121a27" stroke-width="11" stroke-linecap="round" stroke-linejoin="round" opacity="0.85"/><path d="M332 859 H414" fill="none" stroke="#fb923c" stroke-width="5" stroke-linejoin="round" marker-end="url(#m-prim)"/>
+<path d="M666 859 H754" fill="none" stroke="#121a27" stroke-width="11" stroke-linecap="round" stroke-linejoin="round" opacity="0.85"/><path d="M666 859 H754" fill="none" stroke="#fb923c" stroke-width="5" stroke-linejoin="round" marker-end="url(#m-prim)"/>
+<circle cx="708" cy="859" r="16" fill="#fb923c" stroke="#121a27" stroke-width="3"/><text x="708.0" y="865.5" font-size="18" fill="#1a0d00" font-weight="900" text-anchor="middle">2</text>
+<path d="M895 782 V716" fill="none" stroke="#121a27" stroke-width="11" stroke-linecap="round" stroke-linejoin="round" opacity="0.85"/><path d="M895 782 V716" fill="none" stroke="#fb923c" stroke-width="5" stroke-linejoin="round" marker-end="url(#m-prim)"/>
+<text x="910.0" y="750.0" font-size="18" fill="#e6edf3" font-weight="600">Monitor</text>
+<path d="M960 544 V414" fill="none" stroke="#121a27" stroke-width="11" stroke-linecap="round" stroke-linejoin="round" opacity="0.85"/><path d="M960 544 V414" fill="none" stroke="#fb923c" stroke-width="5" stroke-linejoin="round" marker-end="url(#m-prim)"/>
+<circle cx="960" cy="486" r="16" fill="#fb923c" stroke="#121a27" stroke-width="3"/><text x="960.0" y="492.5" font-size="18" fill="#1a0d00" font-weight="900" text-anchor="middle">3</text>
+<text x="944.0" y="524.0" font-size="18" fill="#e6edf3" class="m" font-weight="700" text-anchor="end">write_db</text>
+<path d="M1076 410 V538" fill="none" stroke="#121a27" stroke-width="11" stroke-linecap="round" stroke-linejoin="round" opacity="0.85"/><path d="M1076 410 V538" fill="none" stroke="#fb923c" stroke-width="5" stroke-linejoin="round" marker-end="url(#m-prim)"/>
+<circle cx="1076" cy="486" r="16" fill="#fb923c" stroke="#121a27" stroke-width="3"/><text x="1076.0" y="492.5" font-size="18" fill="#1a0d00" font-weight="900" text-anchor="middle">5</text>
+<text x="1062.0" y="524.0" font-size="18" fill="#e6edf3" class="m" font-weight="700" text-anchor="end">read_db</text>
+<path d="M1196 140 H1060 Q1040 140 1040 160 V238" fill="none" stroke="#121a27" stroke-width="11" stroke-linecap="round" stroke-linejoin="round" opacity="0.85"/><path d="M1196 140 H1060 Q1040 140 1040 160 V238" fill="none" stroke="#fb923c" stroke-width="5" stroke-linejoin="round" marker-end="url(#m-prim)"/>
+<circle cx="1100" cy="140" r="16" fill="#fb923c" stroke="#121a27" stroke-width="3"/><text x="1100.0" y="146.5" font-size="18" fill="#1a0d00" font-weight="900" text-anchor="middle">4</text>
+<text x="1024.0" y="180.0" font-size="18" fill="#e6edf3" font-weight="600" text-anchor="end">answers,</text>
+<text x="1024.0" y="204.0" font-size="18" fill="#e6edf3" font-weight="600" text-anchor="end">@mentions</text>
+<path d="M840 544 V522 Q840 508 826 508 H194 Q180 508 180 522 V518" fill="none" stroke="#121a27" stroke-width="11" stroke-linecap="round" stroke-linejoin="round" opacity="0.85"/><path d="M840 544 V522 Q840 508 826 508 H194 Q180 508 180 522 V518" fill="none" stroke="#fb923c" stroke-width="5" stroke-linejoin="round" marker-end="url(#m-prim)"/>
+<circle cx="740" cy="508" r="16" fill="#fb923c" stroke="#121a27" stroke-width="3"/><text x="740.0" y="514.5" font-size="18" fill="#1a0d00" font-weight="900" text-anchor="middle">6</text>
+<text x="220.0" y="500.0" font-size="18" fill="#e6edf3" font-weight="600">SendMessage [BOARD decision …]</text>
+<path d="M798 604 H706" fill="none" stroke="#121a27" stroke-width="11" stroke-linecap="round" stroke-linejoin="round" opacity="0.85"/><path d="M798 604 H706" fill="none" stroke="#fb923c" stroke-width="5" stroke-linejoin="round" marker-end="url(#m-prim)"/>
+<text x="748.0" y="592.0" font-size="18" fill="#e6edf3" font-weight="600" text-anchor="middle">press</text>
+<path d="M428 604 H334" fill="none" stroke="#121a27" stroke-width="11" stroke-linecap="round" stroke-linejoin="round" opacity="0.85"/><path d="M428 604 H334" fill="none" stroke="#fb923c" stroke-width="5" stroke-linejoin="round" marker-end="url(#m-prim)"/>
+<text x="380.0" y="592.0" font-size="18" fill="#e6edf3" font-weight="600" text-anchor="middle">keys</text>
+</svg>

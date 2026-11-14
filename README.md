@@ -30,7 +30,8 @@ hooks ──▶ zero-token collector ──▶ LLM operator session ──▶ in
 1. **Hooks** in every session write a tiny state file on each lifecycle event (working, needs-you,
    done, offline). They never block Claude and never record prompt text.
 2. A **collector** (plain bash, **no tokens**) merges those files with Claude Code's own session
-   registry into `snapshot.json`. When a session turns needs-you it sends a Slack alert, with a cooldown.
+   registry into `snapshot.json`. When a session turns needs-you it raises an alert that escalates until
+   someone acks it (Slack → desktop → email → LINE), deduplicated per key in `alerts.json`.
 3. One **operator session** (`BOARD`) mirrors the snapshot into a claude.ai **Artifact** with a
    database. It relays your answers back to the sessions.
 4. The **board page** shows tasks moving through lifecycle stages (Plan → Design → Build → Test →
@@ -39,6 +40,14 @@ hooks ──▶ zero-token collector ──▶ LLM operator session ──▶ in
    `@all`.
 
 ## Architecture
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/architecture-dark.svg">
+  <img alt="Architecture: on the local machine, worker sessions in tmux fire lifecycle events into hooks/board-hook.sh, which writes $BOARD_HOME; bin/board-collect (zero tokens) builds snapshot.json and calls lib/notify.py for alerts. The operator session writes the snapshot to the Artifact board across the trust boundary, reads human answers back, and relays them with SendMessage or a guarded bin/board press." src="docs/assets/architecture-light.svg" width="100%">
+</picture>
+
+<details>
+<summary>Diagram source (mermaid)</summary>
 
 ```mermaid
 flowchart LR
@@ -72,6 +81,8 @@ flowchart LR
   CLI -- tmux send-keys --> W2
 ```
 
+</details>
+
 Main path: a worker hits a permission prompt → the hook writes `needs-you` → the collector updates
 the snapshot (and pings Slack) → the operator writes the card to the board → you press **Allow** →
 the operator runs `board press` → the key is sent to that pane only if both guards pass (see below).
@@ -92,15 +103,22 @@ the operator runs `board press` → the key is sent to that pane only if both gu
 git clone https://github.com/osisdie/agent-switchboard.git
 cd agent-switchboard
 scripts/install.sh --dry-run   # prints the planned actions and the settings.json diff; changes nothing
-scripts/install.sh             # links bin/* into ~/.local/bin, creates $BOARD_HOME, merges the hook
+scripts/install.sh             # links bin/*, creates $BOARD_HOME, merges the hook, adds the statusline tap
 scripts/setup-dev.sh           # only if you'll commit to this repo: pre-commit gitleaks + banned terms
 ```
 
-`install.sh` backs up `~/.claude/settings.json` to `settings.json.bak-<date>`. It then adds
-`hooks/board-hook.sh` for **10 events** (`UserPromptSubmit`, `PreToolUse`, `PostToolUse`,
-`PostToolUseFailure`, `PermissionRequest`, `Notification`, `Stop`, `StopFailure`, `SessionStart`,
-`SessionEnd`) and keeps every existing hook. Re-running it changes nothing.
-`scripts/install.sh --uninstall` removes the hook entries and the symlinks.
+`install.sh` backs up `~/.claude/settings.json` to `settings.json.bak-<date>`, then:
+
+- adds `hooks/board-hook.sh` for **10 events** (`UserPromptSubmit`, `PreToolUse`, `PostToolUse`,
+  `PostToolUseFailure`, `PermissionRequest`, `Notification`, `Stop`, `StopFailure`, `SessionStart`,
+  `SessionEnd`), keeping every existing hook;
+- wraps your `statusLine` command with the usage-meter tap (see
+  [Usage meter](#usage-meter-see-the-limit-coming)), saving the previous `statusLine` to
+  `$BOARD_HOME/statusline.prev.json`;
+- links `board`, `board-collect`, `board-notify` and `fleet-up` into `~/.local/bin`.
+
+Re-running it changes nothing. `scripts/install.sh --uninstall` removes the hook entries, restores
+your `statusLine` and removes the symlinks.
 
 **Configure** in `$BOARD_CONFIG_DIR` (default: `tmp-local/` in the repo if it exists, else
 `~/.config/agent-switchboard`):
@@ -114,8 +132,8 @@ scripts/setup-dev.sh           # only if you'll commit to this repo: pre-commit 
   | `release_managers` | `[]` | user ids allowed to authorize `gate: production`. Empty falls back to `approvers`. **Both empty = production refused** |
   | `poll_interval` | `3` | seconds between snapshot rebuilds |
   | `decision_timeout_hours` | `24` | pending decisions older than this become `timeout` |
-  | `notify_cooldown_minutes` | `10` | per-session Slack cooldown |
   | `resume_fallback_seconds` | `15` | `fleet-up` starts a fresh session only if `claude -r NAME` exits this fast |
+  | `alerting` | built-in | routes, quiet hours, repeat, escalation, usage thresholds; see [Alerting & escalation](#alerting--escalation) (or put it in `alerting.yaml`) |
   | `remote_url_prefix` | `https://claude.ai/code/` | prefix for each session's Remote Control link |
   | `press.prompt_regex`, `press.lines`, `press.allow_keys`, `press.deny_keys` | see example | the screen check and keys used by `board press` |
 
@@ -154,6 +172,14 @@ state, permission prompts and messages.
 
 ### Lifecycle and gates
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/lifecycle-gates-dark.svg">
+  <img alt="Lifecycle and gates: Plan (intent.md, owner approves) → Design (optional, spec.md, owner signs off; a simple fix skips design) → Build (plan.md + code, engineer / tech lead) → Test (evals/, code owner reviews) → Deploy (review-findings.md, code owner) → production gate where the agent stops and a release manager authorizes → Maintain (new intent.md, service owner triages) → back to Plan. Request changes keeps the task in the same stage; each stage reads the previous stage's last commit; every approval is recorded in the approvals log." src="docs/assets/lifecycle-gates-light.svg" width="100%">
+</picture>
+
+<details>
+<summary>Diagram source (mermaid)</summary>
+
 ```mermaid
 flowchart LR
   P["1 · Plan<br/>intent.md<br/><i>questions first</i>"] -->|"gate: owner approves"| D
@@ -164,10 +190,14 @@ flowchart LR
   R["5 · Deploy<br/>review-findings.md<br/>merge · staging · smoke"] -->|"gate: code owner"| G
   G{{"⛔ Production gate<br/>agent STOPS here"}} -->|"release manager authorizes"| M
   M["6 · Maintain<br/>new intent.md"] -->|"gate: service owner triages"| P
-  B -. rejected .-> B
-  T -. changes requested .-> B
-  R -. changes requested .-> B
+  P -. request changes .-> P
+  D -. request changes .-> D
+  B -. request changes .-> B
+  T -. request changes .-> T
+  R -. request changes .-> R
 ```
+
+</details>
 
 | Stage | Artifact (committed) | Human gate |
 |---|---|---|
@@ -270,65 +300,92 @@ information, never approvals.**
 
 ## Alerting & escalation
 
-The board is only useful if you look at it. Alerts reach you when you aren't looking, PagerDuty-style:
-they escalate until someone acknowledges them. `bin/board-notify` and `lib/notify.py` send them, and
-the collector calls them. Alerts cost **zero tokens**, so they keep working while the operator is
-rate-limited.
-
-> **Status:** this section describes the alerting contract. Until `bin/board-notify` and
-> `lib/notify.py` ship, `board notify` and the collector post to Slack only (`SLACK_WEBHOOK_URL`).
-
-### Channels
-
-Each channel is an adapter. It is enabled only when its variables are set in
-`$BOARD_CONFIG_DIR/.env`.
-
-| Adapter | Env | Notes |
-|---|---|---|
-| `slack` | `SLACK_WEBHOOK_URL`, `SLACK_MENTION` (e.g. `<@U123>`) | The mention is what makes your phone buzz |
-| `desktop` | none (WSL with `powershell.exe` available) | Windows toast and sound. Best effort |
-| `email` | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, `ALERT_EMAIL_TO` | Any SMTP server. STARTTLS or SSL, chosen by port |
-| `line` | `LINE_CHANNEL_ACCESS_TOKEN`, `LINE_TO` (user or group id) | Push through the LINE Messaging API |
-| `sns` | `AWS_SNS_TOPIC_ARN`, plus AWS CLI credentials | Optional. `aws sns publish` to a topic; subscribe SMS or email to it |
-| `webhook` | `ALERT_WEBHOOK_URL` | Generic JSON POST: ntfy, an incident tool's events API, your own relay |
+The board is only useful if you look at it. Alerts reach you when you aren't looking. They escalate
+PagerDuty-style until someone acknowledges them. `bin/board-notify` (engine: `lib/notify.py`) sends
+them, and the collector calls it on every loop. Alerts cost **zero tokens**, so they keep working
+while the operator session is rate-limited.
 
 ### Levels
 
-| Level | When | Channels (default) |
+| Level | Raised when | Channels (default route) |
 |---|---|---|
-| `info` | FYI | slack |
-| `warn` (**L1**) | a new needs-you or decision; usage ≥ 80% | slack **with mention** + desktop |
-| `high` (**L2**) | not acknowledged after 10 min; usage ≥ 90% ("prepare to switch account") | L1 + **email** |
-| `urgent` (**L3**) | not acknowledged after 30 min; a **production gate**; a permission prompt not acknowledged after 10 min; usage ≥ 95%; usage limit hit | L2 + **line** (+ sns) |
+| `info` | FYI (`board-notify send --level info …`) | slack |
+| `warn` (**L1**) | a session needs you, a new decision, usage ≥ 80% | slack **with @-mention** + desktop |
+| `high` (**L2**) | still not acknowledged after 10 min, usage ≥ 90% ("prepare to switch account") | + **email** |
+| `urgent` (**L3**) | not acknowledged after 30 min, a permission prompt not acknowledged after 10 min, a **production gate** (urgent at once), usage ≥ 95%, usage limit hit | + **line**, sns, webhook |
 
-- **Ack** = the decision leaves `pending` (answered anywhere), or the session leaves needs-you. An
-  ack stops the escalation for that key.
-- **Dedupe:** at most one send per key per level. The same level repeats only after
-  `alerting.repeat_minutes` (default 60). Keys are `decision:<id>`, `session:<code>:needs-you` or
-  `usage:<window>:<threshold>`, and their state is in `$BOARD_HOME/alerts.json`.
-- **Quiet hours:** `alerting.quiet_hours: "23:00-08:00"` in `fleet.yaml`. During quiet hours only
-  `urgent` gets through. Everything else waits, and acked items never wake you.
-- **Routes** per level can be overridden in `fleet.yaml` under `alerting.routes`.
+- **Ack stops escalation.** Alerts ack themselves when the decision leaves `pending` (answered
+  anywhere), the session leaves needs-you, or the limit episode ends. To ack by hand, run
+  `board ack 'session:API:*'` (or `board-notify ack …`). Globs are allowed. Keys look like
+  `decision:<id>`, `session:<code>:needs-you`, `limit:<hit_at>`, `usage:<window>:<threshold>`.
+- **Dedupe:** at most one send per key per level. An alert that is still open is re-sent at the same
+  level only after `repeat_minutes` (default 60). Usage alerts fire once per threshold per reset
+  window.
+- **Quiet hours** (off by default): with `quiet_hours: "23:00-08:00"` (local time), only `urgent` is
+  delivered. Everything else is held and delivered when quiet hours end, unless it was acked
+  meanwhile.
+- **First run:** `board-collect --baseline` builds the snapshot and acks every condition that is
+  already open, without sending anything. Installing on a busy machine therefore doesn't page you
+  about old needs-you sessions and decisions. It runs automatically (via `fleet-up` or the
+  collector) whenever `alerts.json` doesn't exist yet.
+- Every delivery attempt is logged to `events.jsonl` (`type: "alert"`, channel, level, ok/error),
+  never with secret values. `board-notify status` shows the open alerts and which channels are
+  on, without values.
 
-### Setup per channel
+### Channels
 
-1. **Slack.** Create an incoming webhook for a channel you watch. Set `SLACK_MENTION` to your own
-   member id in `<@…>` form. A plain channel post often doesn't push to a phone, but a mention does.
-2. **Desktop** (WSL only). Nothing to configure. If `powershell.exe` is reachable, toasts appear on
-   Windows.
-3. **Email.** Use any SMTP account. Ports 587 and 25 use STARTTLS, port 465 uses SSL. Use an
-   app-specific password, never your main one. Send to an address that reaches your phone.
-4. **LINE.** Create a Messaging API channel, issue a channel access token, and add the account as a
-   friend (or invite it to a group). Put your user or group id in `LINE_TO`.
-5. **SNS** (optional). Create a topic, subscribe your phone number or email to it, and set
-   `AWS_SNS_TOPIC_ARN`. The AWS CLI on this machine must be able to publish to it.
-6. **Webhook.** Any endpoint that accepts a JSON POST: a push service, an incident tool or your own
-   relay.
-7. **Test.** Send a test alert at each level (see `bin/board-notify --help`), and check that every
-   channel you configured delivers. Do this before you rely on it overnight.
+A channel is on only when its variables are set in `$BOARD_CONFIG_DIR/.env` (the process environment
+overrides the file). All of them are listed in `.env.example`.
 
-All of these values are secrets. They live in `$BOARD_CONFIG_DIR/.env` (gitignored) and are never
-printed or written to the board db.
+| Channel | Needs | Notes |
+|---|---|---|
+| `slack` | `SLACK_WEBHOOK_URL`, `SLACK_MENTION` (`<@your member id>`) | The mention is what makes your phone buzz |
+| `desktop` | nothing; `ALERT_DESKTOP=0` turns it off | WSL (`powershell.exe` toast), `notify-send` on Linux, or macOS notifications. Best effort, never blocks |
+| `email` | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, `ALERT_EMAIL_TO` | Any SMTP server. Port 465 uses SSL, 587 uses STARTTLS. `SMTP_SECURITY=ssl\|starttls\|none` overrides |
+| `line` | `LINE_CHANNEL_ACCESS_TOKEN`, `LINE_TO` (user or group id) | LINE Messaging API push. Mind your plan's monthly push quota |
+| `sns` | `AWS_SNS_TOPIC_ARN`, plus a configured `aws` CLI | Subscribe SMS or email to the topic |
+| `webhook` | `ALERT_WEBHOOK_URL`, optional `ALERT_WEBHOOK_AUTH` | Generic JSON POST: a push service, an incident tool's events bridge, your own relay |
+
+**Setup**
+
+1. **Slack:** create an incoming webhook for a channel you watch, and set `SLACK_MENTION` to your own
+   member id. If you can't get a member id (incoming webhooks can't look one up), set
+   `SLACK_MENTION=<!here>` or `<!channel>` instead. That also forces a mobile push. A plain channel post often doesn't push to a phone, but a mention does.
+2. **Email:** use an app-specific password, never your main one, and send to an address that
+   reaches your phone.
+3. **LINE:** create a Messaging API channel, issue a long-lived channel access token, add the
+   account as a friend (or to a group), and put your user or group id in `LINE_TO`.
+4. **SNS / webhook:** optional, for SMS or an incident tool.
+5. **Test every channel** before you rely on it overnight:
+   ```bash
+   board-notify test --channel slack     # also: desktop, email, line, sns, webhook; --level to pick a level
+   board-notify status                   # enabled channels and open alerts
+   ```
+
+All of these values are secrets. They live only in the gitignored `.env`, and are never printed or
+written to the board db.
+
+### Policy: routes, quiet hours, thresholds
+
+Policy is merged in this order (later wins):
+
+1. built-in defaults,
+2. `$BOARD_CONFIG_DIR/alerting.yaml`, if present (an `alerting:` key or the bare block), so a
+   machine can keep its policy without touching `fleet.yaml`,
+3. the `alerting:` block in `fleet.yaml`.
+
+```yaml
+alerting:
+  routes:                     # level -> channels (defaults shown)
+    info:   [slack]
+    warn:   [slack, desktop]
+    high:   [slack, desktop, email]
+    urgent: [slack, desktop, email, line, sns, webhook]
+  quiet_hours: "23:00-08:00"  # default: off
+  repeat_minutes: 60          # 0 = never repeat
+  escalate_minutes: {high: 10, urgent: 30, permission_urgent: 10}
+  thresholds: [80, 90, 95]    # usage % -> warn / high / urgent
+```
 
 ## Operating under usage limits
 
@@ -338,9 +395,9 @@ operator stops and the board freezes. The system is designed to degrade visibly:
 - **Heartbeat banner.** The operator writes `meta/operator.heartbeat_at` every loop. After 10 minutes
   without it, the page shows a red "operator offline since HH:MM" banner and greys out answer buttons.
   Answers are still saved, and they are relayed when the operator returns.
-- **Alerts keep working.** The collector and `board-notify` use zero tokens. On limit detection they
-  send one `urgent` "usage limit hit, resets ~HH:MM, N decisions pending" alert, and they keep
-  escalating needs-you transitions and decisions. While the board is frozen, alerts plus tmux are
+- **Alerts keep working.** The collector and `board-notify` use zero tokens. When a limit episode
+  starts, they send one `urgent` "usage limit hit, resets ~HH:MM, N decisions pending" alert, and
+  they keep escalating needs-you transitions and decisions. While the board is frozen, alerts plus tmux are
   your channel.
 - **Failover.** If the board is shared org-editable, a session on another account (on the **same
   machine**, because the operator must run where the workers run) with editor access
@@ -356,18 +413,27 @@ operator stops and the board freezes. The system is designed to degrade visibly:
 
 ### Usage meter: see the limit coming
 
-Claude Code's statusline input includes `rate_limits.five_hour` and `rate_limits.seven_day`
-(`used_percentage`, `resets_at`). `hooks/board-statusline-tap.sh` wraps your existing statusline
-command (set in `BOARD_STATUSLINE_NEXT`). It records those values to `$BOARD_HOME/usage.json`, then
-runs your command with the same input. Your statusline looks exactly the same.
+Claude Code passes `rate_limits.five_hour` and `rate_limits.seven_day` (`used_percentage`,
+`resets_at`) to the statusline command. `scripts/install.sh` wraps your existing statusline command
+with `hooks/board-statusline-tap.sh` (your command moves to `BOARD_STATUSLINE_NEXT`; other
+`statusLine` settings are kept):
+
+- The tap writes `$BOARD_HOME/usage.json` as
+  `{five_hour:{pct,resets_at}, seven_day:{pct,resets_at}, updated_at, session_id}`, with `pct`
+  from 0 to 100 and `resets_at` in epoch ms. It writes atomically, in the background, and only when
+  the input has rate limits.
+- It then runs your command with the same input, byte for byte. The statusline output and exit
+  status are exactly the same as before, and the overhead is a few milliseconds. Without `jq` it just
+  passes the input through.
+- `scripts/install.sh --uninstall` restores your original `statusLine` setting.
 
 | Usage (5h or weekly) | Alert | Board | Meaning |
 |---|---|---|---|
-| ≥ 80% | L1 `warn` | meters turn yellow | keep an eye on it |
+| ≥ 80% | L1 `warn`: "5h usage 82%, resets ~14:20, heads up" | meters show it | keep an eye on it |
 | ≥ 90% | L2 `high`: "5h usage 90%, resets ~14:20, prepare to switch account" | amber **Prepare to switch account** banner | get the second account ready |
 | ≥ 95%, or limit hit | L3 `urgent`: "weekly usage 95%, resets Mon 09:00, switch account now" | red banner | switch now |
 
-Thresholds are configurable. The page shows both meters (5h and 7d) with reset countdowns. The
+Thresholds are configurable (`alerting.thresholds`). Each one fires once per reset window. The page shows both meters (5h and 7d) with reset countdowns. The
 meter reflects the session whose statusline rendered last. With two accounts on one machine, it can
 show either of them.
 
@@ -480,8 +546,8 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `docs/contract.md` | Binding data contract: local files, db collections, lifecycle stages & gates, relay formats, degraded mode |
 | `hooks/board-hook.sh` | Lifecycle hook: writes `state/<session_id>.json`, appends `events.jsonl`, always exits 0 |
 | `bin/board` | CLI: `ls`, `snapshot`, `ask`, `task new/stage/ls/show`, `decisions`, `answer`, `mark`, `limit`, `press`, `notify`, `doctor`. Exit codes: 3 = press refused, 4 = answer refused |
-| `bin/board-collect` | Zero-token collector: snapshot, diff, alert escalation, usage thresholds |
-| `bin/board-notify`, `lib/notify.py` | Alert adapters (slack, desktop, email, line, sns, webhook), levels, ack, quiet hours, dedupe |
+| `bin/board-collect` | Zero-token collector: snapshot, diff, runs `board-notify` each loop; `--baseline` on first install |
+| `bin/board-notify`, `lib/notify.py` | Alerting: `send`, `ack`, `tick`, `test`, `status`. Adapters (slack, desktop, email, line, sns, webhook), levels, escalation, ack, quiet hours, dedupe |
 | `hooks/board-statusline-tap.sh` | Statusline wrapper that records 5h/weekly usage to `usage.json` without changing your statusline |
 | `bin/fleet-up` | Idempotent fleet launcher from `fleet.yaml` |
 | `autostart/` | Windows logon task and systemd user unit |
