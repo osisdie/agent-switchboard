@@ -164,7 +164,7 @@ out="$("$N" test --channel email)"; rc=$?
 wait_mail 1
 eq "test email exit 0" "$rc" "0"
 has "test email subject" "$(cat "$T"/mail/*.eml)" "Subject: [agent-switchboard] test alert"
-out="$(LINE_TO= LINE_CHANNEL_ACCESS_TOKEN= "$N" test --channel line 2>&1)"; rc=$?
+out="$(LINE_TO='' LINE_CHANNEL_ACCESS_TOKEN='' "$N" test --channel line 2>&1)"; rc=$?
 # the .env still has them; an empty environment value does not override the file
 eq "env file still configures line" "$rc" "0"
 mv "$BOARD_CONFIG_DIR/.env" "$T/env.saved"
@@ -284,7 +284,7 @@ at $(( (R5 + 60) * 1000 )); usage 91 "$R5B"; "$N" tick >/dev/null
 eq "new window: 90% alerts again" "$(n_slack)" "1"
 eq "old window alerts resolved" "$(alert usage:5h:95 .resolved)" "true"
 reset_calls
-usage 92 $(( (R5 - 3600) )); "$N" tick >/dev/null
+usage 92 $(( R5 - 3600 )); "$N" tick >/dev/null
 eq "stale reading (reset already passed) ignored" "$(calls)" "0/0/0/0/0/0"
 usage 10 "$R5B" 95; "$N" tick >/dev/null
 eq "weekly 95% message" "$(alert usage:7d:95 .title)" "weekly usage 95% — resets Mon 09:00 — switch account now"
