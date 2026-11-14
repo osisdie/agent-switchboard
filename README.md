@@ -127,7 +127,9 @@ your `statusLine` and removes the symlinks.
 
   | Key | Default | Meaning |
   |---|---|---|
-  | `sessions[]` | n/a | `code` (tmux session name), `cwd`, `autostart`, `resume_name`, `extra_args`, `aliases` |
+  | `sessions[]` | n/a | `code` (tmux session name), `cwd`, `autostart`, `resume_name`, `resume`, `initial_prompt`, `extra_args`, `aliases` |
+  | `sessions[].resume` | `true` | `false` = always start a **fresh** session, ignoring `resume_name` (no `claude -r`) |
+  | `sessions[].initial_prompt` | none | first prompt, passed as an argument whenever the session starts **fresh** (`resume: false`, no `resume_name`, or a resume that falls back). Not sent when a resume succeeds |
   | `approvers` | `[]` | board user ids allowed to answer decisions. **Empty = not checked locally** (the operator still checks the owner on the board) |
   | `release_managers` | `[]` | user ids allowed to authorize `gate: production`. Empty falls back to `approvers`. **Both empty = production refused** |
   | `poll_interval` | `3` | seconds between snapshot rebuilds |
@@ -149,6 +151,24 @@ fleet-up        # idempotent: creates missing tmux sessions with Remote Control,
 
 Then open the `BOARD` session and give it `prompts/board-operator.md`. On its first run it publishes
 the board from `artifact/board.html` and gives you the link.
+
+**Recommended: run the operator in a fresh, small-context session.** The operator wakes up every
+few minutes, and **every tick re-reads its whole context**, so a long-lived conversation makes each
+tick more expensive. Instead, start `BOARD` fresh and let it rebuild from durable state. The prompt
+file, `board snapshot` / `board decisions` and the board db hold everything it needs:
+
+```yaml
+sessions:
+  - code: BOARD
+    cwd: ~/agent-switchboard
+    autostart: true
+    resume: false               # always a new session, no old context
+    initial_prompt: "Read prompts/board-operator.md and follow it. ARTIFACT_URL=https://claude.ai/…"
+```
+
+Restarting it (for example daily, or after `/compact` stops helping) costs only a catch-up, and the
+operator prompt is written for exactly that (section 0, "Fresh-session start"). Keep `resume: true`
+for worker sessions, whose conversation *is* their work.
 
 **Autostart** (optional). Details are in [`autostart/README.md`](autostart/README.md):
 
@@ -348,9 +368,15 @@ overrides the file). All of them are listed in `.env.example`.
 
 **Setup**
 
-1. **Slack:** create an incoming webhook for a channel you watch, and set `SLACK_MENTION` to your own
-   member id. If you can't get a member id (incoming webhooks can't look one up), set
-   `SLACK_MENTION=<!here>` or `<!channel>` instead. That also forces a mobile push. A plain channel post often doesn't push to a phone, but a mention does.
+1. **Slack:**
+   - Create an incoming webhook for a channel you watch. **Private channels work**: create the
+     webhook as a member of that channel, and pick the channel on the Slack app's *Incoming
+     Webhooks* page.
+   - Set `SLACK_MENTION` to your own member id (`<@U…>`). A plain channel post often doesn't push to
+     a phone, but a mention does.
+   - Can't get a member id? Incoming webhooks can't look one up. Use `SLACK_MENTION=<!channel>`,
+     which notifies all of the channel's members, or `<!here>`, which notifies only those currently
+     active. Either one forces a mobile push.
 2. **Email:** use an app-specific password, never your main one, and send to an address that
    reaches your phone.
 3. **LINE:** create a Messaging API channel, issue a long-lived channel access token, add the

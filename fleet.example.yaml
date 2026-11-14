@@ -27,12 +27,14 @@ sessions:
   - code: BOARD
     cwd: ~/work
     autostart: true
-    resume_name: BOARD        # `claude -r BOARD`, falling back to a fresh session
+    resume: false             # always start fresh (default true: `claude -r resume_name` first)
     extra_args: "--verbose"
+    # First prompt of a fresh session: one line (newlines become spaces), passed as one quoted argument.
+    initial_prompt: "You are the BOARD operator. Read prompts/board-operator.md and start the operator loop."
   - code: API
     cwd: ~/work/api
     autostart: false
-    resume_name: API
+    resume_name: API          # `claude -r API`; fresh only if that exits within resume_fallback_seconds
     aliases: [api-main]       # registry names that also mean this session
   - code: WEB
     cwd: ~/work/web

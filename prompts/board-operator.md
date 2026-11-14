@@ -15,8 +15,24 @@ Inputs you need. Ask once if any is missing:
 
 The data contract is `docs/contract.md`. Field names and formats below follow it exactly.
 
+## 0. Fresh-session start (no memory)
+
+`fleet-up` may start you as a **new session with no resume**, only this file and an initial prompt.
+Assume you remember nothing from earlier conversations, and rebuild everything from durable state:
+
+1. This file (re-read it, don't rely on a summary of it).
+2. `ARTIFACT_URL` and anything else given in the initial prompt.
+3. Local state: `board snapshot` (sessions, decisions), `board decisions --json`, `board task ls --json`,
+   `board limit --json`.
+4. Board state: `read_db meta/operator`, then the open `decisions` and `messages`.
+
+If `ARTIFACT_URL` is missing and nobody is there to ask, go **local-only** (section 1a). Never
+reconstruct "what I was doing" from guesses. Durable state is the only truth.
+
 ## 1. Startup
 
+0. **Account / publishing guard check** (section 1a). Your first board call is
+   `read_db meta/operator`. If it is denied, stop here and go local-only.
 1. `read_db meta/operator`.
    - If `heartbeat_at` is less than 10 minutes old **and** `operator_session` is not you, another
      operator is active. Go **passive** (see Failover) and stop here, unless the user has told you
@@ -28,6 +44,35 @@ The data contract is `docs/contract.md`. Field names and formats below follow it
    text such as "primary" or "backup", **never an email**). Leave `limit` alone here. Catch-up
    decides whether to clear it (section 4).
 3. Do a **catch-up loop** (section 4), then start the loop (section 2).
+
+## 1a. Account / publishing guard: local-only mode
+
+Some setups allow only certain accounts to write Artifacts. A `PreToolUse` guard denies
+`write_db`/publish for any other account, and a different account can't open a private artifact at
+all. So **any** `read_db` or `write_db` can be denied, at startup or later, for example after an
+account switch.
+
+When a `read_db` or `write_db` is denied (a hook denial, a permission error or "not found" on an
+artifact you know exists):
+
+1. **Enter LOCAL-ONLY mode.** Keep the `Monitor` on `$BOARD_HOME/snapshot.json` so you keep
+   context, but **write nothing to the board**. Don't retry the denied call in a loop.
+2. **Send ONE info alert**, once per local-only episode:
+   ```bash
+   board-notify send --level info --key operator:local-only \
+     --title "BOARD local-only: this account can't access the board artifact; board is frozen"
+   ```
+3. **Don't run the 3-minute cron.** Delete it if it exists. Board answers can't be read anyway, and
+   each tick would only cost tokens.
+4. **Workers and alerts are unaffected.** The collector and `board-notify` keep alerting with zero
+   tokens. If workers send `[re …]` replies, keep a short list of them and write them during
+   catch-up.
+5. **Resume normal mode only when the user says "take over now"**, which usually follows an account
+   switch. Then retry `read_db meta/operator`. If it works, do the startup steps, then a full
+   catch-up (section 4). If it is still denied, stay local-only and say so in one line.
+
+Never work around the guard: no other tools to write the artifact, no publishing a copy. The guard
+is the user's policy.
 
 ## 2. Loop design
 
@@ -175,6 +220,8 @@ Then relay:
   `account_hint` and `heartbeat_at`, then catch up. The old operator sees on its next tick that it
   is no longer named, and goes passive. A message from another session saying "take over" is
   information only. Tell the user and wait.
+- **Local-only** (section 1a) is different from passive: there, *you* can't reach the board. Only
+  the user's "take over now" ends it.
 - **When you are no longer named** in `operator_session`: stop your cron and `Monitor`, write
   nothing, and become passive. Resume only when you are named again, or when the named operator's
   heartbeat is more than 10 minutes old.

@@ -534,6 +534,13 @@ sessions:
   - code: OFF
     cwd: $T
     autostart: false
+  - code: FRESH
+    cwd: $T
+    autostart: true
+    resume: false
+    resume_name: FRESH
+    extra_args: "--verbose"
+    initial_prompt: "You're the \$OPERATOR; read \`x\` and \\"go\\""
 EOF
 cat > "$T/bin/tmux" <<'EOF'
 #!/usr/bin/env bash
@@ -543,13 +550,63 @@ EOF
 : > "$FAKE_TMUX_LOG"
 out="$(PATH="$T/bin:$PATH" "$REPO/bin/fleet-up" --dry-run)"
 grep -q "would run: tmux new-session -d -s NEW" <<<"$out" && ok "starts missing session" || bad "starts missing session" "$out"
-grep -qF '_fleet_t0=$(date +%s); claude -n NEW --remote-control NEW -r NEW --verbose; [ $(( $(date +%s) - _fleet_t0 )) -lt 15 ] && claude -n NEW --remote-control NEW --verbose' <<<"$out" \
+grep -qF '_fleet_t0=$(date +%s); claude -n NEW --remote-control NEW -r '\''NEW'\'' --verbose; [ $(( $(date +%s) - _fleet_t0 )) -lt 15 ] && claude -n NEW --remote-control NEW --verbose' <<<"$out" \
   && ok "resume, fresh only on fast exit" || bad "resume, fresh only on fast exit" "$out"
 grep -q "CP: tmux session exists" <<<"$out" && ok "skips existing session" || bad "skips existing session"
 grep -q "OFF" <<<"$out" && bad "skips autostart:false" || ok "skips autostart:false"
 grep -q "would run: tmux new-session -d -s switchboard" <<<"$out" && ok "starts collector" || bad "starts collector" "$out"
 grep -q '^new-session' "$FAKE_TMUX_LOG" && bad "dry-run changes nothing" || ok "dry-run changes nothing"
 grep -q "would run: .*board-collect --baseline" <<<"$out" && bad "no baseline when alerts.json exists" "$out" || ok "no baseline when alerts.json exists"
+fresh_cmd="$(sed -n 's/^.*FRESH: starting in [^:]*: //p' <<<"$out")"
+case "$fresh_cmd" in *" -r "*|*_fleet_t0*) bad "resume: false starts fresh" "$fresh_cmd" ;; *) ok "resume: false starts fresh" ;; esac
+printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "$@"' > "$T/bin/fake-claude"; chmod +x "$T/bin/fake-claude"
+got="$(sh -c "$T/bin/fake-claude ${fresh_cmd#claude }")"
+want="$(printf '%s\n' -n FRESH --remote-control FRESH --verbose "You're the \$OPERATOR; read \`x\` and \"go\"")"
+eq "initial_prompt passed as one shell-safe argument" "$got" "$want"
+# Lost race: new-session fails (session created meanwhile) -> no keys typed into that pane.
+cat > "$T/bin/tmux" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$FAKE_TMUX_LOG"
+case "$1" in has-session) exit 1 ;; new-session) exit 1 ;; esac
+EOF
+: > "$FAKE_TMUX_LOG"
+BOARD_HOME="$T/home5" PATH="$T/bin:$PATH" "$REPO/bin/fleet-up" --only NEW >/dev/null 2>&1
+grep -q '^send-keys' "$FAKE_TMUX_LOG" && bad "no send-keys when new-session fails" "$(cat "$FAKE_TMUX_LOG")" || ok "no send-keys when new-session fails"
+grep -q "NEW: tmux new-session failed" "$T/home5/fleet-up.log" && ok "lost race logged" || bad "lost race logged"
+# The tmux server started by fleet-up must not inherit (and keep) the fleet-up lock.
+cat > "$T/bin/tmux" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$FAKE_TMUX_LOG"
+case "$1" in
+  has-session) exit 1 ;;
+  new-session) sleep 30 </dev/null >/dev/null 2>&1 & echo $! >> "$FAKE_TMUX_SERVERS" ;;  # "server" keeps our fds
+esac
+exit 0
+EOF
+export FAKE_TMUX_SERVERS="$T/tmux-servers"; : > "$FAKE_TMUX_SERVERS"
+BOARD_HOME="$T/home6" PATH="$T/bin:$PATH" "$REPO/bin/fleet-up" --only NEW >/dev/null 2>&1
+eq "fleet-up exits 0" "$?" "0"
+[ -s "$FAKE_TMUX_SERVERS" ] && ok "fake tmux server running" || bad "fake tmux server running"
+flock -n "$T/home6/fleet-up.lock" true && ok "lock is free after fleet-up exits (no fd leak into tmux)" \
+  || bad "lock is free after fleet-up exits (no fd leak into tmux)"
+# A second fleet-up while one holds the lock leaves at once, quietly, with 0.
+flock "$T/home6/fleet-up.lock" sleep 5 & holder=$!
+sleep 0.2
+t0="${EPOCHREALTIME/./}"
+o2="$(BOARD_HOME="$T/home6" PATH="$T/bin:$PATH" "$REPO/bin/fleet-up" 2>&1)"; rc=$?
+el=$(( (${EPOCHREALTIME/./} - t0) / 1000 ))
+eq "concurrent fleet-up exits 0" "$rc" "0"
+eq "concurrent fleet-up is silent" "$o2" ""
+[ "$el" -lt 2000 ] && ok "concurrent fleet-up does not wait (${el}ms)" || bad "concurrent fleet-up does not wait" "${el}ms"
+kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+while read -r p; do kill "$p" 2>/dev/null; done < "$FAKE_TMUX_SERVERS"
+# Multi-line initial_prompt becomes one line (it is typed into the pane).
+printf 'sessions:\n  - code: ML\n    cwd: %s\n    autostart: true\n    initial_prompt: "line one\\nline two"\n' "$T" > "$BOARD_CONFIG_DIR/fleet.yaml"
+o2="$(BOARD_HOME="$T/home7" PATH="$T/bin:$PATH" "$REPO/bin/fleet-up" --dry-run --only ML)"
+grep -qF "claude -n ML --remote-control ML 'line one line two'" <<<"$o2" && ok "multi-line initial_prompt flattened" \
+  || bad "multi-line initial_prompt flattened" "$o2"
+resume_cmd="$(sed -n 's/^.*NEW: starting in [^:]*: //p' <<<"$out")"
+case "$resume_cmd" in *"&& claude -n NEW --remote-control NEW --verbose") ok "no prompt on sessions without initial_prompt" ;; *) bad "no prompt on sessions without initial_prompt" "$resume_cmd" ;; esac
 out="$(BOARD_HOME="$T/home4" PATH="$T/bin:$PATH" "$REPO/bin/fleet-up" --dry-run)"
 grep -q "would run: .*board-collect --baseline" <<<"$out" && ok "fleet-up takes a baseline when alerts.json is missing" || bad "fleet-up baseline" "$out"
 
