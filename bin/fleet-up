@@ -147,7 +147,10 @@ fi
 if [ -z "$only" ] && [ "$(python3 "$FLEET" get serve.enabled false)" = true ]; then
   serve_port="$(python3 "$FLEET" get serve.port 39410)"
   case "$serve_port" in ''|*[!0-9]*) serve_port=39410 ;; esac
-  if (exec 3<>"/dev/tcp/127.0.0.1/$serve_port") 2>/dev/null; then
+  # Bounded probe: on some hosts a connect to a closed port hangs instead of being refused.
+  # shellcheck disable=SC2016  # $1 is expanded by the inner bash
+  if command -v timeout >/dev/null 2>&1 \
+     && timeout 2 bash -c 'exec 3<>"/dev/tcp/127.0.0.1/$1"' _ "$serve_port" 2>/dev/null 8>&-; then
     log "serve: port $serve_port already answers — skip"
   elif tmux list-windows -t "=switchboard" -F '#{window_name}' 2>/dev/null 8>&- | grep -qx serve; then
     log "serve: window switchboard:serve exists — skip"
