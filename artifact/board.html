@@ -599,6 +599,8 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     got: { sessions: false, decisions: false, messages: false, tasks: false, approvals: false, operator: false },
     slow: false, feedError: null, offlineDetail: null,
     me: null, userReady: false, writable: null,   // writable: true | false | null (unknown → let writes decide)
+    canEditBoard: null,          // claude mode: Editor/Owner (writes shared docs, sends messages); Contributors only answer
+    myAnswers: new Map(),        // claude mode: decisionId -> my answers/<me>/d/<id> doc
     canSend: 'off',
     confirm: null,               // { id, choice }
     busy: new Set(),
@@ -657,6 +659,8 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     return S.sessions.find((s) => lc(s.code) === n) || S.sessions.find((s) => (s.aliases || []).some((a) => lc(a) === n)) || null;
   }
   function canAnswer() { return S.userReady && S.writable !== false && (S.mode === 'live' || S.mode === 'demo'); }
+  // Messages are shared documents: in claude mode only Editors write them (approvers are Contributors).
+  function canMessage() { return canAnswer() && (S.demo || isLocal() || S.canEditBoard !== false); }
   function hhmm(t) {
     const d = new Date(t), now = new Date();
     const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
@@ -975,6 +979,15 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     if (d.status === 'unauthorized') {
       card.append(h('p', { class: 'note unauth', text: 'Answered by someone who is not an approver, so the operator did not relay it. An approver can still answer.' }));
     }
+    const mine = S.myAnswers.get(d.id);
+    if (mine && !isLocal() && !S.demo) {
+      card.append(h('p', { class: 'note queue', text: 'Your answer "' + str(mine.answer) + '" is saved and waits for the operator. Answer again to change it.' }));
+    }
+    // A permission whose input was cut short is never allowed from here: the human must see it all.
+    const truncated = isPerm && !!d.summary_truncated;
+    if (truncated) {
+      card.append(h('p', { class: 'note unauth', text: 'The request is longer than what is shown here, so it can only be allowed in the session. Open the session to review it.' }));
+    }
 
     let tip = null;
     if (busy) {
@@ -982,7 +995,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     } else if (canAnswer()) {
       if (appr === false) { tip = 'You are not an approver — your answer won\'t be relayed'; card.append(h('p', { class: 'note noappr', text: 'You are not an approver — your answer won\'t be relayed.' })); }
       if (offline) { tip = tip || 'Answers will queue until the operator returns'; card.append(h('p', { class: 'note queue', text: 'Operator offline — answers are saved and queued until the operator returns.' })); }
-      const opts = isPerm ? ['allow', 'deny'] : Array.isArray(d.options) && d.options.length ? d.options.map(str).filter(Boolean) : isGate ? ['approve', 'request changes'] : [];
+      const opts = isPerm ? (truncated ? ['deny'] : ['allow', 'deny']) : Array.isArray(d.options) && d.options.length ? d.options.map(str).filter(Boolean) : isGate ? ['approve', 'request changes'] : [];
       const needsConfirm = isPerm || isProdGate(d);
       if (conf) {
         const cls = optionClass(conf);
@@ -1009,9 +1022,9 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       }
       if (tip) for (const b of card.querySelectorAll('.opts .btn, .free .btn, .confirm-row .btn')) b.title = tip;
     }
-    const link = sessionLink(d.from, 'Answer in session');
+    const link = sessionLink(d.from, truncated ? 'Open in session' : 'Answer in session');
     card.append(h('div', { class: 'dfoot' },
-      h('span', { text: isPerm ? 'Allow or Deny is pressed in the session by the operator.' : isGate ? 'Approvals are logged in Approvals below.' : 'Your answer is relayed to ' + (str(d.from) || 'the session') + '.' }),
+      h('span', { text: isPerm ? (isLocal() ? 'Allow or Deny is pressed in the session right away.' : 'Allow or Deny is pressed in the session by the operator.') : isGate ? 'Approvals are logged in Approvals below.' : 'Your answer is relayed to ' + (str(d.from) || 'the session') + '.' }),
       link));
     return card;
   }
@@ -1043,7 +1056,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     }
     const ctx = [canAnswer() ? 'w' : 'r', operatorOffline() ? 'off' : 'on', String(approverState())].join('|');
     reconcile($('#dec-list'), pend, (d) => d.id,
-      (d) => JSON.stringify(d) + '|' + ctx + '|' + (S.busy.has(d.id) ? 'b' : '') + '|' + (S.confirm && S.confirm.id === d.id ? S.confirm.choice : '') + '|' + str(findSession(d.from) && findSession(d.from).remote_url) + '|' + str((S.tasks.find((t) => t.id === d.task_id) || {}).title),
+      (d) => JSON.stringify(d) + '|' + JSON.stringify(S.myAnswers.get(d.id) || null) + '|' + ctx + '|' + (S.busy.has(d.id) ? 'b' : '') + '|' + (S.confirm && S.confirm.id === d.id ? S.confirm.choice : '') + '|' + str(findSession(d.from) && findSession(d.from).remote_url) + '|' + str((S.tasks.find((t) => t.id === d.task_id) || {}).title),
       buildDecision);
 
     const past = S.decisions.filter((d) => !isOpen(d))
@@ -1223,9 +1236,9 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     e.textContent = '';
     if (S.mode === 'connecting' || (S.mode === 'live' && !S.got.messages)) e.append(h('strong', { text: 'Loading messages…' }));
     else if (S.mode === 'offline') e.append(h('strong', { text: 'No board data.' }), 'Threads appear here once the page can reach the board.');
-    else e.append(h('strong', { text: 'No messages yet.' }), canAnswer() ? 'Type @ and a session code to send the first one.' : 'Messages that editors send to sessions appear here.');
+    else e.append(h('strong', { text: 'No messages yet.' }), canMessage() ? 'Type @ and a session code to send the first one.' : 'Messages that editors send to sessions appear here.');
     reconcile($('#threads'), list, (m) => m.id, (m) => JSON.stringify(m) + JSON.stringify(S.replies.get(m.id) || []) + (S.me || ''), buildThread);
-    const ok = canAnswer();
+    const ok = canMessage();
     $('#composer').hidden = !ok;
     $('#msg-readonly').hidden = ok || !(S.mode === 'live' && S.userReady);
   }
@@ -1251,6 +1264,8 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     const code = e && e.code;
     // Local adapter (board-serve) answers; never produced by the claude.ai db.
     if (code === 'not_approver') { toast('Not relayed: you are not an approver, so the decision is marked unauthorized.', true); return; }
+    if (code === 'review_in_session') { toast('Only part of this request is shown here, so it can only be allowed in the session.', true); return; }
+    if (code === 'no_approvers') { toast('Nobody is listed as an approver on this board, so no answer is accepted.', true); return; }
     if (code === 'stale') { toast('That prompt is no longer showing, so nothing was pressed. Handle it in the session.', true); return; }
     if (code === 'remote_refused' || code === 'unauthenticated' || code === 'csrf' || code === 'bad_host') {
       toast('The board server refused this request' + (e.message ? ': ' + e.message : '.'), true); return;
@@ -1387,7 +1402,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 
   // Synchronous from the gesture: writes are kicked off, then the fast path is called.
   function sendMessage() {
-    if (!canAnswer()) return;
+    if (!canMessage()) return;
     const raw = ta.value;
     const p = parseMentions(raw);
     if (p.error) { merr.textContent = p.error; ta.focus(); return; }
@@ -1548,13 +1563,31 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   // claude: the claude.ai Artifact db (+ room fast path). local: board-serve's JSON/SSE API.
   function claudeAdapter(dbNs) {
     db = dbNs;
+    let watching = false;
     return {
       mode: 'claude',
       subscribe,
+      // The answer lives under the answerer's own subtree, answers/<me>/d/<decisionId>, which the
+      // db rules ({self}) let nobody else write. The operator takes the identity from that path,
+      // never from a field, so nobody can answer in someone else's name.
       answer(d, answer) {
-        const ref = db.doc('decisions/' + d.id);
-        const patch = (by) => ref.update({ status: 'answered', answer, answered_by: by, answered_at: Date.now() });
-        return S.me ? patch(S.me) : myId().then(patch);
+        const write = async (me) => {
+          if (!me) throw Object.assign(new Error('no user id'), { code: 'not_granted' });
+          await db.doc('answers/' + me + '/d/' + d.id).set({ answer, answered_at: Date.now(), note: null });
+          // A hint for other viewers only (Editors can write it; the operator ignores who did).
+          if (S.canEditBoard) db.doc('decisions/' + d.id).update({ status: 'answered' }).catch(() => {});
+        };
+        return S.me ? write(S.me) : myId().then(write);
+      },
+      watchMine() {
+        if (watching || !S.me) return;
+        watching = true;
+        try {
+          db.collection('answers/' + S.me + '/d').onSnapshot((snap) => {
+            S.myAnswers = new Map(snap.docs.filter((x) => x.exists).map((x) => [x.id, x.data()]));
+            renderDecisions();
+          }, () => { watching = false; });
+        } catch (e) { watching = false; /* an id outside the path grammar: no own-answer view */ }
       },
       sendMessage(ids, targets, body, now) {
         const refs = ids.map((id) => db.doc('messages/' + id));
@@ -1701,7 +1734,11 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       userNs = u;
       if (u) {
         try { S.me = await u.id(); } catch (e) { S.me = null; }
-        try { S.writable = (await u.canEdit()) ? true : false; } catch (e) { S.writable = null; }
+        // Editors write everything. A Contributor (how approvers should be shared) writes only its own
+        // answers/<id>/ subtree, so leave writable unknown and let the first write decide.
+        try { S.canEditBoard = !!(await u.canEdit()); } catch (e) { S.canEditBoard = null; }
+        S.writable = S.canEditBoard ? true : null;
+        if (adapter && adapter.watchMine) adapter.watchMine();
       } else S.writable = null;
       S.userReady = true;
       renderAll();
@@ -1712,6 +1749,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     adapter = claudeAdapter(dbNs); S.mode = 'live';
     renderAll();
     adapter.subscribe();
+    adapter.watchMine();
   }
   boot();
 })();

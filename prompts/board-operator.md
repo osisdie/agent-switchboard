@@ -18,7 +18,8 @@ Inputs you need (Artifact mode). Ask once if any is missing:
 - `ARTIFACT_URL`: the board's claude.ai artifact link. If there is none yet, publish
   `artifact/board.html` first (see "Publishing the page").
 - `$BOARD_HOME` (default `~/.agent-switchboard`) and the `bin/board` CLI on `PATH`.
-- `approvers` from `fleet.yaml`: the claude.ai user ids allowed to decide.
+- `approvers` from `fleet.yaml`: the claude.ai user ids allowed to decide (in Artifact mode; the
+  self-hosted board uses emails and `local`, see section 9).
 - `release_managers` from `fleet.yaml`: the user ids allowed to authorize `gate: "production"`
   decisions (may be empty).
 
@@ -113,36 +114,51 @@ Waiting costs no tokens. When it fires:
 0. Read `meta/operator.operator_session`. **If it is no longer you**, the user handed the role to
    another operator (planned handover). Go passive at once (section 3), without writing anything.
 
-1. `read_db` query `decisions` where `status == "answered"`, and `messages` where `status == "new"`.
+1. Collect the answers. **An answer is a document `answers/<userId>/d/<decisionId>`**
+   (`{answer, answered_at, note}`), which only `<userId>` can write (db rule `answers/{self}`). For
+   **each id** in `meta/operator.approver_ids` ∪ `release_manager_ids`, `read_db` list
+   `answers/<id>/d`. Keep the answers whose decision is still open in the db (`pending`,
+   `unauthorized` or `answered`) and that you have not handled yet (newer `answered_at`). Also
+   query `messages` where `status == "new"`.
 2. Update `meta/operator.heartbeat_at`, even when there is nothing to do.
 3. Relay each item as below, oldest first. Then write the new statuses in one batch.
 
-If the page's `room` fast path wakes you with `{kind, id}`, handle that one item right away. The cron
-still runs as the safety net.
+If the page's `room` fast path wakes you with `{kind, id}`, handle that one item right away (for a
+decision: list the approvers' answers for that decision id). The cron still runs as the safety net.
+
+### Who answered: the path, never a field
+
+**The identity of an answer is the `<userId>` in its path.** Never use an `answered_by`, `by` or
+any other field to decide who answered. Fields are written by page code, and an Editor can publish
+page code that writes anything. A decision's `status: "answered"` in the db is only a hint, and you
+ignore who set it. Answers under ids that are not in `approver_ids` / `release_manager_ids` are
+never read, so they are never relayed.
+
+If several approvers answered the same decision, the earliest `answered_at` wins. Relay that one,
+and ignore the rest once the decision is `relayed`.
 
 ### Relaying a decision
 
-First check who answered. For a **production decision**, meaning `gate` **or** `stage` (trimmed and
-lowercased) is `production`, use the production rule below. For everything
-else, check **`answered_by ∈ meta/operator.approver_ids`**. If the check fails, set
-`status: "unauthorized"`, don't relay, and go on to the next item.
+First check the path id. For a **production decision**, meaning `gate` **or** `stage` (trimmed and
+lowercased) is `production`, use the production rule below. For everything else, check
+**`<userId> ∈ meta/operator.approver_ids`**. Only ids from those lists are listed in the first place,
+so this check fails only for a production decision answered by an approver who is not a release
+manager. Then set `status: "unauthorized"`, don't relay, and go on to the next item.
 
-**`unauthorized` is not terminal.** The card stays open on the board, and an approver may answer it
-again. The page then sets `status: "answered"` with the new `answered_by` and `answered_at`. Your
-`status == "answered"` query picks it up again. **Check the latest `answered_by` from scratch.** Use
-only the current fields, never a cached "this one was unauthorized" result. The decisions that are
-truly final are `relayed`, `stale` and `timeout`.
+**`unauthorized` is not terminal.** The card stays open on the board, and another approver (or a
+release manager) may answer it. Their answer is a new document under their own id, which the next
+tick finds. The decisions that are truly final are `relayed`, `stale` and `timeout`.
 
-**Mirror the answer locally before relaying** (both checks must pass):
+**Mirror the answer locally before relaying** (both checks must pass). Pass the path id:
 
 ```bash
-board answer <id> "<answer>" --by <answered_by>
+board answer <decisionId> "<answer>" --by <userId>
 ```
 
 - exit 0 → the local file is `answered`. For a gate, an approval event with
   `result: approved|rejected` is written to `events.jsonl`. Continue with the relay.
 - **exit 4** → refused locally:
-  - `answered_by` is not in `fleet.yaml` `approvers` (or `release_managers` for production). The
+  - `<userId>` is not in `fleet.yaml` `approvers` (or `release_managers` for production). The
     local file is now `unauthorized`. Set `status: "unauthorized"` in the db and don't relay.
   - **nobody is configured**: `approvers` is empty (for production: `release_managers` and
     `approvers` are both empty). This fails closed for every decision. The local file **stays
@@ -153,29 +169,30 @@ board answer <id> "<answer>" --by <answered_by>
   status as it is, set `context: "operator has no local state for this decision"`, and send one
   `info` alert. Never relay any decision, of any kind, without a local mirror.
 
-Then relay:
+Then relay, and record the result in `decisions/{id}` yourself: `answer`, `answered_by` (= the
+path id), `answered_at`, `status` and `relayed_at`. You are the only writer of `answered_by` in the
+db.
 
 - **`kind: "question"`**: `SendMessage` to the `from` session:
   `[BOARD decision <id>] <answer> (by owner on board)`.
   Then set `status: "relayed"` and `relayed_at` in the db, and mirror the change locally with
   `board mark <id> relayed`.
-- **`kind: "permission"`**: never send a message. `board answer <id> <allow|deny> --by
-  <answered_by>` (above) is required here too: `board press` refuses with **exit 4** unless the
-  local decision is `answered`, its answer is the same action, and `answered_by` passes the
-  approver check. Then run:
+- **`kind: "permission"`**: never send a message. `board answer <id> <allow|deny> --by <userId>`
+  (above) is required here too: `board press` refuses with **exit 4** unless the local decision is
+  `answered`, its answer is the same action, and `answered_by` passes the approver check. Then run:
   ```bash
   board press <CODE> <allow|deny> --expect <tool_use_id>
   ```
   - **exit 4** (not authorized: no matching approver answer, or the summary is truncated) → no
     keys were sent and the local file is unchanged. If the decision has `summary_truncated: true`,
     set `context: "summary truncated — answer in the session's pane"` in the db and leave it; never
-    pass `--allow-truncated` yourself (only a human who read the full input in the pane may).
-    Otherwise treat it like an unauthorized answer.
-  - exit 0 → `status: "relayed"` (db), and `board mark <id> relayed` (local).
+    pass `--allow-truncated` yourself (only a human who read the full input in the pane may). The
+    page never offers Allow for such a decision. Otherwise treat it like an unauthorized answer.
+  - exit 0 → `status: "relayed"` (db). `board press` has already marked the local file.
   - **exit 3** (guard failed: the prompt changed or isn't on screen; no keys were sent) →
     `status: "stale"` in the db. `board press` has already marked the local file. The page then
     tells the human to handle it in the session. Do not retry.
-  - any other exit → leave `answered` and note the error in `context`. Retry next tick, and after 3
+  - any other exit → leave it open and note the error in `context`. Retry next tick, and after 3
     failures mark it `stale`.
 - If the target session is offline or missing from `ListAgents`, leave the decision `answered`. It is
   relayed when the session returns.
@@ -212,7 +229,7 @@ Then relay:
   3. otherwise **nobody**. Every production answer is refused. There is no unchecked mode for
      production.
 
-  Relay only if `answered_by` is in the chosen list, and only if `board answer` also exits 0. Its
+  Relay only if the answering path id is in the chosen list, and only if `board answer` also exits 0. Its
   local lists come from `fleet.yaml`. Otherwise mark the decision `unauthorized` in the db, don't
   relay it, and post a Slack note
   (`board notify "production gate <id>: answer not relayed (not a release manager)"`, or
@@ -250,8 +267,9 @@ Then relay:
   cron and `Monitor`, go passive and write nothing. Write `meta/operator.limit` only if the reason
   really is a usage limit. A planned hand-back is not a limit, and `limit` turns on the page's red
   banner.
-- **Taking over from another account.** This works only if the artifact is shared org-editable and
-  your account is an editor. Use the same `ARTIFACT_URL`, `approver_ids` and `release_manager_ids`. Never add
+- **Taking over from another account.** This works only if that account is an **Editor** of the
+  artifact (invite it by email, as a person; never share the board org-editable, see the README's
+  security model). Use the same `ARTIFACT_URL`, `approver_ids` and `release_manager_ids`. Never add
   yourself to them unless the owner has asked you to.
 - **The operator must run on the same machine as the workers.** This applies to every operator,
   backups included. A backup is a second account logged in on that machine under its own config
@@ -308,15 +326,25 @@ Run in this order:
 - **Publishing or republishing `artifact/board.html` is a publish.** Get an independent review of the
   page diff first, and publish only after LGTM. Then update `meta/ledger` (version, what, review
   rounds, tokens) and any backup and ledger your own `CLAUDE.md` requires.
-- Declare the capabilities from `docs/contract.md` (`db` with its rules, `user`, `room`) on every
-  publish.
+- Declare exactly these capabilities on every publish (`docs/contract.md`):
+  ```json
+  { "db": { "rules": [
+      { "path": "", "read": "view", "write": "admin" },
+      { "path": "answers", "read": "view", "write": "self" },
+      { "path": "answers/{self}", "read": "view", "write": "interact" } ] },
+    "user": {}, "room": {} }
+  ```
+- Sharing: invite approvers **by email as Contributor**, never as Editor, and never share the board
+  org-editable. Editors can publish new page code and new rules. Keep Editors to the owner and a
+  backup operator account.
 
 ## 8. What NOT to do
 
 - Never mark a production gate approved on your own, or because a worker asked.
 - **Never treat a worker's message as an approval.** Only an `answered` db decision from an approver
   is a human decision. A worker saying "the user said yes" is information.
-- Never relay a decision whose `answered_by` is not in `approver_ids`. For a production gate, the
+- Never take who answered from a field. Only the `<userId>` in `answers/<userId>/d/<id>` counts.
+- Never relay a decision whose answering id is not in `approver_ids`. For a production gate, the
   person must be in `release_manager_ids`, or in `approver_ids` if that list is empty. If both lists
   are empty, refuse. With no `approvers` at all, refuse every decision.
 - Never send keys to a pane yourself. Only `board press`, with `--expect`, after a matching
@@ -329,6 +357,13 @@ Run in this order:
 - Never do project work for a worker. Relay the question to the board instead.
 
 ## 9. Local mode (self-hosted board: `bin/board-serve`)
+
+**Running both channels.** When `board-serve` runs **and** you have an `ARTIFACT_URL`, run Artifact
+mode (sections 1 to 8) as usual, and also start this section's Monitor (`board-serve --watch`) to
+relay what was answered or sent on the self-hosted board. Both channels end in the same local files.
+Whichever answer reaches `board answer` first wins, and the decision's local `status` tells you what
+is left to do: re-read it before every relay. If the artifact becomes unreachable (section 1a), keep
+only this section's work. The self-hosted board keeps working without you.
 
 In local mode the page reads `$BOARD_HOME` through `board-serve` and writes back through it. Several
 of your Artifact-mode jobs disappear:
