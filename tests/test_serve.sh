@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2015  # ok/bad always return 0
+# shellcheck disable=SC2015,SC2016  # ok/bad always return 0; jq programs are single-quoted
 # tests/test_serve.sh — board-serve (lib/serve.py): state, SSE, identity, CSRF, approvers,
 # permission presses (fake tmux), path allowlist, Cloudflare Access JWT (if cryptography exists).
 #
@@ -41,7 +41,7 @@ cat > "$CLAUDE_SESSIONS_DIR/$LIVE_PID.json" <<EOF
 EOF
 cat > "$BOARD_HOME/state/$SID.json" <<EOF
 {"session_id":"$SID","state":"needs-you","tmux_pane":"%42","last_event":"PermissionRequest",
- "pending":{"tool_use_id":"tu_1","tool_name":"Bash","summary":"rm -rf build"},"updated_at":$NOW}
+ "pending":{"tool_use_id":"tu_1","tool_name":"Bash","summary":"rm -rf build","summary_sha256":"sha-1"},"updated_at":$NOW}
 EOF
 dec() {  # dec ID KIND EXTRA_JSON
   jq -n --arg id "$1" --arg kind "$2" --argjson now "$NOW" --argjson x "${3:-{\}}" \
@@ -54,7 +54,7 @@ dec d-1-q2 question
 dec d-1-q3 question
 dec d-1-gate question '{"task_id":"t-1","stage":"build","gate":"owner","options":["approve","request changes"]}'
 dec d-1-prod question '{"task_id":"t-1","stage":"production","gate":"production","options":["approve","request changes"]}'
-dec d-1-perm permission "{\"from\":null,\"session_id\":\"$SID\",\"tool_use_id\":\"tu_1\",\"tool_name\":\"Bash\"}"
+dec d-1-perm permission "{\"from\":null,\"session_id\":\"$SID\",\"tool_use_id\":\"tu_1\",\"tool_name\":\"Bash\",\"summary\":\"rm -rf build\",\"summary_sha256\":\"sha-1\"}"
 cat > "$BOARD_HOME/tasks/t-1.json" <<EOF
 {"id":"t-1","title":"Ship it","owner":"CP","stage":"build","artifacts":{},"gates":[{"stage":"build","gate":"owner","status":"pending","decision_id":"d-1-gate"}],"updated_at":$NOW}
 EOF
@@ -120,7 +120,7 @@ post() {  # post PATH JSON [curl args...]
   local p="$1" d="$2"; shift 2
   req POST "$p" -H 'Content-Type: application/json' -H 'X-Board: 1' -H "$ORIGIN" --data-binary "$d" "$@"
 }
-body() { jq -r "$1" "$T/body"; }
+body() { jq -r "$@" "$T/body"; }
 
 write_cfg ""
 start
@@ -260,8 +260,8 @@ eq "  press logged with identity" "$(jq -s -r '[.[] | select(.type=="serve" and 
 eq "answering a relayed decision again 409" "$(post /api/decisions/d-1-perm/answer '{"answer":"deny"}')" "409"
 : > "$FAKE_TMUX_LOG"
 # A new prompt (tu_2) that is no longer on screen when the answer arrives.
-jq '.pending.tool_use_id = "tu_2"' "$BOARD_HOME/state/$SID.json" > "$T/st" && mv "$T/st" "$BOARD_HOME/state/$SID.json"
-dec d-1-permb permission "{\"from\":null,\"session_id\":\"$SID\",\"tool_use_id\":\"tu_2\",\"tool_name\":\"Bash\"}"
+jq '.pending.tool_use_id = "tu_2" | .pending.summary_sha256 = "sha-2"' "$BOARD_HOME/state/$SID.json" > "$T/st" && mv "$T/st" "$BOARD_HOME/state/$SID.json"
+dec d-1-permb permission "{\"from\":null,\"session_id\":\"$SID\",\"tool_use_id\":\"tu_2\",\"tool_name\":\"Bash\",\"summary\":\"rm -rf build\",\"summary_sha256\":\"sha-2\"}"
 echo '$ just a shell' > "$FAKE_TMUX_SCREEN"
 eq "stale permission (prompt gone from the pane) 409" "$(post /api/decisions/d-1-permb/answer '{"answer":"allow"}')" "409"
 eq "  error stale" "$(body .error)" "stale"
@@ -302,6 +302,19 @@ eq "  error review_in_session" "$(body .error)" "review_in_session"
 grep -q send-keys "$FAKE_TMUX_LOG" && bad "  nothing pressed" || ok "  nothing pressed"
 eq "  still pending" "$(jq -r .status "$BOARD_HOME/decisions/d-1-trunc.json")" "pending"
 rm -f "$BOARD_HOME/decisions/d-1-trunc.json"
+
+# A long input through the real hook: the decision carries summary_truncated, and Allow is refused.
+SID2="bbbbbbbb-1111-2222-3333-444444444444"
+long="$(printf 'x%.0s' $(seq 1 300))"
+hk() { printf '%s' "$1" | TMUX_PANE=%43 "$REPO/hooks/board-hook.sh"; }
+hk "{\"session_id\":\"$SID2\",\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Bash\",\"tool_use_id\":\"tu_long\",\"tool_input\":{\"command\":\"echo $long\"}}"
+hk "{\"session_id\":\"$SID2\",\"hook_event_name\":\"PermissionRequest\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo $long\"}}"
+hid="$(jq -r 'select(.tool_use_id == "tu_long") | .id' "$BOARD_HOME"/decisions/*.json 2>/dev/null | head -1)"
+[ -n "$hid" ] && ok "the hook wrote a permission decision" || bad "the hook wrote a permission decision"
+eq "  state carries the hook's summary_truncated" "$(req GET /api/state >/dev/null; body --arg id "$hid" '.decisions[] | select(.id == $id) | .summary_truncated')" "true"
+eq "  Allow refused (review in the session)" "$(post "/api/decisions/$hid/answer" '{"answer":"allow"}')" "409"
+eq "  error review_in_session" "$(body .error)" "review_in_session"
+rm -f "$BOARD_HOME/decisions/$hid.json" "$BOARD_HOME/state/$SID2.json"
 
 # ---------------------------------------------------------------- tunnel listener (Cloudflare Access)
 echo "tunnel listener:"

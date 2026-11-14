@@ -734,6 +734,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if rc == 3:
                 self.audit(ident, via, "press", id=did, code=code, key=answer, result="stale")
                 raise Refused(409, "stale", err or "the prompt is no longer showing")
+            if rc == 4:  # board press: no matching approver answer, or a truncated summary
+                self.audit(ident, via, "press", id=did, code=code, key=answer, result="refused")
+                raise Refused(403, "press_refused", err or "board press refused this answer")
             self.audit(ident, via, "press", id=did, code=code, key=answer, result="error", rc=rc)
             raise Refused(502, "press_failed", err or out)
 
