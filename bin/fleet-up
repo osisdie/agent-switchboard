@@ -12,9 +12,14 @@
 # resume_fallback_seconds (default 15: "no such session"), never after a real session exits.
 # Without resume_name, or with `resume: false`, it starts fresh:
 #   claude -n CODE --remote-control CODE EXTRA ['INITIAL_PROMPT']
-# `initial_prompt` (single-quoted for the shell) is also used when a resume falls back to fresh. With `collector: true` (default) it also makes sure a
-# tmux session `switchboard` runs board-collect, after `board-collect --baseline` when
-# $BOARD_HOME/alerts.json does not exist yet (no alert storm for conditions already open).
+# `initial_prompt` is single-line (newlines become spaces, since the command is typed into the
+# pane) and single-quoted for the shell; it is also used when a resume falls back to fresh.
+# With `collector: true` (default) it also makes sure a tmux session `switchboard` runs
+# board-collect, after `board-collect --baseline` when $BOARD_HOME/alerts.json does not exist
+# yet (no alert storm for conditions already open).
+#
+# Only one fleet-up runs at a time ($BOARD_HOME/fleet-up.lock); a second one exits 0 at once,
+# silently, so it is safe to call from a shell rc file, systemd and a logon task together.
 #
 #   --dry-run    print what would be done, change nothing
 #   --only CODE  start just this session (even if autostart is false)
@@ -41,16 +46,19 @@ done
 mkdir -p "$BOARD_HOME"
 LOG="$BOARD_HOME/fleet-up.log"
 log() { local m; m="$(date '+%F %T') $*"; echo "$m"; [ "$dry" = 1 ] || echo "$m" >> "$LOG"; }
-run() { if [ "$dry" = 1 ]; then echo "  would run: $*"; else "$@"; fi; }
+# Children must not inherit the lock fd (8): the tmux server started by the first new-session
+# would otherwise hold the lock for as long as it lives.
+run() { if [ "$dry" = 1 ]; then echo "  would run: $*"; else "$@" 8>&-; fi; }
 
 for c in tmux python3 jq; do
   command -v "$c" >/dev/null 2>&1 || { log "fleet-up: $c not found"; exit 1; }
 done
 
-# systemd (at distro boot) and a Windows logon task may both run fleet-up at once: serialize.
+# systemd (at distro boot), a logon task and shell rc files may all run fleet-up at once.
+# Non-blocking: if another run holds the lock, it is doing the same work, so just leave.
 if [ "$dry" = 0 ]; then
   exec 8>>"$BOARD_HOME/fleet-up.lock"
-  flock -w 120 8 || { log "fleet-up: another fleet-up is still running — giving up"; exit 1; }
+  flock -n 8 || exit 0
 fi
 
 log "fleet-up start (config: $(python3 "$FLEET" config-dir))"
@@ -69,13 +77,14 @@ while IFS= read -r line; do
   resume="$(jq -r '.resume_name // empty' <<<"$line")"
   [ "$(jq -r '.resume' <<<"$line")" = false ] && resume=""
   extra="$(jq -r '.extra_args // ""' <<<"$line")"
-  prompt="$(jq -r '.initial_prompt // ""' <<<"$line")"
+  prompt="$(jq -r '.initial_prompt // ""' <<<"$line" | tr '\r\n' '  ')"
+  prompt="${prompt% }"
   if [ -n "$only" ]; then
     [ "$code" = "$only" ] || continue
   else
     [ "$auto" = true ] || continue
   fi
-  if tmux has-session -t "=$code" 2>/dev/null; then
+  if tmux has-session -t "=$code" 2>/dev/null 8>&-; then
     log "$code: tmux session exists — skip"
     continue
   fi
@@ -107,7 +116,7 @@ if [ -z "$only" ] && [ "$(python3 "$FLEET" get collector true)" = true ]; then
     if [ "$dry" = 1 ]; then
       echo "  would run: $REPO/bin/board-collect --baseline"
     else
-      "$REPO/bin/board-collect" --baseline >> "$LOG" 2>&1 || log "alerts: baseline failed (collector will retry)"
+      "$REPO/bin/board-collect" --baseline >> "$LOG" 2>&1 8>&- || log "alerts: baseline failed (collector will retry)"
     fi
   fi
   collector_running=0
@@ -120,7 +129,7 @@ if [ -z "$only" ] && [ "$(python3 "$FLEET" get collector true)" = true ]; then
     collect_cmd="BOARD_HOME=$(printf '%q' "$BOARD_HOME")"
     [ -n "${BOARD_CONFIG_DIR:-}" ] && collect_cmd="$collect_cmd BOARD_CONFIG_DIR=$(printf '%q' "$BOARD_CONFIG_DIR")"
     collect_cmd="$collect_cmd $(printf '%q' "$REPO/bin/board-collect")"
-    if tmux has-session -t "=switchboard" 2>/dev/null; then
+    if tmux has-session -t "=switchboard" 2>/dev/null 8>&-; then
       log "collector: starting in new window of tmux session switchboard"
       run tmux new-window -t "=switchboard:" -n collector "$collect_cmd"
     else
