@@ -206,7 +206,7 @@ has "slack: title escaped" "$out" "A &lt;!channel&gt; &amp; &lt;@U1&gt;"
 has "slack: body link escaped" "$out" "see &lt;https://evil.example|bank&gt;"
 has "slack: non-http url not a link" "$out" "javascript:alert(1)"
 hasnt "slack: no injected link" "$out" "<javascript"
-has "slack: http(s) url is a link" "$out" "<https://board.example.test/a?b=1&c=2>"
+has "slack: http(s) url is a link, & escaped" "$out" "<https://board.example.test/a?b=1&amp;c=2>"
 has "notify-send: -- before summary and body" "$out" "notify-send -u normal -- -u critical --help"
 
 echo "test command:"

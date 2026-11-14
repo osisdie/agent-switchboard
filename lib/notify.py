@@ -306,7 +306,7 @@ def slack_link(url):
     """A link only for a plain http(s) URL; anything else is shown as escaped text."""
     u = str(url).strip()
     if re.match(r"^https?://[^\s<>|]+$", u):
-        return "<%s>" % u
+        return "<%s>" % u.replace("&", "&amp;")  # Slack wants & escaped inside links too
     return slack_escape(u)
 
 

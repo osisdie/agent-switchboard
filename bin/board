@@ -594,6 +594,9 @@ cmd_press() {
   st_sha="$(jq -r '.pending.summary_sha256 // empty' "$sf")"
   [ "$st_state" = "needs-you" ] || refuse "$code state is '$st_state', not needs-you" "$pane"
   [ "$st_pending" = "$expect" ] || refuse "pending tool_use_id is '${st_pending:-none}', expected '$expect'" "$pane"
+  if [ -z "$d_sha" ] || [ -z "$st_sha" ]; then
+    refuse "no input hash on the decision or the pending prompt; cannot bind the press to it" "$pane"
+  fi
   [ "$st_sha" = "$d_sha" ] || refuse "pending input differs from the decision's (sha256 mismatch)" "$pane"
   if [ -n "$st_pane" ] && [ "$st_pane" != "$pane" ]; then
     refuse "pane mismatch: hook saw $st_pane, registry says $pane" "$pane"
@@ -629,7 +632,8 @@ cmd_press() {
   if [ "$seen" = 0 ]; then
     case "$summ" in
       /*|~*) local base="${summ##*/}"
-             [ ${#base} -ge 3 ] && [[ $flat == *"$(tr -d '[:space:]' <<<"$base")"* ]] && seen=1 ;;
+             base="$(tr -d '[:space:]' <<<"$base")"
+             [ ${#base} -ge 6 ] && [[ $flat == *"$base"* ]] && seen=1 ;;
     esac
   fi
   [ "$seen" = 1 ] || refuse "the pending input ('${bind}') is not visible in pane $pane" "$pane"

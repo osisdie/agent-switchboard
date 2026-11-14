@@ -89,6 +89,39 @@ case "$event" in
     full_sha="${full_sha%% *}" ;;
 esac
 
+# Token-like values never reach the state file, the db or Slack. (A quoted heredoc keeps the
+# regexes readable; `read -d ''` is a builtin, so this costs no fork.)
+IFS= read -r -d '' REDACT <<'JQ' || true
+def redact:
+  # Authorization headers
+  gsub("(?<k>(?i:bearer|basic))\\s+[A-Za-z0-9._~+/=-]{6,}"; "\(.k) [REDACTED]")
+  # URL userinfo: scheme://user:password@host
+  | gsub("://[^/\\s:@]+:[^/\\s@]+@"; "://[REDACTED]@")
+  # vendor tokens
+  | gsub("xox[abposr]-[A-Za-z0-9-]+"; "[REDACTED]")
+  | gsub("(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})"; "[REDACTED]")
+  | gsub("\\b(sk|pk|rk)_(live|test)_[A-Za-z0-9]{16,}"; "[REDACTED]")
+  | gsub("glpat-[A-Za-z0-9_-]{20,}"; "[REDACTED]")
+  | gsub("AIza[A-Za-z0-9_-]{35}"; "[REDACTED]")
+  | gsub("npm_[A-Za-z0-9]{36}"; "[REDACTED]")
+  | gsub("A[KS]IA[0-9A-Z]{16}"; "[REDACTED]")
+  # command-line credentials: --password X, --token=X, -p X (not a path/number: mkdir -p, ssh -p 22),
+  # curl -u / --user user:password
+  | gsub("(?<f>(?<![\\w-])(?i:--(?:password|passwd|pass|token|secret|api[_-]?key))(?:\\s+|=))(?<v>\"[^\"]*\"|'[^']*'|[^\\s\"';|&]+)";
+         "\(.f)[REDACTED]")
+  | gsub("(?<f>(?<![\\w-])-p\\s+)(?<v>[^\\s\"'/.~0-9;|&-][^\\s\"';|&]*)"; "\(.f)[REDACTED]")
+  | gsub("(?<f>(?<![\\w-])(?:-u|--user)(?:\\s+|=))(?<v>[^\\s:\"']+:[^\\s\"']+)"; "\(.f)[REDACTED]")
+  # key=value / key: value / "key": "value" (JSON) for credential-like keys
+  | gsub("(?<k>(?i:password|passwd|token|secret|api[_-]?key|access[_-]?key|client[_-]?secret))(?<q>[\"']?)(?<s>\\s*[=:]\\s*)(?<v>\"[^\"]*\"|'[^']*'|[^\\s&'\",}]+)";
+         "\(.k)\(.q)\(.s)[REDACTED]")
+  # long hex (except a 40-char git object id) and mixed-case base64-ish runs
+  | gsub("(?<h>\\b[0-9a-fA-F]{32,}\\b)";
+         if (.h | length) == 40 and (.h | test("^[0-9a-f]+$")) then .h else "[REDACTED]" end)
+  | gsub("(?<b>[A-Za-z0-9+/_-]{40,}={0,2})";
+         if (.b | test("[0-9]")) and (.b | test("[a-z]")) and (.b | test("[A-Z]"))
+            and ((.b | split("/") | map(length) | max) >= 24) then "[REDACTED]" else .b end);
+JQ
+
 update() {
   local old="/dev/null" out st ev dec lim tmp
   [ -s "$state_file" ] && old="$state_file"
@@ -100,20 +133,7 @@ update() {
     --arg dec_id "$dec_id" \
     --arg sid "$sid" \
     --arg limre "$LIMIT_RE" \
-    --arg sha "$full_sha" "$FULLIN"'
-    # Token-like values never reach the state file, the db or Slack.
-    def redact:
-      gsub("(?<k>[Bb][Ee][Aa][Rr][Ee][Rr])\\s+[A-Za-z0-9._~+/=-]+"; "\(.k) [REDACTED]")
-      | gsub("xox[abposr]-[A-Za-z0-9-]+"; "[REDACTED]")
-      | gsub("(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})"; "[REDACTED]")
-      | gsub("A[KS]IA[0-9A-Z]{16}"; "[REDACTED]")
-      | gsub("(?<k>(?i:password|passwd|token|secret|api[_-]?key|access[_-]?key|client[_-]?secret))(?<s>\\s*[=:]\\s*)(?<v>\"[^\"]*\"|'"'"'[^'"'"']*'"'"'|[^\\s&'"'"'\"]+)";
-             "\(.k)\(.s)[REDACTED]")
-      | gsub("(?<h>\\b[0-9a-fA-F]{32,}\\b)";
-             if (.h | length) == 40 and (.h | test("^[0-9a-f]+$")) then .h else "[REDACTED]" end)
-      | gsub("(?<b>[A-Za-z0-9+/_-]{40,}={0,2})";
-             if (.b | test("[0-9]")) and (.b | test("[a-z]")) and (.b | test("[A-Z]"))
-                and ((.b | split("/") | map(length) | max) >= 24) then "[REDACTED]" else .b end);
+    --arg sha "$full_sha" "$FULLIN$REDACT"'
     def clean: with_entries(select(.value != null and .value != ""));
     def info($full; $sha):
       ($full | redact) as $r

@@ -332,6 +332,26 @@ read -r tu d <<<"$(perm "kubectl rollout restart deployment/web --namespace stag
 FAKE_TMUX_SCREEN="$(screen $'kubectl rollout restart deployment/web --name\n     space staging')" press CP allow --expect "$tu"
 eq "wrapped command on screen -> press ok" "$?" "0"
 
+# Edit prompts show only the file name: the basename may bind, if it has >= 6 characters.
+editperm() {  # editperm TOOL_USE_ID PATH → decision id
+  hook "$(jq -cn --arg s "$SID" --arg tu "$1" --arg f "$2" '{session_id: $s, hook_event_name: "PreToolUse", tool_name: "Edit", tool_use_id: $tu, tool_input: {file_path: $f, old_string: "a", new_string: "b"}}')"
+  hook "$(jq -cn --arg s "$SID" --arg f "$2" '{session_id: $s, hook_event_name: "PermissionRequest", tool_name: "Edit", tool_input: {file_path: $f, old_string: "a", new_string: "b"}}')"
+  jq -rs --arg t "$1" '[.[] | select(.tool_use_id == $t)] | first | .id // ""' "$BOARD_HOME"/decisions/*.json
+}
+d="$(editperm tu_e1 /w/src/components/ReportTable.tsx)"; "$B" answer "$d" allow --by user-1 >/dev/null
+FAKE_TMUX_SCREEN=$' Edit file\n Do you want to make this edit to ReportTable.tsx?\n ❯ 1. Yes\n' press CP allow --expect tu_e1
+eq "edit prompt: basename (>= 6 chars) binds" "$?" "0"
+hook "$(jq -cn --arg s "$SID" '{session_id: $s, hook_event_name: "PostToolUse", tool_name: "Edit", tool_use_id: "tu_e1", tool_input: {}}')"
+d="$(editperm tu_e2 /w/src/a.c)"; "$B" answer "$d" allow --by user-1 >/dev/null
+FAKE_TMUX_SCREEN=$' Edit file\n Do you want to make this edit to a.c?\n ❯ 1. Yes\n' press CP allow --expect tu_e2
+eq "edit prompt: a short basename does not bind -> exit 3" "$?" "3"
+hook "$(jq -cn --arg s "$SID" '{session_id: $s, hook_event_name: "PostToolUse", tool_name: "Edit", tool_use_id: "tu_e2", tool_input: {}}')"
+# A decision or pending prompt without an input hash cannot be bound.
+read -r tu d <<<"$(perm "rm -rf build-f")"; "$B" answer "$d" allow --by user-1 >/dev/null
+jq 'del(.summary_sha256)' "$BOARD_HOME/decisions/$d.json" > "$T/dx" && mv "$T/dx" "$BOARD_HOME/decisions/$d.json"
+FAKE_TMUX_SCREEN="$(screen "rm -rf build-f")" press CP allow --expect "$tu"
+eq "decision without summary_sha256 -> exit 3" "$?" "3"
+
 # Truncated summaries need --allow-truncated.
 LONGC="echo $(printf 'word%.0s ' $(seq 1 60))"
 read -r tu d <<<"$(perm "$LONGC")"; "$B" answer "$d" allow --by user-1 >/dev/null
@@ -375,6 +395,30 @@ for s in abcdef0123456789xyz s3cr3tvalue hunter2xyz "$k_aws" "${k_gh:0:10}" "${k
 done
 case "$summ" in *"curl -H"*"https://api.example.test?token=[REDACTED]"*) ok "summary keeps the readable parts" ;; *) bad "summary keeps the readable parts" "$summ" ;; esac
 hook "$(jq -cn --arg s "$SID" '{session_id: $s, hook_event_name: "PostToolUse", tool_name: "Bash", tool_use_id: "tu_sec", tool_input: {}}')"
+# One probe per pattern; every secret value is assembled at runtime.
+redacts() {  # redacts NAME COMMAND SECRET [KEEP]
+  hook "$(jq -cn --arg s "$SID" --arg c "$2" '{session_id: $s, hook_event_name: "PreToolUse", tool_name: "Bash", tool_use_id: "tu_rd", tool_input: {command: $c}}')"
+  local got; got="$(st '.recent_pre | last | .summary')"
+  hook "$(jq -cn --arg s "$SID" '{session_id: $s, hook_event_name: "PostToolUse", tool_name: "Bash", tool_use_id: "tu_rd", tool_input: {}}')"
+  case "$got" in *"$3"*) bad "redacts $1" "$got"; return ;; esac
+  if [ -n "${4:-}" ]; then case "$got" in *"$4"*) ;; *) bad "redacts $1 (keeps '$4')" "$got"; return ;; esac; fi
+  ok "redacts $1"
+}
+pw="hunter""2zz"
+redacts 'JSON "token": value' "echo '{\"token\":\"abc1${pw}\"}'" "abc1$pw" '"token":'
+redacts 'JSON "password": value' "printf '%s' '\"password\": \"$pw\"'" "$pw" '"password":'
+redacts '--password VALUE' "mysql --password $pw db" "$pw" "mysql --password"
+redacts '-p VALUE' "mysql -u root -p $pw db" "$pw" "mysql -u root -p"
+redacts 'curl -u user:pass' "curl -u bob:$pw https://api.example.test" "bob:$pw" "curl -u"
+redacts 'URL userinfo' "git clone https://bob:$pw@git.example.test/r.git" "$pw" "git.example.test/r.git"
+redacts 'Authorization: Basic' "curl -H 'Authorization: Basic $(printf 'bob:%s' "$pw" | base64)' x" "$(printf 'bob:%s' "$pw" | base64)" "Basic"
+redacts 'sk_live_' "pay sk_""live_$(printf 'q%.0s' $(seq 1 24))" "sk_live_qqqq"
+redacts 'pk_test_' "pay pk_""test_$(printf 'q%.0s' $(seq 1 24))" "pk_test_qqqq"
+redacts 'rk_live_' "pay rk_""live_$(printf 'q%.0s' $(seq 1 24))" "rk_live_qqqq"
+redacts 'glpat-' "glab --token glpat""-$(printf 'r%.0s' $(seq 1 20))" "glpat-rrrr"
+redacts 'AIza (39)' "maps AIza""$(printf 's%.0s' $(seq 1 35))" "AIzassss"
+redacts 'npm_ (36)' "npm npm""_$(printf 't%.0s' $(seq 1 36))" "npm_tttt"
+redacts 'nothing in mkdir -p / ssh -p 22' "mkdir -p /w/x && ssh -p 22 host" "[REDACTED]" "mkdir -p /w/x && ssh -p 22 host"
 eq "BOARD_HOME is 0700" "$(stat -c %a "$BOARD_HOME")" "700"
 eq "state file is 0600" "$(stat -c %a "$BOARD_HOME/state/$SID.json")" "600"
 eq "decision file is 0600" "$(stat -c %a "$BOARD_HOME/decisions/$d.json")" "600"
