@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# board-serve — the self-hosted board: serves artifact/board.html in local mode plus a small
+# JSON/SSE API over $BOARD_HOME, on 127.0.0.1 only (see docs/contract.md, "Local adapter API").
+#
+# Usage: board-serve [--port PORT] [--check] [--quiet]
+#        board-serve --watch [--once] [--tick SECONDS]
+#
+#   --port PORT  listen port (default: fleet.yaml serve.port, else 39410)
+#   --check      print the resolved settings (port, hosts, Cloudflare Access mode) and exit
+#   --quiet      no access log
+#   --watch      serve nothing; print "decision ID answered" / "message ID new" once per item
+#                (oldest first) and "tick" every --tick seconds (default 480): the input for the
+#                local-mode operator's Monitor. --once prints what is open now and exits.
+#
+# Env: BOARD_HOME (default ~/.agent-switchboard), BOARD_CONFIG_DIR (fleet.yaml).
+# fleet-up starts it in tmux session "switchboard", window "serve", when serve.enabled is true.
+set -u
+REPO="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+case "${1:-}" in
+  -h|--help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;;
+esac
+exec python3 "$REPO/lib/serve.py" "$@"

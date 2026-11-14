@@ -32,7 +32,8 @@ jobs:
           shellcheck --version
           shellcheck -s bash bin/board bin/board-collect bin/fleet-up hooks/board-hook.sh \
             scripts/install.sh scripts/setup-dev.sh tests/run.sh .githooks/pre-commit .githooks/commit-msg \
-            bin/board-notify hooks/board-statusline-tap.sh tests/test_notify.sh
+            bin/board-notify hooks/board-statusline-tap.sh tests/test_notify.sh \
+            bin/board-serve scripts/expose-cloudflare.sh tests/test_serve.sh
 
   tests:
     runs-on: ubuntu-latest
@@ -41,8 +42,10 @@ jobs:
       - name: dependencies
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q jq tmux python3-yaml bsdextrautils util-linux
+          sudo apt-get install -y -q jq tmux python3-yaml python3-cryptography curl bsdextrautils util-linux
       - name: tests
         run: tests/run.sh -v
       - name: notify tests
         run: tests/test_notify.sh -v
+      - name: serve tests
+        run: tests/test_serve.sh -v
