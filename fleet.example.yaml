@@ -8,8 +8,8 @@ decision_timeout_hours: 24    # pending decisions older than this become "timeou
 resume_fallback_seconds: 15   # fleet-up: start fresh only if `claude -r NAME` exits this fast
 
 # Who may decide (board user ids, e.g. from the artifact page's user.id()).
-# Empty `approvers` = not checked locally. A gate:production decision needs `release_managers`
-# (falls back to `approvers`; refused when both are empty).
+# Empty `approvers` fails closed: every answer is refused until you add someone. A production
+# decision (gate or stage "production") needs `release_managers` (falls back to `approvers`).
 approvers: []
 release_managers: []
 

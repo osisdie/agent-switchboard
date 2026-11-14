@@ -132,10 +132,11 @@ board answer <id> "<answer>" --by <answered_by>
 - **exit 4** → refused locally:
   - `answered_by` is not in `fleet.yaml` `approvers` (or `release_managers` for production). The
     local file is now `unauthorized`. Set `status: "unauthorized"` in the db and don't relay.
-  - production gate with **both lists empty**. The local file **stays pending**. Set
-    `status: "unauthorized"` in the db with `context: "no release managers or approvers configured"`,
-    so the page shows that the answer was not relayed. Send one Slack note. After someone fills in
-    `release_managers`, an approver can re-answer it.
+  - **nobody is configured**: `approvers` is empty (for production: `release_managers` and
+    `approvers` are both empty). This fails closed for every decision. The local file **stays
+    pending**. Set `status: "unauthorized"` in the db with
+    `context: "no approvers configured"`, so the page shows that the answer was not relayed. Send
+    one Slack note. After someone fills in the list, an approver can re-answer it.
 - **exit 1** (the decision isn't found locally) → **fail closed: relay nothing.** Leave the db
   status as it is, set `context: "operator has no local state for this decision"`, and send one
   `info` alert. Never relay any decision, of any kind, without a local mirror.
@@ -146,10 +147,18 @@ Then relay:
   `[BOARD decision <id>] <answer> (by owner on board)`.
   Then set `status: "relayed"` and `relayed_at` in the db, and mirror the change locally with
   `board mark <id> relayed`.
-- **`kind: "permission"`**: never send a message. Skip `board answer` for these. Run:
+- **`kind: "permission"`**: never send a message. `board answer <id> <allow|deny> --by
+  <answered_by>` (above) is required here too: `board press` refuses with **exit 4** unless the
+  local decision is `answered`, its answer is the same action, and `answered_by` passes the
+  approver check. Then run:
   ```bash
   board press <CODE> <allow|deny> --expect <tool_use_id>
   ```
+  - **exit 4** (not authorized: no matching approver answer, or the summary is truncated) → no
+    keys were sent and the local file is unchanged. If the decision has `summary_truncated: true`,
+    set `context: "summary truncated — answer in the session's pane"` in the db and leave it; never
+    pass `--allow-truncated` yourself (only a human who read the full input in the pane may).
+    Otherwise treat it like an unauthorized answer.
   - exit 0 → `status: "relayed"` (db), and `board mark <id> relayed` (local).
   - **exit 3** (guard failed: the prompt changed or isn't on screen; no keys were sent) →
     `status: "stale"` in the db. `board press` has already marked the local file. The page then
