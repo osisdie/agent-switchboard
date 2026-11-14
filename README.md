@@ -523,6 +523,108 @@ show either of them.
 - Keep the context small: no file dumps, `/compact` when it grows. The operator relays; it doesn't
   do the work.
 
+## Self-hosted board (local + Cloudflare Tunnel)
+
+The board page has two backends ("adapters"). The page picks one on load:
+
+| adapter | data | when |
+|---|---|---|
+| **claude** | the claude.ai Artifact db, written by the operator | the page is opened as a published Artifact |
+| **local** | `$BOARD_HOME`, through `bin/board-serve` | the page is served by `board-serve`, which injects a `board-mode` meta tag |
+| demo | built-in sample data | `?demo=1`, or the "Preview with demo data" button |
+
+The local adapter needs no claude.ai account and no Artifact. It is the same `artifact/board.html`
+(the published Artifact is unchanged), served by a small stdlib HTTP server:
+
+```bash
+bin/board-serve --check      # resolved port, hosts and Cloudflare Access mode
+bin/board-serve              # http://127.0.0.1:39410 (fleet.yaml serve.port)
+```
+
+Or let `fleet-up` start it in tmux session `switchboard`, window `serve`:
+
+```yaml
+# fleet.yaml
+approvers: [local]           # "local" = a browser on this machine; add emails for remote approvers
+serve:
+  enabled: true
+  port: 39410
+```
+
+What changes in local mode:
+
+- **Live without tokens.** `board-serve` reads `$BOARD_HOME` directly and pushes every change to open
+  pages over Server-Sent Events. Nothing has to be mirrored, so the board keeps working while the
+  operator is rate-limited.
+- **Permission prompts need no operator.** Allow / Deny runs `board answer` (the approver check)
+  and then `board press CODE allow|deny --expect TOOL_USE_ID` right away. The card turns
+  `relayed`, or `stale` if the prompt has already gone.
+- **Questions and gates** are recorded with `board answer --by <identity>`. The operator relays them
+  event-driven (`board-serve --watch` in a `Monitor`, see `prompts/board-operator.md` section 9),
+  without a cron.
+- **Messages** are written to `$BOARD_HOME/messages/<id>.json`. Replies go in
+  `messages/<id>/replies/`.
+- The room fast path is hidden, because it exists only in the Artifact viewer.
+
+### Reaching it from your phone: Cloudflare Tunnel + Access
+
+`board-serve` listens on 127.0.0.1 only. To reach it from elsewhere, put it behind an existing
+Cloudflare Tunnel and protect the hostname with Cloudflare Access:
+
+```bash
+scripts/expose-cloudflare.sh --hostname board.example.com --tunnel my-tunnel            # dry run: prints everything
+scripts/expose-cloudflare.sh --hostname board.example.com --tunnel my-tunnel --apply    # edits the cloudflared config + DNS
+```
+
+The dry run (the default) changes nothing. It prints the ingress rule, the
+`cloudflared tunnel route dns` command and the Access steps: a self-hosted application for the
+hostname, with an Allow policy limited to the approvers' emails (One-time PIN works without an
+identity provider). Then copy the application's **AUD tag** into `fleet.yaml`:
+
+```yaml
+approvers: [local, you@example.com]
+serve:
+  enabled: true
+  hostnames: [board.example.com]           # Host names served besides 127.0.0.1 / localhost
+  cf_access:
+    team_domain: yourteam.cloudflareaccess.com
+    aud: <Application Audience (AUD) Tag>
+```
+
+**Who is asking.** On every request, `board-serve` decides the identity like this:
+
+1. A request from 127.0.0.1 **without** any forwarding header (`X-Forwarded-For`, `Cf-*`,
+   `Forwarded`, ...) is `local`.
+2. Anything else came through the tunnel. With `cf_access.team_domain` + `aud` set and the python
+   `cryptography` module installed, the `Cf-Access-Jwt-Assertion` JWT is verified (RS256 against
+   the team's keys at `https://<team_domain>/cdn-cgi/access/certs`, cached, with audience, issuer and
+   expiry checks). The identity is the token's email.
+3. Without verification, remote requests are **refused**, unless you set
+   `serve.trust_cf_headers: true`. Then the `Cf-Access-Authenticated-User-Email` header is trusted
+   as is.
+
+The identity is then checked against `approvers` / `release_managers` by `board answer`, so passing
+Access alone is not enough to decide.
+
+**The trade-off of `trust_cf_headers`.** The header is only as trustworthy as the path it came
+over. cloudflared connects from 127.0.0.1, so `board-serve` cannot tell it apart from any other
+local process. With `trust_cf_headers: true`, **any process or user on this machine** can claim any
+email by sending the header itself, including a release manager's. Use it only on a single-user
+machine where everything local is already trusted, and prefer JWT verification
+(`pip install cryptography`, or your distribution's `python3-cryptography`). Without either, the
+board stays local-only, which is safe.
+
+**Other guards.**
+
+- Only known `Host` names are served: loopback names on the port, plus `serve.hostnames`. This blocks
+  DNS rebinding.
+- Every POST needs `X-Board: 1` and a same-origin `Origin`, JSON only, at most 16 KiB.
+- Only the page and `/api/*` are served. No file paths come from the URL.
+- Sessions are sent with an allowlist of fields (no `cwd`, pid or session id).
+- Every write is logged to `events.jsonl` as `type: "serve"`, with the identity and how it was
+  established (`loopback`, `cf-jwt`, `cf-header`).
+- The page is served with a nonce-based CSP, `frame-ancestors 'none'` and `no-store`.
+
 ## Security model
 
 - **Who can decide.** The page's db rules let only `admin` (owner and editors) write. Org-editable
@@ -555,6 +657,9 @@ show either of them.
   `board` as your user can claim any id. The barrier is the file permissions on `$BOARD_HOME` (0700)
   and your user account, plus the operator, which only mirrors answers whose `answered_by` came from
   the board's db (`user.id()`).
+- **Self-hosted board.** `board-serve` binds to 127.0.0.1. Remote access goes through Cloudflare
+  Access, and identities are verified as described in
+  [Self-hosted board](#self-hosted-board-local--cloudflare-tunnel).
 
 ## Secrets & sanitization
 
@@ -595,18 +700,19 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `bin/board-collect` | Zero-token collector: snapshot, diff, runs `board-notify` each loop; `--baseline` on first install |
 | `bin/board-notify`, `lib/notify.py` | Alerting: `send`, `ack`, `tick`, `test`, `status`. Adapters (slack, desktop, email, line, sns, webhook), levels, escalation, ack, quiet hours, dedupe |
 | `hooks/board-statusline-tap.sh` | Statusline wrapper that records 5h/weekly usage to `usage.json` without changing your statusline |
-| `bin/fleet-up` | Idempotent fleet launcher from `fleet.yaml` |
+| `bin/fleet-up` | Idempotent fleet launcher from `fleet.yaml` (also starts `board-serve` with `serve.enabled`) |
+| `bin/board-serve`, `lib/serve.py` | Self-hosted board: the page in local mode + JSON/SSE API over `$BOARD_HOME`, 127.0.0.1 only; `--watch` feeds the local-mode operator |
 | `autostart/` | Windows logon task and systemd user unit |
-| `artifact/board.html` | The board page template (db + user + room capabilities) |
+| `artifact/board.html` | The board page: claude adapter (Artifact db + user + room) or local adapter (`board-serve`) |
 | `prompts/board-operator.md` | Standing instructions for the `BOARD` operator session |
 | `snippets/worker-protocol.md` | Paste-in block for every worker session's `CLAUDE.md` |
 | `playbook/` | Lessons for running many Claude Code sessions: SDLC delivery harness, collaboration, publishing, repo hygiene, CLAUDE.md template |
-| `scripts/` | `install.sh`, `setup-dev.sh` (git hooks + gitleaks) and helpers |
+| `scripts/` | `install.sh`, `setup-dev.sh` (git hooks + gitleaks), `expose-cloudflare.sh` (tunnel + Access steps) |
 | `.githooks/pre-commit` | refuses `tmp*/` paths; gitleaks on staged changes + banned-terms check |
 | `.githooks/commit-msg` | secret patterns + banned terms in the commit message |
 | `.github/workflows/ci.yml` | CI: gitleaks, shellcheck, tests |
 | `.gitleaks.toml` | gitleaks default rules plus a narrow allowlist for test fixtures |
-| `tests/` | Tests for the hook, collector and CLI |
+| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), board-serve (`test_serve.sh`) |
 | `fleet.example.yaml`, `.env.example` | Example config |
 
 ## `tmp-local/` convention

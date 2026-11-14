@@ -92,6 +92,72 @@ Rules: every collection is `read: "view"`. Writes need `"admin"`, which only the
 | `meta/operator` | operator | `heartbeat_at, version, owner_id`. The page shows "operator offline" if the heartbeat is older than 10 minutes. |
 | `meta/ledger` | operator | `rows[]`: `{version, date, what, review, lead:{input,cache_read,cache_write,output,total}, teammate, note}` and `total{}`. The page renders this as the "版本與花費" (versions and cost) table in an Info dialog/footer. |
 
+## Local adapter API (`bin/board-serve`, `lib/serve.py`)
+
+The self-hosted alternative to the Artifact db. `board-serve` binds to `127.0.0.1` on
+`serve.port` (default 39410) and serves `artifact/board.html` with an injected
+`<meta name="board-mode" content="local">`. The page then uses its local adapter instead of
+`claude.use("db")`.
+
+Extra files under `$BOARD_HOME`:
+
+```
+$BOARD_HOME/
+  messages/<id>.json                 # {id, to: CODE|"all", body, by, created_at, status: new|relayed|replied,
+                                     #  relayed_to[]?, relayed_at?}  (board-serve creates; operator updates)
+  messages/<id>/replies/<rid>.json   # {id, from: CODE, body, created_at}  (operator)
+  operator.json                      # {heartbeat_at, version, operator_session, account_hint}  (operator)
+  ledger.json                        # optional, same shape as meta/ledger  (operator)
+```
+
+| endpoint | does |
+|---|---|
+| `GET /` | the board page (nonce CSP, `no-store`) |
+| `GET /api/state` | the state below, built from `$BOARD_HOME` |
+| `GET /api/events` | `text/event-stream`: `event: state` with the full state at once and after every change (1 s mtime poll; only when the state differs), `: keepalive` every 25 s |
+| `POST /api/decisions/<id>/answer` `{answer}` | `board answer <id> <answer> --by <identity>` → 200 `{status: "answered"}`; exit 4 → 403 `not_approver` (the decision is `unauthorized`). For `kind: "permission"` (`answer` = `allow`\|`deny`), it then runs `board press <from> <answer> --expect <tool_use_id>` → 200 `{status: "relayed"}`; exit 3 → 409 `stale`. A decision already `relayed`/`stale`/`timeout` → 409 `gone`. |
+| `POST /api/messages` `{to, body}` | writes `messages/<id>.json` with `status: "new"`, `by: <identity>` → 201 `{id}` |
+
+State (`/api/state` and every SSE frame):
+
+```json
+{ "mode": "local", "me": "local|<email>", "writable": true, "generated_at": 0,
+  "sessions":  [ {code, aliases, state, status, task, tmux, remote_url, pending, updated_at} ],
+  "decisions": [ decision files, newest 200, without session_id/tmux_pane ],
+  "tasks":     [ task files, newest 50 ],
+  "approvals": [ events.jsonl type:"approval" rows (+ relayed_at from the decision), newest 100 ],
+  "messages":  [ newest 20 ], "replies": { "<msgId>": [ ... ] },
+  "operator":  { heartbeat_at, version, operator_session, account_hint, approver_ids?,
+                 release_manager_ids, usage: {five_hour, seven_day, updated_at}, limit|null },
+  "ledger": {...}|null }
+```
+
+The shape matches what the page reads from the Artifact db (`sessions/*`, `decisions/*`, `tasks/*`,
+`approvals/*`, `messages/*` + replies, `meta/operator`, `meta/ledger`). `task` is the title of the
+session's current task. `approver_ids` is present only when `approvers` is not empty.
+
+**Identity and checks** (for every request):
+
+- `Host` must be a loopback name on the port, or one of `serve.hostnames` → else 421.
+- Identity: `local` when the TCP peer is loopback **and** no forwarding header is present
+  (`X-Forwarded-*`, `Forwarded`, `X-Real-IP`, `Cf-*`). Otherwise:
+  - verify `Cf-Access-Jwt-Assertion` when `serve.cf_access.{team_domain, aud}` are set and
+    `cryptography` is importable. The identity is the JWT's `email`, and a differing
+    `Cf-Access-Authenticated-User-Email` is rejected.
+  - else, if `serve.trust_cf_headers: true`, the identity is `Cf-Access-Authenticated-User-Email`.
+  - else 403 `remote_refused`. Failed verification → 401 `unauthenticated`.
+- `approvers` / `release_managers` in `fleet.yaml` take emails and the literal `local`.
+- POST: `X-Board: 1` and an `Origin` whose host equals `Host` (else 403 `csrf`),
+  `Content-Type: application/json` (else 415), at most 16 KiB (else 413).
+- Every write appends `{type: "serve", action: "answer"|"press"|"message", by, via:
+  "loopback"|"cf-jwt"|"cf-header", id, result}` to `events.jsonl`.
+
+**Operator in local mode** (`prompts/board-operator.md` section 9): `board-serve --watch` prints
+`decision <id> answered`, `message <id> new` (once each, oldest first) and `tick` every 8 minutes.
+The operator relays questions and gates (then `board mark <id> relayed`) and messages, writes
+replies, and keeps `operator.json.heartbeat_at` fresh. Permission decisions are already pressed by
+`board-serve`.
+
 ## Lifecycle stages & gates (agent-ready SDLC)
 
 Every task goes through the same lifecycle, and each stage produces a committed artifact with a named human gate. The chain of commits plus the approvals log is the audit trail.
