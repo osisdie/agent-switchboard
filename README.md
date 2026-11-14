@@ -130,8 +130,8 @@ your `statusLine` and removes the symlinks.
   | `sessions[]` | n/a | `code` (tmux session name), `cwd`, `autostart`, `resume_name`, `resume`, `initial_prompt`, `extra_args`, `aliases` |
   | `sessions[].resume` | `true` | `false` = always start a **fresh** session, ignoring `resume_name` (no `claude -r`) |
   | `sessions[].initial_prompt` | none | first prompt, passed as an argument whenever the session starts **fresh** (`resume: false`, no `resume_name`, or a resume that falls back). Not sent when a resume succeeds |
-  | `approvers` | `[]` | board user ids allowed to answer decisions. **Empty = not checked locally** (the operator still checks the owner on the board) |
-  | `release_managers` | `[]` | user ids allowed to authorize `gate: production`. Empty falls back to `approvers`. **Both empty = production refused** |
+  | `approvers` | `[]` | board user ids allowed to answer decisions (and so to allow/deny permission prompts). **Empty = every answer refused** (fails closed: `board answer` exits 4 and the decision stays pending) |
+  | `release_managers` | `[]` | user ids allowed to answer production decisions (`gate` or `stage` is `production`). Empty falls back to `approvers`. **Both empty = production refused** |
   | `poll_interval` | `3` | seconds between snapshot rebuilds |
   | `decision_timeout_hours` | `24` | pending decisions older than this become `timeout` |
   | `resume_fallback_seconds` | `15` | `fleet-up` starts a fresh session only if `claude -r NAME` exits this fast |
