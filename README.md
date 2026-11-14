@@ -4,6 +4,10 @@ A switchboard for a fleet of long-running **Claude Code** sessions: one board th
 working, who is blocked, and what is waiting for a human decision. You can answer from the board,
 including from your phone.
 
+The same board page runs on **two channels**: self-hosted (`board-serve`, reachable from your phone
+through a Cloudflare Tunnel behind Cloudflare Access) and a claude.ai Artifact. **Running both is the
+recommended setup.** See [Two channels](#two-channels-self-hosted-and-artifact-recommended-both).
+
 > Status: early. The data contract is in [`docs/contract.md`](docs/contract.md). Everything else
 > follows it.
 
@@ -137,6 +141,8 @@ your `statusLine` and removes the symlinks.
   | `resume_fallback_seconds` | `15` | `fleet-up` starts a fresh session only if `claude -r NAME` exits this fast |
   | `alerting` | built-in | routes, quiet hours, repeat, escalation, usage thresholds; see [Alerting & escalation](#alerting--escalation) (or put it in `alerting.yaml`) |
   | `remote_url_prefix` | `https://claude.ai/code/` | prefix for each session's Remote Control link |
+  | `serve.enabled`, `serve.port` | `false`, `39410` | self-hosted board: `fleet-up` starts `board-serve`; the local listener (identity `local`) |
+  | `serve.tunnel.*` | off | `enabled`, `port` (port + 1), `hostname`, `team_domain`, `aud`: the listener cloudflared points at; identity = the email of a verified Cloudflare Access token |
   | `press.prompt_regex`, `press.lines`, `press.allow_keys`, `press.deny_keys` | see example | the screen check and keys used by `board press` |
 
 - `.env`: alert channels (Slack, email, LINE, SNS, webhook; all optional, see
@@ -151,6 +157,37 @@ fleet-up        # idempotent: creates missing tmux sessions with Remote Control,
 
 Then open the `BOARD` session and give it `prompts/board-operator.md`. On its first run it publishes
 the board from `artifact/board.html` and gives you the link.
+
+**Expose the board on your phone** (self-hosted channel; details in
+[Two channels](#two-channels-self-hosted-and-artifact-recommended-both)):
+
+```bash
+pip install cryptography          # or your distro's python3-cryptography: verifies Access tokens
+cloudflared tunnel login          # once, for your Cloudflare zone
+cloudflared tunnel create board   # a tunnel used only for the board
+scripts/expose-cloudflare.sh --hostname board.example.com --tunnel board            # dry run: prints every step
+```
+
+1. In Cloudflare Zero Trust, create a **self-hosted Access application** for `board.example.com`
+   (the whole host) with an Allow policy for your approvers' emails. One-time PIN works without an
+   identity provider. Copy its **AUD tag**.
+2. Add to `fleet.yaml` and run `fleet-up` (or `bin/board-serve`):
+   ```yaml
+   approvers: [local, you@example.com]   # "local" = a browser on this machine
+   serve:
+     enabled: true
+     port: 39410                         # local listener: http://127.0.0.1:39410
+     tunnel:
+       enabled: true
+       port: 39411                       # what cloudflared points at
+       hostname: board.example.com
+       team_domain: yourteam.cloudflareaccess.com
+       aud: <AUD tag>
+   ```
+3. `scripts/expose-cloudflare.sh --hostname board.example.com --tunnel board --apply --access-checked`
+   writes a cloudflared config of its own and routes DNS. Then
+   `cloudflared tunnel --config ~/.cloudflared/agent-switchboard-board.yml run board`.
+4. Open `https://board.example.com` on your phone and sign in with the emailed code.
 
 **Recommended: run the operator in a fresh, small-context session.** The operator wakes up every
 few minutes, and **every tick re-reads its whole context**, so a long-lived conversation makes each
@@ -435,9 +472,9 @@ operator stops and the board freezes. The system is designed to degrade visibly:
   starts, they send one `urgent` "usage limit hit, resets ~HH:MM, N decisions pending" alert, and
   they keep escalating needs-you transitions and decisions. While the board is frozen, alerts plus tmux are
   your channel.
-- **Failover.** If the board is shared org-editable, a session on another account (on the **same
-  machine**, because the operator must run where the workers run) with editor access
-  can run `prompts/board-operator.md` against the same URL and take over. When the original operator
+- **Failover.** A session on another account that is an **Editor** of the board (invited by email;
+  never share the board org-editable), on the **same machine** because the operator must run where
+  the workers run, can run `prompts/board-operator.md` against the same URL and take over. When the original operator
   comes back and sees a fresher heartbeat, it stays passive.
 - **Catch-up.** The first loop after resuming rewrites every session, relays every answered decision
   and delivers every new message, oldest first.
@@ -477,7 +514,8 @@ show either of them.
 
 **Prerequisites, set up once and tested before you need them:**
 
-- The board artifact is shared **org-editable**, and the second account is an editor.
+- The second account is invited to the board artifact **by email as an Editor** (never share it
+  org-editable). Approvers stay Contributors.
 - The second account is logged in on the **same machine** under its own config dir (for example
   `CLAUDE_CONFIG_DIR=~/.claude-b claude …`). That way it can see the same `$BOARD_HOME`, reach the
   same sessions with `SendMessage`, and run `board answer` and `board press`. This is **required**:
@@ -523,118 +561,120 @@ show either of them.
 - Keep the context small: no file dumps, `/compact` when it grows. The operator relays; it doesn't
   do the work.
 
-## Self-hosted board (local + Cloudflare Tunnel)
+## Two channels: self-hosted and Artifact (recommended: both)
 
-The board page has two backends ("adapters"). The page picks one on load:
+The board page (`artifact/board.html`) has two data adapters, and it picks one when it loads:
 
 | adapter | data | when |
 |---|---|---|
-| **claude** | the claude.ai Artifact db, written by the operator | the page is opened as a published Artifact |
-| **local** | `$BOARD_HOME`, through `bin/board-serve` | the page is served by `board-serve`, which injects a `board-mode` meta tag |
+| **local** | `$BOARD_HOME`, through `bin/board-serve` | served by `board-serve`, which injects a `board-mode` meta tag |
+| **claude** | the claude.ai Artifact db, written by the operator | opened as a published Artifact |
 | demo | built-in sample data | `?demo=1`, or the "Preview with demo data" button |
 
-The local adapter needs no claude.ai account and no Artifact. It is the same `artifact/board.html`
-(the published Artifact is unchanged), served by a small stdlib HTTP server:
+So the same page gives you two channels:
+
+| | Self-hosted: `board-serve` + Cloudflare Tunnel + Access | claude.ai Artifact board |
+|---|---|---|
+| **Account dependency** | None on claude.ai. Needs a Cloudflare account (the free plan works) and a domain on it | The claude.ai account that owns the artifact; every approver needs access to it |
+| **Token cost** | Zero to show live state and to press permission prompts. The operator spends tokens only to relay questions and messages | The operator spends tokens mirroring every change, plus its cron ticks |
+| **Works under usage limits** | Yes: live state, and Allow/Deny is pressed at once. Questions wait for the operator | Frozen (stale-data banner). Answers queue until an operator returns |
+| **Reachable when the machine is off** | No | No: the page opens, but it shows the last mirrored state and nothing is relayed |
+| **Auth model** | Cloudflare Access (email one-time PIN or your IdP) → the email in a verified Access JWT, checked against `approvers`. `local` for a browser on this machine | claude.ai sharing. Approvers are Contributors who write only their own `answers/<user id>/`. The operator takes the identity from that path |
+| **Setup effort** | About 15 minutes: a dedicated tunnel, an Access application, `fleet.yaml` (`scripts/expose-cloudflare.sh` prints every step) | Publish once through the operator, then share the link |
+
+Neither channel works while the machine is off, because the sessions, `$BOARD_HOME` and the
+operator all live on it. That would take a cloud variant, which doesn't exist yet.
+
+### Pick one, or run both
+
+- **Self-hosted only.** No claude.ai account is involved. Set `serve.enabled: true` and, for your
+  phone, `serve.tunnel`. Run the operator in local mode (`prompts/board-operator.md` section 9).
+- **Artifact only.** This is the original setup: the operator mirrors to the Artifact and relays
+  from it.
+- **Both (recommended).** Both channels read and write the same `$BOARD_HOME`. Every answer, from
+  either one, goes through `board answer`, so whichever comes first wins and the other shows the
+  result. `board-serve` always works. The operator mirrors to the Artifact only while it can reach
+  it (otherwise it goes local-only, section 1a), and it relays the self-hosted board's answers with
+  `board-serve --watch`. If the claude.ai account hits its limit or loses access, your phone keeps
+  working.
+
+### The self-hosted board
 
 ```bash
-bin/board-serve --check      # resolved port, hosts and Cloudflare Access mode
-bin/board-serve              # http://127.0.0.1:39410 (fleet.yaml serve.port)
+bin/board-serve --check      # listeners, Access settings, who may answer
+bin/board-serve              # local: http://127.0.0.1:39410
 ```
 
-Or let `fleet-up` start it in tmux session `switchboard`, window `serve`:
+Or let `fleet-up` start it in tmux session `switchboard`, window `serve` (`serve.enabled: true`).
 
-```yaml
-# fleet.yaml
-approvers: [local]           # "local" = a browser on this machine; add emails for remote approvers
-serve:
-  enabled: true
-  port: 39410
-```
-
-What changes in local mode:
-
-- **Live without tokens.** `board-serve` reads `$BOARD_HOME` directly and pushes every change to open
-  pages over Server-Sent Events. Nothing has to be mirrored, so the board keeps working while the
-  operator is rate-limited.
-- **Permission prompts need no operator.** Allow / Deny runs `board answer` (the approver check)
-  and then `board press CODE allow|deny --expect TOOL_USE_ID` right away. The card turns
-  `relayed`, or `stale` if the prompt has already gone.
+- **Live without tokens.** `board-serve` reads `$BOARD_HOME` and pushes every change to open pages
+  over Server-Sent Events.
+- **Permission prompts need no operator.** Allow / Deny runs `board answer` (the approver check),
+  then `board press CODE allow|deny --expect TOOL_USE_ID`. The card turns `relayed`, or `stale` if
+  the prompt has gone. A request whose summary was cut short can only be allowed in the session.
 - **Questions and gates** are recorded with `board answer --by <identity>`. The operator relays them
-  event-driven (`board-serve --watch` in a `Monitor`, see `prompts/board-operator.md` section 9),
-  without a cron.
-- **Messages** are written to `$BOARD_HOME/messages/<id>.json`. Replies go in
-  `messages/<id>/replies/`.
-- The room fast path is hidden, because it exists only in the Artifact viewer.
+  event-driven (`board-serve --watch` in a `Monitor`), without a cron.
+- **Messages** go to `$BOARD_HOME/messages/<id>.json`, and replies to `messages/<id>/replies/`.
 
-### Reaching it from your phone: Cloudflare Tunnel + Access
+**Two listeners, two identities.** Both bind to 127.0.0.1:
 
-`board-serve` listens on 127.0.0.1 only. To reach it from elsewhere, put it behind an existing
-Cloudflare Tunnel and protect the hostname with Cloudflare Access:
+| listener | port | who reaches it | identity |
+|---|---|---|---|
+| local | `serve.port` (39410) | a browser on this machine | `local`. A request with any proxy or Cloudflare header (`X-Forwarded-For`, `Forwarded`, `Cf-Connecting-IP`, `Cf-Ray`, ...) is refused |
+| tunnel | `serve.tunnel.port` (39411) | cloudflared only (point the ingress here) | the `email` of a **verified** `Cf-Access-Jwt-Assertion`: RS256 against your team's keys, with audience (`aud`), issuer and expiry checks. Never `local`. The email header alone counts for nothing |
 
-```bash
-scripts/expose-cloudflare.sh --hostname board.example.com --tunnel my-tunnel            # dry run: prints everything
-scripts/expose-cloudflare.sh --hostname board.example.com --tunnel my-tunnel --apply    # edits the cloudflared config + DNS
-```
+The tunnel listener **refuses to start** without `hostname`, `team_domain`, `aud` and the python
+`cryptography` module. There is no "trust the header" mode, because cloudflared connects from
+127.0.0.1 like every local process, and a header is only as good as the hop that set it.
 
-The dry run (the default) changes nothing. It prints the ingress rule, the
-`cloudflared tunnel route dns` command and the Access steps: a self-hosted application for the
-hostname, with an Allow policy limited to the approvers' emails (One-time PIN works without an
-identity provider). Then copy the application's **AUD tag** into `fleet.yaml`:
+**Exposing it.** `scripts/expose-cloudflare.sh` is a dry run by default. With `--apply`:
+
+- It refuses unless a Cloudflare Access application covers the hostname (all paths). It checks
+  through the API when `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are set; otherwise you
+  check in the dashboard and pass `--access-checked`.
+- It wants a **tunnel of its own** for the board, and refuses one that another cloudflared config
+  already uses.
+- It writes only its own config file (`~/.cloudflared/agent-switchboard-<tunnel>.yml`). It never
+  edits `config.yml` or another tunnel's ingress.
+
+**Other guards** on both listeners:
+
+- Only the listener's own `Host` names are served, which blocks DNS rebinding.
+- POST needs `X-Board: 1` and an `Origin` from the listener's own origins (a missing or `null` Origin
+  is refused), JSON only, at most 16 KiB. `OPTIONS` returns 405, and no `Access-Control-*` header is
+  ever sent.
+- Decision and message ids are checked against a strict pattern before any path is built, and
+  `board` is called with an argv list, never through a shell.
+- **With empty `approvers`, every answer is refused.**
+- Sessions are sent with an allowlist of fields (no `cwd`, pid or session id).
+- Every write is logged to `events.jsonl` as `type: "serve"`, with the identity and `via`
+  (`loopback` or `cf-jwt`).
+- The page is served with a nonce-based CSP, `frame-ancestors 'none'` and `no-store`.
+
+**Who is an approver: two namespaces.** On the self-hosted board, `approvers` and
+`release_managers` hold **emails**, from Cloudflare Access, and the literal **`local`**, a browser on
+this machine, which counts only when it is listed. On the Artifact board they hold **claude.ai user
+ids**, which are opaque and per organization. The two never match each other, so when you run both
+channels, list a person in both forms:
 
 ```yaml
-approvers: [local, you@example.com]
-serve:
-  enabled: true
-  hostnames: [board.example.com]           # Host names served besides 127.0.0.1 / localhost
-  cf_access:
-    team_domain: yourteam.cloudflareaccess.com
-    aud: <Application Audience (AUD) Tag>
+approvers: [local, you@example.com, <your claude.ai user id>]
+release_managers: [you@example.com, <your claude.ai user id>]
 ```
-
-**Who is asking.** On every request, `board-serve` decides the identity like this:
-
-1. A request from 127.0.0.1 **without** any forwarding header (`X-Forwarded-For`, `Cf-*`,
-   `Forwarded`, ...) is `local`.
-2. Anything else came through the tunnel. With `cf_access.team_domain` + `aud` set and the python
-   `cryptography` module installed, the `Cf-Access-Jwt-Assertion` JWT is verified (RS256 against
-   the team's keys at `https://<team_domain>/cdn-cgi/access/certs`, cached, with audience, issuer and
-   expiry checks). The identity is the token's email.
-3. Without verification, remote requests are **refused**, unless you set
-   `serve.trust_cf_headers: true`. Then the `Cf-Access-Authenticated-User-Email` header is trusted
-   as is.
-
-The identity is then checked against `approvers` / `release_managers` by `board answer`, so passing
-Access alone is not enough to decide.
-
-**The trade-off of `trust_cf_headers`.** The header is only as trustworthy as the path it came
-over. cloudflared connects from 127.0.0.1, so `board-serve` cannot tell it apart from any other
-local process. With `trust_cf_headers: true`, **any process or user on this machine** can claim any
-email by sending the header itself, including a release manager's. Use it only on a single-user
-machine where everything local is already trusted, and prefer JWT verification
-(`pip install cryptography`, or your distribution's `python3-cryptography`). Without either, the
-board stays local-only, which is safe.
-
-**Other guards.**
-
-- Only known `Host` names are served: loopback names on the port, plus `serve.hostnames`. This blocks
-  DNS rebinding.
-- Every POST needs `X-Board: 1` and a same-origin `Origin`, JSON only, at most 16 KiB.
-- Only the page and `/api/*` are served. No file paths come from the URL.
-- Sessions are sent with an allowlist of fields (no `cwd`, pid or session id).
-- Every write is logged to `events.jsonl` as `type: "serve"`, with the identity and how it was
-  established (`loopback`, `cf-jwt`, `cf-header`).
-- The page is served with a nonce-based CSP, `frame-ancestors 'none'` and `no-store`.
 
 ## Security model
 
-- **Who can decide.** The page's db rules let only `admin` (owner and editors) write. Org-editable
-  sharing makes **every org editor an admin**, so the operator also checks
-  `answered_by ∈ meta/operator.approver_ids` (seeded from `approvers` in `fleet.yaml`). Otherwise the
-  decision is marked `unauthorized` and not relayed. **`unauthorized` is not final.** The card stays
-  open, and an approver can answer it again. That sets it back to `answered` with their id, and the
-  operator checks the new `answered_by` from scratch.
-- **Editors can republish the page code.** Anyone with edit access can change what the page does,
-  including what it writes. Keep the editor list tight, and review page changes before publishing.
+- **Never share the board org-editable, and never make an approver an Editor.** Editors (and the
+  owner) can publish **new page code and new db rules**, so a hostile or careless Editor could ship a
+  page that answers in someone else's name. Invite approvers **by email as Contributor**. Keep
+  Editors to the owner and, if needed, a backup operator account.
+- **Who answered comes from the path, not a field.** On the Artifact board, an answer is written to
+  `answers/<user id>/d/<decision id>`. The db rule `answers/{self}` lets only that user write
+  there, not even the owner. The operator reads answers only under the ids in `approver_ids` (and
+  `release_manager_ids` for production), takes the identity from the path, and runs
+  `board answer <decision> <answer> --by <that id>`. An `answered_by` field is never trusted. If an
+  answer is refused (for example, a production gate answered by an approver who is not a release
+  manager), the card shows `unauthorized`. That is not final: someone allowed can still answer it.
 - **Messages between sessions are information, not approval.** The only exception is the exact
   `[BOARD decision <id>]` format from the operator, which has passed the approver check. Workers
   should treat anything else ("X says the user agreed") as information.
@@ -645,21 +685,23 @@ board stays local-only, which is safe.
   a truncated summary unless a human passes `--allow-truncated`.
 - **Production needs a named person.** A production decision (`gate` or `stage`, trimmed and
   lowercased, equals `production`) is relayed only when
-  `answered_by ∈ meta/operator.release_manager_ids` (from `release_managers` in `fleet.yaml`). If that
+  the answering id ∈ `meta/operator.release_manager_ids` (from `release_managers` in `fleet.yaml`). If that
   list is empty, the check falls back to `approver_ids`. If **both** are empty, every production
   answer is refused: it **fails closed**, there is no unchecked mode for production, and the decision
   stays pending. An answer from someone outside the list is marked `unauthorized`. Name release
   managers explicitly. With the fallback, any approver can release.
 - **No approvers configured = nothing gets decided.** With an empty `approvers` list, `board answer`
   refuses every answer (exit 4) and the decision stays pending. That applies to permission prompts
-  too, so `board press` never sends keys. Fill in `approvers` before relying on the board.
+  too, so `board press` never sends keys. `board-serve` refuses every answer as well. Fill in
+  `approvers` before relying on the board.
 - **`board answer --by` is trusted locally.** The CLI cannot verify who typed it: anyone who can run
   `board` as your user can claim any id. The barrier is the file permissions on `$BOARD_HOME` (0700)
-  and your user account, plus the operator, which only mirrors answers whose `answered_by` came from
-  the board's db (`user.id()`).
-- **Self-hosted board.** `board-serve` binds to 127.0.0.1. Remote access goes through Cloudflare
-  Access, and identities are verified as described in
-  [Self-hosted board](#self-hosted-board-local--cloudflare-tunnel).
+  and your user account. Beyond that, the operator passes only an id taken from the path of a db
+  answer (`answers/<user id>/`), and `board-serve` passes only `local` (a direct local request) or
+  a verified Access email.
+- **Self-hosted board.** `board-serve` binds to 127.0.0.1. Remote access goes only through the
+  tunnel listener, and only with a verified Cloudflare Access token (see
+  [Two channels](#two-channels-self-hosted-and-artifact-recommended-both)).
 
 ## Secrets & sanitization
 
