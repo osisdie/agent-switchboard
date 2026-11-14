@@ -33,7 +33,8 @@ case "$input" in
       # Parse and write in the background, detached from the statusline's stdout/stderr, so the
       # statusline never waits for jq.
       (
-        [ -d "$home" ] || mkdir -p "$home" || exit 0
+        umask 077   # only in this subshell: the next statusline command keeps the caller's umask
+        [ -d "$home" ] || { mkdir -p "$home" && chmod 700 "$home"; } || exit 0
         tmp="$home/usage.json.tmp.$BASHPID"
         jq -c --argjson now "$now" '
           def ms: if type == "number" then (if . < 1e12 then . * 1000 else . end | floor) else . end;

@@ -31,7 +31,7 @@ jobs:
         run: |
           shellcheck --version
           shellcheck -s bash bin/board bin/board-collect bin/fleet-up hooks/board-hook.sh \
-            scripts/install.sh scripts/setup-dev.sh tests/run.sh .githooks/pre-commit \
+            scripts/install.sh scripts/setup-dev.sh tests/run.sh .githooks/pre-commit .githooks/commit-msg \
             bin/board-notify hooks/board-statusline-tap.sh tests/test_notify.sh
 
   tests:

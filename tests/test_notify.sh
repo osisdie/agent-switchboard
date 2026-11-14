@@ -64,8 +64,7 @@ SLACK_WEBHOOK_URL=https://hooks.example.test/services/T0/B0/SECRETHOOK123
 SLACK_MENTION=<@U0TESTER>
 SMTP_HOST=127.0.0.1
 SMTP_PORT=$SMTP_PORT_NUM
-SMTP_USER=alerts-user
-SMTP_PASSWORD="pw-secret-123"
+SMTP_SECURITY=none
 SMTP_FROM=alerts@example.test
 ALERT_EMAIL_TO=me@example.test
 LINE_CHANNEL_ACCESS_TOKEN=line-secret-token-xyz
@@ -118,7 +117,7 @@ eq "high -> slack + desktop + email" "$(calls)" "1/1/1/0/0/0"
 m="$(cat "$T"/mail/*.eml)"
 has "email subject has HIGH" "$m" "Subject: [agent-switchboard] HIGH: decision waiting"
 has "email to ALERT_EMAIL_TO" "$m" "X-Fake-Rcpt: <me@example.test>"
-has "email authenticated" "$m" "X-Fake-Auth: PLAIN"
+has "email: no AUTH over plaintext" "$m" "X-Fake-Auth: none"
 
 reset_calls
 long="$(head -c 6000 /dev/zero | tr '\0' 'x')"
@@ -163,6 +162,52 @@ has "email failure reported" "$out" "email: FAIL"
 for f in "$BOARD_HOME/events.jsonl" "$BOARD_HOME/alerts.json"; do
   for s in SECRETHOOK pw-secret line-secret; do hasnt "no $s in $(basename "$f")" "$(cat "$f")" "$s"; done
 done
+
+echo "email transport security:"
+# The fake server has no TLS. Credentials must never go over it, and plaintext needs SMTP_SECURITY=none.
+reset_calls
+out="$(SMTP_USER=alerts-user SMTP_PASSWORD=pw-secret-123 "$N" test --channel email)"; rc=$?
+eq "none + credentials -> refused (exit 1)" "$rc" "1"
+has "none + credentials: reason" "$out" "refusing to send them in plaintext"
+out="$(SMTP_SECURITY=auto SMTP_USER=alerts-user SMTP_PASSWORD=pw-secret-123 "$N" test --channel email)"; rc=$?
+eq "auto without STARTTLS + credentials -> refused" "$rc" "1"
+has "auto without STARTTLS: reason" "$out" "no STARTTLS"
+out="$(SMTP_SECURITY=auto "$N" test --channel email)"; rc=$?
+eq "auto without STARTTLS, no credentials -> still refused" "$rc" "1"
+out="$(SMTP_SECURITY=bogus "$N" test --channel email)"; rc=$?
+eq "unknown SMTP_SECURITY -> refused" "$rc" "1"
+sleep 0.2
+eq "nothing delivered over plaintext with credentials" "$(n_mail)" "0"
+if grep -rqs "pw-secret" "$T/mail" "$BOARD_HOME/events.jsonl"; then bad "password never sent or logged"; else ok "password never sent or logged"; fi
+
+echo "slack / desktop escaping:"
+out="$(python3 - "$REPO/lib" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import notify
+sent = []
+notify.http_post = lambda url, payload, headers=None: (sent.append(payload) or (True, None))
+msg = {"level": "warn", "key": "k", "title": "A <!channel> & <@U1>", "body": "see <https://evil.example|bank>",
+       "url": "javascript:alert(1)"}
+notify.a_slack(msg, {"SLACK_WEBHOOK_URL": "https://hooks.example.test/x", "SLACK_MENTION": "<@U0ME>"}, {"mention_from": "warn"})
+print(sent[0]["text"])
+msg["url"] = "https://board.example.test/a?b=1&c=2"
+notify.a_slack(msg, {"SLACK_WEBHOOK_URL": "https://hooks.example.test/x"}, {"mention_from": "warn"})
+print(sent[1]["text"])
+argv = []
+notify.shutil.which = lambda x: "/usr/bin/notify-send" if x == "notify-send" else None
+notify.spawn_detached = lambda a, cwd=None: (argv.append(a) or (True, None))
+notify.a_desktop({"level": "warn", "title": "-u critical", "body": "--help"}, {}, {"subject_prefix": ""})
+print(" ".join(argv[0]))
+PY
+)"
+has "slack: mention kept" "$out" "<@U0ME>"
+has "slack: title escaped" "$out" "A &lt;!channel&gt; &amp; &lt;@U1&gt;"
+has "slack: body link escaped" "$out" "see &lt;https://evil.example|bank&gt;"
+has "slack: non-http url not a link" "$out" "javascript:alert(1)"
+hasnt "slack: no injected link" "$out" "<javascript"
+has "slack: http(s) url is a link, & escaped" "$out" "<https://board.example.test/a?b=1&amp;c=2>"
+has "notify-send: -- before summary and body" "$out" "notify-send -u normal -- -u critical --help"
 
 echo "test command:"
 reset_calls
@@ -310,6 +355,7 @@ eq "tap: usage pct" "$(jq -r .five_hour.pct "$BOARD_HOME/usage.json")" "42.5"
 eq "tap: resets_at seconds -> ms" "$(jq -r .five_hour.resets_at "$BOARD_HOME/usage.json")" "1794666000000"
 eq "tap: resets_at ms kept" "$(jq -r .seven_day.resets_at "$BOARD_HOME/usage.json")" "1794819600000"
 eq "tap: session_id" "$(jq -r .session_id "$BOARD_HOME/usage.json")" "s1"
+eq "tap: usage.json is 0600" "$(stat -c %a "$BOARD_HOME/usage.json")" "600"
 before="$(cat "$BOARD_HOME/usage.json")"
 out="$(printf '{"session_id":"s2"}' | BOARD_STATUSLINE_NEXT='cat' "$TAP")"
 sleep 0.3

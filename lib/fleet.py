@@ -8,6 +8,7 @@ CLI (used by the bash scripts):
 """
 import json
 import os
+import re
 import sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
@@ -48,6 +49,29 @@ def id_list(cfg, key):
 
 def board_home():
     return os.environ.get("BOARD_HOME") or os.path.join(os.path.expanduser("~"), ".agent-switchboard")
+
+
+def ensure_home():
+    """Private state: umask 077 for every file written from here on, BOARD_HOME mode 0700."""
+    os.umask(0o077)
+    h = board_home()
+    if not os.path.isdir(h):
+        os.makedirs(h, mode=0o700, exist_ok=True)
+    return h
+
+
+CONTROL_RE = re.compile("[\x00-\x1f\x7f-\x9f]")
+
+
+def safe_text(s):
+    """Text for a terminal: control characters (escapes, CR, ...) become '?'."""
+    return CONTROL_RE.sub("?", "" if s is None else str(s))
+
+
+def is_production(d):
+    """A decision is a production decision when its gate or stage, trimmed and lowercased, is
+    "production" (the same rule as `board answer`)."""
+    return any(str(d.get(k) or "").strip().lower() == "production" for k in ("gate", "stage"))
 
 
 def sessions_dir():

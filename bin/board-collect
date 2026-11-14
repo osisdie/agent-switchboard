@@ -34,6 +34,8 @@ while [ $# -gt 0 ]; do
   shift
 done
 
+umask 077
+[ -d "$BOARD_HOME" ] || { mkdir -p "$BOARD_HOME" && chmod 700 "$BOARD_HOME"; }
 mkdir -p "$BOARD_HOME/state" "$BOARD_HOME/decisions" "$BOARD_HOME/outbox"
 
 collect() { python3 "$REPO/lib/collect.py" "${pyargs[@]}"; }

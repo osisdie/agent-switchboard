@@ -223,7 +223,7 @@ def alert(prev, snap, verbose):
     for d in snap["decisions"]:
         if d.get("status") != "pending" or d["id"] in prev_pending:
             continue
-        if d.get("kind") == "permission" and d.get("gate") != "production":
+        if d.get("kind") == "permission" and not fleet.is_production(d):
             continue  # the session's needs-you alert covers it
         r = notify.on_decision(d)
         if verbose:
@@ -241,7 +241,7 @@ def main(argv):
         print(__doc__.strip())
         return 0
     verbose = "--verbose" in argv or "-v" in argv
-    home = fleet.board_home()
+    home = fleet.ensure_home()
     for sub in ("state", "decisions", "outbox", "tasks"):
         os.makedirs(os.path.join(home, sub), exist_ok=True)
     cfg = fleet.load_fleet()

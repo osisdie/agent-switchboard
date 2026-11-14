@@ -3,9 +3,12 @@
 #
 #   1. gitleaks on the staged changes (`gitleaks git --staged`, or `protect --staged` on older
 #      versions), using .gitleaks.toml.
+#   0. Nothing under a tmp*/ directory may be committed (machine-specific files live there):
+#      any staged path matching (^|/)tmp[^/]*/ fails the commit.
 #   2. Banned terms: every line of tmp-local/banned-terms.txt (one term or extended regex per
 #      line, '#' starts a comment) is matched case-insensitively against the staged ADDED lines
-#      and staged file paths, excluding tmp*/ paths. Missing list → warning, check skipped.
+#      and staged file paths. Missing list → warning, check skipped.
+# The commit message is checked by .githooks/commit-msg.
 #
 # Enable with scripts/setup-dev.sh (git config core.hooksPath .githooks).
 # Fix the content when this blocks a commit; do not bypass it with --no-verify.
@@ -14,6 +17,15 @@ set -u
 root="$(git rev-parse --show-toplevel)" || exit 1
 cd "$root" || exit 1
 fail=0
+
+# ---- 0. tmp*/ is never committed (it holds .env, fleet.yaml, the banned-terms list, ...)
+tmp_paths="$(git diff --cached --name-only --diff-filter=ACMRT | grep -E '(^|/)tmp[^/]*/' || true)"
+if [ -n "$tmp_paths" ]; then
+  echo "pre-commit: staged files under a tmp*/ directory (machine-specific, gitignored on purpose):" >&2
+  while IFS= read -r p; do printf '  %s\n' "$p" >&2; done <<<"$tmp_paths"
+  echo "  unstage them: git restore --staged <path>" >&2
+  fail=1
+fi
 
 # ---- 1. gitleaks
 if command -v gitleaks >/dev/null 2>&1; then

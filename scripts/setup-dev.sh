@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # setup-dev.sh — one-time (idempotent) developer setup for this clone.
 #
-#   - git config core.hooksPath .githooks   (versioned pre-commit: gitleaks + banned terms)
+#   - git config core.hooksPath .githooks   (versioned hooks: pre-commit = gitleaks, tmp*/
+#     paths and banned terms in staged changes; commit-msg = secrets and banned terms in the
+#     commit message)
 #   - checks that gitleaks is installed
 #   - warns when tmp-local/banned-terms.txt is missing
 set -u
@@ -15,7 +17,14 @@ cd "$root" || exit 1
 rc=0
 
 git config core.hooksPath .githooks
-chmod +x .githooks/* 2>/dev/null
+for h in pre-commit commit-msg; do
+  if [ -f ".githooks/$h" ]; then
+    chmod +x ".githooks/$h"
+    echo "ok    .githooks/$h installed"
+  else
+    rc=1; echo "FAIL  .githooks/$h is missing" >&2
+  fi
+done
 echo "ok    core.hooksPath = $(git config core.hooksPath)"
 
 if command -v gitleaks >/dev/null 2>&1; then

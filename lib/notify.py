@@ -25,6 +25,7 @@ import fcntl
 import fnmatch
 import json
 import os
+import re
 import shutil
 import smtplib
 import ssl
@@ -100,9 +101,7 @@ def write_json_atomic(path, data):
 
 
 def home():
-    h = fleet.board_home()
-    os.makedirs(h, exist_ok=True)
-    return h
+    return fleet.ensure_home()
 
 
 def log_event(ev):
@@ -297,10 +296,30 @@ def subject_of(msg, cfg):
     return ("%s %s%s" % (cfg.get("subject_prefix") or "", tag, msg["title"])).strip()
 
 
+def slack_escape(s):
+    """Slack mrkdwn control characters. Titles and bodies come from sessions and pages (lower
+    trust), so they must not be able to inject <!channel>, <@user> or <url|fake text> links."""
+    return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def slack_link(url):
+    """A link only for a plain http(s) URL; anything else is shown as escaped text."""
+    u = str(url).strip()
+    if re.match(r"^https?://[^\s<>|]+$", u):
+        return "<%s>" % u.replace("&", "&amp;")  # Slack wants & escaped inside links too
+    return slack_escape(u)
+
+
 def a_slack(msg, env, cfg):
     mention = env.get("SLACK_MENTION", "") if rank(msg["level"]) >= rank(cfg.get("mention_from") or "warn") else ""
     icon = {"urgent": ":rotating_light:", "high": ":warning:", "warn": ":bell:"}.get(msg["level"], "")
-    text = " ".join(x for x in (mention, icon, text_of(msg)) if x)
+    parts = [("[%s] " % msg["level"].upper()) + slack_escape(msg["title"])]
+    if msg.get("body"):
+        parts.append(slack_escape(msg["body"]))
+    if msg.get("url"):
+        parts.append(slack_link(msg["url"]))
+    # The mention is added after escaping: it is the only markup that comes from our own config.
+    text = " ".join(x for x in (mention, icon, "\n".join(parts)) if x)
     return http_post(env["SLACK_WEBHOOK_URL"], {"text": text})
 
 
@@ -340,7 +359,7 @@ def a_desktop(msg, env, cfg):
                                "-WindowStyle", "Hidden", "-EncodedCommand", enc], cwd=os.path.dirname(ps))
     if shutil.which("notify-send"):
         urg = "critical" if msg["level"] == "urgent" else "normal"
-        return spawn_detached(["notify-send", "-u", urg, title.strip(), body])
+        return spawn_detached(["notify-send", "-u", urg, "--", title.strip(), body])
     if shutil.which("osascript"):
         safe = lambda s: s.replace("\\", "\\\\").replace('"', '\\"')  # noqa: E731
         return spawn_detached(["osascript", "-e", 'display notification "%s" with title "%s" sound name "Glass"'
@@ -352,6 +371,11 @@ def a_email(msg, env, cfg):
     host = env["SMTP_HOST"]
     port = int(env.get("SMTP_PORT") or 587)
     sec = (env.get("SMTP_SECURITY") or "").lower() or {465: "ssl", 587: "starttls"}.get(port, "auto")
+    creds = bool(env.get("SMTP_USER") and env.get("SMTP_PASSWORD"))
+    if sec not in ("ssl", "starttls", "auto", "none"):
+        return False, "unknown SMTP_SECURITY %r (ssl, starttls, auto or none)" % sec
+    if sec == "none" and creds:
+        return False, "SMTP_SECURITY=none with credentials: refusing to send them in plaintext"
     sender = env.get("SMTP_FROM") or env.get("SMTP_USER")
     rcpts = [x.strip() for x in env["ALERT_EMAIL_TO"].split(",") if x.strip()]
     m = EmailMessage()
@@ -370,10 +394,17 @@ def a_email(msg, env, cfg):
         s = smtplib.SMTP(host, port, timeout=ADAPTER_TIMEOUT)
     try:
         s.ehlo()
-        if sec == "starttls" or (sec == "auto" and s.has_extn("starttls")):
+        encrypted = sec == "ssl"
+        if sec in ("starttls", "auto"):
+            if not s.has_extn("starttls"):
+                # Plaintext only with SMTP_SECURITY=none (and no credentials).
+                return False, "server offers no STARTTLS; set SMTP_SECURITY=none (without credentials) to allow plaintext"
             s.starttls(context=ctx)
             s.ehlo()
-        if env.get("SMTP_USER") and env.get("SMTP_PASSWORD"):
+            encrypted = True
+        if creds:
+            if not encrypted:
+                return False, "refusing to log in over an unencrypted connection"
             try:
                 s.login(env["SMTP_USER"], env["SMTP_PASSWORD"])
             except smtplib.SMTPServerDisconnected:
@@ -616,8 +647,7 @@ def needs_you_alert(session):
 
 def decision_alert(d):
     who = d.get("from") or "?"
-    gate = d.get("gate")
-    if gate == "production":
+    if fleet.is_production(d):
         return {"level": "urgent", "key": "decision:%s" % d.get("id"), "kind": "gate", "escalate": True,
                 "title": "%s requests PRODUCTION approval" % who,
                 "body": (d.get("question") or "")[:300], "url": d.get("artifact_ref") or d.get("url")}
@@ -695,7 +725,7 @@ def _sync_snapshot(data, snap, now):
                 e["acked_by"] = "auto"
     alerts = [needs_you_alert(s) for s in sessions.values() if s.get("state") == "needs-you"]
     for d in pending.values():
-        if d.get("kind") == "permission" and d.get("gate") != "production":
+        if d.get("kind") == "permission" and not fleet.is_production(d):
             continue  # covered by the session's needs-you alert
         alerts.append(decision_alert(d))
     if lim:
@@ -860,7 +890,7 @@ def _print_result(r, as_json):
         print(json.dumps(r, ensure_ascii=False))
         return
     chans = " ".join("%s=%s" % (c, "ok" if v["ok"] else "FAIL(%s)" % v["error"]) for c, v in r.get("channels", {}).items())
-    line = "%s %s %s %s" % (r.get("key"), r.get("level"), r.get("status"), chans or r.get("error") or "")
+    line = "%s %s %s %s" % (fleet.safe_text(r.get("key")), r.get("level"), r.get("status"), fleet.safe_text(chans or r.get("error") or ""))
     print(line.rstrip())
 
 
@@ -915,7 +945,7 @@ def main(argv):
         else:
             print("channels: " + " ".join("%s=%s" % (c, "on" if v else "off") for c, v in s["channels"].items()))
             for k, e in s["open"].items():
-                print("open: %s %s %s" % (k, e["level"], e.get("title") or ""))
+                print("open: %s %s %s" % (fleet.safe_text(k), e["level"], fleet.safe_text(e.get("title") or "")))
             print("entries: %d" % s["total"])
         return 0
     ap.print_help()

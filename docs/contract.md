@@ -20,7 +20,9 @@ $BOARD_HOME/
 { "session_id": "...", "pid": 123, "cwd": "...", "tmux_pane": "%7",
   "state": "working|needs-you|done|rest|offline",
   "last_event": "Stop", "notification_type": "permission_prompt",
-  "pending": { "tool_use_id": "...", "tool_name": "Bash", "summary": "first 200 chars of input" } | null,
+  "pending": { "tool_use_id": "...", "tool_name": "Bash", "summary": "first 200 chars of input (redacted)",
+               "summary_truncated": false, "summary_len": 57, "summary_sha256": "<hex of the full input>",
+               "ambiguous": false, "decision_id": "d-..." } | null,
   "updated_at": 1731500000000 }
 ```
 
@@ -34,7 +36,7 @@ Map hook events to states like this:
 | `SessionEnd` | offline |
 | `SessionStart` | rest |
 
-`pending` is cleared on the next `PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit` or `Stop`. The hook writes the state file atomically (write to a temp file, then `mv`). It never blocks Claude, prints nothing to stdout and always exits 0. It does not record prompt text. The only input it captures is a ≤200-char summary of the pending tool's input.
+`pending` is cleared on the next `PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit` or `Stop`. The hook writes the state file atomically (write to a temp file, then `mv`). It never blocks Claude, prints nothing to stdout and always exits 0. It does not record prompt text. The only input it captures is a ≤200-char summary of the pending tool's input. Token-like values (bearer tokens, Slack/GitHub/AWS keys, `password=`/`token=`/`secret=`/`api_key=` values, long base64/hex runs) are replaced by `[REDACTED]` before storing. `summary_truncated`, `summary_len` and `summary_sha256` describe the full input string. When a `PermissionRequest` carries no `tool_use_id` and more than one in-flight tool use could match it, the hook does not guess: `pending.ambiguous` is `true` and no permission decision is created. `$BOARD_HOME` is mode 0700 and its files 0600 (umask 077 in every writer).
 
 ### snapshot.json (collector output)
 ```json
@@ -56,10 +58,24 @@ Map hook events to states like this:
 { "id": "d-<epoch>-<rand>", "kind": "question|permission", "from": "CP",
   "question": "...", "options": ["A","B"], "context": "optional short text",
   "tool_use_id": "... (permission only)", "tool_name": "...", "summary": "...",
-  "status": "pending|answered|relayed|stale|timeout",
+  "summary_truncated": false, "summary_len": 0, "summary_sha256": "... (permission only)",
+  "status": "pending|answered|relayed|stale|timeout|unauthorized",
   "answer": null, "answered_by": null, "answered_at": null, "relayed_at": null,
   "created_at": 0 }
 ```
+
+### Permission decisions: who may press
+
+- `board press` sends keys only after `board answer <id> allow|deny --by <id>` recorded an
+  approver's answer with that same action (exit 4 otherwise), and only while the hook state still
+  shows that `tool_use_id` (and `summary_sha256`) pending, the pane shows a permission prompt, and
+  the start of the summary is visible in the pane (exit 3 otherwise, decision `stale`).
+- **No approvers configured fails closed** for every decision, not only production. A decision is a
+  production decision when `gate` or `stage`, trimmed and lowercased, is `"production"`.
+- **Truncated summaries:** when `summary_truncated` is true the human cannot see the whole input on
+  the board. The page must **not offer one-click allow** for such a card (show "answer in the
+  session's pane" instead); `board press` refuses unless `--allow-truncated` is passed by a human
+  who read the full input in the pane.
 
 ## Artifact db (written by the BOARD operator session via Artifact write_db; page reads/writes)
 

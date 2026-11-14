@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# commit-msg — block commit messages that contain secrets or banned terms.
+#
+#   1. Secrets: `gitleaks stdin` with .gitleaks.toml when gitleaks is installed, plus built-in
+#      patterns that always run (bearer tokens, Slack/GitHub/AWS keys, Slack webhook URLs,
+#      private-key headers, password=/token=/secret=/api_key= values).
+#   2. Banned terms from tmp-local/banned-terms.txt (same format as the pre-commit hook),
+#      case-insensitive. Missing list → warning, check skipped.
+# Lines starting with '#' (git's comments) are ignored.
+#
+# Enabled by scripts/setup-dev.sh (core.hooksPath .githooks). Don't bypass it with --no-verify.
+set -u
+
+msg_file="${1:-}"
+[ -f "$msg_file" ] || { echo "commit-msg: no message file" >&2; exit 1; }
+root="$(git rev-parse --show-toplevel)" || exit 1
+cd "$root" || exit 1
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+grep -v '^#' "$msg_file" > "$work/msg" || true
+fail=0
+
+# ---- 1. secrets
+if command -v gitleaks >/dev/null 2>&1; then
+  cfg=()
+  [ -f .gitleaks.toml ] && cfg=(--config .gitleaks.toml)
+  if ! gitleaks stdin --redact --no-banner --log-level warn "${cfg[@]}" < "$work/msg" >/dev/null 2>&1; then
+    echo "commit-msg: gitleaks found a secret in the commit message." >&2
+    fail=1
+  fi
+fi
+secret_re='([Bb]earer[[:space:]]+[A-Za-z0-9._~+/=-]{12,}|xox[abposr]-[A-Za-z0-9-]{10,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|A[KS]IA[0-9A-Z]{16}|hooks\.slack\.com/(services|workflows|triggers)/[A-Za-z0-9/+_-]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|(password|passwd|token|secret|api[_-]?key|client[_-]?secret)[[:space:]]*[=:][[:space:]]*["'"'"']?[A-Za-z0-9_+.~-]{8,})'
+if grep -nE -i -- "$secret_re" "$work/msg" > "$work/hits"; then
+  echo "commit-msg: the commit message looks like it contains a secret (line numbers only):" >&2
+  cut -d: -f1 "$work/hits" | sed 's/^/  line /' >&2
+  fail=1
+fi
+
+# ---- 2. banned terms
+terms_file="tmp-local/banned-terms.txt"
+if [ ! -f "$terms_file" ]; then
+  echo "commit-msg: warning: $terms_file not found — banned-terms check skipped." >&2
+else
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%%[[:space:]]#*}"
+    case "$line" in \#*) continue ;; esac
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [ -n "$line" ] || continue
+    if grep -qE -- "$line" </dev/null 2>/dev/null; [ $? -eq 2 ]; then continue; fi
+    printf '%s\n' "$line" >> "$work/patterns"
+  done < "$terms_file"
+  if [ -s "$work/patterns" ] && grep -n -i -E -f "$work/patterns" "$work/msg" > "$work/bhits"; then
+    echo "commit-msg: banned terms in the commit message ($terms_file):" >&2
+    cut -c1-160 "$work/bhits" | sed 's/^/  /' >&2
+    fail=1
+  fi
+fi
+
+if [ "$fail" != 0 ]; then
+  echo "commit-msg: commit blocked. Edit the message (don't use --no-verify)." >&2
+  exit 1
+fi
+exit 0
