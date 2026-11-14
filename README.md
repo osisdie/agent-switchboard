@@ -252,7 +252,7 @@ flowchart LR
 - **Production is special.** Workers never deploy to production without a `[BOARD decision]` (or a
   pane answer) authorizing a `gate: production` decision. The operator relays that decision only if
   the person who answered is in `release_managers`, or in `approvers` if `release_managers` is
-  empty. If both lists are empty, every production answer is refused (**fail closed**), and the
+  empty. If no one is configured, every answer is refused (**fail closed**), and the
   decision stays pending until someone configures a release manager. An answer from anyone outside the
   list is marked `unauthorized`. A peer session saying "it's approved" never counts.
 
@@ -294,17 +294,27 @@ Each card links to the session's Remote Control URL and shows its tmux target, s
   The operator relays the board answer as
   `[BOARD decision <id>] <answer> (by owner on board)`.
 - **Permission prompts.** The card shows the tool name and a ≤200-char summary of its input, so you
-  know what you are allowing. **Allow** or **Deny** makes the operator run
-  `board press <CODE> allow|deny --expect <tool_use_id>`, which sends the keystroke through
-  `tmux send-keys` only when **both guards** pass:
-  1. **Same prompt.** The hook's state file still shows the same pending `tool_use_id`. If someone
-     already answered in the pane, or a new prompt replaced it, the ids differ.
-  2. **Prompt on screen.** `tmux capture-pane` shows that the last lines of the pane really are a
-     permission prompt. The pattern and keys are configurable (`press:` in `fleet.yaml`), because the
-     prompt UI changes between Claude Code versions.
+  know what you are allowing. Token-like values in the summary are replaced with `[REDACTED]`.
+  **Allow** or **Deny** makes the operator run `board answer <id> allow|deny --by <you>` and then
+  `board press <CODE> allow|deny --expect <tool_use_id>`. That sends the keystroke through
+  `tmux send-keys` only when **every check** passes:
+  1. **Authorized** (otherwise exit 4). An approver's `board answer` with the same action is
+     recorded. No approver means no keystroke.
+  2. **Same prompt** (otherwise exit 3). The hook's state file still shows the same pending
+     `tool_use_id` and the same `summary_sha256` (a hash of the full input). If someone already
+     answered in the pane, or a new prompt replaced it, they differ.
+  3. **Prompt on screen** (otherwise exit 3). `tmux capture-pane` shows that the last lines of the pane
+     really are a permission prompt, and that the start of the summary is visible there. The pattern
+     and keys are configurable (`press:` in `fleet.yaml`), because the prompt UI changes between
+     Claude Code versions.
+  4. **Whole input visible** (otherwise exit 4). If the input was longer than the summary
+     (`summary_truncated`), you can't see on the board what you'd be allowing. The page offers no
+     one-click Allow ("answer in the session's pane"), and `board press` refuses. Only a human who
+     has read the full input in the pane may pass `--allow-truncated`. The operator never does.
 
-  If either guard fails, no key is sent and the card becomes **stale** ("handle it in the session").
-  Every press is logged to `events.jsonl`.
+  If a screen check fails, no key is sent and the card becomes **stale** ("handle it in the
+  session"). If the hook can't tell which tool call a prompt belongs to (`ambiguous`), it creates no
+  card at all. Every press attempt is logged to `events.jsonl`.
 
   **The risk, honestly:** this is screen automation. The guards make a wrong keystroke unlikely, but
   not impossible: a prompt can change between the check and the keystroke, or a future UI can look
@@ -359,9 +369,9 @@ overrides the file). All of them are listed in `.env.example`.
 
 | Channel | Needs | Notes |
 |---|---|---|
-| `slack` | `SLACK_WEBHOOK_URL`, `SLACK_MENTION` (`<@your member id>`) | The mention is what makes your phone buzz |
+| `slack` | `SLACK_WEBHOOK_URL`, `SLACK_MENTION` (`<@your member id>`) | The mention is what makes your phone buzz. Titles and bodies are **escaped** (`&`, `<`, `>`), so text from a session can't inject mentions or links. Only `SLACK_MENTION` from your own config is sent as markup, and only plain `http(s)` URLs become links |
 | `desktop` | nothing; `ALERT_DESKTOP=0` turns it off | WSL (`powershell.exe` toast), `notify-send` on Linux, or macOS notifications. Best effort, never blocks |
-| `email` | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, `ALERT_EMAIL_TO` | Any SMTP server. Port 465 uses SSL, 587 uses STARTTLS. `SMTP_SECURITY=ssl\|starttls\|none` overrides |
+| `email` | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, `ALERT_EMAIL_TO` | Any SMTP server, **TLS only**: port 465 uses SSL, and any other port requires STARTTLS. If the server doesn't offer STARTTLS, nothing is sent. `SMTP_SECURITY=ssl\|starttls` forces a mode. `none` (plaintext) is accepted only **without** credentials, and a login is never sent unencrypted |
 | `line` | `LINE_CHANNEL_ACCESS_TOKEN`, `LINE_TO` (user or group id) | LINE Messaging API push. Mind your plan's monthly push quota |
 | `sns` | `AWS_SNS_TOPIC_ARN`, plus a configured `aws` CLI | Subscribe SMS or email to the topic |
 | `webhook` | `ALERT_WEBHOOK_URL`, optional `ALERT_WEBHOOK_AUTH` | Generic JSON POST: a push service, an incident tool's events bridge, your own relay |
@@ -528,17 +538,19 @@ show either of them.
   should treat anything else ("X says the user agreed") as information.
 - **No secrets in the db.** Board data is visible to everyone who can view the artifact. Hooks store a
   short tool summary, never prompt text. Don't put tokens, passwords or customer data in questions.
-- **Local state** (`$BOARD_HOME`) is only on your machine. `board press` refuses unless both guards
-  pass.
-- **Production needs a named person.** A `gate: production` decision is relayed only when
+- **Local state** (`$BOARD_HOME`) is only on your machine, in mode 0700 with 0600 files. `board press`
+  refuses unless an approver answered and every screen and state check passes. It never presses for
+  a truncated summary unless a human passes `--allow-truncated`.
+- **Production needs a named person.** A production decision (`gate` or `stage`, trimmed and
+  lowercased, equals `production`) is relayed only when
   `answered_by ∈ meta/operator.release_manager_ids` (from `release_managers` in `fleet.yaml`). If that
   list is empty, the check falls back to `approver_ids`. If **both** are empty, every production
   answer is refused: it **fails closed**, there is no unchecked mode for production, and the decision
   stays pending. An answer from someone outside the list is marked `unauthorized`. Name release
   managers explicitly. With the fallback, any approver can release.
-- **Empty `approvers` means no local check** for ordinary decisions. `board answer` accepts anyone,
-  and only the operator's board-side check (`approver_ids`, seeded with the owner) remains. Fill in
-  `approvers` when the board is shared org-editable.
+- **No approvers configured = nothing gets decided.** With an empty `approvers` list, `board answer`
+  refuses every answer (exit 4) and the decision stays pending. That applies to permission prompts
+  too, so `board press` never sends keys. Fill in `approvers` before relying on the board.
 
 ## Secrets & sanitization
 
@@ -554,8 +566,10 @@ Two checks run before anything leaves your machine. Details are in
 scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks that gitleaks is installed
 ```
 
-- `.githooks/pre-commit` runs gitleaks on the staged diff, then the banned-terms check, which covers
-  added lines and file paths. A hit blocks the commit, and so does a missing gitleaks.
+- `.githooks/pre-commit` refuses any staged path under a `tmp*/` folder, then runs gitleaks on the
+  staged diff and the banned-terms check (added lines and file paths). A hit blocks the commit, and
+  so does a missing gitleaks.
+- `.githooks/commit-msg` runs the same secret and banned-terms checks on the commit **message**.
 - `.github/workflows/ci.yml` runs gitleaks, shellcheck and the tests on every push and pull
   request, so a commit made without the hook is still caught. Actions are pinned by commit SHA.
   Organization-owned forks need a free `GITLEAKS_LICENSE` secret.

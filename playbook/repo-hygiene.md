@@ -29,6 +29,9 @@ Run it once per clone. Ask agents to run it at the start of a task too. It is id
 
 ## `.githooks/pre-commit`
 
+0. **Nothing under a `tmp*/` directory may be committed.** Any staged path matching
+   `(^|/)tmp[^/]*/` fails the commit, even if someone forced it past `.gitignore` with `git add -f`.
+   Those folders hold `.env`, the real `fleet.yaml` and the banned-terms list.
 1. **gitleaks on the staged changes**, with `.gitleaks.toml`: `gitleaks git --staged` (or
    `gitleaks protect --staged` on older versions), with findings redacted. Only what you are about to
    commit is scanned, so it is fast. **If gitleaks isn't installed, the hook blocks the commit**
@@ -41,6 +44,19 @@ Run it once per clone. Ask agents to run it at the start of a task too. It is id
    agents that explicitly (see below).
 
 If the banned-terms file doesn't exist, that check is skipped with a warning. gitleaks still runs.
+
+## `.githooks/commit-msg`
+
+Commit **messages** leak too: a pasted error with a token in it, an internal hostname in the
+subject. The `commit-msg` hook checks the message (ignoring git's `#` comment lines):
+
+1. **Secrets:** `gitleaks stdin` with `.gitleaks.toml` if gitleaks is installed, plus built-in
+   patterns that always run: bearer tokens, Slack/GitHub/AWS keys, Slack webhook URLs, private-key
+   headers, `password=` / `token=` / `secret=` / `api_key=` values. Hits are reported by line number
+   only, never echoed.
+2. **Banned terms** from `tmp-local/banned-terms.txt`, in the same format as the pre-commit hook.
+
+`scripts/setup-dev.sh` enables both hooks (`core.hooksPath .githooks`).
 
 `.gitleaks.toml` extends the default rule set. It has one narrow allowlist, for synthetic values
 under `tests/fixtures/`. Don't widen the allowlist to get a commit through. Fix the content instead.
