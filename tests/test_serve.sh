@@ -329,8 +329,12 @@ for at in "$(date +%s)000" "$(( $(date +%s) + 3600 ))000" "$(( $(date +%s) - 420
     "$(post /api/presence "{\"visible\":true,\"interaction_at\":$at}"; jq -r '.local.interaction_at' "$PRF"; watching)" "200null"
 done
 eq "  idle_ms 1 s: watching" "$(post /api/presence '{"visible":true,"idle_ms":1000}' >/dev/null; watching)" "local"
-t0="$(date +%s%3N)"; post /api/presence '{"visible":true,"idle_ms":60000}' >/dev/null
-eq "  idle_ms is applied to the server's clock" "$(jq -r --argjson t "$t0" '(.local.interaction_at - ($t - 60000)) | (. >= 0 and . < 5000)' "$PRF")" "true"
+# interaction_at must be the server's time of the request minus idle_ms. The request happens
+# between t0 and t1; 2 s either side absorbs runner jitter, far less than the 60 s being proven.
+t0="$(date +%s%3N)"; st="$(post /api/presence '{"visible":true,"idle_ms":60000}')"; t1="$(date +%s%3N)"
+eq "  idle_ms is applied to the server's clock" "$(jq -r --arg st "$st" --argjson t0 "$t0" --argjson t1 "$t1" \
+  '.local.interaction_at as $ia | if $st == "200" and ($ia | type) == "number" and $ia >= $t0 - 62000 and $ia <= $t1 - 58000
+   then "200 in window" else "status \($st), interaction_at \($ia), want \($t0 - 62000)..\($t1 - 58000)" end' "$PRF")" "200 in window"
 eq "  idle_ms 33 min: not watching (idle limit 15 min)" "$(post /api/presence '{"visible":true,"idle_ms":2000000}' >/dev/null; watching)" ""
 eq "  negative idle_ms counts as 0" "$(post /api/presence '{"visible":true,"idle_ms":-99999999}' >/dev/null; watching)" "local"
 eq "heartbeat: hidden" "$(post /api/presence '{"visible":false}')" "200"
