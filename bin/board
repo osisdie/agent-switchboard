@@ -1384,7 +1384,7 @@ press_free_text() {
   scr="$(last_lines)"
   grep -Eq -- "${focus}[[:space:]]*(${label})" <<<"$scr" \
     || partial "the picker did not move to \"Type something\" ($key); nothing typed" "$pane"
-  same_prompt || partial "pending prompt changed; nothing typed" "$pane"
+  same_prompt || partial "pending prompt changed; nothing typed" "$pane" moved_on
   # tmux reads a trailing ";" as a command separator: escape it (the text never ends in "\;").
   send="$text"
   [[ $send == *";" ]] && send="${send%;}\\;"
@@ -1401,7 +1401,7 @@ press_free_text() {
     [[ $row == *"$key.$want"* ]] && { ok=1; break; }
   done < <(grep -E -- "$focus" <<<"$scr")
   [ "$ok" = 1 ] || partial "the focused row $key does not show the typed text" "$pane"
-  same_prompt || partial "pending prompt changed while typing" "$pane"
+  same_prompt || partial "pending prompt changed while typing" "$pane" moved_on
   tmux send-keys -t "$pane" Enter || partial "send-keys failed (Enter)" "$pane"
 }
 

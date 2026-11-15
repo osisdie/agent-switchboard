@@ -718,7 +718,7 @@ eq "picker gone after typing (text only in history) -> exit 5, no Enter" "$?/$(k
 qdone tu_q6d
 d="$(askq tu_q6e "$Q1")"; "$B" answer "$d" "purple" --by user-1 >/dev/null
 FAKE_TMUX_MUTATE_AT=3 FAKE_TMUX_MUTATE="$BOARD_HOME/state/$SID.json" seqpress tu_q6e "$U" "$F" "$(qscreen focus purple)"
-eq "prompt changed after typing -> exit 5, no Enter" "$?/$(keys_sent)" "5/send-keys -t %42 4|send-keys -t %42 -l -- purple|"
+eq "prompt changed after typing -> exit 5, no Enter, status_reason moved_on" "$?/$(keys_sent)/$(dj "$d" .status_reason)" "5/send-keys -t %42 4|send-keys -t %42 -l -- purple|/moved_on"
 qdone tu_q6e
 d="$(askq tu_q6k "$Q1")"; "$B" answer "$d" "some" --by user-1 >/dev/null
 seqpress tu_q6k "$U" "$F" "$F"
