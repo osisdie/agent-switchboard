@@ -1,5 +1,15 @@
 # agent-switchboard
 
+[![ci](https://github.com/osisdie/agent-switchboard/actions/workflows/ci.yml/badge.svg)](https://github.com/osisdie/agent-switchboard/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![secret scanning: gitleaks](https://img.shields.io/badge/secret%20scanning-gitleaks-blue)](https://github.com/gitleaks/gitleaks)
+[![shellcheck](https://img.shields.io/badge/shellcheck-checked-brightgreen)](https://www.shellcheck.net/)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue?logo=python&logoColor=white)](#quick-start)
+[![Bash](https://img.shields.io/badge/shell-bash-4EAA25?logo=gnubash&logoColor=white)](bin/)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+
+**Docs:** English | [繁體中文](README.zh-TW.md)
+
 A switchboard for a fleet of long-running **Claude Code** sessions: one board that shows who is
 working, who is blocked, and what is waiting for a human decision. You can answer from the board,
 including from your phone.
