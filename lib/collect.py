@@ -507,6 +507,7 @@ def process_decisions(cfg, home, sessions, now):
                 pend = (sess or {}).get("pending") or {}
                 if not sess or sess.get("state") != "needs-you" or pend.get("tool_use_id") != d.get("tool_use_id"):
                     d["status"] = "stale"
+                    d["status_reason"] = "moved_on"  # an answer it had was never delivered
                     changed = True
         if d.get("status") == "pending" and plain_ask(d) and not d.get("hint"):
             at = maybe_answered(d, by_code, home)
@@ -515,6 +516,7 @@ def process_decisions(cfg, home, sessions, now):
                 changed = True
         if d.get("status") == "pending" and now - int(d.get("created_at") or 0) > timeout_ms:
             d["status"] = "timeout"
+            d["status_reason"] = "timeout"
             changed = True
         if changed:
             # Not under a lock: `board answer` / `board resolve` may have written the file since it

@@ -417,7 +417,9 @@ to the Artifact or put in an alert. Turn the prompt off with `cards: {show_promp
   only that key was sent, and the decision goes back to **pending** with a note, so you can answer it
   again from the board. It becomes stale only once the session has moved on. A session card whose
   prompt still waits but whose decision went stale says "Answer in the session" instead of linking
-  to a dead card.
+  to a dead card. In Recent decisions, an answer that was recorded but never delivered (refused at
+  the press, stopped part-way, the session moved on) gets a red "not delivered" chip and reads
+  "Not delivered: <reason> → <answer>", so it never looks relayed.
 
   **The risk, honestly:** this is screen automation. The guards make a wrong keystroke unlikely, but
   not impossible: a prompt can change between the check and the keystroke, or a future UI can look

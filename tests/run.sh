@@ -527,6 +527,7 @@ eq "pane of another tmux session -> exit 3" "$?" "3"
 read -r tu d <<<"$(perm "rm -rf build-c")"; "$B" answer "$d" allow --by user-1 >/dev/null
 FAKE_TMUX_SCREEN="$(screen "rm -rf /")" press CP allow --expect "$tu"
 eq "prompt on screen is about other input -> exit 3" "$?" "3"
+eq "...stale with status_reason screen, the answer kept" "$(jq -r '.status + "/" + .status_reason + "/" + .answer' "$BOARD_HOME/decisions/$d.json")" "stale/screen/allow"
 read -r tu d <<<"$(perm "rm -rf build-d")"; "$B" answer "$d" allow --by user-1 >/dev/null
 jq '.pending.summary_sha256 = "0000"' "$BOARD_HOME/state/$SID.json" > "$T/sx" && mv "$T/sx" "$BOARD_HOME/state/$SID.json"
 FAKE_TMUX_SCREEN="$(screen "rm -rf build-d")" press CP allow --expect "$tu"
@@ -694,6 +695,7 @@ eq "picker did not focus Type something -> exit 5 (partial)" "$?" "5"
 eq "...nothing typed (only the row key)" "$(keys_sent)" "send-keys -t %42 4|"
 eq "...decision stale" "$(dj "$d" .status)" "stale"
 eq "...logged as partial" "$(jq -s -r '[.[] | select(.type=="press")] | last | .result' "$BOARD_HOME/events.jsonl")" "partial"
+eq "...status_reason partial" "$(dj "$d" .status_reason)" "partial"
 qdone tu_q6
 d="$(askq tu_q6b "$Q1")"; "$B" answer "$d" "purple" --by user-1 >/dev/null
 seqpress tu_q6b "$U" "$F
@@ -869,6 +871,7 @@ d="$(askq tu_s1 "$Q1")"; "$B" answer "$d" "Blue" --by user-1 >/dev/null
 seqpress tu_s1 "$SCR" "$U"
 eq "scrolled pane -> C-End, then the picker -> press ok" "$?/$(keys_sent)" "0/send-keys -t %42 C-End|send-keys -t %42 2|"
 eq "...decision relayed" "$(dj "$d" .status)" "relayed"
+eq "...no status_reason on a relayed decision" "$(dj "$d" 'has("status_reason")')" "false"
 eq "...the scroll is logged" "$(jq -s -r '[.[] | select(.type=="press" and .result=="scroll")] | length' "$BOARD_HOME/events.jsonl")" "1"
 qdone tu_s1
 d="$(askq tu_s2 "$Q1")"; "$B" answer "$d" "Blue" --by user-1 >/dev/null
@@ -878,6 +881,7 @@ eq "...not stale: pending, answer cleared, note says scrolled" "$(dj "$d" '"\(.s
 eq "...the collector keeps it pending while the session waits" "$(PATH="$T/bin:$PATH" "$REPO/bin/board-collect" --once --no-notify >/dev/null 2>&1; dj "$d" .status)" "pending"
 qdone tu_s2
 eq "...stale once the session moved on (PostToolUse)" "$(PATH="$T/bin:$PATH" "$REPO/bin/board-collect" --once --no-notify >/dev/null 2>&1; dj "$d" .status)" "stale"
+eq "...stale once the session moved on, status_reason moved_on" "$(dj "$d" .status_reason)" "moved_on"
 d="$(askq tu_s3 "$Q1")"; "$B" answer "$d" "Blue" --by user-1 >/dev/null
 FAKE_TMUX_MUTATE_AT=2 FAKE_TMUX_MUTATE="$BOARD_HOME/state/$SID.json" seqpress tu_s3 "$SCR" "$SCR"
 eq "scrolled, and the state moved on meanwhile -> exit 3, stale" "$?/$(dj "$d" .status)" "3/stale"
@@ -888,6 +892,14 @@ seqpress tu_s4 "$SCR" "$U"
 eq "press.scroll_key empty -> no key sent, exit 7" "$?/$(keys_sent)" "7/"
 sed -i '/^press:$/,$d' "$BOARD_CONFIG_DIR/fleet.yaml"
 qdone tu_s4
+
+# board mark --reason: only the fixed codes.
+d="$(askq tu_m1 "$Q1")"
+"$B" mark "$d" stale --reason "rm -rf /" >/dev/null 2>&1
+eq "mark --reason with free text -> exit 2, untouched" "$?/$(dj "$d" .status)" "2/pending"
+"$B" mark "$d" stale --reason operator >/dev/null
+eq "mark --reason operator" "$(dj "$d" '.status + "/" + .status_reason')" "stale/operator"
+qdone tu_m1
 
 # --option: the clicked button's number must match the label.
 d="$(askq tu_q6i "$Q1")"
@@ -1394,6 +1406,7 @@ grep -v '^approvers:' "$BOARD_CONFIG_DIR/fleet.yaml" > "$T/fleet.base.yaml"
 q="$("$B" ask --from CP "Merge?")"
 "$B" answer "$q" yes --by u-stranger >/dev/null 2>&1; eq "non-approver refused (exit 4)" "$?" "4"
 eq "non-approver -> unauthorized" "$(jq -r .status "$BOARD_HOME/decisions/$q.json")" "unauthorized"
+eq "...status_reason not_approver" "$(jq -r .status_reason "$BOARD_HOME/decisions/$q.json")" "not_approver"
 "$B" answer "$q" yes --by u-owner >/dev/null; eq "approver accepted" "$?" "0"
 eq "approver -> answered" "$(jq -r .status "$BOARD_HOME/decisions/$q.json")" "answered"
 p="$("$B" ask --from CP "Release 1.2 to production?" --gate production --stage production --artifact rel-notes)"

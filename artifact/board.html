@@ -310,6 +310,8 @@ dialog.notif { width: min(720px, calc(100vw - 24px)); }
 .dcard .note.maybe { color: var(--lamp-ink); }
 .dcard .resolve-row { display: flex; justify-content: flex-end; }
 .btn.linkish { min-height: 32px; padding: 4px 10px; font-size: 13px; border-style: dashed; color: var(--muted); }
+.status.undelivered { background: var(--deny-soft); color: var(--deny); }
+.history .undeliv { color: var(--deny); font-weight: 600; }
 .status.pending { background: var(--lamp-soft); color: var(--lamp-ink); }
 
 /* ---------- board ---------- */
@@ -2036,6 +2038,21 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
     setTimeout(() => { if (S.confirm === myConfirm) { S.confirm = null; renderDecisions(); } }, 8000);
   }
 
+  // A decision with a recorded answer whose status is not relayed: the answer never reached the
+  // session (the press was refused, stopped part-way, the session moved on, or a non-approver).
+  function notDelivered(d) {
+    return d.answer != null && d.answer !== '' && ['stale', 'timeout', 'unauthorized'].includes(str(d.status));
+  }
+  const REASONS = {
+    screen: 'the prompt was not on the session\'s screen',
+    partial: 'typed into the question, but Enter was not pressed',
+    moved_on: 'the session moved on before it arrived',
+    timeout: 'it expired before it was sent',
+    not_approver: 'answered by someone who is not an approver',
+    unknown_session: 'the session was not found',
+    operator: 'the operator could not deliver it',
+  };
+  const reasonText = (d) => trMap(REASONS, d.status_reason) || tr('reason not recorded');
   function renderDecisions() {
     const pend = pendingDecisions();
     $('#dec-empty').hidden = pend.length > 0;
@@ -2056,13 +2073,19 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
     const hist = $('#dec-history');
     hist.hidden = past.length === 0;
     $('#dec-history-sum').textContent = tr('Recent decisions ({n}) · answered, relayed or expired', { n: past.length });
-    reconcile($('#dec-history-list'), past, (d) => d.id, (d) => JSON.stringify(d), (d) => h('li', null,
-      h('span', { class: 'status ' + str(d.status), text: d.status === 'answered_in_pane' ? tr('answered in session') : str(d.status) || 'unknown' }),
-      h('span', { class: 'what' },
-        h('span', { class: 'code-chip', text: str(d.from) || '?' }), ' ',
-        str(d.question) || (d.kind === 'permission' ? tr('{tool} permission', { tool: str(d.tool_name) || 'tool' }) : isGateDecision(d) ? tr('{stage} gate', { stage: stageName(d.stage || d.gate) }) : tr('Question')),
-        d.answer != null && d.answer !== '' ? h('span', null, ' → ', h('span', { class: 'ans', text: str(d.answer) })) : null),
-      timeEl(d.answered_at || d.relayed_at || d.created_at)));
+    reconcile($('#dec-history-list'), past, (d) => d.id, (d) => JSON.stringify(d), (d) => {
+      // An answer that was recorded but never reached the session must not read as delivered.
+      const nd = notDelivered(d);
+      return h('li', { class: nd ? 'undelivered' : null },
+        nd ? h('span', { class: 'status undelivered', text: d.status_reason === 'partial' ? tr('partial') : tr('not delivered') })
+          : h('span', { class: 'status ' + str(d.status), text: d.status === 'answered_in_pane' ? tr('answered in session') : str(d.status) || 'unknown' }),
+        h('span', { class: 'what' },
+          h('span', { class: 'code-chip', text: str(d.from) || '?' }), ' ',
+          str(d.question) || (d.kind === 'permission' ? tr('{tool} permission', { tool: str(d.tool_name) || 'tool' }) : isGateDecision(d) ? tr('{stage} gate', { stage: stageName(d.stage || d.gate) }) : tr('Question')),
+          nd ? h('span', { class: 'undeliv' }, ' ', tr('Not delivered: {why}', { why: reasonText(d) })) : null,
+          d.answer != null && d.answer !== '' ? h('span', null, ' → ', h('span', { class: 'ans', text: str(d.answer) })) : null),
+        timeEl(d.answered_at || d.relayed_at || d.created_at));
+    });
   }
 
   /* ----------------------------------------------------------- lifecycle */
@@ -2331,7 +2354,9 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
       const waitDec = p && p.decision_id && !decs.some((d) => d.id === p.decision_id) ? S.decisions.find((d) => d.id === p.decision_id) : null;
       if (p && p.decision_id && !decs.some((d) => d.id === p.decision_id) && !waitDec) decs.push({ id: str(p.decision_id), kind: 'permission', tool_name: p.tool_name });
       const inSession = waitDec && col === 'needs' && waitDec.status !== 'pending' && waitDec.status !== 'answered'
-        ? h('span', { class: 'note in-session', text: waitDec.press_note ? tr('Answer in the session (screen scrolled)') : tr('Answer in the session: the board can no longer press this prompt') }) : null;
+        ? h('span', { class: 'note in-session', text: notDelivered(waitDec)
+            ? tr('Your answer was not delivered ({why}). Answer in the session.', { why: reasonText(waitDec) })
+            : waitDec.press_note ? tr('Answer in the session (screen scrolled)') : tr('Answer in the session: the board can no longer press this prompt') }) : null;
       if (decs.length || inSession) {
         const pe = section('Pending', 'pending');
         if (decs.length) {
@@ -5293,6 +5318,18 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
       "stale": "過時",
       "Answer in the session (screen scrolled)": "請在 session 中回答（畫面已捲動）",
       "In session": "在 session 中",
+      "not delivered": "未送達",
+      "partial": "未完成",
+      "Not delivered: {why}": "未送達：{why}",
+      "Your answer was not delivered ({why}). Answer in the session.": "你的回答未送達（{why}）。請在 session 中回答。",
+      "the prompt was not on the session's screen": "session 的畫面上看不到這個提示",
+      "typed into the question, but Enter was not pressed": "已輸入到問題中，但沒有按下 Enter",
+      "the session moved on before it arrived": "送達前 session 已經往下走了",
+      "it expired before it was sent": "送出前就已過期",
+      "answered by someone who is not an approver": "回答者不是核可者",
+      "the session was not found": "找不到這個 session",
+      "the operator could not deliver it": "operator 無法送達",
+      "reason not recorded": "沒有記錄原因",
       "Answer in the session: the board can no longer press this prompt": "請在 session 中回答：看板已無法替這個提示按鍵",
       "screen was scrolled; try again": "畫面曾捲動，請再試一次",
       "The session's screen was scrolled, so nothing was pressed. Try again, or answer in the session.": "session 的畫面曾捲動，所以沒有按下任何鍵。請再試一次，或在 session 中回答。",

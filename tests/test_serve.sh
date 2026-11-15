@@ -620,6 +620,8 @@ eq "  only the scroll key was sent" "$(grep '^send-keys' "$FAKE_TMUX_LOG" | tr '
 jq '.pending.tool_use_id = "tu_3" | .pending.summary_sha256 = "sha-3"' "$BOARD_HOME/state/$SID.json" > "$T/st" && mv "$T/st" "$BOARD_HOME/state/$SID.json"
 "$REPO/bin/board-collect" --once --no-notify >/dev/null 2>&1
 eq "  stale once the session moved on" "$(jq -r .status "$BOARD_HOME/decisions/d-1-permb.json")" "stale"
+for _ in $(seq 1 20); do req GET /api/state >/dev/null; [ "$(body '.decisions[] | select(.id=="d-1-permb") | .status')" = stale ] && break; sleep 0.1; done
+eq "  the page gets status_reason moved_on" "$(body '.decisions[] | select(.id=="d-1-permb") | .status_reason')" "moved_on"
 
 # ---------------------------------------------------------------- resolve (answered in the session)
 echo "resolve:"

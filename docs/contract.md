@@ -335,6 +335,16 @@ multiSelect, options: [{label, description}]}]}` on `PreToolUse` (with `tool_use
   and its buttons; a session card whose prompt still waits but whose decision is no longer pending
   shows "Answer in the session (screen scrolled)" (or "... the board can no longer press this
   prompt" without a `press_note`) instead of a link.
+- **Not delivered.** A decision whose answer was recorded but never reached the session carries
+  `status_reason`, a fixed code (never free text): `screen` (press refused, exit 3), `partial`
+  (exit 5), `moved_on` (the collector marked it stale: the session moved on), `timeout`,
+  `not_approver` (unauthorized), `unknown_session`, `operator` (`board mark ID stale --reason
+  operator`). Relayed clears it; exit 7 removes it (pending again). board-serve passes it to the
+  page and, for a record from before the code, derives `screen` / `partial` / `not_approver` from
+  the last `mark` / `unauthorized` event's reason prefix (never its text). The page's Recent
+  decisions log shows such a decision (an answer, status `stale` / `timeout` / `unauthorized`) with a
+  `not delivered` (or `partial`) chip and "Not delivered: <reason> → <answer>"; a session card whose
+  prompt still waits says "Your answer was not delivered (<reason>). Answer in the session."
 - **exit 5** (partial): a check failed after the first key. Some keys were sent, Enter was not
   pressed; the decision becomes `stale` with reason `press partial: ...`, the attempt is logged
   with `result: "partial"`, and board-serve answers 409 `partial` ("keys were sent but Enter was

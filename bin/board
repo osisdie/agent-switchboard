@@ -13,7 +13,7 @@
 #                                              mark a decision answered (mirrors the board db);
 #                                              WHO must be in approvers (release_managers for
 #                                              gate:production), else it is marked unauthorized
-#   board mark ID relayed|stale|timeout|unauthorized
+#   board mark ID relayed|stale|timeout|unauthorized [--reason CODE]
 #                                              set a decision's status
 #   board resolve ID --in-pane --from CODE|--by WHO [--note-file F]
 #                                              close a board ask that was answered in the pane
@@ -217,7 +217,9 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
         for w in "${APPROVE_WORDS[@]}"; do out="${out:+$out, }$w"; done
         echo "    $out"
         echo "  anything else (e.g. \"request changes\") records the gate as rejected." ;;
-    mark) echo "usage: board mark ID relayed|stale|timeout|unauthorized" ;;
+    mark) echo "usage: board mark ID relayed|stale|timeout|unauthorized [--reason CODE]"
+        echo "  CODE (why an answer was not delivered, shown on the board): screen, partial, moved_on,"
+        echo "  timeout, not_approver, unknown_session, operator" ;;
     resolve) echo "usage: board resolve ID --in-pane --from CODE|--by WHO [--note-file F]"
         echo "  close a board ask (kind question, not a pane question, not a gate) that was answered in"
         echo "  the session's pane or another session: status answered_in_pane (final). --from: the"
@@ -610,7 +612,8 @@ cmd_answer() {
       echo "board answer: refused — $by may not answer $id; it keeps its approver's answer" >&2
       exit 4
     fi
-    update_decision "$id" '.status = "unauthorized" | .answer = $a | .answered_by = $by | .answered_at = $now | .updated_at = $now' \
+    update_decision "$id" '.status = "unauthorized" | .answer = $a | .answered_by = $by | .answered_at = $now | .updated_at = $now
+        | .status_reason = "not_approver"' \
       --arg a "$answer" --arg by "$by" --argjson now "$now"
     log_event "$(jq -cn --arg id "$id" --arg by "$by" --argjson now "$now" '{ts: $now, type: "unauthorized", id: $id, by: $by}')"
     echo "board answer: refused — $by may not answer $id (not in $(if is_production "$f"; then echo release_managers/approvers; else echo approvers; fi)); marked unauthorized" >&2
@@ -689,8 +692,10 @@ cmd_answer() {
 # status it already has is a no-op. Returns 1 (nothing written) when refused. One exception:
 # board press, whose keys went in, marks relayed over stale (MARK_OVER_STALE=1): the collector may
 # have marked it stale between the key press and this mark.
-mark_status() {  # mark_status ID STATUS [reason]
-  local id="$1" st="$2" reason="${3:-}" now cur
+# mark_status ID STATUS [reason] [code] — code: a fixed status_reason the board shows when an answer
+# was not delivered (screen, partial, unknown_session); relayed clears it.
+mark_status() {
+  local id="$1" st="$2" reason="${3:-}" code="${4:-}" now cur
   cur="$(jq -r '.status // empty' "$(dec_path "$id")" 2>/dev/null)"
   case "$cur" in
     relayed|stale|timeout|answered_in_pane)
@@ -704,8 +709,9 @@ mark_status() {  # mark_status ID STATUS [reason]
       return 1 ;;
   esac
   now="$(now_ms)"
-  update_decision "$id" '.status = $st | .updated_at = $now | (if $st == "relayed" then .relayed_at = $now else . end)' \
-    --arg st "$st" --argjson now "$now"
+  update_decision "$id" '.status = $st | .updated_at = $now | (if $st == "relayed" then .relayed_at = $now else . end)
+      | (if $st == "relayed" then del(.status_reason) elif $code != "" then .status_reason = $code else . end)' \
+    --arg st "$st" --argjson now "$now" --arg code "$code"
   log_event "$(jq -cn --arg id "$id" --arg st "$st" --arg r "$reason" --argjson now "$now" \
     '{ts: $now, type: "mark", id: $id, status: $st} + (if $r == "" then {} else {reason: $r} end)')"
 }
@@ -829,13 +835,17 @@ cmd_resolve() {
 
 cmd_mark() {
   need_jq
-  local id="${1:-}" st="${2:-}"
+  local id="${1:-}" st="${2:-}" code=""
   case "$st" in
     relayed|stale|timeout|unauthorized) ;;
     *) sub_usage mark >&2; exit 2 ;;
   esac
+  if [ "${3:-}" = --reason ]; then
+    code="${4:-}"
+    case "$code" in screen|partial|moved_on|timeout|not_approver|unknown_session|operator) ;; *) sub_usage mark >&2; exit 2 ;; esac
+  fi
   [ -f "$(dec_path "$id")" ] || die "no such decision: $id"
-  mark_status "$id" "$st" || exit 1
+  mark_status "$id" "$st" "" "$code" || exit 1
   echo "$id $st"
 }
 
@@ -994,7 +1004,7 @@ cmd_press() {
   refuse() {
     echo "board press: refused — $1" >&2
     attempt refused "$1" "${2:-}"
-    [ -n "$dec_id" ] && mark_status "$dec_id" stale "press refused: $1" >/dev/null 2>&1
+    [ -n "$dec_id" ] && mark_status "$dec_id" stale "press refused: $1" screen >/dev/null 2>&1
     exit 3
   }
   # The state still shows this prompt waiting, but no prompt or picker is on screen at all (the TUI
@@ -1012,7 +1022,8 @@ cmd_press() {
     attempt not_visible "$1" "${2:-}"
     local n; n="$(now_ms)"
     update_decision "$dec_id" '.status = "pending" | .answer = null | .answered_by = null | .answered_at = null
-        | .answer_index = null | .relay = null | .press_note = $note | .press_note_at = $now | .updated_at = $now' \
+        | .answer_index = null | .relay = null | .press_note = $note | .press_note_at = $now | .updated_at = $now
+        | del(.status_reason)' \
       --arg note "$PRESS_SCREEN_NOTE" --argjson now "$n" >/dev/null 2>&1
     log_event "$(jq -cn --arg id "$dec_id" --arg r "$1" --argjson now "$n" \
       '{ts: $now, type: "mark", id: $id, status: "pending", reason: ("press not visible: " + $r)}')"
@@ -1022,7 +1033,7 @@ cmd_press() {
   partial() {
     echo "board press: stopped — $1; keys sent, Enter not pressed: finish in the session" >&2
     attempt partial "$1" "${2:-}"
-    [ -n "$dec_id" ] && mark_status "$dec_id" stale "press partial: $1" >/dev/null 2>&1
+    [ -n "$dec_id" ] && mark_status "$dec_id" stale "press partial: $1" partial >/dev/null 2>&1
     exit 5
   }
 

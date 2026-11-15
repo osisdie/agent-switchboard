@@ -218,8 +218,10 @@ db.
     page never offers Allow for such a decision. Otherwise treat it like an unauthorized answer.
   - exit 0 → `status: "relayed"` (db). `board press` has already marked the local file.
   - **exit 3** (guard failed: the prompt changed or isn't on screen; no keys were sent) →
-    `status: "stale"` in the db. `board press` has already marked the local file. The page then
-    tells the human to handle it in the session. Do not retry.
+    `status: "stale"` in the db. `board press` has already marked the local file (with
+    `status_reason: "screen"`; copy it to the db). The page then tells the human the answer was
+    not delivered and to handle it in the session. Do not retry. When you give up on a relay
+    yourself, use `board mark <id> stale --reason operator`.
   - **exit 7** (the prompt still waits but is not on screen, e.g. the session's TUI is scrolled
     up; at most the scroll key was sent) → the local file is `pending` again with a `press_note`.
     Keep the db decision open, set `context: "the session's screen is scrolled; answer again or in
