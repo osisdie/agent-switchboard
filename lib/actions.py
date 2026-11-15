@@ -36,10 +36,12 @@ Every action, the same guards (in the style of `board press`):
      (typed, Enter not pressed: never Enter on a guess);
   5. Enter, then the action's own confirmation:
      rc_on    bridgeSessionId appears in the registry (Claude's one-time consent dialog gets
-              Escape: "consent"; "Unknown command": "unavailable");
+              Escape: "consent"; a fresh "Unknown command" above the box: "unavailable");
      rc_off   the dialog (Disconnect this session / Show QR code / Continue): Up row by row,
               checked on screen, until "Disconnect this session" is focused, Enter, and
-              bridgeSessionId disappears; anything unexpected gets Escape (= Continue);
+              bridgeSessionId disappears.
+     Escape is pressed only into a recognized Remote Control dialog (rc_dialog): never into
+     a running turn, typed text or another picker; then the result is "unconfirmed".
      compact  the session turns busy ("Compacting conversation…"), then idle with
               "⎿ Compacted" right under the echoed "/compact": "confirmed"; "Not enough messages
               to compact": "nothing"; still running after compact_seconds: "started".
@@ -164,7 +166,13 @@ def rc_settled(cfg, rec, sid, choice_at):
     return res in RETRY and int(rec.get("tries") or 0) >= int(conf(cfg).get("max_tries") or 3)
 
 
-def auto_allowed(cfg, rec, sid, now, choice_at=None):
+def retry_results(action):
+    """Results after which ACTION may be tried again. A compact is never retried once Enter was
+    pressed (unconfirmed): it must not run twice."""
+    return ("refused", "failed") if action == "compact" else RETRY
+
+
+def auto_allowed(cfg, rec, sid, now, choice_at=None, action=None):
     """--auto: may this action be tried on this session process now? (choice_at: a new board
     choice for rc_on/rc_off starts over.)"""
     if not rec or rec.get("sid") != sid:
@@ -172,7 +180,7 @@ def auto_allowed(cfg, rec, sid, now, choice_at=None):
     if choice_at is not None and rec.get("choice_at") != choice_at:
         return True
     res = rec.get("result")
-    if res in FINAL:
+    if res in FINAL or (res in RETRY and res not in retry_results(action)):
         return False
     if res in RETRY:
         c = conf(cfg)
@@ -218,11 +226,11 @@ def auto_candidates(sessions, cfg, home, now):
         if r.get("state") not in IDLE_STATES or r.get("status") != "idle" or not r.get("tmux_pane"):
             continue
         code, sid = r["code"], r.get("session_id")
-        if run_busy(home, code):
-            continue
         at = (r.get("rc") or {}).get("at")
         jobs = [j for j in (_rc_job(r), "compact" if code in q else None) if j]
-        if any(auto_allowed(cfg, (last.get(code) or {}).get(j), sid, now, at if j.startswith("rc_") else None) for j in jobs):
+        if not jobs or run_busy(home, code):
+            continue
+        if any(auto_allowed(cfg, (last.get(code) or {}).get(j), sid, now, at if j.startswith("rc_") else None, j) for j in jobs):
             out.append(code)
     return out
 
@@ -411,11 +419,53 @@ def _focused(lines):
     return None
 
 
+def _proc_stat(pid):
+    """(state, starttime in clock ticks since boot) from /proc/<pid>/stat, or None."""
+    try:
+        with open("/proc/%d/stat" % int(pid), encoding="utf-8") as fh:
+            data = fh.read()
+        f = data[data.rindex(")") + 2:].split()
+        return f[0], int(f[19])
+    except (OSError, ValueError, IndexError, TypeError):
+        return None
+
+
+def _boot_ms():
+    try:
+        with open("/proc/stat", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("btime "):
+                    return int(line.split()[1]) * 1000
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def same_process(reg, pid):
+    """Is PID still the process the registry entry describes? Not a zombie, and its start time
+    matches the registry's procStart (clock ticks, when given) or, else, startedAt (ms, within
+    5 minutes): a reused pid is another process."""
+    st = _proc_stat(pid)
+    if st is None or st[0] in ("Z", "X"):
+        return False
+    proc_start = reg.get("procStart")
+    if proc_start not in (None, ""):
+        try:
+            return int(proc_start) == st[1]
+        except (TypeError, ValueError):
+            return False
+    started, boot = reg.get("startedAt"), _boot_ms()
+    if isinstance(started, int) and not isinstance(started, bool) and boot:
+        hz = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
+        return abs(boot + st[1] * 1000 // hz - started) <= 300000
+    return True
+
+
 def session_now(row):
     """(registry record, hook state) of this session process, read fresh; (None, None) when it
-    is gone or the registry now names another session."""
+    is gone, the registry now names another session, or the pid belongs to another process."""
     reg = _read_json(os.path.join(fleet.sessions_dir(), "%s.json" % row.get("pid")))
-    if reg.get("sessionId") != row.get("session_id") or not os.path.exists("/proc/%s" % row.get("pid")):
+    if reg.get("sessionId") != row.get("session_id") or not same_process(reg, row.get("pid")):
         return None, None
     st = _read_json(os.path.join(fleet.board_home(), "state", "%s.json" % row.get("session_id")))
     return reg, st
@@ -466,7 +516,8 @@ def run_action(home, cfg, row, action):
     if not _send(pane, cmd, literal=True):
         return "failed", "send-keys failed (typing the command)"
     _settle()
-    i, text = prompt_box(_screen(pane, nlines) or [], c)
+    typed = _screen(pane, nlines) or []
+    i, text = prompt_box(typed, c)
     if i is None or text != cmd:
         return "partial", "the prompt box does not show %s after typing; Enter not pressed (clear the prompt in the session)" % cmd
     reg, st = session_now(row)
@@ -477,28 +528,58 @@ def run_action(home, cfg, row, action):
     if action == "compact":
         return _confirm_compact(row, pane, c, nlines)
     if rc_on:
-        return _confirm_rc_on(row, pane, c, nlines)
-    return _disconnect(row, pane, c, nlines)
+        return _confirm_rc_on(row, pane, c, nlines, typed)
+    return _disconnect(row, pane, c, nlines, typed)
 
 
-def _escape_if_no_box(pane, c, nlines):
-    """After an unconfirmed Remote Control step: when Claude's empty input box is not on screen,
-    a dialog is probably open (the registry was wrong, or a dialog we did not expect). Escape
-    closes it without changing anything (it is "Continue" / "Never mind" in Claude's dialogs).
-    Returns True when Escape was sent."""
-    if idle_screen(_screen(pane, nlines), c) is None:
-        return False
-    _send(pane, "Escape")
-    return True
+def box_visible(lines, c):
+    """Is an input box (a prompt line between two rules) anywhere on screen?"""
+    rule, mark = _rx(c, "rule_regex"), "\u276f"
+    return any(lines[i].startswith(mark) and rule.search(lines[i - 1]) and rule.search(lines[i + 1])
+               for i in range(1, len(lines) - 1))
 
 
-def _rc_dialog(lines, c):
-    """Is Claude's Remote Control dialog (Disconnect / Show QR code / Continue) on screen?"""
+def rc_dialog(lines, c):
+    """"disconnect" or "consent" when one of Claude's Remote Control dialogs is open, else None.
+    All of: no input box anywhere on screen, nothing running (busy_regex), and below the last
+    echoed command line a dialog footer (dialog_regex) with, above it, the dialog's own rows: the
+    disconnect label (rc_disconnect_label, a whole row) or the consent dialog (its title and
+    "Never mind"). Text in the scrollback never counts: only what is below the last echo."""
+    if not lines or box_visible(lines, c) or _has(c, "busy_regex", lines):
+        return None
+    start = 0
+    for k in range(len(lines) - 1, -1, -1):
+        if lines[k].startswith("\u276f"):
+            start = k + 1
+            break
+    region = lines[start:]
+    foot = [k for k, ln in enumerate(region) if _rx(c, "dialog_regex").search(ln)]
+    if not foot:
+        return None
+    body = region[:foot[-1]]
     label = _rx(c, "rc_disconnect_label")
-    return _has(c, "dialog_regex", lines) and any(label.search(ln.replace("\u276f", " ")) for ln in lines)
+    if any(label.search(ln.replace("\u276f", " ")) for ln in body):
+        return "disconnect"
+    if _has(c, "rc_consent_title_regex", body) and _has(c, "rc_consent_regex", body):
+        return "consent"
+    return None
 
 
-def _confirm_rc_on(row, pane, c, nlines):
+def fresh_above_box(lines, before, c, key, window=4):
+    """Does KEY match in the few lines right above the input box now, and not in the same place
+    on the screen captured before Enter? (What the command just printed; scrollback with the
+    same words does not count.)"""
+    def near(ls):
+        i, _ = prompt_box(ls or [], c)
+        if i is None:
+            return []
+        return ls[max(0, i - 1 - window):i - 1]
+    return _has(c, key, near(lines)) and not _has(c, key, near(before))
+
+
+def _confirm_rc_on(row, pane, c, nlines, before):
+    """After Enter on /remote-control (on). Escape only into a recognized Remote Control dialog
+    (rc_dialog): never into a running turn, typed text or a picker of the user's own."""
     secs = float(c.get("rc_confirm_seconds") or 10)
     deadline = time.time() + secs
     while True:
@@ -508,54 +589,54 @@ def _confirm_rc_on(row, pane, c, nlines):
         if _bridge(reg):
             return "confirmed", "Remote Control is on"
         lines = _screen(pane, nlines) or []
-        if _has(c, "rc_unavailable_regex", lines):
-            _escape_if_no_box(pane, c, nlines)
+        if fresh_above_box(lines, before, c, "rc_unavailable_regex"):
             return "unavailable", "Claude does not offer /remote-control in this session (DO_NOT_TRACK set, not signed in to claude.ai, or turned off by policy)"
-        if _has(c, "rc_consent_regex", lines):
+        kind = rc_dialog(lines, c)
+        if kind == "consent":
             _send(pane, "Escape")
             return "consent", "Claude asks its one-time Remote Control confirmation; dismissed. Run /remote-control in the session once"
-        if _rc_dialog(lines, c):
+        if kind == "disconnect":
             _send(pane, "Escape")
             return "refused", "Claude opened the Disconnect dialog: Remote Control was already on although the registry said off; closed it with Escape"
         if time.time() >= deadline:
-            esc = _escape_if_no_box(pane, c, nlines)
-            return "unconfirmed", "bridgeSessionId did not appear within %gs%s" % (secs, "; closed an open dialog with Escape" if esc else "")
+            return "unconfirmed", "bridgeSessionId did not appear within %gs; nothing else sent" % secs
         time.sleep(0.5)
 
 
-def _disconnect(row, pane, c, nlines):
+def _disconnect(row, pane, c, nlines, before):
+    """After Enter on /remote-control (off): walk the Disconnect dialog. Escape only while that
+    dialog (or the consent dialog) is recognized on screen."""
     secs = float(c.get("rc_confirm_seconds") or 10)
     label = _rx(c, "rc_disconnect_label")
     deadline = time.time() + min(secs, 6)
     while True:
         lines = _screen(pane, nlines) or []
-        if _rc_dialog(lines, c):
+        kind = rc_dialog(lines, c)
+        if kind == "disconnect":
             break
-        if _has(c, "rc_consent_regex", lines):
+        if kind == "consent":
             _send(pane, "Escape")
             return "consent", "Claude asked its one-time Remote Control confirmation (Remote Control was off although the registry said on); dismissed with Escape"
-        if _has(c, "rc_unavailable_regex", lines):
-            _escape_if_no_box(pane, c, nlines)
+        if fresh_above_box(lines, before, c, "rc_unavailable_regex"):
             return "unavailable", "Claude does not offer /remote-control in this session"
         if time.time() >= deadline:
-            esc = _escape_if_no_box(pane, c, nlines)
-            return "unconfirmed", "the Remote Control dialog did not open%s" % ("; closed an unexpected screen with Escape" if esc else "; nothing else sent")
+            return "unconfirmed", "the Remote Control dialog did not open; nothing else sent"
         time.sleep(0.3)
     for _ in range(4):
         cur = _focused(lines)
         if cur is not None and label.search(cur):
             break
         if cur is None:
-            _send(pane, "Escape")
+            _send(pane, "Escape")  # the dialog was just recognized: Escape is "Continue"
             return "refused", "no focused row in the Remote Control dialog; closed it with Escape (Remote Control stays on)"
         if not _send(pane, "Up"):
-            _send(pane, "Escape")
-            return "failed", "send-keys failed (Up); closed the dialog with Escape"
+            if rc_dialog(_screen(pane, nlines) or [], c):
+                _send(pane, "Escape")
+            return "failed", "send-keys failed (Up)"
         _settle()
         lines = _screen(pane, nlines) or []
-        if not _rc_dialog(lines, c):
-            esc = _escape_if_no_box(pane, c, nlines)
-            return "partial", "the Remote Control dialog closed unexpectedly%s" % ("; sent Escape" if esc else "")
+        if rc_dialog(lines, c) != "disconnect":
+            return "partial", "the Remote Control dialog closed unexpectedly; nothing else sent"
     else:
         _send(pane, "Escape")
         return "refused", "could not focus \"Disconnect this session\"; closed the dialog with Escape (Remote Control stays on)"
@@ -571,8 +652,11 @@ def _disconnect(row, pane, c, nlines):
         if not _bridge(reg):
             return "confirmed", "Remote Control is off"
         if time.time() >= deadline:
-            esc = _escape_if_no_box(pane, c, nlines)
-            return "unconfirmed", "bridgeSessionId did not disappear within %gs%s" % (secs, "; sent Escape" if esc else "")
+            esc = rc_dialog(_screen(pane, nlines) or [], c) == "disconnect"
+            if esc:
+                _send(pane, "Escape")
+            return "unconfirmed", "bridgeSessionId did not disappear within %gs%s" % (
+                secs, "; the dialog was still open: closed it with Escape" if esc else "; nothing else sent")
         time.sleep(0.5)
 
 
@@ -700,7 +784,7 @@ def apply(home, cfg, codes=None, auto=False, by=None, only=None):
             for job in jobs:
                 is_rc = job.startswith("rc_")
                 if auto and (row.get("state") not in IDLE_STATES
-                             or not auto_allowed(cfg, (last.get(code) or {}).get(job), sid, now, choice_at if is_rc else None)):
+                             or not auto_allowed(cfg, (last.get(code) or {}).get(job), sid, now, choice_at if is_rc else None, job)):
                     continue
                 if job in QUEUED and q[code].get("sid") != sid:
                     unqueue(home, code, by, op="drop", reason="the session restarted")
@@ -715,8 +799,9 @@ def apply(home, cfg, codes=None, auto=False, by=None, only=None):
                 log(home, {"op": "run", "code": code, "action": job, "result": res[0], "reason": res[1],
                            "auto": bool(auto), "by": by, "pane": row.get("tmux_pane")})
                 if job in QUEUED and res[0] != "deferred":
-                    gave_up = res[0] in RETRY and rec and int(rec.get("tries") or 0) >= int(c.get("max_tries") or 3)
-                    if res[0] not in RETRY or gave_up:
+                    again = retry_results(job)
+                    gave_up = res[0] in again and rec and int(rec.get("tries") or 0) >= int(c.get("max_tries") or 3)
+                    if res[0] not in again or gave_up:
                         unqueue(home, code, by, op="done", reason=res[0])
                 if res[0] not in ("confirmed", "already", "nothing"):
                     break  # the next action waits for the next idle moment
@@ -725,6 +810,26 @@ def apply(home, cfg, codes=None, auto=False, by=None, only=None):
     if out:
         refresh_snapshot()
     return out
+
+
+def settle_matching(home, cfg, target):
+    """After a choice is made (also with --no-apply): record "already" for the running sessions
+    it covers that already follow it, so the board never reverts a change made by hand in them
+    later (the choice counts as tried for that session process)."""
+    import rc  # noqa: WPS433
+    refresh_snapshot()
+    data = rc.load(home)
+    n = 0
+    for r in snapshot_rows(home):
+        code, sid = r["code"], r.get("session_id")
+        if not sid or "/" in code or (target != "all" and code != target):
+            continue
+        want, source, at = rc.wanted_at(code, cfg, data)
+        if not rc.explicit(source) or at is None or bool(r.get("remote_url")) != (want == "on"):
+            continue
+        record(home, code, "rc_" + want, sid, "already", "already %s when the choice was made" % want, now_ms(), at)
+        n += 1
+    return n
 
 
 def exit_for(results):

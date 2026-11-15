@@ -130,6 +130,13 @@ def events(kind="rc"):
     return out
 
 
+def proc_start(pid):
+    """The process start time (clock ticks since boot), as Claude Code records it (procStart)."""
+    with open("/proc/%d/stat" % pid) as fh:
+        data = fh.read()
+    return str(int(data[data.rindex(")") + 2:].split()[19]))
+
+
 LIVES = []
 
 
@@ -159,7 +166,8 @@ class Live:
         if os.path.exists(self.reg):
             with open(self.reg) as fh:
                 d = json.load(fh)
-        d.update({"pid": self.pid, "sessionId": self.sid, "cwd": "/w", "startedAt": 1, "statusUpdatedAt": 5})
+        d.update({"pid": self.pid, "sessionId": self.sid, "cwd": "/w", "startedAt": 1, "statusUpdatedAt": 5,
+                  "procStart": proc_start(self.pid)})
         d.update(kw)
         with open(self.reg, "w") as fh:
             json.dump(d, fh)
@@ -200,6 +208,9 @@ def sent():
 
 
 def reset_home():
+    for n in os.listdir(HOME):
+        if n.startswith("actions-") and n.endswith(".lock"):
+            os.remove(os.path.join(HOME, n))
     for n in ("rc-prefs.json", "actions-last.json", "session-actions.json", "events.jsonl", "snapshot.json"):
         p = os.path.join(HOME, n)
         if os.path.exists(p):
@@ -531,12 +542,13 @@ class ReviewTest(unittest.TestCase):
         self.assertIn("consent", out)
         self.assertEqual(sent(), ["-l|--|/remote-control", "Enter", "Escape"])
 
-    def test_rc_on_unexpected_screen_escapes(self):
+    def test_rc_on_unknown_picker_gets_no_escape(self):
+        # Not one of Claude's Remote Control dialogs: it may be the user's own; nothing is sent.
         Live()
         script([IDLE, TYPED, OTHER_PICKER, IDLE])
         rc_, out, _ = board("rc", "on", "CP")
         self.assertEqual(rc_, 6, out)
-        self.assertEqual(sent(), ["-l|--|/remote-control", "Enter", "Escape"])
+        self.assertEqual(sent(), ["-l|--|/remote-control", "Enter"])
 
     def test_rc_on_unconfirmed_with_box_sends_nothing_more(self):
         Live()
@@ -555,12 +567,12 @@ class ReviewTest(unittest.TestCase):
         self.assertEqual(sent(), ["-l|--|/remote-control", "Enter", "Escape"])
         self.assertEqual(live.bridge(), "session_x")
 
-    def test_rc_off_unexpected_screen_escapes(self):
+    def test_rc_off_unknown_picker_gets_no_escape(self):
         Live(bridge="session_x")
         script([IDLE, TYPED, OTHER_PICKER, IDLE])
         rc_, out, _ = board("rc", "off", "CP")
         self.assertEqual(rc_, 6, out)
-        self.assertEqual(sent(), ["-l|--|/remote-control", "Enter", "Escape"])
+        self.assertEqual(sent(), ["-l|--|/remote-control", "Enter"])
 
     def test_disconnect_label_matches_the_focused_row_only(self):
         c = dict(rc.fleet.DEFAULTS["session_actions"])
@@ -696,6 +708,115 @@ class ReviewTest(unittest.TestCase):
         self.assertLess(time.time() - t0, 20)
 
 
+class Round2Test(unittest.TestCase):
+    """The recovery Escape only goes into a recognized Remote Control dialog; scrollback text
+    never decides; a choice that already matches counts as tried; pid reuse; compact never twice."""
+
+    def setUp(self):
+        reset_home()
+        write_fleet()
+
+    def tearDown(self):
+        close_lives()
+
+    WORKING = screen(above=["❯ /remote-control", "✻ Working… (3s · esc to interrupt)"],
+                     below=["  ⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt"])
+    TYPING = screen("❯ the user is typing here", above=["❯ /remote-control"])
+    MODEL_PICKER = "\n".join(HEAD + ["❯ /model", "   Select model", "   ❯ 1. Default (recommended)",
+                                     "     2. Other model", "   Enter to confirm · Esc to exit"])
+
+    def test_no_escape_into_the_users_work(self):
+        for name, scr in (("a running turn", self.WORKING), ("text in the box", self.TYPING),
+                          ("the user's own picker", self.MODEL_PICKER)):
+            for direction, bridge in (("on", None), ("off", "session_x")):
+                with self.subTest(name=name, direction=direction):
+                    reset_home()
+                    Live(bridge=bridge)
+                    script([IDLE, TYPED, scr])
+                    rc_, out, _ = board("rc", direction, "CP")
+                    self.assertEqual(rc_, 6, out)
+                    self.assertIn("unconfirmed", out)
+                    self.assertEqual(sent(), ["-l|--|/remote-control", "Enter"], (name, direction))
+                    close_lives()
+
+    def test_scrollback_never_decides(self):
+        old = ["● Unknown command: /remote-control", "  Never mind   You can always enable it later", "  Enable Remote Control",
+               "  older output", "  more older output", "  and more", "  and even more"]
+        idle = screen(above=old)
+        typed = screen("❯ /remote-control", above=old + ["  ❯ /remote-control   Control this session"])
+        # on: the bridge appears; the scrollback phrases are not "unavailable" or "consent"
+        live = Live()
+        script([idle, typed, screen(above=old + ["❯ /remote-control", "  /remote-control is active"])],
+               on_send={"2": {"path": live.reg, "set": {"bridgeSessionId": "session_s"}}})
+        rc_, out, _ = board("rc", "on", "CP")
+        self.assertEqual((rc_, sent()), (0, ["-l|--|/remote-control", "Enter"]), out)
+        close_lives()
+        # on, never confirmed: unconfirmed, no Escape, not a sticky "unavailable"
+        reset_home()
+        Live()
+        script([idle, typed, idle])
+        rc_, out, _ = board("rc", "on", "CP")
+        self.assertEqual((rc_, sent()), (6, ["-l|--|/remote-control", "Enter"]), out)
+        self.assertIn("unconfirmed", out)
+        close_lives()
+        # off: the same scrollback above the box is not the consent dialog
+        reset_home()
+        Live(bridge="session_x")
+        script([idle, typed, idle])
+        rc_, out, _ = board("rc", "off", "CP")
+        self.assertEqual((rc_, sent()), (6, ["-l|--|/remote-control", "Enter"]), out)
+
+    def test_unavailable_fresh_above_box(self):
+        Live()
+        script([IDLE, TYPED, UNKNOWN])
+        rc_, out, _ = board("rc", "on", "CP")
+        self.assertEqual((rc_, sent()), (6, ["-l|--|/remote-control", "Enter"]), out)
+        self.assertIn("unavailable", out)
+
+    def test_matching_choice_counts_as_tried(self):
+        live = Live(bridge="session_on")
+        script([IDLE])
+        rc_, out, _ = board("rc", "on", "all", "--no-apply")
+        self.assertEqual(rc_, 0, out)
+        rec = actions.load_last(HOME)["CP"]["rc_on"]
+        self.assertEqual((rec["result"], rec["choice_at"]), ("already", rc.load(HOME)["all"]["at"]))
+        live.write(bridgeSessionId=None)   # turned off by hand, e.g. from the phone
+        subprocess.run([os.path.join(REPO, "bin", "board-collect"), "--once", "--no-notify"], check=True)
+        row = [x for x in jload(os.path.join(HOME, "snapshot.json"))["sessions"] if x["code"] == "CP"][0]
+        self.assertEqual((row["rc"]["on"], row["rc"]["pending"]), (False, False))
+        self.assertEqual(actions.auto_candidates([row], rc.fleet.load_fleet(), HOME, rc.now_ms()), [])
+        self.assertEqual(sent(), [])
+
+    def test_reused_pid_is_not_the_session(self):
+        live = Live()
+        live.write(procStart="1")   # the registry describes an earlier process with this pid
+        script([IDLE])
+        rc_, out, _ = board("rc", "on", "CP")
+        self.assertIn("offline", out)
+        self.assertEqual(sent(), [])
+        self.assertFalse(actions.same_process({"procStart": "1"}, live.pid))
+        self.assertTrue(actions.same_process({"procStart": proc_start(live.pid)}, live.pid))
+        self.assertTrue(actions.same_process({"startedAt": int(time.time() * 1000)}, live.pid))
+        self.assertFalse(actions.same_process({"startedAt": 1}, live.pid))
+
+    def test_compact_unconfirmed_never_retried(self):
+        Live()
+        script([IDLE, COMPACT_TYPED, IDLE])
+        rc_, out, _ = board("session", "CP", "compact")
+        self.assertEqual(rc_, 6, out)
+        self.assertEqual(actions.load_queue(HOME, rc.fleet.load_fleet()), {})   # done: never twice
+        rec = actions.load_last(HOME)["CP"]["compact"]
+        self.assertFalse(actions.auto_allowed(rc.fleet.load_fleet(), rec, "s-cp", 10 ** 13, None, "compact"))
+        self.assertTrue(actions.auto_allowed(rc.fleet.load_fleet(), dict(rec, result="refused"), "s-cp", 10 ** 13, None, "compact"))
+
+    def test_idle_sessions_get_no_lock_files(self):
+        Live()
+        subprocess.run([os.path.join(REPO, "bin", "board-collect"), "--once", "--no-notify"], check=True)
+        snap = jload(os.path.join(HOME, "snapshot.json"))["sessions"]
+        self.assertEqual(actions.auto_candidates(snap, rc.fleet.load_fleet(), HOME, rc.now_ms()), [])
+        self.assertFalse(os.path.exists(actions.lock_path(HOME, "CP")))
+
+
 class CompactTest(unittest.TestCase):
     def setUp(self):
         reset_home()
@@ -767,7 +888,7 @@ class CompactTest(unittest.TestCase):
         rc_, out, _ = board("session", "CP", "compact")
         self.assertEqual(rc_, 6, out)
         self.assertIn("unconfirmed", out)
-        self.assertEqual(list(self.queue()), ["CP"])   # kept: retried later (max_tries)
+        self.assertEqual(self.queue(), {})   # Enter was pressed: never retried, never twice
 
     def test_still_running(self):
         live = Live()

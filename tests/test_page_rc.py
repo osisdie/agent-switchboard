@@ -94,8 +94,11 @@ def serve(tmp, approvers, live_pid):
         fh.write("approvers: %s\nserve:\n  enabled: true\n  port: %d\nsessions:\n  - code: CP\n    cwd: /w\n  - code: QA\n    cwd: /w\n"
                  % (json.dumps(approvers), port))
     with open(os.path.join(sess, "%d.json" % live_pid), "w") as fh:
+        with open("/proc/%d/stat" % live_pid) as st:
+            stat = st.read()
         json.dump({"pid": live_pid, "sessionId": "s-cp", "name": "CP", "tmux": "CP:@1.%42", "status": "busy",
-                   "bridgeSessionId": None, "startedAt": 1}, fh)
+                   "bridgeSessionId": None, "startedAt": 1,
+                   "procStart": str(int(stat[stat.rindex(")") + 2:].split()[19]))}, fh)
     env = dict(os.environ, BOARD_HOME=home, BOARD_CONFIG_DIR=cfg, CLAUDE_SESSIONS_DIR=sess,
                CLAUDE_JSON=os.path.join(home, "no-claude.json"), PATH=fbin + os.pathsep + os.environ["PATH"])
     for k in list(env):

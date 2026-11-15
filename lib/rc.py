@@ -282,6 +282,7 @@ def main(argv):
             return 0
         if args.cmd == "set":
             replaced = set_choice(home, args.target, args.state, args.by)
+            actions.settle_matching(home, cfg, args.target)
             print("Remote Control %s: %s%s" % (args.target, args.state,
                                                " (replaces the choice for %s)" % ", ".join(replaced) if replaced else ""))
             if args.no_apply:

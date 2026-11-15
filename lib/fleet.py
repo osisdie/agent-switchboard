@@ -54,7 +54,9 @@ DEFAULTS = {
         "prompt_regex": r"^\u276f[ \u00a0]*$",
         "rule_regex": r"^\u2500{8,}",
         "busy_regex": r"esc to interrupt",
-        "dialog_regex": r"Enter to select",
+        # The footer of Claude's dialogs and pickers ("Enter to select · Esc to continue",
+        # "Enter to confirm · Esc to cancel").
+        "dialog_regex": r"Enter to (select|confirm)",
         # A vim-mode prompt (Enter does not submit there) or another mode line: refused.
         "mode_regex": r"-- (NORMAL|VISUAL|VISUAL LINE) --",
         "retry_minutes": 10,
@@ -64,6 +66,7 @@ DEFAULTS = {
         # Matched against the focused row of the dialog only (the text after the focus mark).
         "rc_disconnect_label": r"^\s*\u276f?\s*Disconnect this session\s*$",
         "rc_consent_regex": r"Never mind",
+        "rc_consent_title_regex": r"Enable Remote Control",
         "rc_unavailable_regex": r"Unknown command: /remote-control",
         "compact_running_regex": r"Compacting conversation",
         "compact_done_regex": r"\u23bf\s+Compacted",
