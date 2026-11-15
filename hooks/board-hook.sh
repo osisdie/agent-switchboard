@@ -258,6 +258,10 @@ update() {
           notification_type: (if $ev == "Notification" then $nt else ($o.notification_type // null) end),
           pending: $pending,
           recent_pre: $recent2,
+          # When the last prompt was submitted and the last turn ended (for the collector
+          # "maybe answered in the session" hint for board asks).
+          last_prompt_at: (if $ev == "UserPromptSubmit" then $now else ($o.last_prompt_at // null) end),
+          last_stop_at: (if $ev == "Stop" or $ev == "StopFailure" then $now else ($o.last_stop_at // null) end),
           recent_done: $done,
           updated_at: $now } ),
       ( { ts: $now, type: "hook", session_id: $in.session_id, event: $ev,

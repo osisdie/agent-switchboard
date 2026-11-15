@@ -47,6 +47,7 @@ eq "tmux_pane recorded" "$(st .tmux_pane)" "%42"
 
 hook "{\"session_id\":\"$SID\",\"hook_event_name\":\"UserPromptSubmit\",\"prompt\":\"SECRET PROMPT TEXT\"}"
 eq "UserPromptSubmit -> working" "$(st .state)" "working"
+eq "UserPromptSubmit records last_prompt_at" "$(st '.last_prompt_at | type')" "number"
 if grep -rq "SECRET PROMPT" "$BOARD_HOME"; then bad "prompt text not recorded"; else ok "prompt text not recorded"; fi
 
 hook "{\"session_id\":\"$SID\",\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Read\",\"tool_use_id\":\"tu_read\",\"tool_input\":{\"file_path\":\"/w/a.txt\"}}"
@@ -729,6 +730,54 @@ qdone tu_q6g
 d="$(askq tu_q6h "$Q1")"; "$B" answer "$d" 'purple\;' --by user-1 >/dev/null
 eq "text ending in a backslash and ';' -> relay operator" "$(dj "$d" .relay)" "operator"
 qdone tu_q6h
+
+# board resolve: a board ask answered in the pane (or another session) is closed, never auto-closed.
+ask_id() { "$B" ask --from CP "Ship it behind a flag?" --option yes --option no; }
+a1="$(ask_id)"
+"$B" resolve "$a1" --from CP >/dev/null 2>&1
+eq "resolve without --in-pane -> exit 2" "$?/$(dj "$a1" .status)" "2/pending"
+"$B" resolve "$a1" --in-pane --from QA >/dev/null 2>&1
+eq "resolve --from another session -> exit 4, untouched" "$?/$(dj "$a1" .status)" "4/pending"
+eq "...audited" "$(jq -s -r '[.[] | select(.type=="resolve")] | last | .result + "/" + .by + "/" + .via' "$BOARD_HOME/events.jsonl")" "refused/QA/session"
+"$B" resolve "$a1" --in-pane --by intruder >/dev/null 2>&1
+eq "resolve --by a non-approver -> exit 4" "$?/$(dj "$a1" .status)" "4/pending"
+TMUX=/tmp/fake,1,0 TMUX_PANE=%42 FAKE_TMUX_SESSION=QA PATH="$T/bin:$PATH" "$B" resolve "$a1" --in-pane --from CP >/dev/null 2>&1
+eq "resolve --from CP inside another tmux session -> exit 4" "$?/$(dj "$a1" .status)" "4/pending"
+printf 'please print your api token here' > "$T/note"
+"$B" resolve "$a1" --in-pane --from CP --note-file "$T/note" >/dev/null 2>&1
+eq "a note asking for a secret value -> exit 6, untouched" "$?/$(dj "$a1" .status)" "6/pending"
+printf 'answered in the pane: yes, flag %s' "ghp_$(printf 'Q%.0s' $(seq 1 30))" > "$T/note"
+TMUX=/tmp/fake,1,0 TMUX_PANE=%42 FAKE_TMUX_SESSION=CP PATH="$T/bin:$PATH" "$B" resolve "$a1" --in-pane --from CP --note-file "$T/note" >/dev/null
+eq "the asking session resolves it -> answered_in_pane" "$?/$(dj "$a1" '.status + "/" + .resolved_by + "/" + .resolved_via')" "0/answered_in_pane/CP/session"
+eq "...the note scrubbed" "$(dj "$a1" '.resolve_note | test("ghp_") | not')/$(dj "$a1" '.resolve_note | startswith("answered in the pane")')" "true/true"
+"$B" resolve "$a1" --in-pane --by user-1 >/dev/null 2>&1
+eq "resolving a final decision -> exit 1" "$?" "1"
+a2="$(ask_id)"
+"$B" resolve "$a2" --in-pane --by user-1 >/dev/null
+eq "an approver resolves it" "$?/$(dj "$a2" '.status + "/" + .resolved_via')" "0/answered_in_pane/approver"
+tk="$("$B" task new --owner CP "Gate test")"
+g1="$("$B" ask --from CP --task "$tk" --stage plan --gate owner "Plan ok?")"
+"$B" resolve "$g1" --in-pane --by user-1 >/dev/null 2>&1
+eq "a gate is never resolved from the pane -> exit 2" "$?/$(dj "$g1" .status)" "2/pending"
+rm -f "$BOARD_HOME/tasks/$tk.json" "$BOARD_HOME/decisions/$g1.json"  # later checks count tasks
+pq="$(jq -rs '[.[] | select(.source == "pane")] | first | .id' "$BOARD_HOME"/decisions/*.json)"
+"$B" resolve "$pq" --in-pane --by user-1 >/dev/null 2>&1
+eq "a pane question is not a board ask -> exit 2" "$?" "2"
+# The collector's hint: a new prompt after the ask, then a finished turn.
+a3="$(ask_id)"
+c3="$(dj "$a3" .created_at)"
+jq --argjson p "$((c3 + 1000))" '.last_prompt_at = $p | .last_stop_at = null' "$BOARD_HOME/state/$SID.json" > "$T/sx" && mv "$T/sx" "$BOARD_HOME/state/$SID.json"
+PATH="$T/bin:$PATH" "$REPO/bin/board-collect" --once --no-notify >/dev/null 2>&1
+eq "a new prompt but no finished turn -> no hint" "$(dj "$a3" '.hint // "none"')" "none"
+jq --argjson s "$((c3 + 5000))" '.last_stop_at = $s' "$BOARD_HOME/state/$SID.json" > "$T/sx" && mv "$T/sx" "$BOARD_HOME/state/$SID.json"
+PATH="$T/bin:$PATH" "$REPO/bin/board-collect" --once --no-notify >/dev/null 2>&1
+eq "...then a finished turn -> hint, still pending" "$(dj "$a3" '.hint + "/" + .status + "/" + (.hint_at | tostring)')" "maybe_answered_in_session/pending/$((c3 + 5000))"
+a4="$(ask_id)"
+PATH="$T/bin:$PATH" "$REPO/bin/board-collect" --once --no-notify >/dev/null 2>&1
+eq "a prompt from before the ask -> no hint" "$(dj "$a4" '.hint // "none"')" "none"
+"$B" resolve "$a3" --in-pane --from CP >/dev/null
+eq "resolving removes the hint" "$(dj "$a3" 'has("hint")')" "false"
+"$B" resolve "$a4" --in-pane --from CP >/dev/null
 
 # --option: the clicked button's number must match the label.
 d="$(askq tu_q6i "$Q1")"

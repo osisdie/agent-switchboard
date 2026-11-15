@@ -66,7 +66,8 @@ import rc  # noqa: E402
 import pomodoro  # noqa: E402
 import resources  # noqa: E402
 
-FINAL = ("relayed", "stale", "timeout", "unauthorized")
+FINAL = ("relayed", "stale", "timeout", "unauthorized", "answered_in_pane")
+MAYBE_ANSWERED = "maybe_answered_in_session"
 TITLE_MAX = 120
 SUMMARY_MAX = 160
 NAME_MAX = 80
@@ -458,8 +459,36 @@ def build_sessions(cfg, home, prefix):
     return rows
 
 
+def plain_ask(d):
+    """A board ask: a question that is not a pane question and not a gate."""
+    return d.get("kind") == "question" and d.get("source") != "pane" and not d.get("gate") and not d.get("task_id")
+
+
+def maybe_answered(d, by_code, home):
+    """The hint for a pending board ask: its asking session took a new prompt after the ask was
+    created and finished that turn (UserPromptSubmit after created_at, then Stop). Someone may have
+    answered it in the pane; it is never closed for that (board resolve does)."""
+    sess = by_code.get(str(d.get("from") or "").lower())
+    if not sess or not sess.get("session_id"):
+        return None
+    st = read_json(os.path.join(home, "state", "%s.json" % sess["session_id"]))
+    if not isinstance(st, dict):
+        return None
+    created = int(d.get("created_at") or 0)
+    prompt, stop = st.get("last_prompt_at"), st.get("last_stop_at")
+    if isinstance(prompt, int) and isinstance(stop, int) and prompt > created and stop > prompt:
+        return stop
+    return None
+
+
 def process_decisions(cfg, home, sessions, now):
     by_sid = {s["session_id"]: s for s in sessions if s.get("session_id")}
+    by_code = {}
+    for s in sessions:
+        if s.get("pid"):
+            for a in [s.get("code")] + list(s.get("aliases") or []):
+                if a:
+                    by_code.setdefault(str(a).lower(), s)
     timeout_ms = float(cfg.get("decision_timeout_hours") or 24) * 3600 * 1000
     out = []
     for path in sorted(glob.glob(os.path.join(home, "decisions", "*.json"))):
@@ -478,6 +507,11 @@ def process_decisions(cfg, home, sessions, now):
                 if not sess or sess.get("state") != "needs-you" or pend.get("tool_use_id") != d.get("tool_use_id"):
                     d["status"] = "stale"
                     changed = True
+        if d.get("status") == "pending" and plain_ask(d) and not d.get("hint"):
+            at = maybe_answered(d, by_code, home)
+            if at:
+                d["hint"], d["hint_at"] = MAYBE_ANSWERED, at
+                changed = True
         if d.get("status") == "pending" and now - int(d.get("created_at") or 0) > timeout_ms:
             d["status"] = "timeout"
             changed = True
