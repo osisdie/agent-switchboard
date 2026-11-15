@@ -340,3 +340,21 @@ The scheduler ships in three steps instead of section 7's PRs 2–4: (1) task mo
 - **Not yet:** lessons (2b), git facts for stacked branches (rebase-needed still follows `base` ==
   the merged task's `branch`).
 
+## Implementation notes (scheduler 2b: lessons engine and API)
+- **Scope.** The owner asked for lessons to be visible and editable on the board, so 2b is the
+  engine, `board lesson …` and an approver-only API; the board's Lessons section is 2c.
+- **Tombstones.** `delete` appends `{id, deleted: true, by, at}`; lessons.jsonl stays append-only.
+- **Owner rules** go through the same tighten-only validator as auto rules; a loosening action is
+  refused with a message pointing to retire/delete. `advise:<text>` is a board hint only; it is
+  never added to a `[BOARD schedule]` message.
+- **Default rules.** Only J3b (`serialize_repo`) and J5 (`max_heavy:1` under 30% memory) come
+  with one; the others are text lessons until someone writes a rule.
+- **Hits** are counted when a rule starts to match (not every pass), so the file does not grow
+  while a rule keeps matching. Owner lessons never expire.
+- **Export.** `--generic` drops ids and signals; free text is exported as written.
+- **Review fixes.** Hint text and reasons are screened like other text, and a hint may not mention
+  approvals, deploys, decisions or `[BOARD`. `raise_severity` never gets past quiet hours. A hit
+  counts only after the rule was off 30 minutes. Delete is "forget" (the tombstone keeps the
+  fingerprint; capture skips it), retire is "stop applying". J3b lessons are global (no repo in the
+  fingerprint). `board lesson note` is for auto lessons only. Uncaptured episodes wait in the state.
+

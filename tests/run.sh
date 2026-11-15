@@ -1802,6 +1802,15 @@ eq "schedule off is audited" "$(jq -rs '[.[] | select(.type=="schedule")] | last
 "$B" schedule on --by u-owner >/dev/null
 "$REPO/bin/board-collect" --once --no-notify
 eq "schedule on resumes it" "$(jq -r .mode "$sf")" "normal"
+eq "lesson ls: none yet" "$("$B" lesson ls)" "no lessons"
+printf '{"title":"One heavy suite at a time","rule":{"when":{"all":[{"metric":"heavy_running","gte":1}]},"then":{"action":"max_heavy:1"}}}' > "$T/lesson.json"
+"$B" lesson add --by nobody --file "$T/lesson.json" >/dev/null 2>&1; eq "lesson add needs an approver" "$?" "4"
+lid="$("$B" lesson add --by u-owner --file "$T/lesson.json" | cut -d' ' -f1)"
+eq "lesson added, active" "$("$B" lesson ls --json | jq -r --arg i "$lid" '.[] | select(.id == $i) | .status')" "active"
+"$REPO/bin/board-collect" --once --no-notify
+eq "an active lesson that does not match is not applied" "$(jq -r '.lessons.applied | length' "$sf")" "0"
+"$B" lesson delete "$lid" --by u-owner >/dev/null
+eq "lesson deleted (tombstone)" "$("$B" lesson ls --all --json | jq length),$(tail -1 "$BOARD_HOME/lessons.jsonl" | jq -r .deleted)" "0,true"
 rm -f "$tf2"
 cp "$T/fleet.base.yaml" "$BOARD_CONFIG_DIR/fleet.yaml"
 
@@ -1811,7 +1820,7 @@ out="$("$B" answer --help)"; rc=$?
 eq "board answer --help exits 0" "$rc" "0"
 grep -q "lgtm" <<<"$out" && ok "answer --help lists approve words" || bad "answer --help lists approve words" "$out"
 for c in ls snapshot ask decisions answer mark resolve press limit notify doctor ack task "task new" "task stage" "task ls" "task show" \
-    "task set" "task dep" "task pr" "task done" schedule pomodoro resources mute notify-level notify-presence rc session away consensus message; do
+    "task set" "task dep" "task pr" "task done" schedule lesson pomodoro resources mute notify-level notify-presence rc session away consensus message; do
   # shellcheck disable=SC2086  # word-split "task new" on purpose
   out="$("$B" $c -h 2>&1)"; rc=$?
   if [ "$rc" = 0 ] && grep -q "^usage: board ${c%% *}" <<<"$out"; then ok "board $c -h"; else bad "board $c -h" "rc=$rc $out"; fi

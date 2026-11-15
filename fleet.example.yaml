@@ -87,6 +87,12 @@ serve:
 #   max_messages_per_session_hour: 4
 #   human_wait_minutes: 10      # J1: every session with work waits on the owner this long
 #   conserve: {five_hour_pct: 85, margin_minutes: 20, weekly_pace_slack_pct: 15}
+# What the scheduler learns from jams (lib/lessons.py, lessons.jsonl; `board lesson ...`).
+# lessons:
+#   enabled: true
+#   min_lost_minutes: 10        # a resolved jam that cost less (minutes x sessions) is not kept
+#   auto_activate_after: 2      # a candidate seen this many times becomes active (rules only tighten)
+#   ttl_days: 30                # an auto lesson unseen and unused this long is retired
 
 # Session cards on the self-hosted board (lib/cards.py). The last message and prompt are shown to
 # approvers only; show_prompt: false stops the collector from keeping the prompt at all.

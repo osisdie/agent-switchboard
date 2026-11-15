@@ -19,6 +19,7 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import lessons as lessonstore  # noqa: E402
 import tasks as taskstore  # noqa: E402
 
 FILE = "scheduler.json"
@@ -141,7 +142,16 @@ def clean_res(res):
     if not isinstance(res, dict):
         return None
     mem = res.get("mem") if isinstance(res.get("mem"), dict) else {}
+    swap = res.get("swap") if isinstance(res.get("swap"), dict) else {}
+    cpu = res.get("cpu") if isinstance(res.get("cpu"), dict) else {}
+    disks = [_num(d.get("free_pct"), None) for d in _dicts(res.get("disks"))]
     return {
+        "metrics": {"mem_available_mb": _num(mem.get("available_mb"), None),
+                    "mem_available_pct": _num(mem.get("available_pct"), None),
+                    "psi_mem": _num(mem.get("psi_some_avg60"), None), "swap_used_pct": _num(swap.get("used_pct"), None),
+                    "load_per_cpu": _num(cpu.get("load_per_cpu"), None),
+                    "disk_free_pct": min((d for d in disks if d is not None), default=None),
+                    "heavy_running": _num(res.get("heavy_running"), None)},
         "enabled": res.get("enabled") is not False, "at": _num(res.get("at"), None),
         "level": res.get("level") if _s(res.get("level")) in LEVELS else None,
         "total_mb": _num(mem.get("total_mb")), "heavy_running": int(_num(res.get("heavy_running"))),
@@ -268,6 +278,35 @@ def decide(tasks, sessions, res, st, now, ctx=None):
     rsess = {r["code"]: r for r in res["sessions"]} if res_state == "ok" else {}
     mem_mb = res["total_mb"] if res else 0
     max_heavy = st["max_heavy"] if st["max_heavy"] != "auto" else (1 if 0 < mem_mb < 16384 else 2)
+    # Active lessons (lib/lessons.py): declarative rules that can only tighten the schedule.
+    metrics = dict(res["metrics"]) if res_state == "ok" else {}
+    u = ctx.get("usage") if isinstance(ctx.get("usage"), dict) else {}
+    if -RES_SKEW_MS <= now - _num(u.get("updated_at"), -10 ** 15) <= USAGE_STALE_MS:
+        five = u.get("five_hour") if isinstance(u.get("five_hour"), dict) else {}
+        week = u.get("seven_day") if isinstance(u.get("seven_day"), dict) else {}
+        r5 = _num(five.get("resets_at"), None)
+        metrics.update(five_hour_pct=_num(five.get("pct"), None), weekly_pct=_num(week.get("pct"), None),
+                       five_hour_min_to_reset=(r5 - now) // 60000 if r5 is not None else None)
+    rules = []
+    for x in ctx.get("lessons") or []:
+        try:
+            rules.append({"id": x["id"], "rule": lessonstore.validate_rule(x["rule"])})
+        except (lessonstore.Bad, KeyError, TypeError, AttributeError):
+            continue                          # a broken line never loosens anything: it is skipped
+    applied = set()
+
+    def acting(action, extra=None):
+        """The lessons with this action whose rule holds (for a task when `extra` has its metrics)."""
+        out = []
+        for L in rules:
+            a = L["rule"]["then"]["action"]
+            if (a == action or a.startswith(action + ":")) and (extra is not None or not lessonstore.task_only(L["rule"])) \
+                    and lessonstore.holds(L["rule"], dict(metrics, **(extra or {}))):
+                applied.add(L["id"])
+                out.append(L)
+        return out
+    for L in acting("max_heavy"):
+        max_heavy = min(max_heavy, int(L["rule"]["then"]["action"].split(":")[1]))
 
     by_id = {t["id"]: t for t in tasks}
     live = {i: t for i, t in by_id.items() if taskstore.status_of(t) not in ("done", "dropped")}
@@ -277,6 +316,14 @@ def decide(tasks, sessions, res, st, now, ctx=None):
             if isinstance(d, dict) and d.get("task") in live:
                 unblocks[d["task"]] = unblocks.get(d["task"], 0) + 1
 
+    open_prs = {}
+    for t in live.values():
+        if t["repo"] and t["pr"].get("state") == "open":
+            open_prs[t["repo"]] = open_prs.get(t["repo"], 0) + 1
+
+    def tmetrics(i):
+        t = live[i]
+        return {"stage": t.get("stage"), "open_prs_in_repo": open_prs.get(t["repo"], 0) if t["repo"] else None}
     rows = {}
     for i, t in sorted(live.items()):
         heavy = t.get("heavy") is True
@@ -343,14 +390,21 @@ def decide(tasks, sessions, res, st, now, ctx=None):
     asks = sorted((picks[c][0] for c in free_owners if picks[c] and picks[c][0]["heavy"]),
                   key=lambda r: (held[r["session"]],) + rank_key(r))
     granted = {r["task"] for r in asks[:free_slots]}
+    for r in asks:                                   # a lesson may hold a heavy start back
+        held_by = acting("defer_heavy", tmetrics(r["task"]))
+        if held_by and r["task"] in granted:
+            granted.discard(r["task"])
+            r["lesson"] = held_by[0]["id"]
     advisories = []
     for code in free_owners:
         for r in picks[code]:
             if r["heavy"] and r["task"] not in granted:
                 r["state"] = "deferred"
-                reason = ("resources are at %s" % level) if lvl >= 2 else (
-                    "%d heavy job(s) already run (max %d)" % (used, max_heavy))
-                r["blocked_by"] = [{"kind": "resource", "ref": level if lvl >= 2 else "max_heavy"}]
+                reason = ("a lesson %s holds heavy starts back now" % r["lesson"]) if r.get("lesson") else (
+                    ("resources are at %s" % level) if lvl >= 2 else
+                    ("%d heavy job(s) already run (max %d)" % (used, max_heavy)))
+                r["blocked_by"] = [{"kind": "lesson", "ref": r.pop("lesson")} if r.get("lesson") else
+                                   {"kind": "resource", "ref": level if lvl >= 2 else "max_heavy"}]
                 if r is not picks[code][0]:      # only the task the session would start next is advised
                     continue
                 advisories.append(_adv(
@@ -358,6 +412,14 @@ def decide(tasks, sessions, res, st, now, ctx=None):
                     "Task %s is heavy and %s: hold its test runs, builds and browsers; take lighter work first." % (r["task"], reason),
                     "A heavy task of yours has to wait: hold its heavy runs for now; take lighter work first."))
         ready = [r for r in picks[code] if r["state"] is None]
+        for r in list(ready):                        # lessons: pause new starts, one repo at a time
+            busy_repo = live[r["task"]]["repo"] and any(
+                x["state"] == "run" and live[x["task"]]["repo"] == live[r["task"]]["repo"] for x in rows.values())
+            hold = acting("pause_new_starts", tmetrics(r["task"])) or (
+                acting("serialize_repo", tmetrics(r["task"])) if busy_repo else [])
+            if hold:
+                r["state"], r["blocked_by"] = "deferred", [{"kind": "lesson", "ref": hold[0]["id"]}]
+                ready.remove(r)
         if umode == "wait-reset" and ready:        # no new starts until the usage window resets
             for r in ready:
                 r["state"], r["blocked_by"] = "deferred", [{"kind": "reset", "ref": resets_at}]
@@ -436,6 +498,11 @@ def decide(tasks, sessions, res, st, now, ctx=None):
                 "Memory is critical: stop the largest heavy process you started yourself, and re-run it later.",
                 pid=c["pid"], comm=_safe(c["comm"], cls), rss_mb=size(c), **{"class": cls}))
 
+    if acting("raise_severity"):
+        for a in advisories:
+            if a["severity"] == "warn":                 # ranks higher; quiet hours still judge the original
+                a["severity"], a["raised_from"] = "high", "warn"
+    hints = [{"lesson": L["id"], "text": L["rule"]["then"]["action"][len("advise:"):]} for L in acting("advise")]
     conds, answer_first = conditions(rows, live, sessions, sstate, cur_of, stuck, picks, free_owners, since,
                                      st, now, lvl, res, umode, resets_at, ctx)
     queue = sorted(rows.values(), key=lambda r: (STATE_ORDER.index(r["state"]),) + rank_key(r))
@@ -449,7 +516,8 @@ def decide(tasks, sessions, res, st, now, ctx=None):
             "level": level, "resources": res_state, "max_heavy": max_heavy, "heavy_used": used,
             "start": [r["task"] for r in queue if r["state"] == "ready"], "queue": queue,
             "stuck": sorted(stuck, key=lambda s: s["task"]), "advisories": advisories,
-            "answer_first": answer_first, "conditions": conds}
+            "answer_first": answer_first, "conditions": conds,
+            "lessons": {"applied": sorted(applied), "hints": hints}}
     body["digest"] = digest(body)
     return body
 
@@ -551,21 +619,23 @@ def conditions(rows, live, sessions, sstate, cur_of, stuck, picks, free_owners, 
             if len(ids) >= 2:
                 out.append(_cond("J3b", _hash(repo), "warn", {rows[i]["session"] for i in ids if rows[i]["session"]},
                                  "%d open PRs in %s (%s): finish one first." % (len(ids), repo, ", ".join(sorted(ids))),
-                                 tasks=sorted(ids)))
+                                 tasks=sorted(ids)))      # its rule is global: no repo in the fingerprint
     # J4: stalled work, or an idle session with a ready task
     for s in stuck:
         out.append(_cond("J4", s["session"], s["severity"], [s["session"]],
-                         "%s has had no progress on %s for a while." % (_who(s["session"]), s["task"]), task=s["task"]))
+                         "%s has had no progress on %s for a while." % (_who(s["session"]), s["task"]), task=s["task"],
+                         signals={"kind": "stuck"}))
     for code in free_owners:
         ready = [r for r in picks.get(code) or [] if r["state"] == "ready"]
         if ready and sstate.get(code) in FREE and now - since.get(code, now) >= st["idle_ms"]:
             out.append(_cond("J4", code + "-idle", "info", [code], "%s is idle with %s ready." % (_who(code), ready[0]["task"]),
-                             alert=False, task=ready[0]["task"]))
+                             alert=False, task=ready[0]["task"], signals={"kind": "idle"}))
     # J5: resources critical or an OOM kill (alerted as res:*), J6: operator silent (operator:stale)
     if lvl == 3 or (res and res["oom"]):
         out.append(_cond("J5", "fleet", "high", [r["session"] for r in rows.values() if r["state"] == "run" and r["session"]],
                          "Resources are critical%s." % (" after an OOM kill" if res and res["oom"] else ""),
-                         alert=False, evals=1 if res and res["oom"] else 2))   # critical: 2 samples; an OOM at once
+                         alert=False, evals=1 if res and res["oom"] else 2,   # critical: 2 samples; an OOM at once
+                         signals={"oom": bool(res and res["oom"])}))
     if ctx.get("operator_stale"):
         out.append(_cond("J6", "fleet", "high", [], "The operator is silent while something waits to be relayed.",
                          alert=False, evals=1))
@@ -573,7 +643,8 @@ def conditions(rows, live, sessions, sstate, cur_of, stuck, picks, free_owners, 
     busy = [c for c, s in sstate.items() if s == "working"]
     if umode and len(busy) >= 2:
         out.append(_cond("J7", str(int(resets_at or 0)), "warn", busy,
-                         "Usage is %s and %d sessions are working: let one finish, pause the rest." % (umode, len(busy))))
+                         "Usage is %s and %d sessions are working: let one finish, pause the rest." % (umode, len(busy)),
+                         signals={"mode": umode}))
     out.sort(key=lambda c: c["id"])
     return out, answer_first
 
@@ -583,7 +654,8 @@ def off_doc(error=None, paused=False):
     error): no advice at all, rather than old advice that no longer holds."""
     body = {"schema_version": SCHEMA_VERSION, "enabled": error is not None, "mode": "error" if error else "off",
             "usage": None, "level": None, "resources": None, "max_heavy": None, "heavy_used": None, "start": [],
-            "queue": [], "stuck": [], "advisories": [], "answer_first": [], "due": {}, "jams": []}
+            "queue": [], "stuck": [], "advisories": [], "answer_first": [], "due": {}, "jams": [],
+            "lessons": {"applied": [], "hints": []}}
     if error:
         body["error"] = error
     if paused:
@@ -650,15 +722,18 @@ def step(cfg, home, sessions, tasks, now):
             if not st["enabled"] or paused:
                 doc = off_doc(paused=paused)
             else:
-                doc = decide(tasks, sessions, read_json(os.path.join(home, "resources.json")), st, now,
-                             context(home, now))
+                ctx = context(home, now)
+                ctx["lessons"] = lessonstore.active_rules(home)
+                doc = decide(tasks, sessions, read_json(os.path.join(home, "resources.json")), st, now, ctx)
                 try:
                     import notify
                     quiet = notify.in_quiet_hours(notify.load_config(), now)
                 except Exception:  # noqa: BLE001 - no alerting config: not quiet
                     quiet = False
                 live = {x.get("code") for x in sessions or [] if isinstance(x, dict) and x.get("state") != "offline"}
-                new_state = advisories.advance(doc, state, st, valid_codes(cfg, sessions), now, quiet, live=live)
+                new_state, resolved = advisories.advance(doc, state, st, valid_codes(cfg, sessions), now, quiet,
+                                                         live=live)
+                learn(cfg, home, doc, state, new_state, resolved, now)
                 if new_state != state:
                     advisories.write_json(os.path.join(home, advisories.STATE_FILE), new_state)
         except Exception as exc:  # noqa: BLE001 - a bug must not leave stale advice in place
@@ -669,6 +744,37 @@ def step(cfg, home, sessions, tasks, now):
             return old, False
         write_doc(home, dict(doc, generated_at=now))
         return doc, True
+
+
+HIT_OFF_MS = 30 * 60 * 1000      # a rule counts a new hit only after it was off this long (no flapping)
+
+
+def learn(cfg, home, doc, state, new_state, resolved, now):
+    """Lessons: resolved jams become (or merge into) lessons; a rule that starts to match after
+    HIT_OFF_MS off counts a hit; stale auto lessons retire. Episodes not yet captured (the lessons
+    file was busy) wait in the state for the next pass. A failure here never stops the schedule."""
+    applied = set((doc.get("lessons") or {}).get("applied") or [])
+    was_on = set(state.get("lesson_on") or [])
+    off = {k: v for k, v in (state.get("lesson_off") or {}).items() if isinstance(v, int)} \
+        if isinstance(state.get("lesson_off"), dict) else {}
+    hits = {i for i in applied - was_on if i not in off or now - off[i] >= HIT_OFF_MS}
+    off = {i: t for i, t in off.items() if i not in applied}
+    off.update({i: now for i in was_on - applied})
+    pending = [e for e in state.get("to_learn") or [] if isinstance(e, dict)] + list(resolved)
+    new_state.update(lesson_on=sorted(applied), lesson_off=off, to_learn=[])
+    try:
+        lessonstore.capture(home, pending, cfg, now)
+    except Exception:  # noqa: BLE001 - busy or broken: keep the episodes for the next pass
+        new_state["to_learn"] = pending[-advisories_keep():]
+    try:
+        lessonstore.maintain(home, cfg, hits, now)
+    except Exception:  # noqa: BLE001
+        new_state["lesson_on"] = sorted(was_on & applied)       # count these hits next pass
+
+
+def advisories_keep():
+    import advisories
+    return advisories.KEEP_RESOLVED
 
 
 def snapshot_digest(doc):

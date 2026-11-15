@@ -210,6 +210,10 @@ class Delivery(unittest.TestCase):
         self.assertEqual(self.run_(batches={"API": [NOW - n * MIN for n in range(4)]})[1][0], "held")
         self.assertEqual(self.run_(batches={"API": [NOW - 70 * MIN] * 4})[1][0], "due")
         self.assertEqual(self.run_(quiet=True)[1][:3], ["held", "board", "due"])     # high still goes
+        a = self.advs()
+        a[0].update(severity="high", raised_from="warn")                # raised by a lesson: quiet still holds it
+        advisories.deliver(a, {}, {}, ST, {"API", "WEB"}, NOW, quiet=True)
+        self.assertEqual(a[0]["delivery"]["state"], "held")
 
     def test_offline_held_and_send_cap(self):
         self.assertEqual(self.run_()[1][:3], ["due", "board", "due"])

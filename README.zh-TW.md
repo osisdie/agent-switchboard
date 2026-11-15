@@ -325,7 +325,9 @@ flowchart LR
   先回答哪個決策）、相依循環、兩個 session 在同一個 branch、同一個 repo 有兩個開著的 PR、停滯的工作等，
   以 `jam:*` 通知。operator 會把建議用 `[BOARD schedule <id>]` 訊息送給各 session：只管順序和節奏，
   永遠不是核准，每個 session 每小時最多 4 則。`schedule.advise: false` 只顯示不送出；
-  `board schedule off` 暫停排程。
+  `board schedule off` 暫停排程。花了時間的卡關會成為**經驗**（`board lesson ls`）：出現兩次就生效，
+  它的規則（固定詞彙、只能收緊：暫緩重型工作、同時少跑幾個、一個 repo 一次一件⋯）會影響排程。
+  核可者可以用 `board lesson …` 或 `/api/lessons` 新增、編輯、停用和刪除經驗。
   ```bash
   board task set <task-id> --repo shop --branch feat/export --size M --heavy yes --priority 2
   board task dep <task-id> --on <other-task> --kind merge

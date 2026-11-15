@@ -42,6 +42,12 @@ listeners (docs/contract.md, "Local adapter API"):
                                        apply` types the fixed command in the background)
   POST /api/rc                         {"code": "CODE"|"all", "state": "on"|"off"}  (the same for
                                        Remote Control, also for all sessions)
+  GET  /api/lessons[?q=TEXT]           the scheduler's lessons (also in /api/state), searchable
+  POST /api/lessons                    {"title", "rule"?, "cause"?, "resolution"?}  (approvers only;
+                                       via `board lesson add --by board:<identity> --file <0600 tmp>`)
+  POST /api/lessons/<id>               {"action": "edit"|"activate"|"retire"|"delete", ...}  (approvers
+                                       only; edit takes title/rule/cause/resolution; delete needs
+                                       "confirm": "delete" and appends a tombstone; audited)
 
 --check prints the resolved settings and exits. --watch serves nothing: it prints one line per
 item the local-mode operator must relay (see prompts/board-operator.md, "Local mode").
@@ -67,6 +73,7 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import away  # noqa: E402
 import fleet  # noqa: E402
 import guard  # noqa: E402
+import lessons  # noqa: E402
 import pomodoro  # noqa: E402
 import limit  # noqa: E402
 import messages  # noqa: E402
@@ -419,6 +426,7 @@ class StateBuilder:
         paths.append(self.p("resources.json"))  # rewritten on a bucketed change, else every 60 s
         paths.append(self.p("cards.json"))      # card extras (lib/cards.py), rewritten when changed
         paths.append(self.p("pomodoro.json"))   # pomodoro tallies (lib/pomodoro.py)
+        paths.append(self.p(lessons.FILE))      # lessons (lib/lessons.py), append-only
         for sub in ("decisions", "tasks", "consensus"):
             paths.append(self.p(sub))
             paths.extend(glob.glob(self.p(sub, "*.json")))
@@ -574,6 +582,7 @@ class StateBuilder:
                 "rc": rc_state(self.home),
                 "resources": resources.board_view(read_json(self.p("resources.json"))),
                 "pomodoro": pomodoro.board_view(read_json(self.p("pomodoro.json")), now_ms()),
+                "lessons": lessons.board_view(self.home, 100),
                 "generated_at": snap.get("generated_at")})
 
 
@@ -887,6 +896,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.events(ident)
         if path == "/api/me":
             return self.send_json(200, self.me_for(ident, via))
+        if path == "/api/lessons":
+            q = (urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("q") or [""])[0].lower()[:200]
+            rows = lessons.board_view(self.server.home, 10 ** 6)
+            if q:
+                rows = [r for r in rows if q in json.dumps([r.get("title"), r.get("cause"), r.get("resolution"),
+                                                             r.get("rule"), r.get("rule_kind")], ensure_ascii=False).lower()]
+            cfg = fleet.load_fleet()
+            return self.send_json(200, guard.scrub_tree({
+                "lessons": rows, "can_edit": match_id(ident, fleet.id_list(cfg, "approvers")) is not None}))
         if path in STATIC:
             return self.static(*STATIC[path])
         return self.send_json(404, {"error": "not_found"})
@@ -1018,6 +1036,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if path == "/api/rc":
                 body = self.read_body()
                 return self.set_rc(body, ident, via)
+            if path == "/api/lessons":
+                return self.lesson(None, self.read_body(), ident, via)
+            m = re.fullmatch(r"/api/lessons/([^/]+)", path)
+            if m:
+                return self.lesson(m.group(1), self.read_body(), ident, via)
             m = re.fullmatch(r"/api/sessions/([^/]+)/action", path)
             if m:
                 body = self.read_body()
@@ -1405,6 +1428,42 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return self.send_json(200, {"away": now_away, "status": result})
 
 
+    def lesson(self, lid, body, ident, via):
+        """Add (lid None) or change a lesson. Approvers only; the body goes to `board lesson` by a
+        0600 file, never argv; the CLI validates the rule, screens and scrubs the text."""
+        action = "add" if lid is None else body.get("action")
+        if lid is not None and (not lessons.ID_RE.fullmatch(lid) or action not in ("edit", "activate", "retire", "delete")):
+            raise Refused(400, "bad_request", "a lesson id and action edit|activate|retire|delete")
+        by = self.approver(ident, via, "lesson", what="change lessons", lesson=lid, op=action)
+        if action == "delete" and body.get("confirm") != "delete":
+            raise Refused(400, "confirm_required", "send \"confirm\": \"delete\" to delete a lesson")
+        fields = {k: body[k] for k in ("title", "rule", "cause", "resolution") if k in body}
+        if action in ("activate", "retire", "delete") and fields:
+            raise Refused(400, "bad_request", "%s takes no fields" % action)
+        args = ["lesson", action] + ([lid] if lid else []) + ["--by", "board:%s" % by]
+        tmp = None
+        try:
+            if action in ("add", "edit"):
+                fd, tmp = tempfile.mkstemp(prefix=".lesson.", dir=self.server.home)
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    json.dump(fields, fh)
+                args += ["--file", tmp]
+            with self.server.write_lock:
+                rc, out, err = self.board(*args)
+        finally:
+            if tmp:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+        msg = guard.scrub(err.split(": ", 2)[-1][:300]) if err else ""
+        self.audit(ident, via, "lesson", op=action, lesson=lid or (out.split() or [None])[0], rc=rc)
+        if rc == 0:
+            self.hub_kick()
+            return self.send_json(200, {"id": out.split()[0], "status": out.split()[-1]})
+        raise Refused(*{1: (404, "not_found"), 2: (400, "bad_lesson"), 4: (403, "not_approver"),
+                        6: (400, "held_text"), 8: (409, "busy")}.get(rc, (500, "lesson_failed")), msg or "not saved")
+
     def approver(self, ident, via, action, what="change notification settings", **kw):
         """The configured spelling of an approver identity; fails closed (403) otherwise."""
         approvers = fleet.id_list(fleet.load_fleet(), "approvers")
@@ -1649,6 +1708,9 @@ def actionable(home):
         m = read_json(path)
         if isinstance(m, dict) and m.get("status") == "new":
             out.append((as_int(m.get("created_at")), "message %s new" % m.get("id"), ("m", m.get("id"))))
+    for r in lessons.board_view(home, 10 ** 6):   # a new auto lesson waits for the operator's note
+        if r.get("status") == "candidate" and r.get("source") == "auto" and not r.get("cause") and not r.get("resolution"):
+            out.append((as_int(r.get("first_seen")), "lesson %s candidate" % r["id"], ("l", r["id"])))
     sched = read_json(os.path.join(home, "scheduler.json"))
     if isinstance(sched, dict) and isinstance(sched.get("due"), dict) \
             and not os.path.exists(os.path.join(home, "schedule-off")):     # off: nothing to deliver

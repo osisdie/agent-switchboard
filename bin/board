@@ -36,6 +36,11 @@
 #                                              start now, the queue, stuck tasks, advisories, jams
 #   board schedule outbox [CODE] [--json] | sent ID... | reply ID --from CODE ack|done|cannot [--note-file F]
 #   board schedule off|on --by WHO             deliver advisories (operator) / pause the scheduler
+#   board lesson ls [--all] [--status S] [--search T] [--json] | show ID | export [--generic]
+#   board lesson add|edit [ID] --by WHO --file F | note ID --by WHO --file F
+#   board lesson activate|retire|delete ID --by WHO
+#                                              what the scheduler learned from jams (lessons.jsonl);
+#                                              rules can only tighten; WHO must be an approver
 #   board limit [--json|--clear]               show (or end) the current usage-limit episode
 #   board resources [--json|--mirror] [--refresh]
 #                                              system resources, per-session processes and
@@ -306,6 +311,7 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
         echo "       board schedule off|on --by WHO          pause / resume the scheduler (schedule-off)"
         echo "  an advisory is for ordering and pacing only, never an approval. Exit 8: the schedule"
         echo "  state was busy; run the same command again." ;;
+    lesson|"lesson "*) python3 "$REPO/lib/lessons.py" --help | sed -n 's/^  lessons.py /usage: board lesson /p; /^Exit:/,$p' ;;
     limit) echo "usage: board limit [--json|--clear]"
         echo "  show (or end) the current usage-limit episode (\$BOARD_HOME/limit.json)" ;;
     resources) echo "usage: board resources [--json|--mirror] [--refresh]"
@@ -2361,7 +2367,7 @@ case "$sub" in
   # leading -h/--help asks for help.
   answer)
     case "${1:-}" in -h|--help) sub_usage answer; exit 0 ;; esac ;;
-  ls|snapshot|ask|decisions|mark|resolve|press|limit|notify|doctor|ack|unmute|notify-level|notify-presence|resources|rc|session|pomodoro|schedule)
+  ls|snapshot|ask|decisions|mark|resolve|press|limit|notify|doctor|ack|unmute|notify-level|notify-presence|resources|rc|session|pomodoro|schedule|lesson)
     if wants_help "$@"; then sub_usage "$sub"; exit 0; fi ;;
   # proposals, notes and the owner's words are free text: only -h/--help right after the
   # subcommand (or instead of it) asks for help.
@@ -2388,6 +2394,11 @@ case "$sub" in
   limit) cmd_limit "$@" ;;
   resources) cmd_resources "$@" ;;
   pomodoro) guarded cmd_pomodoro "$@" ;;
+  lesson)
+    case "${1:-}" in
+      ls|show|export) guarded python3 "$REPO/lib/lessons.py" "$@" ;;
+      *) python3 "$REPO/lib/lessons.py" "$@" ;;
+    esac ;;
   schedule)
     case "${1:-}" in
       outbox) shift; guarded python3 "$REPO/lib/advisories.py" outbox "$@" ;;
