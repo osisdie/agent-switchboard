@@ -180,6 +180,11 @@ def main():
             s = pg.evaluate(MENU_JS)
             check("a real button, closed, aria-controls the panel",
                   s["tag"] == "BUTTON" and s["expanded"] == "false" and s["controls"] == "acct-panel" and not s["open"], s)
+            box = pg.evaluate("""() => { const r = (id) => { const e = document.getElementById(id); if (!e) return null; const b = e.getBoundingClientRect(); return [b.left, b.top, b.right, b.bottom]; };
+              return { acct: r('acct-btn'), notif: r('notif-btn'), info: r('info-btn'), vw: innerWidth }; }""")
+            hit = lambda a, b: bool(a and b) and a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+            check("phone: the profile button overlaps neither Notifications nor Info, and fits",
+                  box["acct"][2] <= box["vw"] and not hit(box["acct"], box["notif"]) and not hit(box["acct"], box["info"]), box)
             check("avatar initials and an accessible name", s["avatar"] == "DV" and "Demo viewer" in (s["label"] or ""), s)
             pg.click("#acct-btn")
             pg.wait_for_timeout(150)
