@@ -79,3 +79,11 @@ sessions:
 #   repeat_minutes: 60          # re-alert an unacked key at the same level after this long (0 = never)
 #   escalate_minutes: {high: 10, urgent: 30, permission_urgent: 10}
 #   thresholds: [80, 90, 95]    # usage % -> warn / high / urgent, once per threshold per reset window
+#   min_level: {}               # triage floors: a level (everything) or {all: warn, email: high};
+#                               # `board notify-level` overrides them (README "Quieting the board")
+#   presence:                   # while an approver watches the self-hosted board, hold push below min_level
+#     reduce: true
+#     min_level: high
+#     window_seconds: 120       # a heartbeat at most this old
+#     idle_seconds: 900         # and an interaction at most this old (0 = no idle limit)
+# Urgent always breaks through mutes and presence, unless a mute has --include-urgent.

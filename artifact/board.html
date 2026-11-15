@@ -157,6 +157,32 @@ time { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .banner.demo strong { font-family: var(--f-mono); font-size: 13px; letter-spacing: .12em; color: var(--lamp); }
 .banner.warn { border-color: color-mix(in srgb, var(--deny) 40%, var(--rule)); }
 .banners { display: grid; gap: 10px; }
+/* notification controls */
+.banner.mute { background: var(--lamp-soft); border-color: color-mix(in srgb, var(--lamp) 40%, var(--rule)); }
+.banner.mute strong { color: var(--lamp-ink); }
+.banner.mute p { color: var(--lamp-ink); }
+.nlamp { width: 8px; height: 8px; border-radius: 50%; flex: none; display: inline-block; background: var(--ok); }
+.nlamp.muted { background: var(--lamp-glow); box-shadow: 0 0 0 2px color-mix(in srgb, var(--lamp-glow) 30%, transparent); }
+.nlamp.unknown { background: transparent; box-shadow: inset 0 0 0 2px var(--off); }
+dialog.notif { width: min(720px, calc(100vw - 24px)); }
+.nf { display: grid; gap: 18px; }
+.nf h3 { font-size: 16px; font-stretch: 90%; margin: 0 0 6px; }
+.nf .note { margin: 0; font-size: 13px; color: var(--muted); }
+.nf .bt { margin: 0; padding: 10px 12px; border-radius: var(--r); background: var(--cord-soft); font-size: 14px; }
+.nf-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.nf-line > .grow { flex: 1 1 200px; min-width: 0; }
+.nf select { font: inherit; font-size: 14px; min-height: 36px; max-width: 100%; padding: 4px 8px; border: 1px solid var(--rule); border-radius: 5px; background: var(--panel); color: var(--ink); }
+.nf label.chk { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; }
+.nf label.chk input { width: 18px; height: 18px; margin: 0; accent-color: var(--cord); }
+.nf-rows { list-style: none; margin: 0; padding: 0; }
+.nf-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 10px 0; border-top: 1px solid var(--rule); }
+.nf-row .nf-name { font-weight: 600; min-width: 6.5em; }
+.nf-row .nf-state { flex: 1 1 180px; min-width: 0; font-size: 14px; color: var(--ok); }
+.nf-row .nf-state.muted { color: var(--lamp); }
+.nf-row .nf-state.off { color: var(--muted); }
+.nf-row .nf-ctl { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.nf-row .nf-ctl .btn { min-width: 6.5em; }
+.nf-row select, .nf-line select { min-width: 10em; }
 .banners:empty { display: none; }
 /* owner away: sessions decide by explicit consensus */
 .banner.away { background: var(--cord-soft); border-color: color-mix(in srgb, var(--cord) 45%, var(--rule)); }
@@ -491,6 +517,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
         <li><a href="#messages" data-spy="messages">Messages <span class="zh">訊息</span> <span class="badge" id="nav-msg">0</span></a></li>
         <li><a href="#approvals" data-spy="approvals">Approvals <span class="zh">核准紀錄</span> <span class="badge" id="nav-appr">0</span></a></li>
       </ul>
+      <button class="icon-btn" id="notif-btn" type="button" aria-haspopup="dialog" title="Push notifications: mute, triage and presence"><span class="nlamp unknown" id="notif-lamp" aria-hidden="true"></span><span id="notif-label">Notifications</span></button>
       <button class="icon-btn" id="info-btn" type="button" aria-haspopup="dialog" title="Versions, cost and how this works">ⓘ Info</button>
     </div>
   </nav>
@@ -621,6 +648,16 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   </div>
 </dialog>
 
+<dialog class="info notif" id="notif" aria-labelledby="notif-title">
+  <div class="info-in">
+    <div class="info-head">
+      <h2 id="notif-title">Notifications <span class="zh">推播通知</span></h2>
+      <button class="icon-btn" id="notif-close" type="button">Close</button>
+    </div>
+    <div class="nf" id="notif-body"></div>
+  </div>
+</dialog>
+
 <div class="toasts" id="toasts" aria-live="polite"></div>
 
 <script>
@@ -639,6 +676,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     sessions: [], decisions: [], messages: [], tasks: [], approvals: [],
     operator: null, ledger: null,
     away: null, consensus: [],   // owner-away record ({since, by, said}) | null; consensus items
+    notify: null,                // notification controls (board-serve state.notify / meta/notify) | null
     replies: new Map(),
     got: { sessions: false, decisions: false, messages: false, tasks: false, approvals: false, operator: false, consensus: false },
     slow: false, feedError: null, offlineDetail: null,
@@ -948,6 +986,15 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
         h('p', { text: 'Sessions decide by explicit consensus; red lines and board asks wait for the owner.' }),
         awayEditor() ? h('button', { class: 'btn primary', type: 'button', disabled: S.busy.has('away'), onclick: () => setAway('off'), text: 'I\'m back' }) : null,
         a.said ? h('span', { class: 'said', text: '“' + str(a.said) + '”' + (a.legacy ? ' (free-text record)' : '') }) : null));
+    }
+    const muted = activeMutes();
+    if (muted.length) {
+      const urgentToo = muted.some((m) => m.include_urgent);
+      box.append(h('div', { class: 'banner mute', role: 'status' }, h('span', { class: 'nlamp muted', 'aria-hidden': 'true' }),
+        h('strong', { id: 'mute-banner', text: muted.map((m) => chanName(m.target) + ' muted ' + untilText(m.until)).join(' · ') }),
+        h('p', { text: urgentToo ? 'Urgent alerts are muted too. The board still shows everything.' : 'Urgent alerts still break through. The board still shows everything.' }),
+        notifEditor() ? h('button', { class: 'btn', type: 'button', disabled: S.busy.has('notify'), onclick: () => setNotify({ op: 'unmute', channel: 'all' }), text: 'Unmute all' }) : null,
+        h('button', { class: 'golink', type: 'button', onclick: openNotif, text: 'Notification settings →' })));
     }
     if (operatorOffline()) {
       const hb = ts(S.operator && S.operator.heartbeat_at);
@@ -1372,7 +1419,160 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   }
   $('#away-form').addEventListener('submit', (ev) => { ev.preventDefault(); setAway('on', $('#away-said').value.trim()); });
 
-  function renderAll() { renderHeader(); renderBanners(); renderDecisions(); renderConsensus(); renderTasks(); renderBoard(); renderMessages(); renderApprovals(); if ($('#info').open) renderLedger(); openLinked(); }
+  /* ------------------------------------------------- notification controls */
+  // Mutes, per-channel and global min levels and the presence policy (docs/contract.md,
+  // "Notification controls"). Changed on the self-hosted board by approvers (POST
+  // /api/notify-prefs, which runs `board mute|unmute|notify-level|notify-presence`); shown
+  // read-only from meta/notify in the Artifact.
+  const NCHANNELS = [['slack', 'Slack'], ['desktop', 'Desktop'], ['email', 'Email'], ['line', 'LINE'], ['sns', 'SNS'], ['webhook', 'Webhook']];
+  const NLEVELS = ['info', 'warn', 'high', 'urgent'];
+  const chanName = (t) => (t === 'all' ? 'All push' : (NCHANNELS.find((c) => c[0] === t) || [t, str(t)])[1]);
+  function untilText(u) { const t = ts(u); return t ? 'until ' + hhmm(t) : 'until you unmute'; }
+  function activeMutes() {
+    const m = S.notify && S.notify.mutes;
+    if (!m || typeof m !== 'object') return [];
+    const order = ['all'].concat(NCHANNELS.map((c) => c[0]));
+    return order.filter((t) => m[t] && typeof m[t] === 'object' && (m[t].until == null || ts(m[t].until) > Date.now()))
+      .map((t) => Object.assign({ target: t }, m[t]));
+  }
+  // Approvers change them on the self-hosted board (board-serve checks it again); demo: page only.
+  function notifEditor() { return S.demo || (awayEditor() && !!S.notify); }
+  function notifDuration(v) {
+    if (v === '1h' || v === '4h') return { for: v };
+    if (v === 'morning') {
+      const d = new Date(); d.setHours(8, 0, 0, 0);
+      if (d.getTime() <= Date.now()) d.setDate(d.getDate() + 1);
+      return { until: d.toISOString() };
+    }
+    return {};
+  }
+  function renderNotifButton() {
+    const lamp = $('#notif-lamp'), label = $('#notif-label'), muted = activeMutes();
+    lamp.className = 'nlamp' + (!S.notify ? ' unknown' : muted.length ? ' muted' : '');
+    label.textContent = muted.length ? (muted.some((m) => m.target === 'all') ? 'All muted' : muted.length + ' muted') : 'Notifications';
+  }
+  function levelSelect(id, value, opts, onchange, disabled, label) {
+    const sel = h('select', { id, 'aria-label': label, disabled: disabled || null, onchange: (e) => onchange(e.target.value) },
+      opts.map(([v, t]) => h('option', { value: v, text: t })));
+    sel.value = value;
+    return sel;
+  }
+  function renderNotif() {
+    renderNotifButton();
+    const box = $('#notif-body');
+    if (!$('#notif').open) return;
+    const N = S.notify, ed = notifEditor(), busy = S.busy.has('notify');
+    const dis = !ed || busy;
+    box.textContent = '';
+    if (!N || typeof N !== 'object') {
+      box.append(h('p', { class: 'note', text: isLocal() ? 'The board server did not report notification settings.' : 'The operator has not mirrored the notification settings to this board yet (meta/notify). Use board mute status in a terminal.' }));
+      return;
+    }
+    if (!ed) box.append(h('p', { class: 'note', id: 'notif-readonly', text: isLocal() ? 'Read-only: only approvers change notification settings.' : 'Read-only here. Change them on the self-hosted board or with board mute / board notify-level.' }));
+    const mutes = activeMutes(), byT = new Map(mutes.map((m) => [m.target, m]));
+    const durSel = h('select', { id: 'notif-dur', 'aria-label': 'Mute for', disabled: dis || null },
+      [['1h', 'for 1 hour'], ['4h', 'for 4 hours'], ['morning', 'until 08:00'], ['', 'until I unmute']].map(([v, t]) => h('option', { value: v, text: t })));
+    durSel.value = S.drafts.notifDur != null ? S.drafts.notifDur : '1h';
+    durSel.addEventListener('change', () => { S.drafts.notifDur = durSel.value; });
+    const urg = h('input', { type: 'checkbox', id: 'notif-urgent', disabled: dis || null });
+    urg.checked = !!S.drafts.notifUrgent;
+    urg.addEventListener('change', () => { S.drafts.notifUrgent = urg.checked; });
+    const muteBody = (target) => Object.assign({ op: 'mute', channel: target, include_urgent: urg.checked }, notifDuration(durSel.value));
+    const all = byT.get('all');
+    box.append(h('section', { 'aria-labelledby': 'nf-h-pause' },
+      h('h3', { id: 'nf-h-pause', text: 'Pause push' }),
+      h('div', { class: 'nf-line' },
+        h('span', { class: 'grow', id: 'notif-all-state', text: all ? 'All push muted ' + untilText(all.until) + (all.include_urgent ? ', urgent too.' : '; urgent still breaks through.') : 'Push is on.' }),
+        all ? h('button', { class: 'btn primary', type: 'button', id: 'notif-unmute-all', disabled: dis || null, onclick: () => setNotify({ op: 'unmute', channel: 'all' }), text: 'Unmute all' })
+          : h('button', { class: 'btn primary', type: 'button', id: 'notif-mute-all', disabled: dis || null, onclick: () => setNotify(muteBody('all')), text: 'Mute all' })),
+      h('div', { class: 'nf-line' }, h('label', { for: 'notif-dur', text: 'Mute' }), durSel,
+        h('label', { class: 'chk' }, urg, 'include urgent (no breakthrough)'))));
+    const eff = N.effective_min_level || {}, floors = N.min_level || {}, chans = N.channels || {};
+    const floorOpts = (t) => {
+      const f = floors[t] || {};
+      const def = f.source === 'config' ? 'default (' + str(f.level) + ', fleet.yaml)' : 'default (' + (f.source === 'prefs' ? 'remove' : 'info') + ')';
+      return [['default', def]].concat(NLEVELS.map((l) => [l, l + (l === 'urgent' ? ' only' : ' and up')]));
+    };
+    const floorVal = (t) => ((floors[t] || {}).source === 'prefs' ? str(floors[t].level) : 'default');
+    const rows = h('ul', { class: 'nf-rows' });
+    for (const [c, name] of NCHANNELS) {
+      const m = byT.get(c), off = chans[c] === false;
+      // Urgent is stopped when either mute in force (the channel's or "all") includes it.
+      const urgentToo = !!((m && m.include_urgent) || (all && all.include_urgent));
+      const state = off ? 'not configured' : all && !m ? 'muted by "all"' + (urgentToo ? ', urgent too' : ' · urgent gets through')
+        : m ? 'muted ' + untilText(m.until) + (urgentToo ? ', urgent too' : ' · urgent gets through')
+        : 'on · ' + (eff[c] || 'info') + (eff[c] === 'urgent' ? ' only' : ' and up');
+      rows.append(h('li', { class: 'nf-row', id: 'nf-' + c },
+        h('span', { class: 'nf-name', text: name }),
+        h('span', { class: 'nf-state' + (off ? ' off' : m || all ? ' muted' : ''), text: state }),
+        h('span', { class: 'nf-ctl' },
+          m ? h('button', { class: 'btn', type: 'button', disabled: dis || null, onclick: () => setNotify({ op: 'unmute', channel: c }), text: 'Unmute' })
+            : h('button', { class: 'btn', type: 'button', disabled: dis || null, onclick: () => setNotify(muteBody(c)), text: 'Mute' }),
+          levelSelect('nf-level-' + c, floorVal(c), floorOpts(c), (v) => setNotify({ op: 'level', channel: c, level: v }), dis, name + ': minimum level'))));
+    }
+    box.append(h('section', { 'aria-labelledby': 'nf-h-chan' },
+      h('h3', { id: 'nf-h-chan', text: 'Channels and triage' }),
+      h('div', { class: 'nf-line' }, h('label', { class: 'grow', for: 'nf-level-all', text: 'Everything: deliver' }),
+        levelSelect('nf-level-all', floorVal('all'), floorOpts('all'), (v) => setNotify({ op: 'level', channel: 'all', level: v }), dis, 'All channels: minimum level')),
+      rows,
+      h('p', { class: 'note', text: 'A channel gets the stricter of its own level and the level for everything.' })));
+    const P = N.presence || {};
+    const red = h('input', { type: 'checkbox', id: 'notif-presence', disabled: dis || null, onchange: (e) => setNotify({ op: 'presence', reduce: e.target.checked }) });
+    red.checked = P.reduce !== false;
+    const watching = isLocal() && document.visibilityState === 'visible' && P.reduce !== false && ed;
+    box.append(h('section', { 'aria-labelledby': 'nf-h-pres' },
+      h('h3', { id: 'nf-h-pres', text: 'While I\'m watching' }),
+      h('div', { class: 'nf-line' }, h('label', { class: 'chk grow' }, red, 'Reduce push while I\'m watching the board'),
+        levelSelect('nf-pres-level', str(P.min_level) || 'high', [['warn', 'push warn and up'], ['high', 'push high and up'], ['urgent', 'push urgent only']],
+          (v) => setNotify({ op: 'presence', reduce: true, level: v }), dis || P.reduce === false, 'While watching: push from')),
+      h('p', { class: 'note', id: 'notif-watching', text: watching ? 'You are watching now: push below ' + str(P.min_level || 'high') + ' is held while this page stays open, visible and in use (' + Math.round((P.idle_seconds || 900) / 60) + ' min idle ends it). Escalation timers keep running.'
+        : 'Counts only while a board page is open, visible and in use. Escalation timers keep running, so anything still open escalates normally once you stop watching.' })));
+    box.append(h('p', { class: 'bt', text: 'Urgent alerts (a production gate, a usage limit hit, anything left unanswered long enough to escalate to urgent) break through mutes and presence unless a mute includes urgent. The board itself always shows everything. Held pushes are logged; nothing is replayed when a mute ends, and an alert still open goes out at its next escalation step.' }));
+  }
+  function openNotif() {
+    const d = $('#notif');
+    if (!d.open) { if (typeof d.showModal === 'function') d.showModal(); else d.setAttribute('open', ''); }
+    renderNotif();
+  }
+  $('#notif-btn').addEventListener('click', openNotif);
+  $('#notif-close').addEventListener('click', () => { const d = $('#notif'); if (typeof d.close === 'function') d.close(); else d.removeAttribute('open'); });
+  $('#notif').addEventListener('click', (e) => { if (e.target === e.currentTarget) e.currentTarget.close(); });
+  function demoNotify(b) {
+    const N = S.notify = JSON.parse(JSON.stringify(S.notify || {}));
+    N.mutes = N.mutes || {}; N.min_level = N.min_level || {}; N.presence = N.presence || {};
+    if (b.op === 'mute') N.mutes[b.channel] = { until: b.for ? Date.now() + parseInt(b.for, 10) * 3600000 : b.until ? Date.parse(b.until) : null, by: 'board:you', include_urgent: !!b.include_urgent };
+    else if (b.op === 'unmute') { if (b.channel === 'all') N.mutes = {}; else delete N.mutes[b.channel]; }
+    else if (b.op === 'level') N.min_level[b.channel] = b.level === 'default' ? { level: 'info', source: 'default' } : { level: b.level, source: 'prefs' };
+    else if (b.op === 'presence') { N.presence.reduce = b.reduce; if (b.level) N.presence.min_level = b.level; }
+    const lv = (t) => (N.min_level[t] || {}).level || 'info';
+    N.effective_min_level = {};
+    for (const [c] of NCHANNELS) N.effective_min_level[c] = NLEVELS[Math.max(NLEVELS.indexOf(lv('all')), NLEVELS.indexOf(lv(c)))];
+  }
+  function setNotify(body) {
+    if (S.demo) { demoNotify(body); renderAll(); toast('Demo: shown on this page only. Nothing was saved or sent.'); return; }
+    if (!isLocal() || !adapter.setNotify || S.busy.has('notify')) return;
+    S.busy.add('notify'); renderNotif(); renderBanners();
+    adapter.setNotify(body).then((r) => {
+      if (r && r.notify && typeof r.notify === 'object') S.notify = r.notify;
+      toast(body.op === 'mute' ? chanName(body.channel) + ' muted.' : body.op === 'unmute' ? (body.channel === 'all' ? 'All push unmuted.' : chanName(body.channel) + ' unmuted.')
+        : body.op === 'level' ? 'Saved: ' + chanName(body.channel) + ' delivers ' + (body.level === 'default' ? 'its default levels.' : body.level + (body.level === 'urgent' ? ' only.' : ' and up.'))
+        : body.reduce ? 'Push is reduced while you watch the board.' : 'Push is no longer reduced while you watch.');
+    }).catch((e) => handleWriteError(e)).finally(() => { S.busy.delete('notify'); renderAll(); });
+  }
+  // Presence heartbeat (self-hosted board, approvers): visible or not, and when this viewer last
+  // clicked, tapped, scrolled or typed. board-serve records it under the verified identity.
+  let lastInteraction = Date.now(), beatAt = 0;
+  for (const ev of ['pointerdown', 'keydown', 'wheel', 'touchstart']) addEventListener(ev, () => { lastInteraction = Date.now(); }, { capture: true, passive: true });
+  function beat(leaving) {
+    if (!isLocal() || !adapter.presence || !awayEditor()) return;
+    beatAt = Date.now();
+    adapter.presence(!leaving && document.visibilityState === 'visible', lastInteraction, !!leaving).catch(() => {});
+  }
+  setInterval(() => { if (document.visibilityState === 'visible') beat(); }, 30000);
+  document.addEventListener('visibilitychange', () => { beat(); if ($('#notif').open) renderNotif(); });
+  addEventListener('pagehide', () => beat(true));
+
+  function renderAll() { renderHeader(); renderBanners(); renderNotif(); renderDecisions(); renderConsensus(); renderTasks(); renderBoard(); renderMessages(); renderApprovals(); if ($('#info').open) renderLedger(); openLinked(); }
 
   /* ----------------------------------------------------------- deep links */
   // Alerts link to <board>/?d=<decision id> (m= message, c= consensus); a #<id> or #dec-<id> hash
@@ -1462,6 +1662,8 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     if (code === 'review_in_session') { toast('Only part of this request is shown here, so it can only be allowed in the session.', true); return; }
     if (code === 'no_approvers') { toast('Nobody is listed as an approver on this board, so no answer is accepted.', true); return; }
     if (code === 'away_failed') { toast('The board server could not change owner-away mode.', true); return; }
+    if (code === 'prefs_failed') { toast('The board server could not change the notification settings.', true); return; }
+    if (code === 'bad_duration' || code === 'bad_level' || code === 'bad_channel' || code === 'bad_op') { toast('Not saved: ' + (e.message || 'the board server refused that setting.'), true); return; }
     if (code === 'stale') { toast('That prompt is no longer showing, so nothing was pressed. Handle it in the session.', true); return; }
     if (code === 'remote_refused' || code === 'unauthenticated' || code === 'csrf' || code === 'bad_host' || code === 'not_allowed' || code === 'press_refused') {
       toast('The board server refused this request' + (e.message ? ': ' + e.message : '.'), true); return;
@@ -1732,6 +1934,11 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
         const d = snap.exists ? snap.data() : null;
         S.away = d && d.active === true ? d : null; renderBanners(); renderConsensus();
       }, () => {});
+      // Notification controls: mirrored by the operator (board-notify status --json); read-only here.
+      db.doc('meta/notify').onSnapshot((snap) => {
+        const d = snap.exists ? snap.data() : null;
+        S.notify = d && typeof d === 'object' ? d : null; renderBanners(); renderNotif();
+      }, () => {});
       db.collection('consensus').orderBy('created_at', 'desc').limit(50).onSnapshot((snap) => {
         S.consensus = docs(snap); S.got.consensus = true; renderConsensus(); openLinked();
       }, () => {});
@@ -1812,6 +2019,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       S.ledger = st.ledger && typeof st.ledger === 'object' ? st.ledger : null;
       S.away = st.owner_away && typeof st.owner_away === 'object' ? st.owner_away : null;
       S.consensus = arr(st.consensus);
+      S.notify = st.notify && typeof st.notify === 'object' ? st.notify : null;
       S.replies = new Map(Object.entries(st.replies && typeof st.replies === 'object' ? st.replies : {}).map(([k, v]) => [k, arr(v)]));
       S.me = str(st.me) || null; S.writable = st.writable !== false; S.userReady = true;
       S.canMessageLocal = st.can_message === true;
@@ -1819,6 +2027,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       clearTimeout(loadTimer);
       S.mode = 'live'; S.slow = false; S.feedError = null; S.offlineDetail = null;
       renderAll();
+      if (!beatAt) beat();
     }
     function failed(detail) {
       clearTimeout(loadTimer); S.slow = false;
@@ -1854,6 +2063,13 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       sendMessage(ids, targets, body) { return Promise.all(targets.map((to) => post('/api/messages', { to, body }))); },
       // Approvers only; board-serve runs `board away on|off --by board:<identity>`.
       setAway(state, said) { return post('/api/away', { state, said }); },
+      // Approvers only; board-serve runs `board mute|unmute|notify-level|notify-presence --by board:<identity>`.
+      setNotify(body) { return post('/api/notify-prefs', body); },
+      presence(visible, interactionAt, leaving) {
+        return call('/api/presence', { method: 'POST', keepalive: !!leaving, headers: { 'Content-Type': 'application/json', 'X-Board': '1' },
+          // A duration, not a time: board-serve applies it to its own clock.
+          body: JSON.stringify({ visible, idle_ms: Math.max(0, Date.now() - interactionAt) }) });
+      },
       fastPath() { return null; },
     };
   }
@@ -1912,6 +2128,11 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       { id: 'm-1-demo', to: 'DOCS', body: 'Add a section on the new config flags to the upgrade guide.', by: 'u_demo_editor', created_at: now - 40 * min, status: 'replied', relayed_to: ['DOCS'], relayed_at: now - 39 * min },
     ];
     S.replies = new Map([['m-1-demo', [{ id: 'r1', from: 'DOCS', body: 'Added under "Configuration changes", with a table of old and new flag names.', created_at: now - 31 * min }]]]);
+    S.notify = { mutes: { slack: { until: now + 135 * min, by: 'board:you', include_urgent: false } },
+      min_level: { all: { level: 'info', source: 'default' }, email: { level: 'urgent', source: 'prefs' } },
+      effective_min_level: { slack: 'info', desktop: 'info', email: 'urgent', line: 'info', sns: 'info', webhook: 'info' },
+      presence: { reduce: true, min_level: 'high', window_seconds: 120, idle_seconds: 900 }, breakthrough: 'urgent',
+      channels: { slack: true, desktop: true, email: true, line: true, sns: false, webhook: false } };
     S.away = { since: now - 95 * min, by: 'OPS', said: 'Offline until tomorrow 09:00. Agree among yourselves; anything risky waits for me.' };
     S.consensus = [
       { id: 'c-2-demo', from: 'API', participants: ['API', 'WEB', 'QA'], ref: '#decisions', proposal: 'Bump the shared test fixture to v2 in both repos before the nightly run.', status: 'pending', created_at: now - 20 * min,

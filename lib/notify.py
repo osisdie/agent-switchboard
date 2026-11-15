@@ -8,7 +8,11 @@ Usage:
   notify.py ack KEY [KEY...]        stop escalation (KEY may be a glob, e.g. 'session:API:*')
   notify.py tick [--json]           escalation pass + snapshot discovery + usage thresholds
   notify.py test --channel slack|desktop|email|line|sns|webhook [--level L]
-  notify.py status [--json]         alerts.json and which channels are enabled (never values)
+  notify.py status [--json]         alerts.json, which channels are enabled (never values) and
+                                    the notification controls (mutes, min levels, presence)
+  notify.py gate --channel C --level L [--key K]
+                                    exit 0 when C may deliver L now, 10 when the notification
+                                    controls hold it (logged); used by `board notify`
 
 State:  $BOARD_HOME/alerts.json   {key: {level, first_at, last_at, acked_at, sent:{level: ms}, ...}}
 Log:    $BOARD_HOME/events.jsonl  {ts, type:"alert", key, channel, level, ok, error}
@@ -22,6 +26,14 @@ or the board root as its `url`, worked out at delivery time from the alert's `bo
 A caller's own --url (an artifact or session link) is then sent as `ref`, and both lines are
 labelled ("Decide on the board: …", "Open the session: …"). Unset: no link, no labels, and the
 message is byte for byte what it was before.
+
+Notification controls (lib/prefs.py; docs/contract.md, "Notification controls"): at delivery
+time, after dedupe and quiet hours, every routed channel is checked against the mutes, the
+per-channel and global min levels and the presence policy. A held channel is logged as
+{type: "alert-suppressed", key, channel, level, reason} with reason muted:<channel|all>,
+below_min_level or owner_present. When every routed channel is held, the level counts as sent
+(status "suppressed"): nothing is replayed later, and an alert that stays open goes out at its next
+escalation step or repeat. Urgent breaks through mutes unless a mute says include_urgent.
 
 A send never raises: every adapter failure is caught, logged and reported in the result.
 """
@@ -46,6 +58,7 @@ from email.utils import formataddr, formatdate, make_msgid
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import fleet  # noqa: E402
+import prefs  # noqa: E402
 
 LEVELS = ["info", "warn", "high", "urgent"]
 CHANNELS = ["slack", "desktop", "email", "line", "sns", "webhook"]
@@ -68,6 +81,8 @@ DEFAULTS = {
     "thresholds": [80, 90, 95],   # usage %: lowest -> warn, middle -> high, highest -> urgent
     "mention_from": "warn",       # SLACK_MENTION is prepended from this level up
     "subject_prefix": "[agent-switchboard]",
+    "min_level": {},              # floors {all|channel: level}; `board notify-level` overrides them
+    "presence": {"reduce": True, "min_level": "high", "window_seconds": 120, "idle_seconds": 900},
 }
 
 ENV_PREFIXES = ("SLACK_", "SMTP_", "ALERT_", "LINE_", "AWS_")
@@ -172,6 +187,7 @@ def load_config():
     if isinstance(block, dict):
         cfg = fleet._merge(cfg, block)  # noqa: SLF001
     cfg["board_url"] = fleet.board_url(fl)  # validated; None = alerts carry no board link
+    cfg["approvers"] = fleet.id_list(fl, "approvers")  # whose presence on the board counts
     return cfg
 
 
@@ -597,6 +613,20 @@ def _deliver(key, e, now, env, cfg, force=False):
         return res
     routes = (cfg.get("routes") or {}).get(lvl) or []
     channels = [c for c in routes if c in ADAPTERS and enabled(c, env)]
+    channels, held = prefs.filter_channels(channels, lvl, cfg, now, approvers=cfg.get("approvers"))
+    for c, why in held.items():
+        log_event({"ts": now, "type": "alert-suppressed", "key": key, "channel": c, "level": lvl, "reason": why})
+    if held:
+        res["suppressed"] = held
+    if held and not channels:
+        # Held by the owner's own controls: this level counts as delivered (no replay later); an
+        # alert that stays open goes out at its next escalation step or repeat.
+        e.setdefault("sent", {})[lvl] = now
+        e.setdefault("suppressed", {})[lvl] = now
+        e.pop("held", None)
+        e.pop("retry_at", None)
+        res["status"] = "suppressed"
+        return res
     msg = with_board_link({"level": lvl, "key": key, "title": e.get("title") or key, "body": e.get("body") or "",
                            "url": e.get("url"), "ts": now}, cfg, board_id(key, e))
     res["channels"] = dispatch(msg, channels, env, cfg)
@@ -934,10 +964,25 @@ def test_channel(channel, level="info", env=None, cfg=None):
     return {"channel": channel, "ok": r["ok"], "error": r["error"]}
 
 
-def status(env=None):
+def gate(channel, level, key="notify", now=None, cfg=None):
+    """May CHANNEL deliver a LEVEL message now (for senders outside send(), such as `board
+    notify`)? Returns None, or the reason it is held (logged as alert-suppressed)."""
+    now = now if now is not None else now_ms()
+    cfg = cfg if cfg is not None else load_config()
+    _, held = prefs.filter_channels([channel], level, cfg, now, approvers=cfg.get("approvers"))
+    why = held.get(channel)
+    if why:
+        log_event({"ts": now, "type": "alert-suppressed", "key": key, "channel": channel, "level": level,
+                   "reason": why})
+    return why
+
+
+def status(env=None, cfg=None):
     env = env if env is not None else load_env()
+    cfg = cfg if cfg is not None else load_config()
     data = read_json(os.path.join(home(), "alerts.json")) or {}
     return {"channels": {c: enabled(c, env) for c in CHANNELS},
+            "controls": prefs.status(cfg, now_ms(), home(), cfg.get("approvers")),
             "open": {k: {x: e.get(x) for x in ("level", "kind", "first_at", "sent", "title")}
                      for k, e in data.items() if not e.get("acked_at") and not e.get("resolved")},
             "total": len(data)}
@@ -950,6 +995,7 @@ def _print_result(r, as_json):
         print(json.dumps(r, ensure_ascii=False))
         return
     chans = " ".join("%s=%s" % (c, "ok" if v["ok"] else "FAIL(%s)" % v["error"]) for c, v in r.get("channels", {}).items())
+    chans = " ".join(x for x in [chans] + ["%s=held(%s)" % (c, why) for c, why in (r.get("suppressed") or {}).items()] if x)
     line = "%s %s %s %s" % (fleet.safe_text(r.get("key")), r.get("level"), r.get("status"), fleet.safe_text(chans or r.get("error") or ""))
     print(line.rstrip())
 
@@ -978,6 +1024,10 @@ def main(argv):
     p.add_argument("--level", default="info", choices=LEVELS)
     p = sub.add_parser("status")
     p.add_argument("--json", action="store_true")
+    p = sub.add_parser("gate")
+    p.add_argument("--channel", required=True, choices=CHANNELS)
+    p.add_argument("--level", required=True, choices=LEVELS)
+    p.add_argument("--key", default="notify")
     args = ap.parse_args(argv)
 
     if args.cmd == "send":
@@ -1009,7 +1059,11 @@ def main(argv):
             for k, e in s["open"].items():
                 print("open: %s %s %s" % (fleet.safe_text(k), e["level"], fleet.safe_text(e.get("title") or "")))
             print("entries: %d" % s["total"])
+            for line in prefs.status_lines(s["controls"], now_ms()):
+                print("controls: " + line)
         return 0
+    if args.cmd == "gate":
+        return 10 if gate(args.channel, args.level, args.key) else 0
     ap.print_help()
     return 2
 

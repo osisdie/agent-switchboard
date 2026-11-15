@@ -15,7 +15,7 @@ Thanks for helping. Keep changes small and focused, and keep the repo generic.
 
 ```bash
 export BOARD_HOME="$(mktemp -d)"
-tests/run.sh -v && tests/test_notify.sh -v && tests/test_serve.sh -v && tests/test_away.sh -v
+tests/run.sh -v && tests/test_notify.sh -v && tests/test_notify_controls.sh -v && tests/test_serve.sh -v && tests/test_away.sh -v
 python3 scripts/check-readme-sync.py
 ```
 

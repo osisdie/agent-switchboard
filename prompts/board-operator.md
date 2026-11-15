@@ -122,7 +122,8 @@ Waiting costs no tokens. When it fires:
    `answers/<id>/d`. Keep the answers whose decision is still open in the db (`pending`,
    `unauthorized` or `answered`) and that you have not handled yet (newer `answered_at`). Also
    query `messages` where `status == "new"`.
-2. Update `meta/operator.heartbeat_at`, even when there is nothing to do.
+2. Update `meta/operator.heartbeat_at`, even when there is nothing to do. Mirror the notification
+   controls (section 11) when they changed.
 3. Relay each item as below, oldest first. Then write the new statuses in one batch.
 
 If the page's `room` fast path wakes you with `{kind, id}`, handle that one item right away (for a
@@ -459,7 +460,7 @@ The page shows replies right away. `board-serve` pushes every change to open pag
 - **Ledger.** If you keep a cost ledger, write it to `$BOARD_HOME/ledger.json` in the
   `meta/ledger` shape (section 7). The Info dialog shows it.
 - **Usage and limits.** Nothing to mirror. `board-serve` reads `usage.json` and `limit.json`
-  directly. Section 5's alerting and handover rules are unchanged.
+  directly. The same goes for the notification controls (section 11). Section 5's alerting and handover rules are unchanged.
 - **Who decided.** `answered_by` is `local` or an email. In local mode, `approvers` and
   `release_managers` in `fleet.yaml` hold those values, not claude.ai user ids.
 - **Never** write decisions' `status`, `answer` or `answered_by` yourself, except through
@@ -526,3 +527,20 @@ Your part:
      session when it comes back. Don't re-send on every tick.
 4. **Notify.** `board away` and `board consensus` already send an info notify on away on/off and on
    `agreed`, `objected` and `owner_back`. Don't duplicate them.
+
+## 11. Notification controls (mirror only)
+
+The owner mutes channels, sets min levels and the "reduce push while I'm watching" policy with
+`board mute`, `board notify-level` and `board notify-presence`, or on the self-hosted board
+(docs/contract.md, "Notification controls"). You never change them on anyone's say-so, only on the
+owner's own instruction (`--by <your code>`).
+
+- **Artifact mode:** on every cron tick (loop B), run `board-notify status --json` and, when its
+  `controls` or `channels` changed since you last wrote them, write `meta/notify`:
+  `controls` **without `presence.present`** (who is watching stays local), plus
+  `channels` (`{slack: true, ...}`: booleans only, never a value from `.env`) and `updated_at`.
+  The page shows it read-only and drops mutes whose `until` has passed by itself.
+- **Local mode:** nothing to mirror; `board-serve` serves it from `$BOARD_HOME`.
+- Held pushes are logged as `alert-suppressed` in `events.jsonl`. Your own `board notify` posts
+  are `info` on Slack and follow the same rules, so a muted Slack is not an error. Urgent alerts
+  still break through unless the owner muted with `--include-urgent`.

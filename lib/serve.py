@@ -21,6 +21,10 @@ listeners (docs/contract.md, "Local adapter API"):
   POST /api/messages                   {"to": "CODE"|"all", "body": "..."}
   POST /api/away                       {"state": "on"|"off", "said": "..."}   (approvers only;
                                        via `board away on|off --by board:<identity>`)
+  POST /api/notify-prefs               {"op": "mute"|"unmute"|"level"|"presence", ...}  (approvers
+                                       only; via `board mute|unmute|notify-level|notify-presence`)
+  POST /api/presence                   {"visible": bool, "idle_ms": ms}  (approvers only;
+                                       the board page's heartbeat, recorded in presence.json)
 
 --check prints the resolved settings and exits. --watch serves nothing: it prints one line per
 item the local-mode operator must relay (see prompts/board-operator.md, "Local mode").
@@ -44,6 +48,8 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import away  # noqa: E402
 import fleet  # noqa: E402
 import limit  # noqa: E402
+import notify  # noqa: E402
+import prefs  # noqa: E402
 
 REPO = fleet.REPO
 BOARD = os.path.join(REPO, "bin", "board")
@@ -53,6 +59,7 @@ DEFAULT_PORT = 39410
 MAX_BODY = 16 * 1024
 MAX_ANSWER = 500
 MAX_MESSAGE = 4000
+MAX_IDLE_MS = 24 * 3600 * 1000   # presence: idle_ms above a day is refused (400)
 MAX_SSE = 32            # per listener, so the tunnel can't starve the local browser
 MAX_CONN = 64           # concurrent connections per listener (SSE streams included)
 SOCKET_TIMEOUT_S = 60   # per-connection socket timeout (SSE writes every <= 25 s)
@@ -309,7 +316,7 @@ class StateBuilder:
     def signature(self):
         h = hashlib.sha1()
         paths = [self.p(n) for n in ("snapshot.json", "usage.json", "limit.json", "operator.json",
-                                    "ledger.json", "events.jsonl", "owner-away")]
+                                    "ledger.json", "events.jsonl", "owner-away", prefs.PREFS_FILE)]
         for sub in ("decisions", "tasks", "consensus"):
             paths.append(self.p(sub))
             paths.extend(glob.glob(self.p(sub, "*.json")))
@@ -435,7 +442,23 @@ class StateBuilder:
                 "operator": operator, "ledger": ledger if isinstance(ledger, dict) else None,
                 "owner_away": away.away_record(self.home),
                 "consensus": away.consensus_items(self.home, now_ms())[-50:],
+                "notify": notify_state(self.home),
                 "generated_at": snap.get("generated_at")}
+
+
+def notify_state(home):
+    """The notification controls for the page (the shape of meta/notify): mutes, floors,
+    presence policy and which channels are configured (booleans only, never values). Who is
+    watching is left out: presence.json changes every heartbeat and is nobody else's business."""
+    try:
+        cfg = notify.load_config()
+        out = prefs.status(cfg, now_ms(), home, with_present=False)
+        env = notify.load_env()
+        out["channels"] = {c: notify.enabled(c, env) for c in prefs.CHANNELS}
+        return out
+    except Exception as exc:  # noqa: BLE001 - the board keeps working without this panel
+        log("notify state: %r" % exc)
+        return None
 
 
 class Hub:
@@ -724,6 +747,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if path == "/api/away":
                 body = self.read_body()
                 return self.set_away(body, ident, via)
+            if path == "/api/notify-prefs":
+                body = self.read_body()
+                return self.notify_prefs(body, ident, via)
+            if path == "/api/presence":
+                body = self.read_body()
+                return self.presence(body, ident, via)
             raise Refused(404, "not_found")
         except Refused as exc:
             return self.refuse(exc)
@@ -882,6 +911,93 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.audit(ident, via, "away", state=state, result=result)
         self.hub_kick()
         return self.send_json(200, {"away": now_away, "status": result})
+
+
+    def approver(self, ident, via, action, **kw):
+        """The configured spelling of an approver identity; fails closed (403) otherwise."""
+        approvers = fleet.id_list(fleet.load_fleet(), "approvers")
+        if not approvers:
+            self.audit(ident, via, action, result="refused", reason="no approvers configured", **kw)
+            raise Refused(403, "no_approvers", "fleet.yaml approvers is empty: nobody may change this")
+        by = match_id(ident, approvers)
+        if by is None:
+            self.audit(ident, via, action, result="refused", reason="not an approver", **kw)
+            raise Refused(403, "not_approver", "only approvers change notification settings")
+        return by
+
+    def notify_prefs(self, body, ident, via):
+        """Notification controls from the board: approvers only, through the board CLI (argv)."""
+        op, target = body.get("op"), body.get("channel")
+        if op not in ("mute", "unmute", "level", "presence"):
+            raise Refused(400, "bad_op", "op must be mute, unmute, level or presence")
+        if op != "presence" and target not in prefs.TARGETS:
+            raise Refused(400, "bad_channel", "channel must be one of %s" % ", ".join(prefs.TARGETS))
+        args = []
+        if op == "mute":
+            dur, until, urgent = body.get("for"), body.get("until"), body.get("include_urgent", False)
+            if dur is not None and until is not None:
+                raise Refused(400, "bad_duration", "give for or until, not both")
+            try:
+                if dur is not None:
+                    prefs.parse_for(dur if isinstance(dur, str) else "")
+                    args = ["--for", dur]
+                elif until is not None:
+                    if not isinstance(until, str) or len(until) > 64:
+                        raise prefs.UsageError("until")
+                    prefs.parse_until(until, now_ms())
+                    args = ["--until", until]
+            except prefs.UsageError as exc:
+                raise Refused(400, "bad_duration", "for is 30m/1h/4h/2d (max 30d); until is HH:MM or "
+                              "an ISO time in the next 30 days") from exc
+            if not isinstance(urgent, bool):
+                raise Refused(400, "bad_body", "include_urgent must be true or false")
+            argv = ["mute", target] + args + (["--include-urgent"] if urgent else [])
+        elif op == "unmute":
+            argv = ["unmute", target]
+        elif op == "level":
+            level = body.get("level")
+            if level not in prefs.LEVELS + ["default"]:
+                raise Refused(400, "bad_level", "level must be info, warn, high, urgent or default")
+            argv = ["notify-level", target, level]
+        else:
+            reduce, level = body.get("reduce"), body.get("level")
+            if not isinstance(reduce, bool):
+                raise Refused(400, "bad_body", "reduce must be true or false")
+            if level is not None and level not in prefs.LEVELS[1:]:
+                raise Refused(400, "bad_level", "level must be warn, high or urgent")
+            argv = ["notify-presence", "on" if reduce else "off"] + (["--level", level] if level else [])
+        kw = {"op": op, "channel": target} if op != "presence" else {"op": op}
+        by = self.approver(ident, via, "notify-prefs", **kw)
+        with self.server.write_lock:
+            rc, out, err = self.board(*(argv + ["--by", "board:%s" % by]))
+            if rc != 0:
+                log("board %s failed (rc %d): %s %s" % (argv[0], rc, err, out))
+                self.audit(ident, via, "notify-prefs", result="error", rc=rc, **kw)
+                raise Refused(500, "prefs_failed", "the notification settings could not be changed")
+            self.audit(ident, via, "notify-prefs", result="ok", **kw)
+        self.hub_kick()
+        return self.send_json(200, {"status": "ok", "notify": notify_state(self.server.home)})
+
+    def presence(self, body, ident, via):
+        """The board page's heartbeat: this approver has the board open (visible or not). The
+        identity is the listener's verified one; only visible and how long ago the viewer last
+        interacted come from the page. idle_ms (a duration) is turned into a time with the
+        server's clock, so a page whose clock runs fast can't keep "watching" alive. A time sent
+        by the page (interaction_at) is ignored: without idle_ms the interaction is unknown, so
+        the viewer does not count as watching. Audited when visibility changes, not on every
+        heartbeat."""
+        visible, idle = body.get("visible"), body.get("idle_ms")
+        if not isinstance(visible, bool):
+            raise Refused(400, "bad_body", "visible must be true or false")
+        if idle is not None and (not isinstance(idle, int) or isinstance(idle, bool) or idle > MAX_IDLE_MS):
+            raise Refused(400, "bad_body", "idle_ms must be milliseconds (at most a day) or null")
+        by = self.approver(ident, via, "presence")
+        now = now_ms()
+        seen = now - max(0, idle) if idle is not None else None
+        changed = prefs.record_presence(self.server.home, by, visible, seen, via, now)
+        if changed:
+            self.audit(ident, via, "presence", visible=visible, result="ok")
+        return self.send_json(200, {"status": "ok", "visible": visible})
 
 
 class Server(http.server.ThreadingHTTPServer):

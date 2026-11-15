@@ -526,7 +526,69 @@ alerting:
   repeat_minutes: 60          # 0 = never repeat
   escalate_minutes: {high: 10, urgent: 30, permission_urgent: 10}
   thresholds: [80, 90, 95]    # usage % -> warn / high / urgent
+  min_level: {}               # triage floors, e.g. {all: warn, email: high}; `board notify-level` overrides
+  presence: {reduce: true, min_level: high, window_seconds: 120, idle_seconds: 900}
 ```
+
+### Quieting the board: mute, triage, presence
+
+Slack-style control over what gets **pushed** to you. The board itself always shows everything,
+alerts keep escalating, and every push that is held is logged in `events.jsonl`
+(`type: "alert-suppressed"`, with the reason `muted:<channel>`, `muted:all`, `below_min_level` or
+`owner_present`), so nothing disappears silently.
+
+**Mute** a channel (`slack`, `desktop`, `email`, `line`, `sns`, `webhook`) or `all`, for a while
+or until you unmute:
+
+```bash
+board mute slack --for 1h            # 30m, 4h, 2d ... (at most 30 days)
+board mute all --until 08:00         # the next 08:00 local time; an ISO time works too
+board mute email                     # until `board unmute email`
+board mute all --include-urgent      # everything, urgent too: total silence
+board unmute all                     # removes every mute
+board mute status                    # what is muted, floors, presence, who is watching
+```
+
+**Triage** with a minimum level per channel and for everything. A channel gets the stricter of
+the two; `default` removes your setting (fleet.yaml `alerting.min_level`, else `info`, applies):
+
+```bash
+board notify-level slack high        # Slack only high and urgent
+board notify-level email urgent      # email only urgent
+board notify-level all high          # everything only high+
+board notify-level slack default
+```
+
+**While you're watching.** When an approver has the self-hosted board open, visible and in use
+(a heartbeat in the last 2 minutes, a click, tap, scroll or key in the last 15), push below
+`high` is held, because you can already see it. Escalation timers keep running: walk away and
+whatever is still open escalates and reaches you as usual. Turn it off or change the level with
+`board notify-presence off` / `board notify-presence on --level urgent`.
+
+**Breakthrough rules.**
+
+- `urgent` breaks through every mute and presence by default: a production gate, a usage-limit
+  hit, usage ≥ 95%, a permission prompt left 10 minutes, anything left 30 minutes, or any
+  `board-notify send --level urgent`. Triage can't stop it either, since urgent is the top level.
+  (An operator-silent alert is not there yet; it comes with the resources change, as urgent.)
+- Only a mute **with `--include-urgent`** stops urgent. That is the explicit "mute everything,
+  including urgent" switch; use it with an expiry.
+- Quiet hours (`alerting.quiet_hours`) still apply on top: outside urgent, they hold and later
+  deliver.
+- When a mute ends, nothing is replayed. An alert that is still open goes out at its next
+  escalation step (or its hourly repeat), under the rules in force then.
+- `board notify` posts are `info` on Slack and follow the same rules. `board-notify test`
+  ignores them on purpose.
+
+**On the board.** The **Notifications** button opens the same controls: mute all (1 h, 4 h, until
+08:00, until I unmute, optionally including urgent), per-channel mute and min level, the level for
+everything, and "reduce push while I'm watching". A banner says what is muted ("Slack muted until
+14:00") and whether urgent still breaks through. On the self-hosted board only approvers change
+them (`POST /api/notify-prefs`, which runs the commands above with `--by board:<you>`); on the
+Artifact board they are read-only, mirrored by the operator into `meta/notify`.
+
+Settings live in `$BOARD_HOME/notify-prefs.json`; `board-notify status` shows the effective state
+without any credential. Details: the contract's "Notification controls".
 
 ## Operating under usage limits
 
@@ -730,6 +792,9 @@ The tunnel listener **refuses to start** without `hostname`, `team_domain`, `aud
 - Sessions are sent with an allowlist of fields (no `cwd`, pid or session id).
 - Every write is logged to `events.jsonl` as `type: "serve"`, with the identity and `via`
   (`loopback` or `cf-jwt`).
+- Notification settings (`POST /api/notify-prefs`) and the page's presence heartbeat
+  (`POST /api/presence`) are approvers only, fail closed with empty `approvers`, and take the
+  identity from the listener, never from the request body.
 - The page is served with a nonce-based CSP, `frame-ancestors 'none'` and `no-store`.
 - Each listener takes at most 64 connections and 32 update streams, so the tunnel can't lock out
   the local browser. Idle or stuck connections are dropped after 60 s.
@@ -831,9 +896,10 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 |---|---|
 | `docs/contract.md` | Binding data contract: local files, db collections, lifecycle stages & gates, relay formats, degraded mode |
 | `hooks/board-hook.sh` | Lifecycle hook: writes `state/<session_id>.json`, appends `events.jsonl`, always exits 0 |
-| `bin/board` | CLI: `ls`, `snapshot`, `ask`, `task new/stage/ls/show`, `decisions`, `answer`, `mark`, `limit`, `press`, `notify`, `away`, `consensus`, `doctor`. Exit codes: 3 = press refused, 4 = answer / vote refused |
+| `bin/board` | CLI: `ls`, `snapshot`, `ask`, `task new/stage/ls/show`, `decisions`, `answer`, `mark`, `limit`, `press`, `notify`, `mute`, `unmute`, `notify-level`, `notify-presence`, `away`, `consensus`, `doctor`. Exit codes: 3 = press refused, 4 = answer / vote refused |
 | `bin/board-collect` | Zero-token collector: snapshot, diff, runs `board-notify` each loop; `--baseline` on first install |
-| `bin/board-notify`, `lib/notify.py` | Alerting: `send`, `ack`, `tick`, `test`, `status`. Adapters (slack, desktop, email, line, sns, webhook), levels, escalation, ack, quiet hours, dedupe |
+| `bin/board-notify`, `lib/notify.py` | Alerting: `send`, `ack`, `tick`, `test`, `status`, `gate`. Adapters (slack, desktop, email, line, sns, webhook), levels, escalation, ack, quiet hours, dedupe |
+| `lib/prefs.py` | Notification controls: mutes, min levels, presence (`board mute`, `notify-level`, `notify-presence`) and the delivery rule `lib/notify.py` applies |
 | `hooks/board-statusline-tap.sh` | Statusline wrapper that records 5h/weekly usage to `usage.json` without changing your statusline |
 | `bin/fleet-up` | Idempotent fleet launcher from `fleet.yaml` (also starts `board-serve` with `serve.enabled`) |
 | `bin/board-serve`, `lib/serve.py` | Self-hosted board: the page in local mode + JSON/SSE API over `$BOARD_HOME`, 127.0.0.1 only; `--watch` feeds the local-mode operator |
@@ -848,7 +914,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `.github/workflows/ci.yml` | CI: gitleaks, shellcheck, tests, readme-sync |
 | `.gitleaks.toml` | gitleaks default rules plus a narrow allowlist for test fixtures |
 | `lib/away.py` | Reads owner-away mode and consensus items for the snapshot and `board-serve` |
-| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), and the optional headless check of the page's alert links (`test_page_links.py`: needs python playwright, skips without it; not run in CI) |
+| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), and the optional headless checks of the page's alert links and notifications control (`test_page_links.py`, `test_page_notify.py`: need python playwright, skip without it; not run in CI) |
 | `CONTRIBUTING.md` | Dev setup, tests, and the rule for keeping `README.zh-TW.md` in sync |
 | `fleet.example.yaml`, `.env.example` | Example config |
 

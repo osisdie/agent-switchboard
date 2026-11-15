@@ -6,7 +6,13 @@
 #   board-notify ack KEY [KEY...]          stop escalation (glob allowed: 'session:API:*')
 #   board-notify tick                      escalation pass (the collector runs this each loop)
 #   board-notify test --channel slack|desktop|email|line|sns|webhook
-#   board-notify status [--json]           open alerts and which channels are enabled
+#                                          (ignores the notification controls on purpose)
+#   board-notify status [--json]           open alerts, which channels are enabled (never values)
+#                                          and the notification controls in force: mutes, min
+#                                          levels, presence policy, who is watching
+#   board-notify gate --channel C --level L [--key K]
+#                                          exit 0 when channel C may deliver level L now, 10 when
+#                                          the controls hold it (logged as alert-suppressed)
 #
 # Channels are configured in $BOARD_CONFIG_DIR/.env; routing, quiet hours, repeat and
 # thresholds in the `alerting:` block of fleet.yaml (or alerting.yaml next to it).
