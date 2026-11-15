@@ -2173,8 +2173,11 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   const KEY_STATUS = ['active', 'revoked', 'expired'];
   const rootEl = document.documentElement;
   const themeBoot = window.switchboardTheme && typeof window.switchboardTheme === 'object' ? window.switchboardTheme : null;
-  // Host-controlled: the claude.ai viewer stamped data-theme before this page ran (or changes it later).
-  let themeHost = themeBoot ? !!themeBoot.host : rootEl.hasAttribute('data-theme');
+  // Host-controlled: the claude.ai viewer stamped data-theme, before the pre-paint script, between it
+  // and this script (a value the pre-paint script did not set), or later (the observer below).
+  // While the host has no stamp on the root, the viewer's own choice applies.
+  const themeAttr0 = rootEl.getAttribute('data-theme');
+  let themeHost = themeAttr0 !== null && (themeBoot ? !!themeBoot.host || themeAttr0 !== themeBoot.own : true);
   function storedTheme() {
     try { const t = localStorage.getItem(THEME_KEY); return t === 'light' || t === 'dark' ? t : 'system'; } catch (e) { return null; }
   }
@@ -2203,9 +2206,13 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   }
   applyTheme();
   try {
-    // Any data-theme change this page did not make comes from the host: follow it from then on.
+    // A data-theme change this page did not make comes from the host: follow it. When the host takes
+    // its stamp away again, the viewer's stored choice applies and the switcher is back.
     new MutationObserver(() => {
-      if (!themeHost && rootEl.getAttribute('data-theme') !== themeOwn) { themeHost = true; renderTheme(); }
+      const v = rootEl.getAttribute('data-theme');
+      if (themeHost && v === null) { themeHost = false; themeChoice = storedTheme() || themeChoice; applyTheme(); }
+      else if (!themeHost && v !== themeOwn) themeHost = true;
+      renderTheme();
     }).observe(rootEl, { attributes: true, attributeFilter: ['data-theme'] });
   } catch (e) { /* no MutationObserver: the switcher still works */ }
   window.addEventListener('storage', (e) => {

@@ -373,7 +373,7 @@ flowchart LR
 - **你的角色：** approver、release manager 或 viewer。
 - **主題：** 淺色、深色或跟隨系統。選擇存在這個瀏覽器裡（`localStorage`；儲存被封鎖時只在這次瀏覽
   有效），並在頁面繪製前套用，所以不會閃一下。在 claude.ai 檢視器裡，以檢視器設定的主題為準：
-  切換器會顯示該主題並停用。
+  切換器會顯示該主題並停用。檢視器取消設定後，會恢復你自己的選擇。
 - **我的 API 金鑰：** 保留給之後的金鑰後端。在那之前，選單會顯示「API keys are not enabled on this
   board」。資料格式寫在 `docs/contract.md`（"Who am I"）。
 - **登出** Cloudflare Access（`/cdn-cgi/access/logout`），只有透過 tunnel 時才會出現。

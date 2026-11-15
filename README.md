@@ -394,7 +394,7 @@ The avatar at the top right of the board opens a small menu:
 - **Theme:** Light, Dark or System. The choice is kept in this browser (`localStorage`; if storage
   is blocked it lasts for the page view) and applied before the page paints, so there is no flash.
   Inside the claude.ai viewer, a theme the viewer has set wins: the switcher then shows it and is
-  disabled.
+  disabled. When the viewer clears it, your own choice applies again.
 - **My API keys:** reserved for a later key backend. Until then the menu says "API keys are not
   enabled on this board". The shape is in `docs/contract.md` ("Who am I").
 - **Sign out** of Cloudflare Access (`/cdn-cgi/access/logout`), shown only through the tunnel.
