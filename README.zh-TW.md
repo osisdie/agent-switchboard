@@ -779,6 +779,26 @@ approvers: [local, you@example.com, <your claude.ai user id>]
 release_managers: [you@example.com, <your claude.ai user id>]
 ```
 
+### 加到主畫面（iPhone）
+
+自架看板可以安裝成主畫面 app。`board-serve` 提供圖示（`artifact/icon.svg`、`favicon.png`、
+`apple-touch-icon.png`、`icons/icon-{192,512}.png`）和 `manifest.webmanifest`（standalone，起始網址
+`/`），並在頁面加上對應的 head 標籤。這些檔案和頁面走同樣的 Host 與身分檢查：透過 tunnel 時，
+它們和其他內容一樣在 Cloudflare Access 後面。
+
+1. 在 Safari 開啟看板的 tunnel 網址，並且**先登入 Cloudflare Access**。iOS 會帶著 Access cookie
+   抓圖示和 manifest，所以登入前就加入的話，存到的會是 Access 登入頁，不是看板。
+2. 分享 → **加入主畫面**。app 會以全螢幕開啟。狀態列是 `black-translucent`，所以頁面在它底下
+   放一條深色帶，標題和頁面底部也會避開瀏海和 Home 指示條。
+3. Access 工作階段過期時，app 會再顯示 Access 登入頁，在那裡登入即可。
+
+Artifact 頁面無法提供同層的檔案，所以只有以 `data:` URI 內嵌的 favicon，沒有 manifest。
+`scripts/render-icons.py` 用 headless Chromium 從 SVG 產生 PNG。
+
+**沒有 service worker**。看板是即時資料，離線模式沒有用處，而在 Access 後面的 service worker
+只會多出失敗的方式。iOS（16.4 以後）的網頁推播需要 service worker、VAPID 金鑰和已安裝的 app。
+它是未來可能的告警管道，不在這次的範圍內。
+
 ## 安全模型
 
 - **絕不要把看板開放給整個組織編輯，也絕不要讓核准者成為 Editor**。Editor（和擁有者）可以發布**新的頁面程式碼和新的資料庫規則**，
@@ -854,16 +874,17 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `bin/board-serve`、`lib/serve.py` | 自架看板：local 模式的頁面 + 建立在 `$BOARD_HOME` 上的 JSON／SSE API，只限 127.0.0.1；`--watch` 供 local 模式的 operator 使用 |
 | `autostart/` | Windows 登入工作與 systemd 使用者 unit |
 | `artifact/board.html` | 看板頁面：claude adapter（Artifact db + user + room）或 local adapter（`board-serve`） |
+| `artifact/icon.svg`、`artifact/icons/`、`*.png`、`manifest.webmanifest` | 圖示與 web app manifest（主畫面 app；由 `board-serve` 提供） |
 | `prompts/board-operator.md` | `BOARD` operator session 的常駐指示 |
 | `snippets/worker-protocol.md` | 貼進每個 worker session `CLAUDE.md` 的區塊 |
 | `playbook/` | 執行多個 Claude Code session 的經驗：SDLC delivery harness、協作、發布、repo 衛生、CLAUDE.md 範本 |
-| `scripts/` | `install.sh`、`setup-dev.sh`（git hook + gitleaks）、`expose-cloudflare.sh`（tunnel + Access 步驟）、`check-readme-sync.py`（README 翻譯結構與粗體檢查，在 CI 執行） |
+| `scripts/` | `install.sh`、`setup-dev.sh`（git hook + gitleaks）、`expose-cloudflare.sh`（tunnel + Access 步驟）、`check-readme-sync.py`（README 翻譯結構與粗體檢查，在 CI 執行）、`render-icons.py`（從 SVG 產生 PNG 圖示） |
 | `.githooks/pre-commit` | 拒絕 `tmp*/` 路徑；對暫存變更執行 gitleaks + banned terms 檢查 |
 | `.githooks/commit-msg` | 檢查 commit 訊息裡的機密樣式與 banned terms |
 | `.github/workflows/ci.yml` | CI：gitleaks、shellcheck、測試、readme-sync |
 | `.gitleaks.toml` | gitleaks 預設規則，加上針對測試 fixture 的小範圍允許清單 |
 | `lib/away.py` | 為 snapshot 和 `board-serve` 讀取 owner-away 模式與共識項目 |
-| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`），以及選用的頁面告警連結、通知控制、個人選單與主題 headless 檢查（`test_page_links.py`、`test_page_notify.py`、`test_page_profile.py`：需要 python playwright，沒有就略過；CI 不執行） |
+| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`），以及選用的頁面告警連結、通知控制、個人選單與主題、主畫面 app headless 檢查（`test_page_links.py`、`test_page_notify.py`、`test_page_profile.py`、`test_page_pwa.py`：需要 python playwright，沒有就略過；CI 不執行） |
 | `CONTRIBUTING.md` | 開發環境設定、測試，以及讓 `README.zh-TW.md` 保持同步的規則 |
 | `fleet.example.yaml`、`.env.example` | 設定範例 |
 
