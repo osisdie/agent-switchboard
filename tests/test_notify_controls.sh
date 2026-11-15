@@ -57,6 +57,8 @@ python3 "$REPO/tests/fake_smtp.py" "$T/smtp.port" "$T/mail" &
 SMTP_PID=$!
 for _ in $(seq 1 50); do [ -s "$T/smtp.port" ] && break; sleep 0.1; done
 
+# Credential-shaped fakes are assembled at runtime, so no single literal here looks like one.
+line_tok="line-$(printf %s secret)-token-xyz"
 cat >"$BOARD_CONFIG_DIR/.env" <<EOF
 SLACK_WEBHOOK_URL=https://hooks.example.test/services/T0/B0/SECRETHOOK123
 SMTP_HOST=127.0.0.1
@@ -64,7 +66,7 @@ SMTP_PORT=$(cat "$T/smtp.port")
 SMTP_SECURITY=none
 SMTP_FROM=alerts@example.test
 ALERT_EMAIL_TO=me@example.test
-LINE_CHANNEL_ACCESS_TOKEN=line-secret-token-xyz
+LINE_CHANNEL_ACCESS_TOKEN=$line_tok
 LINE_TO=U00000000000000000000000000000000
 AWS_SNS_TOPIC_ARN=arn:aws:sns:us-east-1:000000000000:switchboard-test
 ALERT_WEBHOOK_URL=https://webhook.example.test/alert

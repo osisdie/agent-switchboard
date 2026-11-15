@@ -103,14 +103,40 @@ def write(path, data):
         fh.write(data if isinstance(data, str) else json.dumps(data))
 
 
-def wait_for(pg, js, timeout_ms=15000):
-    t = 0
-    while t < timeout_ms:
-        if pg.evaluate(js):
+# Demo pages run on a paused page clock (Playwright's fake timers): page time moves only when
+# the test calls run_for, so a loaded machine changes how long a check takes, never what it sees.
+# Midday, UTC: far from a day boundary.
+T0 = 1768478400.0  # 2026-01-15 12:00:00 UTC, epoch seconds
+SLOW_MS = 120000   # real-time budget for anything that waits on the browser or board-serve
+
+
+def open_paused(pg, url, ready, at=T0):
+    """Open url with the page clock paused at `at` (epoch seconds); step only the timers due now
+    (the stub's setTimeout(0) snapshots) until `ready` holds. True once it does."""
+    # install() starts the clock running: begin an hour early so pause_at(at) is always ahead of it.
+    pg.clock.install(time=at - 3600)
+    pg.clock.pause_at(at)
+    pg.goto(url)
+    for _ in range(200):
+        if pg.evaluate(ready):
             return True
-        pg.wait_for_timeout(200)
-        t += 200
+        pg.clock.run_for(16)
+        pg.wait_for_timeout(50)
     return False
+
+
+def has(pg, js):
+    """Wait (real time, generous) until js is truthy; False on timeout."""
+    try:
+        pg.wait_for_function(js, timeout=SLOW_MS, polling=100)
+        return True
+    except Exception:  # noqa: BLE001 - playwright TimeoutError: report it as a failed check
+        return False
+
+
+CARDS_UP = "() => !!document.querySelector('.spomo[data-pomo]')"
+KEY_UP = "() => !!document.querySelector('#deck-grid .dcell[data-deck=\"pomo\"] .dkey')"
+OPS3 = "() => (document.querySelector('.spomo[data-pomo=\"OPS\"]') || {}).innerText?.includes('🍅×3')"
 
 
 def main():
@@ -126,7 +152,7 @@ def main():
             errors = []
 
             def new_page(init=None, **kw):
-                ctx = browser.new_context(**dict({"viewport": {"width": 1280, "height": 900}}, **kw))
+                ctx = browser.new_context(**dict({"viewport": {"width": 1280, "height": 900}, "timezone_id": "UTC"}, **kw))
                 for script in (BURST_SPY, init):
                     if script:
                         ctx.add_init_script(script)
@@ -139,8 +165,7 @@ def main():
 
             print("demo: session cards")
             pg = new_page()
-            pg.goto(PAGE + "?demo=1")
-            pg.wait_for_timeout(600)
+            check("the demo renders its cards", open_paused(pg, PAGE + "?demo=1", CARDS_UP))
             rows = pg.evaluate(ROWS_JS)
             d = rows.get("DOCS") or {}
             check("a working session: ring, mm:ss of 25:00, today's count", d.get("ring") and d.get("live")
@@ -148,7 +173,7 @@ def main():
             check("  labelled for screen readers", d.get("label", "").startswith("DOCS · Pomodoro 1") and "of 25:00" in d.get("label", "")
                   and "5 🍅 today" in d.get("label", ""), d.get("label"))
             first = d.get("text")
-            pg.wait_for_timeout(1300)
+            pg.clock.run_for(1300)
             d2 = pg.evaluate(ROWS_JS).get("DOCS") or {}
             check("  the clock ticks without a re-render", d2.get("text") != first and d2.get("dash") != d.get("dash"), (first, d2.get("text")))
             a = rows.get("API") or {}
@@ -170,7 +195,7 @@ def main():
             check("  7-day sparkline, today highlighted", k and len(k["bars"]) == 7 and k["bars"][-1]["today"] and not k["bars"][0]["today"], k and k["bars"])
             check("  shares the last row with the wide strip", k and k["sameRow"] and k["wideRight"] and k["leftEdge"], k)
             pg.click("#deck-grid .dkey.pomo")
-            pg.wait_for_timeout(300)
+            pg.clock.run_for(300)
             pn = pg.evaluate(PANEL_JS)
             check("pressing it opens the panel", pn["open"] and "Pomodoro" in pn["title"], pn["title"])
             check("  fleet total and focus", "AI fleet: 19 🍅 · 9h 28m focus" in pn["text"], pn["text"][:200])
@@ -184,26 +209,25 @@ def main():
             check("  Close closes it", not pg.evaluate("() => document.getElementById('pomo').open"))
 
             print("demo: a pomodoro completes (OPS is 9 s from the end)")
-            ok = wait_for(pg, "() => (document.querySelector('.spomo[data-pomo=\"OPS\"]') || {}).innerText?.includes('🍅×3')", 15000)
-            check("the count goes up when the clock reaches 25:00", ok, pg.evaluate(ROWS_JS).get("OPS"))
+            pg.clock.run_for(10000)
+            check("the count goes up when the clock reaches 25:00", pg.evaluate(OPS3), pg.evaluate(ROWS_JS).get("OPS"))
             check("  a celebration on the card and the Deck key", pg.evaluate("() => window.__bursts") >= 2, pg.evaluate("() => window.__bursts"))
             check("  fleet total follows", " 20 " in " " + pg.evaluate(KEY_JS)["text"] + " ", pg.evaluate(KEY_JS)["text"])
-            pg.wait_for_timeout(1800)
+            pg.clock.run_for(1800)
             check("  the burst is gone afterwards", pg.evaluate("() => document.querySelectorAll('.pomo-burst, .pomo-pop').length") == 0)
             pg.close()
 
             print("reduced motion")
             pg = new_page(reduced_motion="reduce")
-            pg.goto(PAGE + "?demo=1")
-            ok = wait_for(pg, "() => (document.querySelector('.spomo[data-pomo=\"OPS\"]') || {}).innerText?.includes('🍅×3')", 15000)
-            check("the count still goes up", ok)
+            check("reduced motion: the demo renders", open_paused(pg, PAGE + "?demo=1", CARDS_UP))
+            pg.clock.run_for(10000)
+            check("the count still goes up", pg.evaluate(OPS3))
             check("  no celebration", pg.evaluate("() => window.__bursts") == 0, pg.evaluate("() => window.__bursts"))
             pg.close()
 
             print("phone width")
             pg = new_page(viewport={"width": 390, "height": 860}, is_mobile=True, has_touch=True)
-            pg.goto(PAGE + "?demo=1")
-            pg.wait_for_timeout(600)
+            check("phone: the demo renders", open_paused(pg, PAGE + "?demo=1", CARDS_UP))
             k = pg.evaluate(KEY_JS)
             check("the key and the wide strip share a row on three columns", k and k["sameRow"] and k["wideRight"] and k["leftEdge"], k)
             ov = pg.evaluate("""() => [...document.querySelectorAll('.spomo')].filter((e) => { const r = e.getBoundingClientRect(), c = e.closest('article').getBoundingClientRect();
@@ -211,7 +235,7 @@ def main():
             check("  card rows stay inside their cards", ov == 0, ov)
             check("  no horizontal page scroll", pg.evaluate("() => document.scrollingElement.scrollWidth <= innerWidth"))
             pg.click("#deck-grid .dkey.pomo")
-            pg.wait_for_timeout(300)
+            pg.clock.run_for(300)
             pn = pg.evaluate(PANEL_JS)
             check("  the panel fits the screen", pn["open"] and pn["width"] <= pn["vw"] and pn["scrollW"] <= pn["vw"], pn)
             hist = pg.evaluate("() => { const h = document.querySelector('.pm-hist'); return [h.scrollWidth, h.clientWidth]; }")
@@ -220,14 +244,13 @@ def main():
 
             print("zh-TW")
             pg = new_page("try { localStorage.setItem('switchboard.lang', 'zh-TW'); } catch (e) {}")
-            pg.goto(PAGE + "?demo=1")
-            pg.wait_for_timeout(600)
+            check("zh-TW: the demo renders", open_paused(pg, PAGE + "?demo=1", CARDS_UP))
             k = pg.evaluate(KEY_JS)
             check("key in Chinese", k and k["text"].startswith("🍅 今日") and "專注 9 小時 28 分" in k["text"] and k["label"].startswith("AI 團隊：19 🍅"), k)
             r = pg.evaluate(ROWS_JS)
             check("card rows in Chinese", "今日 🍅×5" in r["DOCS"]["text"] and "teammate +5 🍅" in r["DOCS"]["text"] and r["API"]["label"] == "API · 番茄鐘 9:00 / 25:00 (暫停中) · 今日 3 🍅", (r["DOCS"], r["API"]["label"]))
             pg.click("#deck-grid .dkey.pomo")
-            pg.wait_for_timeout(300)
+            pg.clock.run_for(300)
             pn = pg.evaluate(PANEL_JS)
             check("panel in Chinese", "番茄鐘" in pn["title"] and "今日各 session" in pn["text"].lower() and "最近 14 天" in pn["text"]
                   and "AI 團隊：19 🍅" in pn["text"] and "teammate 5 🍅" in pn["text"] and "每個 session 和每個 teammate 都有自己的番茄鐘" in pn["text"], pn["text"][:300])
@@ -241,15 +264,14 @@ def main():
                       "days": [{"date": "2026-11-%02d" % (2 + i), "done": i, "focus_ms": i * 1500000, "sessions": {}} for i in range(14)], "updated_at": None}
             mirror["days"][-1].update(done=4, focus_ms=7200000)
             pg = new_page(claude_stub(mirror))
-            pg.goto(PAGE)
-            pg.wait_for_timeout(800)
+            check("mirror: the cards render", open_paused(pg, PAGE, CARDS_UP))
             r = pg.evaluate(ROWS_JS)
             check("cards show the mirrored count, no clock", r.get("API", {}).get("text") == "🍅×3 today" and not r["API"]["ring"]
                   and r.get("WEB", {}).get("text") == "🍅×1 today", r)
             k = pg.evaluate(KEY_JS)
             check("the key shows the fleet total", k and " 4 " in " " + k["text"] + " " and "2h 0m focus" in k["text"], k)
             pg.click("#deck-grid .dkey.pomo")
-            pg.wait_for_timeout(300)
+            pg.clock.run_for(300)
             pn = pg.evaluate(PANEL_JS)
             check("  the panel says it is a mirror", "Mirrored by the operator" in pn["text"] and pn["rows"] == ["API×3", "WEB×1"], (pn["rows"], pn["text"][-120:]))
             pg.close()
@@ -262,10 +284,9 @@ def main():
                                              "progress_ms": None, "done_at": None}},
                         "days": [{"date": "2026-11-15", "done": 0, "focus_ms": 0, "sessions": {}}]}
                 pg = new_page(claude_stub(view))
-                pg.goto(PAGE)
-                pg.wait_for_timeout(800)
+                check("  %s: the card renders" % label, open_paused(pg, PAGE, CARDS_UP, at=now_ms / 1000.0))
                 a1 = pg.evaluate(ROWS_JS).get("API") or {}
-                pg.wait_for_timeout(1300)
+                pg.clock.run_for(1300)
                 a2 = pg.evaluate(ROWS_JS).get("API") or {}
                 if want_live:
                     check("  fresh: the clock runs from started_at", a1.get("live") and re.search(r"\b10:0\d / 25:00", a1.get("text", "")) and a2.get("text") != a1.get("text"), (a1, a2))
@@ -275,12 +296,11 @@ def main():
                 pg.close()
 
             pg = new_page(claude_stub(None))
-            pg.goto(PAGE)
-            pg.wait_for_timeout(800)
+            check("no meta/pomodoro: the key renders", open_paused(pg, PAGE, KEY_UP))
             k = pg.evaluate(KEY_JS)
             check("no meta/pomodoro: the key says so", k and "—" in k["text"] and "no data yet" in k["text"], k)
             pg.click("#deck-grid .dkey.pomo")
-            pg.wait_for_timeout(300)
+            pg.clock.run_for(300)
             check("  and the panel points at board pomodoro", "meta/pomodoro" in pg.evaluate(PANEL_JS)["text"])
             check("  no card rows", pg.evaluate(ROWS_JS) == {})
             pg.close()
@@ -298,10 +318,11 @@ def main():
                                                              "name": "CP", "status": "busy", "startedAt": 1})
             write(os.path.join(home, "state", sid + ".json"), {"session_id": sid, "state": "working", "tmux_pane": "%42", "updated_at": now})
             today = time.strftime("%Y-%m-%d", time.gmtime(now / 1000))
-            # CP is 4 s from the end of its third pomodoro (as the collector would have left it).
+            # CP is 10 min from the end of its third pomodoro (as the collector would have left it):
+            # no slow start-up can cross 25:00 before the first checks. The crossing is set up below.
             write(os.path.join(home, "pomodoro.json"), {"version": 1, "at": now, "settings": {"focus_ms": 1500000, "grace_ms": 120000, "tz": "UTC"},
-                                                        "sessions": {"CP": {"state": "working", "acc": 1500000 - 4000, "away_since": None, "done_at": now - 1496000}},
-                                                        "days": {today: {"CP": {"done": 2, "focus_ms": 2 * 1500000 + 1496000}}}, "notified": {}})
+                                                        "sessions": {"CP": {"state": "working", "acc": 900000, "away_since": None, "done_at": now - 900000}},
+                                                        "days": {today: {"CP": {"done": 2, "focus_ms": 2 * 1500000 + 900000}}}, "notified": {}})
             write(os.path.join(fbin, "tmux"), FAKE_TMUX)
             os.chmod(os.path.join(fbin, "tmux"), 0o755)
             proc = os.path.join(tmp, "proc")
@@ -317,7 +338,7 @@ def main():
 
             collect()
             srv = subprocess.Popen([os.path.join(REPO, "bin", "board-serve"), "--quiet"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            for _ in range(50):
+            for _ in range(600):
                 try:
                     socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
                     break
@@ -325,21 +346,28 @@ def main():
                     time.sleep(0.1)
             pg = new_page()
             pg.goto("http://127.0.0.1:%d/" % port)
-            pg.wait_for_timeout(1000)
+            has(pg, "() => !!document.querySelector('.spomo[data-pomo=\"CP\"] svg.pring')")
             r = pg.evaluate(ROWS_JS).get("CP") or {}
             check("the collector's pomodoro.json reaches the card", r.get("ring") and r.get("live") and "/ 25:00" in r.get("text", "")
                   and "🍅×2 today" in r.get("text", ""), r)
             k = pg.evaluate(KEY_JS)
             check("  and the Deck key", k and " 2 " in " " + k["text"] + " ", k)
-            time.sleep(max(0, (now + 4500 - int(time.time() * 1000)) / 1000.0))
+            # Its last run was 2 s ago with 1 s to go: the next run crosses 25:00 whatever the load.
+            with open(os.path.join(home, "pomodoro.json"), encoding="utf-8") as fh:
+                doc = json.load(fh)
+            t = int(time.time() * 1000)
+            doc["at"] = doc["sessions"]["CP"]["seen_at"] = t - 2000
+            doc["sessions"]["CP"]["acc"] = 1500000 - 1000
+            doc["days"][today]["CP"]["focus_ms"] = 2 * 1500000 + 1500000 - 1000
+            write(os.path.join(home, "pomodoro.json"), doc)
             collect()  # the run that crosses 25:00
             with open(os.path.join(home, "pomodoro.json"), encoding="utf-8") as fh:
                 doc = json.load(fh)
             check("  the collector counted the third", doc["days"][today]["CP"]["done"] == 3, doc["days"])
-            ok = wait_for(pg, "() => (document.querySelector('.spomo[data-pomo=\"CP\"]') || {}).innerText?.includes('🍅×3')", 10000)
+            ok = has(pg, "() => (document.querySelector('.spomo[data-pomo=\"CP\"]') || {}).innerText?.includes('🍅×3')")
             check("  the completion reaches the page over SSE", ok, pg.evaluate(ROWS_JS))
             check("  with a celebration", pg.evaluate("() => window.__bursts") >= 1, pg.evaluate("() => window.__bursts"))
-            check("  the next pomodoro started", re.search(r"\b0:0\d / 25:00", (pg.evaluate(ROWS_JS).get("CP") or {}).get("text", "")), pg.evaluate(ROWS_JS).get("CP"))
+            check("  the next pomodoro started", re.search(r"\b0:[0-5]\d / 25:00", (pg.evaluate(ROWS_JS).get("CP") or {}).get("text", "")), pg.evaluate(ROWS_JS).get("CP"))
             pg.close()
 
             check("no page errors", not errors, errors)

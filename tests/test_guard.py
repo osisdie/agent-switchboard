@@ -41,14 +41,16 @@ SENTINEL = J(["SENTINEL", "-board-", "secret-", "9f3K", "q7Zx", "2Lm8"])
 SENTINEL_PW = J(["sentinel", "-db-", "pass-", "4471", "-xyzzy"])
 SENTINEL_URL = J(["https://", "example.invalid", "/hook/T000/B000/", "sentinel", "Webhook77"])
 SENTINEL_SYM = J(["Sym!", "b@d/", "pa+ss", "&k=", "y9"])          # !@/+&= inside a value
+SHORT = J(["abc", "123"])                                           # too short to redact
+LATE = J(["late-added", "-sentinel-", "55"])
 SENTINEL_INLINE = J(["inline", "-sentinel-", "3141", "5926"])     # value followed by " # comment"
 HEX64 = J(["9f86d081884c7d65", "9a2feaa0c55ad015", "a3bf4f1b2b0b822c", "d15d6c15b0f00a08"])
 B64_32 = J(["Zm9vYmFy", "QmF6UXV4", "MTIzNDU2", "Nzg5MEFi"])
 B64_LONG = J(["dGhpcyBp", "cyBhIHNl", "Y3JldCBU", "b2tlbiAx", "MjM0NTY3", "ODkw+/=="])
 with open(os.path.join(CFG, ".env"), "w", encoding="utf-8") as fh:
     fh.write("# test config\nBOARD_TEST_TOKEN=%s\nSLACK_WEBHOOK_URL=\"%s\"\nSMTP_PORT=587\n"
-             "SMTP_HOST=smtp.example.invalid\nSHORT_SECRET=abc123\nINLINE_API_KEY=%s # rotated monthly\n"
-             "STATUS_PAGE_URL=https://status.example.invalid/page\n" % (SENTINEL, SENTINEL_URL, SENTINEL_INLINE))
+             "SMTP_HOST=smtp.example.invalid\nSHORT_SECRET=%s\nINLINE_API_KEY=%s # rotated monthly\n"
+             "STATUS_PAGE_URL=https://status.example.invalid/page\n" % (SENTINEL, SENTINEL_URL, SHORT, SENTINEL_INLINE))
 PROJECT_ENV = "DB_" + J(["PASS", "WORD"]) + "=%s\nAPP_NAME=example-app-name\nSYM_SECRET='%s'\n" % (SENTINEL_PW, SENTINEL_SYM)
 with open(os.path.join(TMP, "project.env"), "w", encoding="utf-8") as fh:
     fh.write(PROJECT_ENV)
@@ -237,16 +239,16 @@ class Scrub(unittest.TestCase):
         return d
 
     def test_literal_skips_short_and_non_secret(self):
-        out = G.scrub("abc123 smtp.example.invalid example-app-name 587")
-        self.assertEqual(out, "abc123 smtp.example.invalid example-app-name 587")
+        out = G.scrub(SHORT + " smtp.example.invalid example-app-name 587")
+        self.assertEqual(out, SHORT + " smtp.example.invalid example-app-name 587")
 
     def test_literal_reload_on_change(self):
         try:
             with open(os.path.join(TMP, "project.env"), "a", encoding="utf-8") as fh:
-                fh.write("NEW_API_KEY=late-added-sentinel-55\n")
+                fh.write("NEW_API_KEY=%s\n" % LATE)
             G.LITERALS.checked = 0
             time.sleep(0.01)
-            self.assertIn("[redacted:NEW_API_KEY]", G.scrub("x late-added-sentinel-55 y"))
+            self.assertIn("[redacted:NEW_API_KEY]", G.scrub("x %s y" % LATE))
         finally:
             with open(os.path.join(TMP, "project.env"), "w", encoding="utf-8") as fh:
                 fh.write(PROJECT_ENV)
