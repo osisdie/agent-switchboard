@@ -809,9 +809,11 @@ away_record() {
   local rec mt
   # Exactly one JSON object (within the first 16 KiB, as lib/away.py reads it) is a record;
   # anything else (free text, several objects, a non-object) is a legacy file: still away.
-  if rec="$( { head -c 16384 "$AWAY_FILE" 2>/dev/null || true; } | jq -sce \
-              'if length == 1 and (.[0] | type) == "object"
-               then .[0] | {since: (.since // null), by: (.by // null), said: (.said // null)} else empty end' 2>/dev/null)"; then
+  if rec="$( { head -c 16384 "$AWAY_FILE" 2>/dev/null || true; } | jq -sce "$JQ_DEFANG"'
+               if length == 1 and (.[0] | type) == "object"
+               then .[0] | {since: (.since // null), by: (.by // null), said: (.said // null)}
+                 | (.by, .said) |= (if type == "string" then defang else . end)
+               else empty end' 2>/dev/null)"; then
     echo "$rec"
     return 0
   fi
@@ -880,7 +882,10 @@ away_set() {
   if [ -z "$by" ] || { [ "$action" = on ] && [ -z "${said//[[:space:]]/}" ]; }; then
     sub_usage away "$action" >&2; exit 2
   fi
-  no_ctl "--by" "$by" 200
+  # --by is quoted to every session: a session code or board:<identity> (an email or "local"),
+  # never free text.
+  [[ $by =~ ^(board:)?[A-Za-z0-9][A-Za-z0-9@._+:-]{0,199}$ ]] \
+    || die "away $action: --by must be a session code or board:<identity> (letters, digits, @ . _ + : -)"
   cap "--said" "$said" 2000
   said="$(defang "$said")"
 
@@ -1003,6 +1008,7 @@ cons_propose() {
   [ -n "$from" ] && [ -n "$to" ] && [ -n "${text//[[:space:]]/}" ] || { sub_usage consensus propose >&2; exit 2; }
   valid_code "$from" || die "consensus propose: invalid session code: $from"
   no_ctl "--ref" "$ref" 500
+  ref="$(defang "$ref")"
   cap "proposal" "$text" 4000
   local parts=("$from") p q seen
   local IFS_OLD="$IFS"; IFS=','; read -ra tos <<<"$to"; IFS="$IFS_OLD"
@@ -1153,10 +1159,10 @@ cons_ls() {
   local files=("$BOARD_HOME"/consensus/c-*.json)
   [ -e "${files[0]}" ] || { echo "no consensus items"; return 0; }
   local rows
-  rows="$(jq -s --argjson all "$all" --argjson now "$(now_ms)" '
+  rows="$(jq -s --argjson all "$all" --argjson now "$(now_ms)" "$JQ_DEFANG"'
     map(select(type == "object" and .id)
         | select($all == 1 or .status == "pending" or ($now - (.decided_at // .updated_at // 0)) < 86400000))
-    | sort_by(.created_at)' "${files[@]}")"
+    | sort_by(.created_at) | walk(if type == "string" then defang else . end)' "${files[@]}")"
   [ "$(jq 'length' <<<"$rows")" -gt 0 ] || { echo "no consensus items (--all shows older ones)"; return 0; }
   echo
   {
@@ -1182,10 +1188,11 @@ cons_show() {
   local f; f="$(cons_path "$id")"
   [ -f "$f" ] || die "no such consensus item: $id"
   sweep_if_back
-  if [ "$md" = 0 ]; then jq . "$f"; return 0; fi
-  jq -r --arg red "$(red_lines_inline)" "$JQ_TS$JQ_LINE"'
+  # Files may be edited by hand: what is printed never carries "[BOARD" either.
+  if [ "$md" = 0 ]; then jq "$JQ_DEFANG"'walk(if type == "string" then defang else . end)' "$f"; return 0; fi
+  jq -r --arg red "$(red_lines_inline)" "$JQ_TS$JQ_LINE$JQ_DEFANG"'
     def line: tostring | gsub("[\r\n\t]+"; " ") | gsub("[\u0000-\u001f\u007f-\u009f]"; "?")
-      | gsub("@"; "@\u200b");   # pasted into a PR/ticket, "@name" must not ping anyone
+      | gsub("@"; "@\u200b") | defang;   # pasted into a PR/ticket, "@name" must not ping anyone
     def cell: line | gsub("\\|"; "\\|");
     (reduce .votes[] as $x ({}; .[$x.by] = $x.vote)) as $last
     | "#### Owner-away consensus `\(.id)`: \(.status)",

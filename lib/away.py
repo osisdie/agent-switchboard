@@ -7,8 +7,9 @@
   as {since: <mtime ms>, by: None, said: <first 300 chars>, legacy: True}.
 - consensus_items(home, now): the compact list for the snapshot and the board page: every
   `pending` item, plus final ones (agreed, objected, owner_back) for 24 h after they were decided.
-  When the owner is not away, a still-pending item is shown as `owner_back` (display only; the
-  next `board consensus` command writes it).
+  When the owner is not away, or the item was proposed in another away period (its away.since
+  differs), a still-pending item is shown as `owner_back` (display only; the next
+  `board consensus` command writes it).
 - Free text that BOARD may quote never looks like a relay: "[BOARD" becomes "(BOARD" (as in
   bin/board).
 """
@@ -61,10 +62,10 @@ def away_record(home):
         rec = None
     if isinstance(rec, dict):
         return {"since": _ms(rec.get("since")) or None,
-                "by": _clip(rec.get("by"), 200) if rec.get("by") else None,
+                "by": _text(rec.get("by"), 200) if rec.get("by") else None,
                 "said": _text(rec.get("said"), MAX_TEXT) if rec.get("said") else None}
     try:
-        mtime = int(os.lstat(path).st_mtime * 1000)
+        mtime = int(os.lstat(path).st_mtime) * 1000  # whole seconds, like bin/board (stat %Y)
     except OSError:
         mtime = None
     text = raw.decode("utf-8", "replace").strip()
@@ -76,19 +77,19 @@ def compact(c):
     votes = []
     for v in c.get("votes") or []:
         if isinstance(v, dict):
-            votes.append({"by": _clip(v.get("by"), 64), "vote": _clip(v.get("vote"), 16),
+            votes.append({"by": _text(v.get("by"), 64), "vote": _clip(v.get("vote"), 16),
                           "at": _ms(v.get("at")) or None,
                           "note": _text(v.get("note"), MAX_NOTE) if v.get("note") else None})
-    parts = [_clip(p, 64) for p in (c.get("participants") or []) if isinstance(p, str)]
-    return {"id": c.get("id"), "from": _clip(c.get("from"), 64), "participants": parts,
-            "ref": _clip(c.get("ref"), MAX_TEXT) if c.get("ref") else None,
+    parts = [_text(p, 64) for p in (c.get("participants") or []) if isinstance(p, str)]
+    return {"id": c.get("id"), "from": _text(c.get("from"), 64), "participants": parts,
+            "ref": _text(c.get("ref"), MAX_TEXT) if c.get("ref") else None,
             "proposal": _text(c.get("proposal"), MAX_TEXT), "status": _clip(c.get("status"), 16),
             "votes": votes, "created_at": _ms(c.get("created_at")) or None,
             "updated_at": _ms(c.get("updated_at")) or None, "decided_at": _ms(c.get("decided_at")) or None}
 
 
 def consensus_items(home, now):
-    away = away_record(home) is not None
+    rec = away_record(home)
     out = []
     for path in glob.glob(os.path.join(home, "consensus", "c-*.json")):
         try:
@@ -101,8 +102,11 @@ def consensus_items(home, now):
         if c.get("status") in FINAL and now - _ms(c.get("decided_at") or c.get("updated_at")) >= KEEP_MS:
             continue
         item = compact(c)
-        if not away and item["status"] == "pending":
-            item["status"] = "owner_back"  # display only: the owner is back, so it waits for them
+        # Display only (the next `board consensus` command writes it): with the owner back, or
+        # in a different away period than the one it was proposed in, it waits for the owner.
+        if item["status"] == "pending" and (
+                rec is None or _ms((c.get("away") or {}).get("since")) != _ms(rec.get("since"))):
+            item["status"] = "owner_back"
         out.append(item)
     out.sort(key=lambda c: (c.get("created_at") or 0, c["id"]))
     return out
