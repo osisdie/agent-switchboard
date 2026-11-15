@@ -820,6 +820,21 @@ case "$resume_cmd" in *"&& claude -n NEW --remote-control NEW --verbose") ok "no
 out="$(BOARD_HOME="$T/home4" PATH="$T/bin:$PATH" "$REPO/bin/fleet-up" --dry-run)"
 grep -q "would run: .*board-collect --baseline" <<<"$out" && ok "fleet-up takes a baseline when alerts.json is missing" || bad "fleet-up baseline" "$out"
 
+echo "hook stdin from a socket (as Claude Code passes it):"
+SOCK_SID="66666666-7777-8888-9999-000000000000"
+python3 - "$HOOK" "$SOCK_SID" <<'PY'
+import socket, subprocess, sys
+hook, sid = sys.argv[1], sys.argv[2]
+a, b = socket.socketpair()
+p = subprocess.Popen([hook], stdin=b, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+b.close()
+a.sendall(('{"session_id":"%s","hook_event_name":"UserPromptSubmit","cwd":"/w"}' % sid).encode())
+a.shutdown(socket.SHUT_WR)
+p.wait(timeout=10)
+a.close()
+PY
+[ -f "$BOARD_HOME/state/$SOCK_SID.json" ] && ok "hook reads stdin from a socket" || bad "hook reads stdin from a socket" "no state file: reading /dev/stdin fails on a socket (ENXIO)"
+
 echo
 echo "passed: $pass  failed: $fail"
 [ "$fail" = 0 ]

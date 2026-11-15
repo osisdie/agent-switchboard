@@ -24,7 +24,9 @@ exec 1>/dev/null 2>/dev/null
 
 command -v jq >/dev/null 2>&1 || exit 0
 
-input="$(</dev/stdin)"
+# Read fd 0 with cat, not $(</dev/stdin): Claude Code hands hooks stdin as a socket, and opening
+# /dev/stdin on a socket fails (ENXIO), which silently dropped every event.
+input="$(cat)"
 [ -n "$input" ] || exit 0
 
 BOARD_HOME="${BOARD_HOME:-$HOME/.agent-switchboard}"
