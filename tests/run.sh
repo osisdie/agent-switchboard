@@ -889,6 +889,10 @@ d="$(askq tu_s3 "$Q1")"; "$B" answer "$d" "Blue" --by user-1 >/dev/null
 FAKE_TMUX_MUTATE_AT=2 FAKE_TMUX_MUTATE="$BOARD_HOME/state/$SID.json" seqpress tu_s3 "$SCR" "$SCR"
 eq "scrolled, and the state moved on meanwhile -> exit 3, stale" "$?/$(dj "$d" .status)" "3/stale"
 eq "...status_reason moved_on" "$(dj "$d" .status_reason)" "moved_on"
+d="$(askq tu_s3b "$Q1")"; "$B" answer "$d" "Blue" --by user-1 >/dev/null
+FAKE_TMUX_STALE_ON_SEND="$BOARD_HOME/decisions/$d.json" seqpress tu_s3b "$SCR" "$SCR"
+eq "marked stale during the scroll key, still scrolled -> exit 3, never reopened as pending" "$?/$(dj "$d" .status)" "3/stale"
+qdone tu_s3b
 qdone tu_s3
 d="$(askq tu_s4 "$Q1")"; "$B" answer "$d" "Blue" --by user-1 >/dev/null
 printf 'press:\n  scroll_key: ""\n' >> "$BOARD_CONFIG_DIR/fleet.yaml"

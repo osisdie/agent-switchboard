@@ -1022,6 +1022,10 @@ cmd_press() {
             != "needs-you $expect ${st_sha:-}" ]; then
       refuse "$1; the session has moved on" "${2:-}" moved_on
     fi
+    # Only from answered: a decision the collector already closed (stale, ...) is never reopened.
+    if [ "$(jq -r '.status // empty' "$(dec_path "$dec_id")" 2>/dev/null)" != answered ]; then
+      refuse "$1; the decision is no longer answered" "${2:-}" moved_on
+    fi
     echo "board press: refused — $1; the prompt still waits: answer it again or in the session" >&2
     attempt not_visible "$1" "${2:-}"
     local n; n="$(now_ms)"
@@ -1126,7 +1130,7 @@ cmd_press() {
   [ "$st_state" = "needs-you" ] || refuse "$code state is '$st_state', not needs-you" "$pane" moved_on
   [ "$st_pending" = "$expect" ] || refuse "pending tool_use_id is '${st_pending:-none}', expected '$expect'" "$pane" moved_on
   if [ -z "$d_sha" ] || [ -z "$st_sha" ]; then
-    refuse "no input hash on the decision or the pending prompt; cannot bind the press to it" "$pane"
+    refuse "no input hash on the decision or the pending prompt; cannot bind the press to it" "$pane" config
   fi
   [ "$st_sha" = "$d_sha" ] || refuse "pending input differs from the decision's (sha256 mismatch)" "$pane" moved_on
   if [ -n "$st_pane" ] && [ "$st_pane" != "$pane" ]; then
@@ -1177,7 +1181,7 @@ cmd_press() {
     if [ -n "$q_text" ]; then
       # The row the free-text key goes to must be the picker's "Type something" row.
       ft_label="$(cfg_get press.free_text_label)"
-      [ -n "$ft_label" ] || refuse "no press.free_text_label configured" "$pane"
+      [ -n "$ft_label" ] || refuse "no press.free_text_label configured" "$pane" config
       grep -Eq -- "^[[:space:]]*($(cfg_get press.focus_regex))?[[:space:]]*${keys[0]}\.[[:space:]]*($ft_label)" <<<"$screen" \
         || refuse "row ${keys[0]} of the picker is not \"Type something\"" "$pane"
     fi
