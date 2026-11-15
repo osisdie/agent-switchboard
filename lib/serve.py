@@ -22,6 +22,8 @@ listeners (docs/contract.md, "Local adapter API"):
   GET  /icon.svg, /favicon.png, /favicon.ico, /apple-touch-icon.png, /icons/icon-{192,512}.png,
        /manifest.webmanifest           icons and the web app manifest (fixed list, same checks)
   POST /api/decisions/<id>/answer      {"answer": "..."}   (via `board answer` / `board press`)
+  POST /api/decisions/<id>/resolve     {"confirm": "resolve", "note": "..."}  (approvers only: a
+                                       board ask answered in the session; `board resolve --in-pane`)
   POST /api/messages                   {"to": "CODE"|"all", "body": "..."}  (screened by the secret
                                        guard: a secret request is stored "held", never relayed)
   POST /api/messages/<id>/release      {"confirm": "release"}  (approvers only: release a held
@@ -117,6 +119,7 @@ CARD_KEYS = ("teammates", "meter", "done", "doing", "prompt", "branch", "state_s
 CARD_PRIVATE = ("doing", "prompt")
 DECISION_KEYS = ("id", "kind", "from", "question", "options", "context", "tool_use_id", "tool_name",
                  "summary", "status", "answer", "answered_by", "answered_at", "relayed_at",
+                 "hint", "hint_at", "resolved_by", "resolved_via", "resolved_at", "resolve_note",
                  "created_at", "updated_at", "task_id", "stage", "gate", "artifact_ref",
                  "escalation_level", "notified_via", "summary_truncated",
                  "labels_clipped", "answer_options",
@@ -931,6 +934,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if m:
                 body = self.read_body()
                 return self.answer(m.group(1), body, ident, via)
+            m = re.fullmatch(r"/api/decisions/([^/]+)/resolve", path)
+            if m:
+                body = self.read_body()
+                return self.resolve(m.group(1), body, ident, via)
             m = re.fullmatch(r"/api/messages/([^/]+)/release", path)
             if m:
                 body = self.read_body()
@@ -1179,6 +1186,50 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.hub_kick()
         return self.send_json(200, {"id": mid, "status": "new"})
 
+
+    def resolve(self, did, body, ident, via):
+        """A board ask answered in the session (or in another one): approvers only, with a confirm
+        step, through `board resolve ID --in-pane --by <approver>` (the note by a 0600 file)."""
+        if not DEC_ID_RE.fullmatch(did):
+            raise Refused(400, "bad_id", "invalid decision id")
+        by = self.approver(ident, via, "resolve", what="mark a question answered in the session", id=did)
+        if body.get("confirm") != "resolve":
+            raise Refused(400, "confirm_required", "confirm it: {\"confirm\": \"resolve\"}")
+        note = body.get("note") or ""
+        if not isinstance(note, str) or len(note) > MAX_ANSWER:
+            raise Refused(400, "bad_note", "note must be a string (max %d chars)" % MAX_ANSWER)
+        home = self.server.home
+        with self.server.write_lock:
+            if not isinstance(read_json(os.path.join(home, "decisions", did + ".json")), dict):
+                raise Refused(404, "not_found", "no such decision")
+            args = ["resolve", did, "--in-pane", "--by", by]
+            nfile = None
+            if note.strip():
+                fd, nfile = tempfile.mkstemp(prefix=".note.", dir=home)
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write(note.strip())
+                args += ["--note-file", nfile]
+            try:
+                rc, out, err = self.board(*args)
+            finally:
+                if nfile:
+                    try:
+                        os.unlink(nfile)
+                    except OSError:
+                        pass
+        self.hub_kick()
+        if rc == 0:
+            self.audit(ident, via, "resolve", id=did, result="resolved")
+            return self.send_json(200, {"id": did, "status": "answered_in_pane"})
+        log("board resolve %s (rc %d): %s %s" % (did, rc, err, out))
+        self.audit(ident, via, "resolve", id=did, result="refused", rc=rc)
+        if rc == 2:
+            raise Refused(409, "not_a_board_ask", "only a question asked with board ask can be closed this way")
+        if rc == 4:
+            raise Refused(403, "not_approver", "you may not close this decision")
+        if rc == 6:
+            raise Refused(400, "held_note", "the note asks for a secret value: not recorded")
+        raise Refused(409, "gone", "the decision is no longer open")
 
     def set_away(self, body, ident, via):
         """Owner-away mode from the board: approvers only (the rule of an ordinary answer)."""
