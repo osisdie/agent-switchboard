@@ -1122,6 +1122,11 @@ EOF2
 )"
 grep -q '^decision d-1-perm' <<<"$w" && bad "--watch skips permission decisions" "$w" || ok "--watch skips permission decisions"
 grep -q '^message m-1-a ' <<<"$w" && bad "--watch skips replied messages" "$w" || ok "--watch skips replied messages"
+[ -f "$BOARD_HOME/scheduler.json" ] && cp "$BOARD_HOME/scheduler.json" "$T/scheduler.keep"
+echo '{"enabled":true,"generated_at":5,"due":{"CP":["a-0123456789ab"],"X/y":["a-0123456789ac"],"API":[]},"advisories":[]}' > "$BOARD_HOME/scheduler.json"
+w="$("$REPO/bin/board-serve" --watch --once)"
+eq "--watch: schedule CODE due, for valid codes with ids only" "$(grep '^schedule ' <<<"$w" | tr '\n' ',')" "schedule CP due,"
+if [ -f "$T/scheduler.keep" ]; then mv "$T/scheduler.keep" "$BOARD_HOME/scheduler.json"; else rm -f "$BOARD_HOME/scheduler.json"; fi
 "$REPO/bin/board-serve" --watch --tick 1 > "$T/watch.out" & wpid=$!
 # Wait (bounded) for the watcher's first pass instead of a fixed sleep: under load it may start late.
 for _ in $(seq 1 100); do grep -q '^away off$' "$T/watch.out" 2>/dev/null && break; sleep 0.1; done

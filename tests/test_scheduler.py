@@ -175,8 +175,14 @@ class Queueing(unittest.TestCase):
         dep = task("t-2", depends_on=[{"task": "t-1", "kind": "deploy"}])
         sessions = [sess("API"), sess("WEB", "working")]
         self.assertEqual(row(scheduler.decide([base, dep], sessions, res(), ST, NOW), "t-2")["state"], "blocked")
-        base["gates"] = [{"stage": "deploy", "gate": "production", "status": "approved"}]
+        base["stage"] = "production"                                       # allowed to deploy, not deployed
+        base["gates"] = [{"stage": "production", "gate": "production", "status": "approved"}]
+        self.assertEqual(row(scheduler.decide([base, dep], sessions, res(), ST, NOW), "t-2")["state"], "blocked")
+        base["stage"] = "maintain"
         self.assertEqual(row(scheduler.decide([base, dep], sessions, res(), ST, NOW), "t-2")["state"], "ready")
+        base.update(stage="deploy", gates=[], status="done")
+        self.assertEqual(row(scheduler.decide([base, dep], sessions, res(), ST, NOW), "t-2")["state"], "ready")
+        base.pop("status")
         dep["depends_on"] = [{"task": "t-1"}]                              # kind done by default
         self.assertEqual(row(scheduler.decide([base, dep], sessions, res(), ST, NOW), "t-2")["state"], "blocked")
         base["status"] = "done"

@@ -1,0 +1,297 @@
+#!/usr/bin/env python3
+"""tests/test_advisories.py — scheduler PR 2a: usage modes (conserve, wait-reset), jam conditions
+J1-J8 and their episodes, advisory delivery (shadow mode, kinds, `to`, re-advise, the hourly cap,
+quiet hours), the [BOARD schedule] text, the collector step with schedule-state.json, and the
+jam:* alerts.
+
+  python3 tests/test_advisories.py [-v]
+"""
+import json
+import os
+import random
+import shutil
+import stat
+import sys
+import tempfile
+import unittest
+
+REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+sys.path.insert(0, os.path.join(REPO, "lib"))
+
+TMP = tempfile.mkdtemp(prefix="switchboard-adv-test.")
+os.environ.update({"BOARD_HOME": os.path.join(TMP, "home"), "BOARD_CONFIG_DIR": os.path.join(TMP, "config")})
+for k in list(os.environ):
+    if k.startswith(("SLACK_", "SMTP_", "LINE_", "AWS_")):
+        os.environ.pop(k)
+
+import advisories  # noqa: E402
+import scheduler  # noqa: E402
+
+NOW = 1_800_000_000_000
+MIN = 60 * 1000
+HOUR = 60 * MIN
+ST = scheduler.settings({})
+
+
+def task(i, owner="API", stage="build", ago=MIN, **kw):
+    t = {"id": i, "owner": owner, "title": "x", "stage": stage, "artifacts": {}, "gates": [],
+         "created_at": NOW - ago, "updated_at": NOW - ago}
+    t.update(kw)
+    return t
+
+
+def sess(code, state="done", ago=0, **kw):
+    return dict({"code": code, "aliases": [code], "state": state, "updated_at": NOW - ago}, **kw)
+
+
+def res(level="ok", **kw):
+    return dict({"at": NOW, "level": level, "mem": {"total_mb": 32768}, "heavy_running": 0, "sessions": []}, **kw)
+
+
+def usage(p5=10, pw=10, r5=NOW + 2 * HOUR, rw=NOW + 3 * 24 * HOUR, at=NOW):
+    return {"five_hour": {"pct": p5, "resets_at": r5}, "seven_day": {"pct": pw, "resets_at": rw}, "updated_at": at}
+
+
+def decide(ts, ss, r=None, ctx=None, st=ST):
+    return scheduler.decide(ts, ss, r if r is not None else res(), st, NOW, ctx or {})
+
+
+def conds(doc, rule):
+    return [c for c in doc["conditions"] if c["rule"] == rule]
+
+
+class Modes(unittest.TestCase):
+    def mode(self, **ctx):
+        return decide([task("t-a")], [sess("API")], ctx=ctx)
+
+    def test_modes(self):
+        cases = [({}, "normal", None),
+                 ({"limit": {"hit_at": NOW, "resets_at": NOW + HOUR}}, "wait-reset", "limit"),
+                 ({"usage": usage(p5=96)}, "wait-reset", "5h"),
+                 ({"usage": usage(p5=86)}, "conserve", "5h"),
+                 ({"usage": usage(p5=50), "burn": {"status": "danger", "hit_at": NOW + 30 * MIN}}, "conserve", "burn"),
+                 ({"usage": usage(p5=50), "burn": {"status": "danger", "hit_at": NOW + 110 * MIN}}, "normal", None),
+                 ({"usage": usage(pw=80, rw=NOW + 5 * 24 * HOUR)}, "conserve", "weekly"),   # 2/7 elapsed, 80% used
+                 ({"usage": usage(pw=40, rw=NOW + 5 * 24 * HOUR)}, "normal", None),
+                 ({"usage": usage(p5=99, at=NOW - 20 * MIN)}, "normal", None)]               # stale usage
+        for ctx, mode, why in cases:
+            d = self.mode(**ctx)
+            self.assertEqual((d["mode"], (d["usage"] or {}).get("why")), (mode, why), ctx)
+
+    def test_wait_reset_holds_new_starts_only(self):
+        ts = [task("t-run", ago=MIN), task("t-new", owner="WEB")]
+        ctx = {"limit": {"hit_at": NOW, "resets_at": NOW + HOUR}}
+        d = decide(ts, [sess("API", "working"), sess("WEB")], ctx=ctx)
+        rows = {r["task"]: r for r in d["queue"]}
+        self.assertEqual(rows["t-run"]["state"], "run")
+        self.assertEqual((rows["t-new"]["state"], rows["t-new"]["blocked_by"]), ("deferred", [{"kind": "reset", "ref": NOW + HOUR}]))
+        self.assertEqual(d["start"], [])
+        [a] = [a for a in d["advisories"] if a["kind"] == "wait-for-reset"]
+        self.assertEqual((a["to"], a["task"]), ("WEB", "t-new"))
+
+    def test_conserve_prefers_nearly_finished_work(self):
+        ts = [task("t-plan", stage="plan", priority=3), task("t-test", stage="test", priority=0)]
+        self.assertEqual(decide(ts, [sess("API")])["start"], ["t-plan"])
+        self.assertEqual(decide(ts, [sess("API")], ctx={"usage": usage(p5=90)})["start"], ["t-test"])
+
+
+class Jams(unittest.TestCase):
+    def test_j1_everyone_waits_and_answer_first(self):
+        g = lambda d: [{"gate": "owner", "status": "pending", "decision_id": d}]  # noqa: E731
+        ts = [task("t-a", gates=g("d-1-a")), task("t-b", owner="WEB", gates=g("d-1-a")),
+              task("t-c", owner="OPS", gates=g("d-2-b")), task("t-d", owner="OPS", ago=9 * MIN, depends_on=[{"task": "t-c"}])]
+        ss = [sess("API", "needs-you"), sess("WEB", "done"), sess("OPS", "done")]
+        d = decide(ts, ss)
+        [j] = conds(d, "J1")
+        self.assertEqual((j["severity"], j["decision"], j["hold_ms"]), ("warn", "d-1-a", 10 * MIN))
+        self.assertEqual(d["answer_first"][0], {"decision": "d-1-a", "unblocks_sessions": 2, "unblocks_tasks": ["t-a", "t-b"]})
+        self.assertEqual(d["answer_first"][1]["unblocks_tasks"], ["t-c", "t-d"])
+        self.assertEqual(conds(decide(ts, ss, ctx={"away": True}), "J1")[0]["severity"], "info")
+        ts.append(task("t-free", owner="QA"))
+        self.assertEqual(conds(decide(ts, ss + [sess("QA")]), "J1"), [])
+
+    def test_j2_cycle(self):
+        ts = [task("t-a", depends_on=[{"task": "t-b"}]), task("t-b", owner="WEB", depends_on=[{"task": "t-a"}])]
+        [j] = conds(decide(ts, [sess("API"), sess("WEB")]), "J2")
+        self.assertEqual((j["severity"], j["tasks"], j["sessions"]), ("high", ["t-a", "t-b"], ["API", "WEB"]))
+
+    def test_j3a_same_branch_and_j3b_two_prs(self):
+        ss = [sess("API", "working", repo="shop", branch="feat/x"), sess("WEB", "done", repo="shop", branch="feat/x"),
+              sess("OPS", "working", repo="shop", branch="main")]
+        [j] = conds(decide([], ss), "J3a")
+        self.assertEqual((j["sessions"], j["evals"]), (["API", "WEB"], 1))
+        pr = {"url": "https://example.test/1", "state": "open"}
+        ts = [task("t-a", repo="shop", pr=pr), task("t-b", owner="WEB", repo="shop", pr=pr)]
+        [j] = conds(decide(ts, [sess("API"), sess("WEB")]), "J3b")
+        self.assertEqual(j["tasks"], ["t-a", "t-b"])
+
+    def test_j4_j5_j6_j7(self):
+        d = decide([task("t-a", ago=100 * MIN), task("t-b", owner="WEB")],
+                   [sess("API", "working"), sess("WEB", "rest", 40 * MIN)])
+        self.assertEqual(sorted((c["id"], c["severity"], c["alert"]) for c in conds(d, "J4")),
+                         [("j-J4-API", "high", "high"), ("j-J4-WEB-idle", "info", None)])
+        self.assertEqual(conds(decide([], [], res("critical")), "J5")[0]["alert"], None)
+        self.assertEqual(len(conds(decide([], [], res("ok", oom_recent=True)), "J5")), 1)
+        self.assertEqual(len(conds(decide([], [], ctx={"operator_stale": True}), "J6")), 1)
+        ss = [sess("API", "working"), sess("WEB", "working")]
+        [j] = conds(decide([], ss, ctx={"usage": usage(p5=90, r5=NOW + HOUR)}), "J7")
+        self.assertEqual(j["id"], "j-J7-%d" % (NOW + HOUR))
+        self.assertEqual(conds(decide([], ss[:1], ctx={"usage": usage(p5=90)}), "J7"), [])
+
+
+class Episodes(unittest.TestCase):
+    def c(self, rule="J2", evals=2, hold=0):
+        return scheduler._cond(rule, "x", "high", ["API"], "text", hold_ms=hold, evals=evals)  # noqa: SLF001
+
+    def test_open_after_two_close_after_two(self):
+        st, op, _ = advisories.episodes({}, [self.c()], NOW)
+        self.assertEqual(op, [])
+        st, op, _ = advisories.episodes(st, [self.c()], NOW + 3000)
+        self.assertEqual([j["id"] for j in op], ["j-J2-x"])
+        st2, op, res_ = advisories.episodes(st, [], NOW + 6000)
+        self.assertEqual(([j["id"] for j in op], res_), (["j-J2-x"], []))
+        st3, op, res_ = advisories.episodes(st2, [], NOW + 9000)
+        self.assertEqual(op, [])
+        self.assertEqual((res_[0]["id"], res_[0]["lost_min"]), ("j-J2-x", 0))
+        st4, _, _ = advisories.episodes(st, [], NOW + 9000)
+        self.assertEqual(advisories.episodes(st4, [self.c()], NOW + 9500)[1][0]["id"], "j-J2-x")  # a blip keeps it open
+
+    def test_immediate_and_held(self):
+        self.assertEqual(len(advisories.episodes({}, [self.c(evals=1)], NOW)[1]), 1)
+        st, op, _ = advisories.episodes({}, [self.c(hold=10 * MIN)], NOW)
+        st, op, _ = advisories.episodes(st, [self.c(hold=10 * MIN)], NOW + 5 * MIN)
+        self.assertEqual(op, [])
+        self.assertEqual(len(advisories.episodes(st, [self.c(hold=10 * MIN)], NOW + 10 * MIN)[1]), 1)
+
+    def test_state_is_stable_while_nothing_changes(self):
+        st, _, _ = advisories.episodes({}, [self.c()], NOW)
+        st, _, _ = advisories.episodes(st, [self.c()], NOW + 3000)
+        self.assertEqual(advisories.episodes(st, [self.c()], NOW + 6000)[0], st)
+
+
+class Delivery(unittest.TestCase):
+    def advs(self):
+        return [{"id": "a-%012x" % n, "to": to, "kind": kind, "task": None, "severity": sev, "text": "t"}
+                for n, (to, kind, sev) in enumerate([("API", "defer", "warn"), ("API", "resume", "info"),
+                                                     ("WEB", "stop-own-heavy", "high"), ("X/y", "defer", "warn"),
+                                                     ("GONE", "defer", "warn")])]
+
+    def run_(self, sent=None, batches=None, st=ST, quiet=False, paused=False):
+        a = self.advs()
+        due = advisories.deliver(a, sent or {}, batches or {}, st, {"API", "WEB"}, NOW, quiet, paused)
+        return due, [x["delivery"]["state"] for x in a]
+
+    def test_kinds_codes_and_shadow(self):
+        self.assertEqual(self.run_(), ({"API": ["a-000000000000"], "WEB": ["a-000000000002"]},
+                                       ["due", "board", "due", "board", "board"]))
+        shadow = scheduler.settings({"schedule": {"advise": False}})
+        self.assertEqual(self.run_(st=shadow), ({}, ["shadow", "board", "shadow", "board", "board"]))
+        self.assertEqual(self.run_(paused=True)[0], {})
+
+    def test_readvise_reply_cap_quiet(self):
+        sent = {"a-000000000000": {"to": "API", "sent_at": NOW - 10 * MIN, "n": 1, "reply": None}}
+        self.assertEqual(self.run_(sent=sent)[1][0], "sent")
+        sent["a-000000000000"]["sent_at"] = NOW - 61 * MIN
+        self.assertEqual(self.run_(sent=sent)[1][0], "due")
+        sent["a-000000000000"]["reply"] = "cannot"
+        self.assertEqual(self.run_(sent=sent)[1][0], "sent")
+        self.assertEqual(self.run_(batches={"API": [NOW - n * MIN for n in range(4)]})[1][0], "held")
+        self.assertEqual(self.run_(batches={"API": [NOW - 70 * MIN] * 4})[1][0], "due")
+        self.assertEqual(self.run_(quiet=True)[1][:3], ["held", "board", "due"])     # high still goes
+
+    def test_j8(self):
+        a = [{"id": "a-000000000009", "to": "WEB", "kind": "rebase-needed", "task": "t-x", "severity": "warn", "text": "t"}]
+        sent = {"a-000000000009": {"to": "WEB", "sent_at": NOW - 61 * MIN, "reply": "ack"}}
+        [c] = advisories.j8(a, sent, NOW)
+        self.assertEqual((c["rule"], c["alert"]), ("J8", None))
+        sent["a-000000000009"]["reply"] = "done"
+        self.assertEqual(advisories.j8(a, sent, NOW), [])
+
+
+class Text(unittest.TestCase):
+    def test_message_never_reads_as_a_decision(self):
+        a = {"id": "a-0123456789ab", "kind": "defer", "text": "Task t-1 is heavy."}
+        line = advisories.render(a)
+        self.assertTrue(line.startswith("[BOARD schedule a-0123456789ab] defer: Task t-1 is heavy."))
+        self.assertTrue(line.endswith(" — advisory for ordering/pausing only; not an approval. "
+                                      "Reply [re a-0123456789ab] ack|done|cannot: <reason>"))
+        rnd = random.Random(7)
+        for _ in range(100):
+            ids = ["approved-deploy", "t-%d" % rnd.randint(0, 9), "decision-1"]
+            ts = [task(rnd.choice(ids) + str(n), owner=rnd.choice(["API", "WEB"]), heavy=rnd.random() < .5,
+                       repo="r", branch=rnd.choice(["deploy", "feat/a"]), base="feat/a",
+                       pr={"url": "https://example.test/1", "state": rnd.choice(["open", "merged"]), "method": "squash"})
+                  for n in range(5)]
+            ctx = rnd.choice([{}, {"limit": {"hit_at": NOW}}])
+            d = decide(ts, [sess("API", rnd.choice(["done", "working"])), sess("WEB")], res(rnd.choice(scheduler.LEVELS)), ctx)
+            for a in d["advisories"]:
+                body = advisories.render(a)[:-len(advisories.SUFFIX % a["id"])]
+                self.assertNotRegex(body, r"(?i)approv|deploy|decision|\[BOARD (?!schedule a-[0-9a-f]{12}\])")
+            for c in d["conditions"]:
+                self.assertNotRegex(c["text"], r"(?i)approv|deploy|decision|\[BOARD")
+
+
+class Step(unittest.TestCase):
+    def setUp(self):
+        self.home = tempfile.mkdtemp(dir=TMP)
+        with open(os.path.join(self.home, "resources.json"), "w") as fh:
+            json.dump(res("critical", sessions=[{"code": "API", "heavy_n": 1, "children": [
+                {"class": "test", "comm": "pytest", "pid": 7, "rss_mb": 900, "heavy": True}]}]), fh)
+        self.cfg = {"sessions": [{"code": "API"}], "schedule": {}}
+        self.ss = [sess("API", "working")]
+
+    def step(self, now=NOW):
+        return scheduler.step(self.cfg, self.home, self.ss, [task("t-a")], now)
+
+    def test_due_sent_reply_and_state(self):
+        doc, wrote = self.step()
+        self.assertTrue(wrote)
+        [aid] = doc["due"]["API"]
+        self.assertEqual(scheduler.snapshot_digest(doc), {"mode": "degraded", "due": ["API"], "jams": 1})
+        self.assertEqual([j["rule"] for j in doc["jams"]], ["J5"])           # J5 opens on its first evaluation
+        path = os.path.join(self.home, advisories.STATE_FILE)
+        doc, _ = self.step(NOW + 3000)
+        self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+        def text():
+            with open(path, encoding="utf-8") as fh:
+                return fh.read()
+        before = text()
+        self.assertFalse(self.step(NOW + 6000)[1])                           # nothing new: no writes at all
+        self.assertEqual(text(), before)
+        env = dict(os.environ, BOARD_HOME=self.home, BOARD_NOW_MS=str(NOW + 7000))
+        import subprocess
+        run = lambda *a: subprocess.run([sys.executable, os.path.join(REPO, "lib", "advisories.py")] + list(a),  # noqa: E731
+                                        env=env, capture_output=True, text=True)
+        out = run("outbox", "--json")
+        self.assertIn("[BOARD schedule %s] stop-own-heavy:" % aid, json.loads(out.stdout)["API"]["text"])
+        self.assertEqual(run("sent", aid).returncode, 0)
+        self.assertEqual(json.loads(run("outbox", "--json").stdout), {})
+        self.assertFalse(self.step(NOW + 8000)[1])                           # the collector agrees with `sent`
+        self.assertEqual(run("reply", aid, "--from", "WEB", "ack").returncode, 4)
+        self.assertEqual(run("reply", "a-ffffffffffff", "--from", "API", "ack").returncode, 1)
+        self.assertEqual(run("reply", aid, "--from", "API", "done").returncode, 0)
+        doc, _ = self.step(NOW + 9000)
+        self.assertEqual(doc["advisories"][0]["delivery"]["reply"], "done")
+        self.assertEqual(run("off", "--by", "owner").returncode, 0)
+        doc, _ = self.step(NOW + 10000)
+        self.assertEqual((doc["mode"], doc.get("paused"), doc["due"]), ("off", True, {}))
+        self.assertEqual(scheduler.snapshot_digest(doc), {"mode": "off", "due": [], "jams": 0})
+        run("on", "--by", "owner")
+        self.assertEqual(self.step(NOW + 11000)[0]["mode"], "degraded")
+
+    def test_jam_alerts(self):
+        import notify
+        doc = {"enabled": True, "jams": [
+            {"id": "j-J2-ab12", "rule": "J2", "severity": "high", "alert": "high", "sessions": ["API"], "text": "cycle"},
+            {"id": "j-J5-fleet", "rule": "J5", "severity": "high", "alert": None, "sessions": [], "text": "x"},
+            {"id": "j-J4-API-idle", "rule": "J4", "severity": "info", "alert": None, "sessions": ["API"], "text": "x"}]}
+        self.assertEqual([(a["key"], a["level"], a["escalate"]) for a in notify.jam_alerts(doc)],
+                         [("jam:J2:ab12", "high", False)])
+        self.assertEqual(notify.jam_alerts({"enabled": False, "jams": doc["jams"]}), [])
+
+
+if __name__ == "__main__":
+    try:
+        unittest.main(verbosity=2 if "-v" in sys.argv else 1, argv=[sys.argv[0]])
+    finally:
+        shutil.rmtree(TMP, ignore_errors=True)

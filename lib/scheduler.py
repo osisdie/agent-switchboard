@@ -32,6 +32,11 @@ DEFAULTS = {
     "one_pr_per_repo": True,
     "stall_minutes": [45, 90],       # a running task with no progress this long: stuck warn / high
     "idle_with_work_minutes": 30,    # a session idle this long with a ready task: `resume` (info)
+    "advise": True,                  # deliver advisories to sessions; false = shadow mode (board only)
+    "readvise_minutes": 60,          # re-send an advisory nobody answered after this long
+    "max_messages_per_session_hour": 4,
+    "human_wait_minutes": 10,        # J1: every session with work waits on the owner this long
+    "conserve": {"five_hour_pct": 85, "margin_minutes": 20, "weekly_pace_slack_pct": 15},
 }
 STAGE_W = {"plan": .15, "design": .25, "build": .45, "test": .70, "deploy": .85, "production": .85, "maintain": .85}
 SIZE_W = {"S": 1.0, "M": .8, "L": .6}
@@ -43,6 +48,9 @@ RES_STALE_MS = 5 * 60 * 1000         # resources.json older than this: no resour
 RES_SKEW_MS = 30 * 1000              # ... or ahead of the caller's clock by more than this
 RSS_BUCKET_MB = 256                  # process sizes in advisories, so small growth is not a change
 HOUR_MS = 3600 * 1000
+WEEK_MS = 7 * 24 * HOUR_MS
+USAGE_STALE_MS = 15 * 60 * 1000      # usage.json older than this: no usage mode (a limit episode still counts)
+WAIT_RESET_PCT = 95
 # Advisory text never reads like an approval, a deploy order or a board decision.
 BANNED_RE = re.compile(r"approv|deploy|\[BOARD|decision", re.I)
 SAFE_NAME_RE = re.compile(r"[A-Za-z0-9._-]{1,40}")
@@ -60,6 +68,7 @@ def settings(cfg):
     stall = stall if isinstance(stall, list) and len(stall) == 2 else DEFAULTS["stall_minutes"]
     warn_m = _int(stall[0], 45, 1, 10080)
     mh = c.get("max_heavy_concurrent", "auto")
+    cons = c.get("conserve") if isinstance(c.get("conserve"), dict) else {}
     return {
         "enabled": c.get("enabled", True) is not False,
         "stop_own_heavy": c.get("stop_own_heavy", True) is not False,
@@ -68,6 +77,13 @@ def settings(cfg):
         "one_pr_per_repo": c.get("one_pr_per_repo", True) is not False,
         "stall_ms": [warn_m * 60000, max(warn_m, _int(stall[1], 90, 1, 10080)) * 60000],
         "idle_ms": _int(c.get("idle_with_work_minutes"), 30, 1, 10080) * 60000,
+        "advise": c.get("advise", True) is not False,
+        "readvise_ms": _int(c.get("readvise_minutes"), 60, 1, 10080) * 60000,
+        "max_messages": _int(c.get("max_messages_per_session_hour"), 4, 1, 60),
+        "human_wait_ms": _int(c.get("human_wait_minutes"), 10, 0, 10080) * 60000,
+        "conserve": {"five_hour_pct": _int(cons.get("five_hour_pct"), 85, 1, 100),
+                     "margin_ms": _int(cons.get("margin_minutes"), 20, 0, 600) * 60000,
+                     "weekly_slack": _int(cons.get("weekly_pace_slack_pct"), 15, 0, 100)},
     }
 
 
@@ -106,7 +122,8 @@ def clean_task(t):
 def clean_sessions(sessions):
     return [{"code": s["code"], "aliases": [a for a in s.get("aliases") or [] if isinstance(a, str)]
              if isinstance(s.get("aliases"), list) else [], "state": _s(s.get("state")) or "offline",
-             "updated_at": int(_num(s.get("updated_at")))}
+             "updated_at": int(_num(s.get("updated_at"))), "repo": _ref(s.get("repo"), None),
+             "branch": _ref(s.get("branch"), None)}
             for s in _dicts(sessions) if isinstance(s.get("code"), str)]
 
 
@@ -118,6 +135,7 @@ def clean_res(res):
         "enabled": res.get("enabled") is not False, "at": _num(res.get("at"), None),
         "level": res.get("level") if _s(res.get("level")) in LEVELS else None,
         "total_mb": _num(mem.get("total_mb")), "heavy_running": int(_num(res.get("heavy_running"))),
+        "oom": res.get("oom_recent") is True or _num(res.get("oom_kills_delta")) > 0,
         "sessions": [{"code": r["code"], "heavy_n": int(_num(r.get("heavy_n"))), "children": [
             {"class": _s(c.get("class")), "comm": _s(c.get("comm")), "via": _s(c.get("via")),
              "pid": int(_num(c.get("pid"))), "rss_mb": int(_num(c.get("rss_mb"))), "heavy": c.get("heavy") is True}
@@ -142,9 +160,9 @@ def dep_met(dep, by_id):
     if kind == "merge":
         return pr.get("state") == "merged"
     if kind == "deploy":
-        return d.get("stage") == "maintain" or any(
-            isinstance(g, dict) and g.get("gate") == "production" and g.get("status") == "approved"
-            for g in d.get("gates") or [])
+        # Owner decision: deployed means the task reached `maintain` (or is done, above). An approved
+        # production gate only allows the deploy; it never satisfies a deploy dependency.
+        return d.get("stage") == "maintain"
     return False
 
 
@@ -157,6 +175,42 @@ def _resources(res, now):
     if res["at"] is None or not -RES_SKEW_MS <= now - res["at"] <= RES_STALE_MS:
         return None, "stale"
     return res["level"], "ok"
+
+
+def usage_mode(ctx, st, now):
+    """("wait-reset"|"conserve"|None, resets_at, why) from limit.json, usage.json and its burn rate."""
+    ctx = ctx if isinstance(ctx, dict) else {}
+    lim = ctx.get("limit") if isinstance(ctx.get("limit"), dict) else None
+    u = ctx.get("usage") if isinstance(ctx.get("usage"), dict) else {}
+    burn = ctx.get("burn") if isinstance(ctx.get("burn"), dict) else {}
+    win = {k: (u.get(k) if isinstance(u.get(k), dict) else {}) for k in ("five_hour", "seven_day")}
+    fresh = -RES_SKEW_MS <= now - _num(u.get("updated_at"), -10 ** 15) <= USAGE_STALE_MS
+    p5, r5 = _num(win["five_hour"].get("pct"), None), _num(win["five_hour"].get("resets_at"), None)
+    pw, rw = _num(win["seven_day"].get("pct"), None), _num(win["seven_day"].get("resets_at"), None)
+    if lim is not None:
+        return "wait-reset", _num(lim.get("resets_at"), None), "limit"
+    if not fresh:
+        return None, None, None
+    c = st["conserve"]
+    if p5 is not None and p5 >= WAIT_RESET_PCT:
+        return "wait-reset", r5, "5h"
+    if p5 is not None and p5 >= c["five_hour_pct"]:
+        return "conserve", r5, "5h"
+    hit = _num(burn.get("hit_at"), None)
+    if burn.get("status") == "danger" and hit is not None and r5 is not None and hit < r5 - c["margin_ms"]:
+        return "conserve", r5, "burn"
+    if pw is not None and rw is not None:
+        elapsed = min(1.0, max(0.0, 1 - (rw - now) / WEEK_MS))
+        if pw > elapsed * 100 + c["weekly_slack"]:
+            return "conserve", rw, "weekly"
+    return None, None, None
+
+
+def _when(ms):
+    if not ms:
+        return "the reset"
+    import datetime as dt
+    return dt.datetime.fromtimestamp(ms / 1000, dt.timezone.utc).strftime("%H:%M UTC")
 
 
 def _adv(kind, to, task, ref, severity, text, fallback, **extra):
@@ -177,12 +231,17 @@ def _ref(v, fallback):
     return v if isinstance(v, str) and taskstore.REF_RE.fullmatch(v) and ".." not in v else fallback
 
 
-def decide(tasks, sessions, res, st, now):
-    """The scheduling decision. Pure: reads only its arguments, which may hold anything."""
+def decide(tasks, sessions, res, st, now, ctx=None):
+    """The scheduling decision. Pure: reads only its arguments, which may hold anything. `ctx`:
+    {usage: usage.json, burn: usage-samples.json burn, limit: the active limit episode or None,
+    away: owner away, operator_stale: the operator:stale alert is open}."""
     tasks = [t for t in (clean_task(x) for x in (tasks if isinstance(tasks, list) else [])) if t]
     sessions, res = clean_sessions(sessions), clean_res(res)
+    ctx = ctx if isinstance(ctx, dict) else {}
     level, res_state = _resources(res, now)
     lvl = LEVELS.index(level) if level else 0
+    umode, resets_at, uwhy = usage_mode(ctx, st, now)
+    conserve = umode == "conserve"
     code_of, sstate, since = {}, {}, {}
     for s in sessions:
         for a in [s["code"]] + s["aliases"]:
@@ -205,9 +264,11 @@ def decide(tasks, sessions, res, st, now):
     for i, t in sorted(live.items()):
         heavy = t.get("heavy") is True
         age_h = max(0, (now - touched(t)) // HOUR_MS)
-        score = (60 * STAGE_W.get(t.get("stage"), .15) * SIZE_W.get(t.get("size"), .8)
+        # conserve: nearly finished work wins (p_finish weight 90, plan/design -20)
+        score = ((90 if conserve else 60) * STAGE_W.get(t.get("stage"), .15) * SIZE_W.get(t.get("size"), .8)
                  + 15 * min(unblocks.get(i, 0), 3) + 10 * _int(t.get("priority"), 1, 0, 3)
-                 + 2 * min(age_h, 5) - (15 if heavy and lvl >= 1 else 0))
+                 + 2 * min(age_h, 5) - (15 if heavy and lvl >= 1 else 0)
+                 - (20 if conserve and t.get("stage") in ("plan", "design") else 0))
         blocked = []
         if taskstore.status_of(t) == "blocked":
             blocked.append({"kind": "manual", "ref": None})
@@ -232,7 +293,7 @@ def decide(tasks, sessions, res, st, now):
     by_code = {}
     for r in rows.values():
         by_code.setdefault(r["session"], []).append(r)
-    stuck, picks, free_owners = [], {}, []
+    stuck, picks, free_owners, cur_of = [], {}, [], {}
     for code, mine in sorted(by_code.items(), key=lambda kv: kv[0] or ""):
         open_ = sorted((r for r in mine if r["state"] is None), key=rank_key)
         if code is None or sstate.get(code) not in BUSY + FREE:
@@ -240,6 +301,7 @@ def decide(tasks, sessions, res, st, now):
                 r["state"], r["blocked_by"] = "deferred", [{"kind": "session", "ref": code or r["owner"]}]
             continue
         cur = max((r for r in mine if r["state"] != "paused"), key=lambda r: (r["_touched"], r["task"]), default=None)
+        cur_of[code] = cur
         if sstate[code] in BUSY and cur is not None and cur["state"] is None:
             cur["state"] = "run"
             idle = now - cur["_touched"]
@@ -279,6 +341,15 @@ def decide(tasks, sessions, res, st, now):
                     "Task %s is heavy and %s: hold its test runs, builds and browsers; take lighter work first." % (r["task"], reason),
                     "A heavy task of yours has to wait: hold its heavy runs for now; take lighter work first."))
         ready = [r for r in picks[code] if r["state"] is None]
+        if umode == "wait-reset" and ready:        # no new starts until the usage window resets
+            for r in ready:
+                r["state"], r["blocked_by"] = "deferred", [{"kind": "reset", "ref": resets_at}]
+            advisories.append(_adv(
+                "wait-for-reset", code, ready[0]["task"], resets_at, "warn",
+                "The usage window is nearly used up: don't start task %s before %s; finish or pause what runs."
+                % (ready[0]["task"], _when(resets_at)),
+                "The usage window is nearly used up: don't start new work before the reset."))
+            continue
         for n, r in enumerate(ready):
             r["state"] = "ready" if n == 0 else "queued"
             if n:
@@ -348,27 +419,152 @@ def decide(tasks, sessions, res, st, now):
                 "Memory is critical: stop the largest heavy process you started yourself, and re-run it later.",
                 pid=c["pid"], comm=_safe(c["comm"], cls), rss_mb=size(c), **{"class": cls}))
 
+    conds, answer_first = conditions(rows, live, sessions, sstate, cur_of, stuck, picks, free_owners, since,
+                                     st, now, lvl, res, umode, resets_at, ctx)
     queue = sorted(rows.values(), key=lambda r: (STATE_ORDER.index(r["state"]),) + rank_key(r))
     for n, r in enumerate(queue, 1):
         r["rank"] = n
         r.pop("_touched")
     advisories.sort(key=lambda a: (SEVERITY_ORDER.index(a["severity"]), a["to"] or "", a["kind"], a["id"]))
-    body = {"schema_version": SCHEMA_VERSION, "enabled": True, "mode": "degraded" if lvl == 3 else "normal",
+    mode = umode or ("degraded" if lvl == 3 else "normal")
+    body = {"schema_version": SCHEMA_VERSION, "enabled": True, "mode": mode,
+            "usage": {"mode": umode, "why": uwhy, "resets_at": resets_at} if umode else None,
             "level": level, "resources": res_state, "max_heavy": max_heavy, "heavy_used": used,
             "start": [r["task"] for r in queue if r["state"] == "ready"], "queue": queue,
-            "stuck": sorted(stuck, key=lambda s: s["task"]), "advisories": advisories}
+            "stuck": sorted(stuck, key=lambda s: s["task"]), "advisories": advisories,
+            "answer_first": answer_first, "conditions": conds}
     body["digest"] = digest(body)
     return body
 
 
-def off_doc(error=None):
-    """schedule.enabled: false (mode off), or a decision that failed (mode error): no advice at all,
-    rather than old advice that no longer holds."""
+def _cond(rule, scope, severity, sessions, text, alert=True, hold_ms=0, evals=2, **extra):
+    """A jam condition (docs/design J1-J8). Episodes (open after `evals` evaluations and `hold_ms`,
+    closed after 2 clear ones) are kept by lib/advisories.py. alert: raise jam:<rule>:<scope>."""
+    if BANNED_RE.search(text):
+        text = "Jam %s: see the board." % rule
+    c = {"id": "j-%s-%s" % (rule, scope), "rule": rule, "severity": severity, "sessions": sorted(sessions),
+         "text": text, "alert": severity if alert else None, "hold_ms": hold_ms, "evals": evals}
+    c.update(extra)
+    return c
+
+
+def _hash(*parts):
+    return hashlib.sha1("|".join(str(p) for p in parts).encode()).hexdigest()[:10]
+
+
+def conditions(rows, live, sessions, sstate, cur_of, stuck, picks, free_owners, since, st, now, lvl, res,
+               umode, resets_at, ctx):
+    """The jam conditions true right now (J1-J8 but J8, which needs delivery state) and the
+    decisions to answer first. Pure."""
+    out = []
+    # answer_first: pending gate decisions, ranked by the sessions and tasks they hold up
+    hold = {}
+    for r in rows.values():
+        for b in r["blocked_by"]:
+            if b["kind"] == "human" and b["ref"]:
+                h = hold.setdefault(b["ref"], {"sessions": set(), "tasks": set()})
+                h["tasks"].add(r["task"])
+                if r["session"] and cur_of.get(r["session"]) is r:
+                    h["sessions"].add(r["session"])
+    for r in rows.values():                      # one level through dependencies
+        for b in r["blocked_by"]:
+            if b["kind"] == "task" and b["ref"] in rows:
+                for h in hold.values():
+                    if b["ref"] in h["tasks"]:
+                        h["tasks"].add(r["task"])
+    answer_first = sorted(({"decision": d, "unblocks_sessions": len(h["sessions"]), "unblocks_tasks": sorted(h["tasks"])}
+                           for d, h in hold.items()), key=lambda a: (-a["unblocks_sessions"], -len(a["unblocks_tasks"]), a["decision"]))
+
+    def waits_on_human(r, seen=()):
+        for b in r["blocked_by"] if r else []:
+            if b["kind"] == "human" or (b["kind"] == "task" and b["ref"] in rows and b["ref"] not in seen
+                                         and waits_on_human(rows[b["ref"]], seen + (b["ref"],))):
+                return True
+        return False
+    # J1: every live session with work waits on the owner
+    working = [c for c, cur in cur_of.items() if cur is not None and sstate.get(c) != "offline"]
+    if working and all(waits_on_human(cur_of[c]) for c in working):
+        first = answer_first[0]["decision"] if answer_first else None
+        out.append(_cond("J1", "fleet", "info" if ctx.get("away") else "warn", working,
+                         "Every session with work is waiting on you%s." % (": answer %s first" % first if first else ""),
+                         hold_ms=st["human_wait_ms"], decision=first))
+    # J2: a dependency cycle
+    graph = {i: [d["task"] for d in t["depends_on"] if d["task"] in live] for i, t in live.items()}
+    cycles, color = set(), {}
+
+    def dfs(n, path):
+        color[n] = 1
+        for m in graph.get(n, []):
+            if color.get(m) == 1:
+                cycles.add(tuple(sorted(path[path.index(m):])))
+            elif not color.get(m):
+                dfs(m, path + [m])
+        color[n] = 2
+    for n in sorted(graph):
+        if not color.get(n):
+            dfs(n, [n])
+    for cyc in sorted(cycles):
+        owners = {rows[i]["session"] for i in cyc if rows[i]["session"]}
+        out.append(_cond("J2", _hash(*cyc), "high", owners,
+                         "Dependency cycle: %s. Ask the owner which dependency to drop." % " → ".join(cyc + cyc[:1]),
+                         tasks=list(cyc)))
+    # J3a: two live sessions on one repo + branch (same worktree or branch)
+    spots = {}
+    for s in sessions:
+        if s["state"] != "offline" and s["repo"] and s["branch"]:
+            spots.setdefault((s["repo"], s["branch"]), []).append(s["code"])
+    for (repo, br), codes in sorted(spots.items()):
+        if len(codes) >= 2:
+            out.append(_cond("J3a", _hash(repo, br), "high", codes,
+                             "%s work on the same branch %s of %s: one of them should move to its own worktree and branch."
+                             % (" and ".join(sorted(codes)), br, repo), evals=1))
+    # J3b: two open PRs in one repo
+    if st["one_pr_per_repo"]:
+        prs = {}
+        for i, t in live.items():
+            if t["repo"] and t["pr"].get("state") == "open":
+                prs.setdefault(t["repo"], []).append(i)
+        for repo, ids in sorted(prs.items()):
+            if len(ids) >= 2:
+                out.append(_cond("J3b", _hash(repo), "warn", {rows[i]["session"] for i in ids if rows[i]["session"]},
+                                 "%d open PRs in %s (%s): finish one first." % (len(ids), repo, ", ".join(sorted(ids))),
+                                 tasks=sorted(ids)))
+    # J4: stalled work, or an idle session with a ready task
+    for s in stuck:
+        out.append(_cond("J4", s["session"], s["severity"], [s["session"]],
+                         "%s has had no progress on %s for a while." % (s["session"], s["task"]), task=s["task"]))
+    for code in free_owners:
+        ready = [r for r in picks.get(code) or [] if r["state"] == "ready"]
+        if ready and sstate.get(code) in FREE and now - since.get(code, now) >= st["idle_ms"]:
+            out.append(_cond("J4", code + "-idle", "info", [code], "%s is idle with %s ready." % (code, ready[0]["task"]),
+                             alert=False, task=ready[0]["task"]))
+    # J5: resources critical or an OOM kill (alerted as res:*), J6: operator silent (operator:stale)
+    if lvl == 3 or (res and res["oom"]):
+        out.append(_cond("J5", "fleet", "high", [r["session"] for r in rows.values() if r["state"] == "run" and r["session"]],
+                         "Resources are critical%s." % (" after an OOM kill" if res and res["oom"] else ""),
+                         alert=False, evals=1))
+    if ctx.get("operator_stale"):
+        out.append(_cond("J6", "fleet", "high", [], "The operator is silent while something waits to be relayed.",
+                         alert=False, evals=1))
+    # J7: usage starvation with several sessions working; one alert per reset window
+    busy = [c for c, s in sstate.items() if s == "working"]
+    if umode and len(busy) >= 2:
+        out.append(_cond("J7", str(int(resets_at or 0)), "warn", busy,
+                         "Usage is %s and %d sessions are working: let one finish, pause the rest." % (umode, len(busy))))
+    out.sort(key=lambda c: c["id"])
+    return out, answer_first
+
+
+def off_doc(error=None, paused=False):
+    """schedule.enabled: false or `board schedule off` (mode off), or a decision that failed (mode
+    error): no advice at all, rather than old advice that no longer holds."""
     body = {"schema_version": SCHEMA_VERSION, "enabled": error is not None, "mode": "error" if error else "off",
-            "level": None, "resources": None, "max_heavy": None, "heavy_used": None, "start": [], "queue": [],
-            "stuck": [], "advisories": []}
+            "usage": None, "level": None, "resources": None, "max_heavy": None, "heavy_used": None, "start": [],
+            "queue": [], "stuck": [], "advisories": [], "answer_first": [], "due": {}, "jams": []}
     if error:
         body["error"] = error
+    if paused:
+        body["paused"] = True
     body["digest"] = digest(body)
     return body
 
@@ -397,19 +593,66 @@ def write_doc(home, doc):
     os.replace(tmp, path)
 
 
+def context(home, now):
+    """decide()'s ctx from $BOARD_HOME: usage.json, the burn rate, the active limit episode, the
+    owner-away flag and whether operator:stale is open."""
+    lim = read_json(os.path.join(home, "limit.json"))
+    alerts = read_json(os.path.join(home, "alerts.json"))
+    op = alerts.get("operator:stale") if isinstance(alerts, dict) else None
+    samples = read_json(os.path.join(home, "usage-samples.json"))
+    return {"usage": read_json(os.path.join(home, "usage.json")),
+            "burn": samples.get("burn") if isinstance(samples, dict) else None,
+            "limit": lim if isinstance(lim, dict) and lim.get("hit_at") and not lim.get("cleared_at") else None,
+            "away": os.path.exists(os.path.join(home, "owner-away")),
+            "operator_stale": isinstance(op, dict) and not op.get("resolved")}
+
+
+def valid_codes(cfg, sessions):
+    """Who may receive an advisory: fleet.yaml codes and the live sessions' codes."""
+    codes = {s.get("code") for s in (cfg or {}).get("sessions") or [] if isinstance(s, dict)}
+    codes |= {s.get("code") for s in sessions or [] if isinstance(s, dict) and s.get("state") != "offline"}
+    import advisories
+    return {c for c in codes if isinstance(c, str) and advisories.CODE_RE.fullmatch(c)}
+
+
 def step(cfg, home, sessions, tasks, now):
-    """The collector's step: decide, and write scheduler.json when the decision changed.
-    Returns (doc, written)."""
+    """The collector's step: decide, fold in the delivery and jam state (schedule-state.json),
+    and write scheduler.json when the decision changed. Returns (doc, written)."""
+    import advisories
     st = settings(cfg)
-    try:
-        doc = decide(tasks, sessions, read_json(os.path.join(home, "resources.json")), st, now) if st["enabled"] else off_doc()
-    except Exception as exc:  # noqa: BLE001 - a bug must not leave stale advice in place
-        doc = off_doc(type(exc).__name__)
-    old = read_json(os.path.join(home, FILE))
-    if isinstance(old, dict) and old.get("digest") == doc["digest"] and digest(old) == doc["digest"]:
-        return old, False
-    write_doc(home, dict(doc, generated_at=now))
-    return doc, True
+    with advisories.locked(home, wait_s=2.0):
+        paused = advisories.paused(home)
+        state = advisories.load_state(home)
+        try:
+            if not st["enabled"] or paused:
+                doc = off_doc(paused=paused)
+            else:
+                doc = decide(tasks, sessions, read_json(os.path.join(home, "resources.json")), st, now,
+                             context(home, now))
+                try:
+                    import notify
+                    quiet = notify.in_quiet_hours(notify.load_config(), now)
+                except Exception:  # noqa: BLE001 - no alerting config: not quiet
+                    quiet = False
+                new_state = advisories.advance(doc, state, st, valid_codes(cfg, sessions), now, quiet)
+                if new_state != state:
+                    advisories.write_json(os.path.join(home, advisories.STATE_FILE), new_state)
+        except Exception as exc:  # noqa: BLE001 - a bug must not leave stale advice in place
+            doc = off_doc(type(exc).__name__)
+        doc["digest"] = digest(doc)
+        old = read_json(os.path.join(home, FILE))
+        if isinstance(old, dict) and old.get("digest") == doc["digest"] and digest(old) == doc["digest"]:
+            return old, False
+        write_doc(home, dict(doc, generated_at=now))
+        return doc, True
+
+
+def snapshot_digest(doc):
+    """The snapshot's `schedule` field: changes only when the mode, the sessions with advice due
+    or the open jams change, so the operator's Monitor wakes for those alone."""
+    if not isinstance(doc, dict) or not doc.get("enabled"):
+        return {"mode": (doc or {}).get("mode") or "off", "due": [], "jams": 0} if isinstance(doc, dict) else None
+    return {"mode": doc.get("mode"), "due": sorted(doc.get("due") or {}), "jams": len(doc.get("jams") or [])}
 
 
 def show(argv, home, out=sys.stdout):
@@ -421,18 +664,25 @@ def show(argv, home, out=sys.stdout):
         out.write("no schedule yet (the collector writes %s)\n" % FILE)
         return 0
     if not doc.get("enabled"):
-        out.write("scheduler off (fleet.yaml schedule.enabled: false)\n")
+        out.write("scheduler off (%s)\n" % ("board schedule off" if doc.get("paused") else "fleet.yaml schedule.enabled: false"))
         return 0
-    out.write("mode %s · resources %s%s · heavy %s/%s · start: %s\n" % (
+    out.write("mode %s · resources %s%s · heavy %s/%s · start: %s · due: %s\n" % (
         doc.get("mode"), doc.get("resources"), (" (%s)" % doc["level"]) if doc.get("level") else "",
-        doc.get("heavy_used"), doc.get("max_heavy"), ", ".join(doc.get("start") or []) or "-"))
+        doc.get("heavy_used"), doc.get("max_heavy"), ", ".join(doc.get("start") or []) or "-",
+        ", ".join(sorted(doc.get("due") or {})) or "-"))
     for r in doc.get("queue") or []:
         out.write("%3s %-8s %-28s %-10s %4s %s%s\n" % (
             r.get("rank"), r.get("state"), r.get("task"), r.get("session") or r.get("owner") or "-", r.get("score"),
             ",".join("%s:%s" % (b.get("kind"), b.get("ref")) for b in r.get("blocked_by") or []) or "",
             (" stuck:" + r["stuck"]) if r.get("stuck") else ""))
     for a in doc.get("advisories") or []:
-        out.write("  [%s] %s → %s: %s\n" % (a.get("severity"), a.get("kind"), a.get("to"), a.get("text")))
+        out.write("  [%s] %s → %s (%s): %s\n" % (a.get("severity"), a.get("kind"), a.get("to"),
+                                                (a.get("delivery") or {}).get("state", "-"), a.get("text")))
+    for j in doc.get("jams") or []:
+        out.write("  jam %s %s [%s]: %s\n" % (j.get("rule"), j.get("id"), j.get("severity"), j.get("text")))
+    for a in doc.get("answer_first") or []:
+        out.write("  answer first: %s (holds %d session(s), %d task(s))\n" % (
+            a.get("decision"), a.get("unblocks_sessions") or 0, len(a.get("unblocks_tasks") or [])))
     return 0
 
 

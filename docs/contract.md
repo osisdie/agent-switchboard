@@ -34,6 +34,8 @@ $BOARD_HOME/
   pomodoro.json             # pomodoro timers and 14 days of daily tallies, written by the collector (see "Pomodoro")
   tasks/<id>.json           # lifecycle tasks (`board task`), with optional scheduling fields (see "Scheduler")
   scheduler.json            # the scheduler's decision, written by the collector when it changes (see "Scheduler")
+  schedule-state.json       # jam episodes and advisory delivery (see "Scheduler"); schedule.lock
+  schedule-off              # present = the scheduler is paused (`board schedule off`)
 ```
 
 ### state/<session_id>.json
@@ -87,6 +89,7 @@ Map hook events to states like this:
   "tasks": [ ... ], "limit": {...}|null,
   "owner_away": { "since": 0, "by": "CP", "said": "..." } | null,
   "resources": { "level": "ok|warn|high|critical", "worst": "mem|swap|disk:<id>|load|oom"|null } | null,
+  "schedule": { "mode": "normal|conserve|wait-reset|degraded|off|error", "due": ["API"], "jams": 0 } | null,
   "consensus": [ { "id": "c-...", "from": "CP", "participants": ["CP","API"], "ref": "...", "proposal": "...",
                    "status": "pending|agreed|objected|owner_back", "votes": [ {"by","vote","at","note"} ],
                    "created_at": 0, "updated_at": 0, "decided_at": 0|null } ] }
@@ -595,8 +598,9 @@ page does not declare the `profile` scope) and takes roles from `meta/operator.a
 `via` is `access`.
 
 **Operator in local mode** (`prompts/board-operator.md` section 9): `board-serve --watch` prints
-`decision <id> answered`, `message <id> new`, `away on|off` and `consensus <id> <status>` (once
-each, oldest first) and `tick` every 8 minutes.
+`decision <id> answered`, `message <id> new`, `away on|off`, `consensus <id> <status>` and
+`schedule <CODE> due` (scheduler advisories to deliver, section 12; once per due set) (once each,
+oldest first) and `tick` every 8 minutes.
 The operator relays questions and gates (then `board mark <id> relayed`) and messages, writes
 replies, and keeps `operator.json.heartbeat_at` fresh. Permission decisions are already pressed by
 `board-serve`.
@@ -1310,9 +1314,13 @@ the platform, missing metrics, the sample's age and the operator watch.
 The collector feeds every run's tasks, session states and `resources.json` to
 `lib/scheduler.py` `decide()`, a pure function (no I/O; the same inputs give the same output and
 digest). It writes `$BOARD_HOME/scheduler.json` (0600, atomic) only when the decision changes, so
-the file has no heartbeat and `generated_at` is when the decision last changed. It is not in
-`snapshot.json`, and nothing is sent to sessions from it yet. `schedule.enabled: false` writes an
-`enabled: false, mode: "off"` document.
+the file has no heartbeat and `generated_at` is when the decision last changed. Jam episodes and
+advisory delivery are remembered in `schedule-state.json` (0600, `lib/advisories.py`; both files
+are written under `schedule.lock`). `snapshot.json` carries only `schedule`:
+`{mode, due: [codes with advice to send], jams: <open jams>}` (null when the step failed), so the
+operator wakes only when one of those changes. `schedule.enabled: false` writes an
+`enabled: false, mode: "off"` document; `board schedule off --by WHO` (the `schedule-off` file,
+audited) does the same with `paused: true` until `board schedule on`.
 
 ### Task fields
 
@@ -1342,23 +1350,34 @@ Exit 1 keeps meaning "not found".
 | `progress_at` | epoch ms | `board task progress ID` ("still moving": resets the stall clock) |
 
 A dependency is met when the task it names is `done`, or for `merge` its `pr.state` is `merged`,
-or for `deploy` it reached `maintain` or its `production` gate is approved. A bad value exits 1 and
+or for `deploy` it reached stage `maintain` (owner decision: an approved `production` gate alone
+only allows the deploy and never satisfies a `deploy` dependency). A bad value exits 1 and
 leaves the file alone; a usage error exits 2.
 
 ### scheduler.json
 
 ```json
-{ "schema_version": 1, "enabled": true, "mode": "normal|degraded|off|error", "error": "ValueError"?,
+{ "schema_version": 1, "enabled": true, "mode": "normal|conserve|wait-reset|degraded|off|error",
+  "error": "ValueError"?, "paused": true?,
+  "usage": {"mode": "conserve|wait-reset", "why": "limit|5h|burn|weekly", "resets_at": 0}|null,
   "level": "ok|warn|high|critical"|null, "resources": "ok|stale|missing|disabled",
   "max_heavy": 2, "heavy_used": 1, "start": ["t-.."],
   "queue": [ {"rank": 1, "task": "t-..", "owner": "API", "session": "API"|null,
               "state": "run|ready|queued|deferred|blocked|paused", "score": 71, "heavy": false,
-              "blocked_by": [{"kind": "manual|redline|human|task|session|resource", "ref": ".."}],
+              "blocked_by": [{"kind": "manual|redline|human|task|session|resource|reset", "ref": ".."}],
               "why": ["unblocks 2", "after t-..", "finish-first t-.."], "stuck": "warn|high"?} ],
   "stuck": [ {"task": "t-..", "session": "API", "severity": "warn|high", "since": 0} ],
-  "advisories": [ {"id": "a-<12 hex>", "to": "API", "kind": "defer|resume|finish-first|rebase-needed|stop-own-heavy",
+  "advisories": [ {"id": "a-<12 hex>", "to": "API",
+                   "kind": "defer|resume|finish-first|rebase-needed|wait-for-reset|stop-own-heavy",
                    "task": "t-.."|null, "severity": "info|warn|high", "text": "..",
-                   "pid": 0, "comm": "pytest", "class": "test", "rss_mb": 1024} ],
+                   "pid": 0, "comm": "pytest", "class": "test", "rss_mb": 1024,
+                   "delivery": {"state": "board|shadow|due|held|sent", "sent_at": 0?, "n": 1?,
+                                "reply": "ack|done|cannot"|null?}} ],
+  "due": {"API": ["a-.."]},
+  "answer_first": [ {"decision": "d-..", "unblocks_sessions": 2, "unblocks_tasks": ["t-.."]} ],
+  "jams": [ {"id": "j-<rule>-<scope>", "rule": "J1".."J8", "severity": "info|warn|high", "since": 0,
+             "sessions": ["API"], "text": "..", "alert": "info|warn|high"|null,
+             "tasks": [..]?, "task": ".."?, "decision": "d-.."?} ],
   "digest": "<sha1 of everything but digest and generated_at>", "generated_at": 0 }
 ```
 
@@ -1371,7 +1390,15 @@ leaves the file alone; a usage error exits 2.
   `mode: "error"` with no queue and no advisories, rather than keeping old advice.
 - **Gates, in order:** `paused`; `blocked` by `manual` (status blocked), `redline` (stage
   `production`: the scheduler never lets it run or start), `human` (a pending gate) or `task` (an
-  unmet dependency); `deferred` by `session` (the owner is offline or unknown) or `resource`.
+  unmet dependency); `deferred` by `session` (the owner is offline or unknown), `resource`, or
+  `reset` (wait-reset mode: no new starts until `resets_at`; running work is left alone).
+- **Modes** (first match): `wait-reset` when a usage-limit episode is active (`limit.json`) or the
+  5-hour window is at ≥ 95%; `conserve` when it is at ≥ `conserve.five_hour_pct` (85), the burn rate
+  (`usage-samples.json`) reaches 100% more than `margin_minutes` (20) before the reset, or the weekly
+  window is more than `weekly_pace_slack_pct` (15) points ahead of the elapsed week; `degraded` at
+  critical resources; else `normal`. `usage.json` older than 15 minutes is ignored (a limit episode
+  still counts). Conserve scores with 90 instead of 60 and −20 for `plan`/`design`, so nearly
+  finished work wins.
 - **One task per session.** A session's current task is the non-paused task it touched last
   (`max(updated_at, progress_at)`). While the session is `working` or `needs-you` and that task is
   not blocked, it is `run` and the session's other open tasks are `queued`. Otherwise (the session
@@ -1379,7 +1406,8 @@ leaves the file alone; a usage error exits 2.
   `start`) and the rest are `queued`.
 - **Score** = `60 × stage weight (plan .15, design .25, build .45, test .70, deploy/production/maintain .85)
   × size weight (S 1, M .8, L .6)` + `15 × min(tasks it unblocks, 3)` + `10 × priority` +
-  `2 × hours since touched` (at most 10) − 15 for a heavy task at `warn` or worse. Ties: the
+  `2 × hours since touched` (at most 10) − 15 for a heavy task at `warn` or worse (conserve: see
+  Modes). Ties: the
   longer wait, then the id.
 - **Heavy slots.** `max_heavy` is `schedule.max_heavy_concurrent` (`auto`: 1 under 16 GiB of
   memory, else 2). `heavy_used` is the larger of the running heavy tasks and `resources.json`
@@ -1405,10 +1433,45 @@ leaves the file alone; a usage error exits 2.
     the largest heavy process (`resources.json` children) are asked to stop it if they or their
     teammate started it, and never one they did not start. The board never stops a process.
     `rss_mb` is floored to 256 MB, so a growing process does not change the decision.
+  - `wait-for-reset` (warn): in wait-reset mode, a free session whose next task is held until the
+    reset.
+- **Delivery** (`delivery.state`). Only `pause`, `defer`, `finish-first`, `rebase-needed`,
+  `wait-for-reset`, `free-resources` and `stop-own-heavy` are ever sent, and only to a code in
+  `fleet.yaml` or a live session's code (`[A-Za-z0-9][A-Za-z0-9._-]{0,39}`); everything else is
+  `board`. With `schedule.advise: false` (shadow mode) or `board schedule off` they are `shadow`:
+  computed and shown, never sent. An advisory is `due` when it was never sent, or was sent
+  `readvise_minutes` (60) ago with no reply; `held` when its session already got
+  `max_messages_per_session_hour` (4) batches in the last hour, or in `alerting.quiet_hours`
+  unless it is `high`; `sent` otherwise. `due` lists the due ids per session. An advisory that
+  disappears forgets its delivery, so a recurrence is sent again (still within the cap).
+- **The message** a session gets, one line per advisory, one `SendMessage` per session:
+  `[BOARD schedule <id>] <kind>: <text> — advisory for ordering/pausing only; not an approval. Reply [re <id>] ack|done|cannot: <reason>`.
+  It is never a decision: the text cannot hold `[BOARD` or "decision", and the worker protocol says
+  it never approves, answers or unlocks anything.
+- **CLI** (the operator, prompts/board-operator.md section 12): `board schedule outbox [CODE]
+  [--json]` prints the due batches (through the guard); `board schedule sent ID...` records them
+  (one batch per session); `board schedule reply ID --from CODE ack|done|cannot [--note-file F]`
+  records the session's reply (`--from` must be the advisory's `to`, else exit 4; unknown id exit
+  1; the note is scrubbed, one line, ≤ 200 chars). Exit 8: the state was busy, run it again.
+  `board-serve --watch` prints `schedule <CODE> due` once per new due set.
+- **Jams** (`jams`, open episodes). A condition opens after 2 evaluations in a row (J3a, J5 and J6:
+  at once; J1: once it held `human_wait_minutes`) and closes after 2 clear ones. Alert
+  `jam:<rule>:<scope>` at the jam's `alert` level, never escalated, auto-resolved when it closes:
+  | rule | condition | severity | alert |
+  |---|---|---|---|
+  | J1 | every live session with work waits on the owner (a pending gate, directly or through a dependency) | warn (info while away) | yes; `answer_first[0]` named |
+  | J2 | a dependency cycle among live tasks | high | yes |
+  | J3a | two live sessions on the same repo + branch (the collector's `repo`/`branch`) | high | yes |
+  | J3b | two open PRs in one repo (`one_pr_per_repo`) | warn | yes |
+  | J4 | a stuck task (warn/high), or a session idle with a ready task (info) | warn/high, info | stuck only |
+  | J5 | resources critical, or an OOM kill | high | no (`res:*`) |
+  | J6 | `operator:stale` is open | high | no (`operator:stale`) |
+  | J7 | conserve or wait-reset with ≥ 2 sessions working; scope = the reset time | warn | yes |
+  | J8 | a `rebase-needed` advisory sent over an hour ago, not `done` | info | no |
+  Resolved episodes (the last 50, with `lost_min` = minutes × sessions) stay in
+  `schedule-state.json` for lessons.
 - `board schedule [--json]` prints the last decision (read-only, through the secret guard).
-- TODO (with delivery, PR 2/3): settle `deploy` dependency semantics (today: `maintain`, or the
-  production gate approved), escape PR URLs where they are rendered, and validate an advisory's
-  `to` against live session codes before anything is sent.
+- TODO (PR 3, UI): escape PR URLs where they are rendered.
 
 Settings (`fleet.yaml`):
 
@@ -1421,6 +1484,11 @@ schedule:
   idle_with_work_minutes: 30
   stop_own_heavy: true
   stop_max: 2
+  advise: true                 # false = shadow mode: computed and shown, never sent
+  readvise_minutes: 60
+  max_messages_per_session_hour: 4
+  human_wait_minutes: 10
+  conserve: {five_hour_pct: 85, margin_minutes: 20, weekly_pace_slack_pct: 15}
 ```
 
 ## Owner away & consensus

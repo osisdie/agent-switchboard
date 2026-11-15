@@ -1036,6 +1036,43 @@ def _sync_resources_now(data, snap, now, fcfg=None):
     return new
 
 
+# ------------------------------------------------------------------ scheduler jams (J1-J8)
+# scheduler.json `jams` (lib/scheduler.py + lib/advisories.py) -> jam:<rule>:<scope>, opened and
+# auto-resolved here. J5/J6 carry no alert (res:* and operator:stale cover them); advisories never alert.
+
+def jam_alerts(doc):
+    out = []
+    if not isinstance(doc, dict) or not doc.get("enabled"):
+        return out
+    for j in doc.get("jams") or []:
+        if not isinstance(j, dict) or j.get("alert") not in ("info", "warn", "high") or not isinstance(j.get("id"), str):
+            continue
+        rule = str(j.get("rule"))
+        scope = j["id"][len("j-%s-" % rule):] if j["id"].startswith("j-%s-" % rule) else j["id"]
+        who = ", ".join(str(x) for x in j.get("sessions") or [])
+        out.append({"level": j["alert"], "key": "jam:%s:%s" % (rule, scope), "kind": "jam", "escalate": False,
+                    "repeat": False, "title": "Jam %s: %s" % (rule, j.get("text") or ""),
+                    "body": ("Sessions: %s." % who) if who else ""})
+    return out
+
+
+def _sync_jams(data, now):
+    try:
+        want = {a["key"]: a for a in jam_alerts(read_json(os.path.join(home(), "scheduler.json")))}
+        for key, e in data.items():
+            if key.startswith("jam:") and key not in want and not e.get("resolved"):
+                e["resolved"] = True
+                if not e.get("acked_at"):
+                    e["acked_at"], e["acked_by"] = now, "auto"
+        for key, a in want.items():
+            e = data.get(key)
+            if e is None or e.get("resolved"):
+                data[key] = _open_episode(None, a, now)
+    except Exception as exc:  # noqa: BLE001 - never stops the tick
+        log_event({"ts": now, "type": "alert", "key": "jam:*", "channel": None, "level": None, "ok": False,
+                   "error": "jam sync: %s: %s" % (type(exc).__name__, exc)})
+
+
 def baseline(now=None, cfg=None):
     """Treat every condition open right now as already known: open alerts for them (as tick()
     would) and ack them with acked_by="baseline", without delivering anything. Only conditions
@@ -1053,6 +1090,7 @@ def baseline(now=None, cfg=None):
                 _sync_snapshot(st.data, snap, now)
             _sync_usage(st.data, usage, cfg, now)
             _sync_resources(st.data, snap, now)
+            _sync_jams(st.data, now)
             for key, e in st.data.items():
                 if not e.get("acked_at") and not e.get("resolved"):
                     e["acked_at"] = now
@@ -1088,6 +1126,7 @@ def tick(now=None, env=None, cfg=None):
                 _sync_snapshot(st.data, snap, now)
             _sync_usage(st.data, usage, cfg, now)
             _sync_resources(st.data, snap, now)
+            _sync_jams(st.data, now)
             for key, e in st.data.items():
                 if e.get("acked_at") or e.get("resolved"):
                     continue

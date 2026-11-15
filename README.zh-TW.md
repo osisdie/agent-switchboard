@@ -321,7 +321,11 @@ flowchart LR
   和狀態。collector 把這些、各 session 的狀態和資源等級交給一個確定性的排程器（`lib/scheduler.py`，
   零 token）。只有決定改變時它才寫 `scheduler.json`：哪些任務現在可以開始、排好名次的佇列、卡住的任務，
   以及建議。記憶體到 high 時，重的任務要等。到 critical 時，會請 session 停掉它自己啟動的重型程序；
-  看板從不停掉任何程序。建議目前只顯示出來（`board schedule`），之後才會送給各 session。
+  看板從不停掉任何程序。它也追蹤用量（`conserve` 和 `wait-reset` 模式）和卡關：所有人都在等你（會指出
+  先回答哪個決策）、相依循環、兩個 session 在同一個 branch、同一個 repo 有兩個開著的 PR、停滯的工作等，
+  以 `jam:*` 通知。operator 會把建議用 `[BOARD schedule <id>]` 訊息送給各 session：只管順序和節奏，
+  永遠不是核准，每個 session 每小時最多 4 則。`schedule.advise: false` 只顯示不送出；
+  `board schedule off` 暫停排程。
   ```bash
   board task set <task-id> --repo shop --branch feat/export --size M --heavy yes --priority 2
   board task dep <task-id> --on <other-task> --kind merge

@@ -1627,7 +1627,8 @@ class Server(http.server.ThreadingHTTPServer):
 def actionable(home):
     """What a local-mode operator has to relay: answered question/gate decisions, new messages,
     the owner-away state (`away on|off`, broadcast to every session when it changes) and each
-    consensus status (`consensus <id> <status>`, mirrored, never relayed as a decision)."""
+    consensus status (`consensus <id> <status>`, mirrored, never relayed as a decision) and each
+    session with scheduler advisories to send (`schedule <CODE> due`, board schedule outbox)."""
     out = []
     rec = away.away_record(home)
     if rec:
@@ -1648,6 +1649,12 @@ def actionable(home):
         m = read_json(path)
         if isinstance(m, dict) and m.get("status") == "new":
             out.append((as_int(m.get("created_at")), "message %s new" % m.get("id"), ("m", m.get("id"))))
+    sched = read_json(os.path.join(home, "scheduler.json"))
+    if isinstance(sched, dict) and isinstance(sched.get("due"), dict):
+        for code, ids in sorted(sched["due"].items()):    # advisories to send (board schedule outbox)
+            if isinstance(ids, list) and ids and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,39}", str(code)):
+                out.append((as_int(sched.get("generated_at")), "schedule %s due" % code,
+                            ("s", code, tuple(str(i) for i in ids))))
     out.sort(key=lambda x: x[0])
     return [(line, key) for _, line, key in out]
 
@@ -1680,7 +1687,7 @@ def main(argv):
     ap.add_argument("--check", action="store_true", help="print the resolved settings and exit")
     ap.add_argument("--quiet", action="store_true", help="no access log")
     ap.add_argument("--watch", action="store_true",
-                    help="do not serve: print 'decision ID answered' / 'message ID new' lines for the "
+                    help="do not serve: print 'decision ID answered' / 'message ID new' / 'schedule CODE due' lines for the "
                          "local-mode operator's Monitor, plus 'tick' every --tick seconds")
     ap.add_argument("--once", action="store_true", help="with --watch: print what is open now and exit")
     ap.add_argument("--tick", type=int, default=480, help="with --watch: heartbeat tick seconds (0 = off)")

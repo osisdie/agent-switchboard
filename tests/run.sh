@@ -1782,12 +1782,26 @@ eq "the waiting ask then creates decision and gate" "$r1,$(jq -r --arg g "$gw" '
 sf="$BOARD_HOME/scheduler.json"
 eq "scheduler.json written, mode 0600" "$(stat -c %a "$sf" 2>/dev/null)" "600"
 eq "scheduler queue has the live task only" "$(jq -r '[.queue[].task] | join(",")' "$sf")" "$tid"
-eq "snapshot has no schedule field" "$(jq -r 'has("schedule") or has("scheduler")' "$BOARD_HOME/snapshot.json")" "false"
+eq "snapshot carries only the schedule digest" "$(jq -c '.schedule | keys' "$BOARD_HOME/snapshot.json")" '["due","jams","mode"]'
 gen="$(jq -r .generated_at "$sf")"
 "$REPO/bin/board-collect" --once --no-notify
 eq "scheduler.json not rewritten without a change" "$(jq -r .generated_at "$sf")" "$gen"
 "$B" schedule | grep -q "^mode " && ok "board schedule" || bad "board schedule" "$("$B" schedule)"
 eq "board schedule --json" "$("$B" schedule --json | jq -r .digest)" "$(jq -r .digest "$sf")"
+eq "schedule outbox empty" "$("$B" schedule outbox --json)" "{}"
+"$B" schedule sent nope >/dev/null 2>&1; eq "schedule sent: bad id is a usage error" "$?" "2"
+"$B" schedule sent a-0123456789ab >/dev/null 2>&1; eq "schedule sent: unknown advisory" "$?" "1"
+"$B" schedule reply a-0123456789ab --from CP ack >/dev/null 2>&1; eq "schedule reply: never sent" "$?" "1"
+"$B" schedule reply a-0123456789ab --from CP maybe >/dev/null 2>&1; eq "schedule reply: bad kind" "$?" "2"
+"$B" schedule off >/dev/null 2>&1; eq "schedule off needs --by" "$?" "2"
+"$B" schedule off --by u-owner >/dev/null
+"$REPO/bin/board-collect" --once --no-notify
+eq "schedule off pauses it" "$(jq -r '[.mode, .paused] | map(tostring) | join(",")' "$sf"),$(jq -r .schedule.mode "$BOARD_HOME/snapshot.json")" "off,true,off"
+eq "schedule off is audited" "$(jq -rs '[.[] | select(.type=="schedule")] | last | .action + "," + .by' "$BOARD_HOME/events.jsonl")" "off,u-owner"
+"$B" schedule | grep -q "board schedule off" && ok "board schedule says it is paused" || bad "board schedule says it is paused" "$("$B" schedule)"
+"$B" schedule on --by u-owner >/dev/null
+"$REPO/bin/board-collect" --once --no-notify
+eq "schedule on resumes it" "$(jq -r .mode "$sf")" "normal"
 rm -f "$tf2"
 cp "$T/fleet.base.yaml" "$BOARD_CONFIG_DIR/fleet.yaml"
 

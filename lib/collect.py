@@ -41,7 +41,8 @@ Usage: collect.py [--no-notify] [--baseline] [--verbose] [--apply-rc]
   --auto` in the background, under its own lock and retry rules.
 - Scheduling decision: every run feeds the tasks, the session states and resources.json to
   lib/scheduler.py (a pure function) and writes $BOARD_HOME/scheduler.json only when the decision
-  changed. Nothing is sent from it yet, and it never enters the snapshot.
+  changed; jam episodes and advisory delivery live in schedule-state.json (lib/advisories.py).
+  The snapshot only carries `schedule`: {mode, due (sessions with advice to send), jams (open)}.
 - Pomodoro tallies: every run's session states advance each session's pomodoro timer
   (lib/pomodoro.py) in $BOARD_HOME/pomodoro.json, never in the snapshot. --no-notify / --baseline
   also hold its milestone notification (off unless fleet.yaml pomodoro.notify).
@@ -750,8 +751,10 @@ def main(argv):
     except Exception as exc:  # noqa: BLE001 - never breaks the collector
         if verbose:
             print("pomodoro: %s: %s" % (type(exc).__name__, exc))
+    snap["schedule"] = None
     try:  # the scheduling decision (lib/scheduler.py): scheduler.json, written only when it changes
-        _, wrote = scheduler.step(cfg, home, sessions, tasks, res_now)
+        sdoc, wrote = scheduler.step(cfg, home, sessions, tasks, res_now)
+        snap["schedule"] = scheduler.snapshot_digest(sdoc)   # mode, sessions with advice due, open jams
         if verbose and wrote:
             print("scheduler: updated")
     except Exception as exc:  # noqa: BLE001 - never breaks the collector

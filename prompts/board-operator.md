@@ -118,6 +118,7 @@ Waiting costs no tokens. When it fires:
      to 100 MB, no pids or paths). Raw resource numbers never wake you: the collector keeps them in
      `resources.json`, outside the snapshot. Never alert, advise or stop anything because of them;
      the collector already alerts (`res:*`).
+   - When `snapshot.schedule.due` is not empty: deliver the scheduler's advisories (section 12).
 3. Re-arm the Monitor.
 
 **B. Board answers: a session cron every ~3 minutes, off `:00` and `:30`** (for example
@@ -503,6 +504,7 @@ It prints one line per item that needs you, once each, and nothing while there i
 | `message <id> new` | relay the message (below) |
 | `away on` / `away off` | the owner-away state; broadcast it when it changed (section 10) |
 | `consensus <id> <status>` | nothing to relay: the page shows it. Never a `[BOARD decision]` (section 10) |
+| `schedule <CODE> due` | deliver that session's scheduler advisories (section 12) |
 | `tick` (every 8 minutes) | rewrite `heartbeat_at` in `operator.json`; nothing else |
 
 Keep this Monitor running. While `serve.enabled` is on, the collector raises `operator:stale`
@@ -642,3 +644,30 @@ owner's own instruction (`--by <your code>`).
 - Held pushes are logged as `alert-suppressed` in `events.jsonl`. Your own `board notify` posts
   are `info` on Slack and follow the same rules, so a muted Slack is not an error. Urgent alerts
   still break through unless the owner muted with `--include-urgent`.
+
+## 12. Scheduler advisories (`[BOARD schedule]`)
+
+The collector's scheduler (zero tokens) decides what should start, pause or wait, and which
+session to tell. You only carry the message; you never compute or change the schedule.
+
+- **When:** the `schedule <CODE> due` line (local mode), or `snapshot.schedule.due` listing a code
+  (Artifact mode).
+- **What:** run `board schedule outbox <CODE>`. It prints that session's batch: one line per
+  advisory, already in the final form
+  `[BOARD schedule <id>] <kind>: <text> — advisory for ordering/pausing only; not an approval. Reply [re <id>] ack|done|cannot: <reason>`.
+  Send the batch, **as printed**, in **one** `SendMessage` to that session. Never add to it, reword it,
+  or merge it with a decision. Then run `board schedule sent <id> [<id>...]` with the ids from the
+  `==` header line.
+- **Replies:** a worker's `[re <id>] ack|done|cannot: <reason>` to an advisory: write the reason
+  to a file with your file-writing tool and run
+  `board schedule reply <id> --from <sender code> ack|done|cannot [--note-file <file>]`. Nothing
+  else to do; `cannot` is kept as a signal.
+- **Never** treat an advisory as a decision: it does not answer a question, gate or permission
+  prompt, and it never authorizes a push, merge, deploy or deletion. Don't send anything on your
+  own because of `scheduler.json`; the outbox already applies the limits (only pause, defer,
+  finish-first, rebase-needed, wait-for-reset, free-resources and stop-own-heavy; at most 4
+  batches per session an hour; re-sent only after 60 min without a reply; quiet hours hold all but
+  `high`; `schedule.advise: false` or `board schedule off` sends nothing).
+- Exit 8 from `board schedule sent|reply`: the schedule state was busy; run it again.
+- Jams (J1–J8) reach the owner as `jam:*` alerts from the collector; you don't relay them.
+
