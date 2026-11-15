@@ -182,7 +182,71 @@ class Engine(unittest.TestCase):
         self.assertEqual(view["sessions"]["WEB"]["done"], 2)
         self.assertFalse(view["sessions"]["API"]["running"])
         self.assertTrue(view["sessions"]["OPS"]["running"])
-        self.assertEqual(view["days"][-1]["sessions"], {"API": 1, "OPS": 1, "WEB": 2})
+        self.assertNotIn("sessions", view["days"][-1])    # the board view drops the per-day maps
+        raw = pomodoro.raw_view(dict(doc, settings={"tz": "UTC"}), t)
+        self.assertEqual(raw["days"][-1]["sessions"], {"API": 1, "OPS": 1, "WEB": 2})
+
+
+class BoundedView(unittest.TestCase):
+    """However many teammates came and went, the board view stays bounded and its totals exact."""
+
+    def big_doc(self, now, leads=20, per=70):
+        day = pomodoro.day_of(now, None)
+        sessions, per_day = {}, {}
+        for i in range(leads):
+            lead = "S%02d" % i
+            per_day[lead] = {"done": i % 3, "focus_ms": (i % 3) * 25 * MIN + 60000}
+            sessions[lead] = {"state": "working" if i % 2 else "done", "acc": 5 * MIN, "away_since": None, "done_at": None, "seen_at": now}
+            for j in range(per):
+                k = "%s/tm-%03d" % (lead, j)
+                if j % 5 == 0:   # gone, nothing today, no progress: no row at all
+                    per_day.setdefault(k, {"done": 0, "focus_ms": 0})
+                    continue
+                per_day[k] = {"done": j % 4, "focus_ms": (j % 4) * 25 * MIN + j * 1000}
+                if j % 7 == 0:   # some still run
+                    sessions[k] = {"state": "working", "acc": 3 * MIN, "away_since": None, "done_at": None, "seen_at": now}
+        return {"version": 2, "at": now, "settings": {"tz": "UTC", "mode": "accumulate"}, "sessions": sessions,
+                "days": {day: per_day}, "notified": {}}
+
+    def test_cap_and_others_keep_the_totals(self):
+        now = T0 + 6 * 3600 * SEC
+        doc = self.big_doc(now)
+        raw = pomodoro.raw_view(doc, now)
+        view = pomodoro.board_view(doc, now)
+        self.assertEqual(view["fleet"]["done"], raw["fleet"]["done"])
+        self.assertEqual(view["days"][-1]["done"], raw["days"][-1]["done"])
+        # the page's sums over the rows: the 🍅 exactly, the focus once each running stretch is added back
+        self.assertEqual(sum(r["done"] for r in view["sessions"].values()), raw["fleet"]["done"])
+        live = sum(now - max(r["started_at"], view["day_start"]) for r in view["sessions"].values() if r["running"])
+        self.assertEqual(sum(r["focus_ms"] for r in view["sessions"].values()) + live, raw["fleet"]["focus_ms"])
+        self.assertEqual(view["fleet"]["focus_ms"] + live, raw["fleet"]["focus_ms"])
+        for i in range(20):
+            lead = "S%02d" % i
+            team = [k for k in view["sessions"] if k.startswith(lead + "/")]
+            self.assertLessEqual(len(team), pomodoro.VIEW_TEAM_CAP + 1)
+            others = view["sessions"].get(lead + "/+others")
+            self.assertTrue(others and others["streams"] > 0 and not others["running"], others)
+            self.assertTrue(all(view["sessions"][k]["running"] for k in team if k.endswith("/tm-%03d" % 7)))  # running: never folded
+            self.assertNotIn(lead + "/tm-000", view["sessions"])   # nothing today, no progress: no row
+        self.assertNotIn("sessions", view["days"][0])
+        self.assertLess(len(json.dumps(view)), 400 * 1024)
+
+    def test_small_fleet_is_unchanged(self):
+        doc, _, t = play([(25, {"API": "working", "API/tests": "working"}), (5, {"API": "done", "API/tests": "working"})])
+        view = pomodoro.board_view(dict(doc, settings={"tz": "UTC"}), t)
+        self.assertEqual(sorted(view["sessions"]), ["API", "API/tests"])
+        self.assertNotIn("API/+others", view["sessions"])
+
+    def test_gone_teammate_with_progress_goes_after_a_day(self):
+        doc, _, t = play([(10, {"API": "working", "API/tm": "working"})], st=ACC)
+        doc, _ = pomodoro.step(doc, {"API": "working"}, t + 3 * SEC, ACC)
+        self.assertIn("API/tm", doc["sessions"])                 # gone, progress kept
+        doc, _ = pomodoro.step(doc, {"API": "working"}, t + 23 * 3600 * SEC, ACC)
+        self.assertIn("API/tm", doc["sessions"])
+        doc, _ = pomodoro.step(doc, {"API": "working"}, t + 25 * 3600 * SEC, ACC)
+        self.assertNotIn("API/tm", doc["sessions"])              # gone longer than a day: dropped
+        self.assertEqual(done_on(doc, DAY, "API/tm"), 0)
+        self.assertGreater(doc["days"][DAY]["API/tm"]["focus_ms"], 9 * MIN)   # its day tally stays
 
     def test_clock_back_across_midnight_keeps_the_later_day(self):
         start = int(dt.datetime(2026, 11, 16, 0, 10, tzinfo=dt.timezone.utc).timestamp() * 1000)

@@ -842,6 +842,14 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
 .pm-champ .who { font-family: var(--f-mono); font-weight: 650; overflow-wrap: anywhere; }
 .pm-champ .ru { color: var(--muted); font-size: 13px; }
 .pm-streams, .pm-human { color: var(--muted); font-size: 13px; }
+/* the totals stay in view while the list scrolls */
+.pm-head { position: sticky; top: 0; z-index: 2; padding: 6px 0; background: var(--panel); border-bottom: 1px solid var(--rule); }
+.pm-q { width: 100%; box-sizing: border-box; margin: 0 0 8px; padding: 7px 10px; font: inherit; color: var(--ink); background: var(--paper); border: 1px solid var(--rule); border-radius: 6px; }
+.pm-list li.pm-more { display: block; padding: 2px 0 4px; border-bottom: 1px dashed var(--rule); }
+.pm-tgl { font: inherit; font-size: 13px; color: var(--cord); background: none; border: 0; padding: 2px 0 2px .9em; cursor: pointer; }
+.pm-tgl:focus-visible { outline: 2px solid var(--cord); outline-offset: 2px; border-radius: 3px; }
+.pm-all { margin-top: 8px; }
+.pm-quiet { font-size: 13px; }
 .pomo-why { font: inherit; line-height: 1; padding: 0 2px; border: 0; background: none; cursor: help; border-radius: 4px; }
 .pomo-why:focus-visible, .pm-code.clip:focus-visible { outline: 2px solid var(--cord); outline-offset: 2px; }
 #pomo .info-head { position: relative; }
@@ -3445,12 +3453,15 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
   function pomoTeamSum(p, code, now) {
     let done = 0, focus = 0;
     const team = pomoTeam(p, code);
-    for (const [, r] of team) { done += num(r.done) || 0; focus += pomoFocus(p, r, now); }
-    return { n: team.length, done, focus };
+    let n = 0;
+    for (const [, r] of team) { done += num(r.done) || 0; focus += pomoFocus(p, r, now); n += num(r.streams) || 1; }
+    return { n, done, focus };
   }
   const pomoTeamText = (t) => tr('teammates +{n} 🍅 · {focus}', { n: t.done, focus: pomoDur(t.focus) });
   // A stream's full name: the session code, or "CODE · name" for one of its teammates.
   const pomoName = (key) => { key = String(key); const c = pomoParent(key); return key === c ? c : c + ' · ' + key.slice(c.length + 1); };
+  // The board view folds a session's teammates past its cap into "CODE/+others" (lib/pomodoro.py).
+  const pomoFolded = (r) => !!(r && num(r.streams) > 0);
   // What a pomodoro is here (the 🍅 in the panel header and the Deck key). Text only.
   function renderPomoWhy(pop) {
     const p = pomoView(), m = Math.round((p ? pomoFull(p) : POMO_DEFAULT_MS) / 60000);
@@ -3636,10 +3647,11 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
   // The top of the panel: today's streams, the person-hours, and the champion (most 🍅, then the
   // most focus) with the runner-up; none yet: the stream closest to its first.
   function pomoSummary(p, all, now, fleetFocus) {
-    const streams = all.map(([k, r]) => ({ k, done: num(r.done) || 0, focus: pomoFocus(p, r, now), cur: pomoNow(p, r, now) }));
-    const active = streams.filter((x) => x.done > 0 || x.focus > 0), tm = active.filter((x) => x.k.includes('/')).length;
+    const folded = all.filter(([, r]) => pomoFolded(r)).reduce((a, [, r]) => a + num(r.streams), 0);
+    const streams = all.filter(([, r]) => !pomoFolded(r)).map(([k, r]) => ({ k, done: num(r.done) || 0, focus: pomoFocus(p, r, now), cur: pomoNow(p, r, now) }));
+    const active = streams.filter((x) => x.done > 0 || x.focus > 0), tm = active.filter((x) => x.k.includes('/')).length + folded;
     const box = h('div', { class: 'pm-sum' },
-      h('p', { class: 'pm-streams', text: tr('{k} streams today: {s} sessions + {t} teammates', { k: active.length, s: active.length - tm, t: tm }) }),
+      h('p', { class: 'pm-streams', text: tr('{k} streams today: {s} sessions + {t} teammates', { k: active.length + folded, s: active.length + folded - tm, t: tm }) }),
       fleetFocus >= 60000 ? h('p', { class: 'pm-human', text: tr('≈ {h} person-hours of focus', { h: (fleetFocus / 3600000).toFixed(1) }) }) : null);
     const who = (x) => h('span', { class: 'who', text: pomoName(x.k) });
     const rank = streams.filter((x) => x.done > 0).sort((a, b) => b.done - a.done || b.focus - a.focus || a.k.localeCompare(b.k));
@@ -3656,8 +3668,16 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
     }
     return box;
   }
+  // The panel stays usable with 100+ streams: the totals stay in view, the chart comes before the
+  // list, one row per session (its teammates folded under it), the top POMO_TOP sessions with
+  // something today unless "Show all", and a filter once there are more than POMO_TOP.
+  const POMO_TOP = 10;
+  let pomoAll = false, pomoQuery = '';
+  const pomoOpenTm = new Set();    // sessions whose teammates are shown
   function renderPomoPanel() {
     const box = $('#pomo-body'), p = pomoView();
+    const q0 = document.activeElement && document.activeElement.id === 'pomo-q' ? document.activeElement : null;
+    const caret = q0 ? [q0.selectionStart, q0.selectionEnd] : null;
     box.textContent = '';
     if (!p) {
       box.append(h('p', { class: 'note', text: tr(isLocal() || S.demo ? 'No pomodoro data yet. The collector starts counting when a session works.' : 'The operator has not mirrored the pomodoro tally to this board yet (meta/pomodoro). Use board pomodoro in a terminal.') }));
@@ -3668,34 +3688,11 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
     let tmDone = 0, tmFocus = 0;
     for (const [k, r] of all) if (k.includes('/')) { tmDone += num(r.done) || 0; tmFocus += pomoFocus(p, r, now); }
     const fleetDone = num(p.fleet.done) || 0, fleetFocus = pomoFleetFocus(p, now);
-    box.append(h('p', { class: 'pm-total' }, h('strong', { text: tr('AI fleet: {n} 🍅', { n: fleetDone }) }), ' · ', tr('{focus} focus', { focus: pomoDur(fleetFocus) })));
-    if (all.some(([k]) => k.includes('/'))) box.append(h('p', { class: 'pm-split', text: tr('Sessions {a} 🍅 · {af} focus + teammates {b} 🍅 · {bf} focus', { a: fleetDone - tmDone, af: pomoDur(Math.max(0, fleetFocus - tmFocus)), b: tmDone, bf: pomoDur(tmFocus) }) }));
+    box.append(h('div', { class: 'pm-head' },
+      h('p', { class: 'pm-total' }, h('strong', { text: tr('AI fleet: {n} 🍅', { n: fleetDone }) }), ' · ', tr('{focus} focus', { focus: pomoDur(fleetFocus) })),
+      all.some(([k]) => k.includes('/')) ? h('p', { class: 'pm-split', text: tr('Sessions {a} 🍅 · {af} focus + teammates {b} 🍅 · {bf} focus', { a: fleetDone - tmDone, af: pomoDur(Math.max(0, fleetFocus - tmFocus)), b: tmDone, bf: pomoDur(tmFocus) }) }) : null));
     box.append(pomoSummary(p, all, now, fleetFocus));
     box.append(h('p', { class: 'note', text: tr('Today is {day} ({tz}).', { day: str(p.today), tz: str(p.tz) || tr('system time') }) }));
-    // One row per session (its own stream), sorted by the session's total with its teammates; each
-    // teammate stream right under its session.
-    const groups = new Map();
-    for (const [k, r] of all) {
-      const code = pomoParent(k);
-      if (!groups.has(code)) groups.set(code, { own: null, team: [] });
-      if (k.includes('/')) groups.get(code).team.push([k, r]); else groups.get(code).own = r;
-    }
-    const total = (g) => [g.own].concat(g.team.map((x) => x[1])).filter(Boolean).reduce((a, r) => [a[0] + (num(r.done) || 0), a[1] + pomoFocus(p, r, now)], [0, 0]);
-    const order = [...groups.entries()].map(([code, g]) => [code, g, total(g)])
-      .sort((a, b) => b[2][0] - a[2][0] || b[2][1] - a[2][1] || a[0].localeCompare(b[0]));
-    const line = (key, r, label, sub) => {
-      const cur = r ? pomoNow(p, r, now) : { clock: false, live: false, ms: 0 }, done = (r && num(r.done)) || 0;
-      return h('li', { class: sub ? 'pm-sub' : null, 'aria-label': pomoLabel(sub ? tr('teammate {name}', { name: label }) : label, done, cur) },
-        h('span', { class: 'pm-code', title: pomoName(key), text: label }),
-        h('span', { class: 'pm-tom', 'aria-hidden': 'true', text: done ? '🍅'.repeat(Math.min(done, 8)) + (done > 8 ? '+' : '') : '·' }),
-        h('span', { class: 'pm-cnt', text: '×' + done }),
-        h('span', { class: 'pm-f', text: r ? pomoDur(pomoFocus(p, r, now)) : '' }),
-        h('span', { class: 'pm-cur' + (cur.live ? ' live' : ''), dataset: cur.live ? { pomoT: key } : null, text: cur.clock && (cur.ms || cur.live) ? mmss(cur.ms) : '' }));
-    };
-    box.append(h('h3', { text: tr('Sessions today') }));
-    if (!order.length) box.append(h('p', { class: 'note', text: tr('No pomodoros yet today.') }));
-    else box.append(h('ul', { class: 'pm-list' }, order.flatMap(([code, g]) => [line(code, g.own, code, false)]
-      .concat(g.team.sort((a, b) => a[0].localeCompare(b[0])).map(([k, r]) => line(k, r, k.slice(code.length + 1), true))))));
     box.append(h('h3', { text: tr('Last 14 days') }));
     const top = Math.max(1, ...p.days.map((d) => (d && num(d.done)) || 0));
     box.append(h('div', { class: 'pm-hist', role: 'list', 'aria-label': tr('Pomodoros per day, last 14 days') }, p.days.slice(-14).map((d, i, a) => {
@@ -3706,11 +3703,79 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
         h('span', { class: 'pm-bar', 'aria-hidden': 'true' }, h('i', { style: 'height:' + (n ? Math.max(6, Math.round(n / top * 100)) : 0) + '%' })),
         h('span', { class: 'pm-d', 'aria-hidden': 'true', text: day.slice(8) }));
     })));
+    box.append(h('h3', { text: tr('Sessions today') }));
+    box.append(pomoList(p, all, now));
     box.append(h('p', { class: 'note pm-rules', text: p.mode === 'accumulate'
       ? tr('Every session and every teammate runs its own pomodoro. Each {m} minutes of focus adds up to one, and the rest carries over: a break never resets it, waiting for you pauses it, and going offline resets it.', { m: Math.round(pomoFull(p) / 60000) })
       : tr('A pomodoro is {m} minutes of a session working. A short pause (up to {g}) keeps it, a longer break or going offline resets it, and waiting for you pauses it.', { m: Math.round(pomoFull(p) / 60000), g: pomoDur(num(p.grace_ms) != null ? p.grace_ms : 120000) }) }));
     if (!isLocal() && !S.demo) box.append(h('p', { class: 'note', text: tr('Mirrored by the operator: daily totals only, no running clock.') }));
+    const q = $('#pomo-q');
+    if (q && caret) { q.focus({ preventScroll: true }); q.setSelectionRange(caret[0], caret[1]); }
     pomoClip();
+  }
+  function pomoList(p, all, now) {
+    const wrap = h('div', { class: 'pm-sessions' });
+    const groups = new Map();
+    for (const [k, r] of all) {
+      const code = pomoParent(k);
+      if (!groups.has(code)) groups.set(code, { own: null, team: [] });
+      if (k.includes('/')) groups.get(code).team.push([k, r]); else groups.get(code).own = r;
+    }
+    const busy = (r) => { const c = pomoNow(p, r, now); return c.clock && (c.ms > 0 || c.live); };
+    const some = (r) => (num(r.done) || 0) > 0 || pomoFocus(p, r, now) > 0 || busy(r);
+    const order = [...groups.entries()].map(([code, g]) => {
+      const rows = [g.own].concat(g.team.map((x) => x[1])).filter(Boolean);
+      return { code, g, done: rows.reduce((a, r) => a + (num(r.done) || 0), 0), focus: rows.reduce((a, r) => a + pomoFocus(p, r, now), 0), some: rows.some(some) };
+    }).sort((a, b) => b.done - a.done || b.focus - a.focus || a.code.localeCompare(b.code));
+    if (!order.length) { wrap.append(h('p', { class: 'note', text: tr('No pomodoros yet today.') })); return wrap; }
+    if (order.length > POMO_TOP) {
+      wrap.append(h('input', { class: 'pm-q', id: 'pomo-q', type: 'search', value: pomoQuery, autocomplete: 'off',
+        placeholder: tr('Filter by session or teammate'), 'aria-label': tr('Filter by session or teammate'),
+        oninput: (e) => { pomoQuery = e.target.value; renderPomoPanel(); } }));
+    }
+    const q = pomoQuery.trim().toLowerCase();
+    const hit = (s) => String(s).toLowerCase().includes(q);
+    let shown;
+    if (q) shown = order.filter((o) => hit(o.code) || o.g.team.some(([k]) => hit(k.slice(o.code.length + 1))));
+    else shown = pomoAll ? order : order.filter((o) => o.some).slice(0, POMO_TOP);
+    const line = (key, r, label, sub, tot) => {
+      const cur = r ? pomoNow(p, r, now) : { clock: false, live: false, ms: 0 };
+      const done = tot ? tot.done : (r && num(r.done)) || 0, focus = tot ? tot.focus : r ? pomoFocus(p, r, now) : 0;
+      const folded = pomoFolded(r);
+      const name = folded ? tr('{n} more teammates', { n: num(r.streams) }) : label;
+      const aria = sub ? pomoLabel(folded ? name : tr('teammate {name}', { name: label }), done, cur)
+        : pomoLabel(label, done, cur) + (tot && tot.n ? ' · ' + tr('teammates included') : '');
+      return h('li', { class: sub ? 'pm-sub' : null, 'aria-label': aria },
+        h('span', { class: 'pm-code', title: folded ? pomoParent(key) + ' · ' + name : pomoName(key), text: name }),
+        h('span', { class: 'pm-tom', 'aria-hidden': 'true', text: done ? '🍅'.repeat(Math.min(done, 8)) + (done > 8 ? '+' : '') : '·' }),
+        h('span', { class: 'pm-cnt', text: '×' + done }),
+        h('span', { class: 'pm-f', text: r || tot ? pomoDur(focus) : '' }),
+        h('span', { class: 'pm-cur' + (cur.live ? ' live' : ''), dataset: cur.live ? { pomoT: key } : null, text: cur.clock && (cur.ms || cur.live) ? mmss(cur.ms) : '' }));
+    };
+    const list = h('ul', { class: 'pm-list' });
+    for (const o of shown) {
+      const team = o.g.team.slice().sort((a, b) => a[0].localeCompare(b[0]));
+      const tq = q && !hit(o.code) ? team.filter(([k]) => hit(k.slice(o.code.length + 1))) : null;   // only teammates matched
+      const vis = tq || (pomoAll || q ? team : team.filter(([, r]) => some(r)));
+      const n = vis.reduce((a, [, r]) => a + (num(r.streams) || 1), 0);
+      list.append(line(o.code, o.g.own, o.code, false, { done: o.done, focus: o.focus, n }));
+      if (!vis.length) continue;
+      const open = !!tq || pomoOpenTm.has(o.code);
+      list.append(h('li', { class: 'pm-more' }, h('button', { class: 'pm-tgl', type: 'button', 'aria-expanded': open ? 'true' : 'false', dataset: { tm: o.code },
+        onclick: () => { if (pomoOpenTm.has(o.code)) pomoOpenTm.delete(o.code); else pomoOpenTm.add(o.code); renderPomoPanel(); const b = $('#pomo-body .pm-tgl[data-tm="' + CSS.escape(o.code) + '"]'); if (b) b.focus({ preventScroll: true }); },
+        text: (open ? '▾ ' : '▸ ') + tr('{n} teammates', { n }) })));
+      if (open) for (const [k, r] of vis) list.append(line(k, r, k.slice(o.code.length + 1), true));
+    }
+    if (shown.length) wrap.append(list);
+    else wrap.append(h('p', { class: 'note', text: q ? tr('Nothing matches "{q}".', { q: pomoQuery.trim() }) : tr('No pomodoros yet today.') }));
+    const quiet = order.filter((o) => !o.some).length;
+    if (!q && (pomoAll || order.length > shown.length)) {
+      wrap.append(h('button', { class: 'btn pm-all', type: 'button', 'aria-pressed': pomoAll ? 'true' : 'false',
+        onclick: () => { pomoAll = !pomoAll; renderPomoPanel(); const b = $('#pomo-body .pm-all'); if (b) b.focus({ preventScroll: true }); },
+        text: pomoAll ? tr('Show the top {n}', { n: POMO_TOP }) : tr('Show all ({n})', { n: order.length }) }),
+        !pomoAll && quiet ? h('span', { class: 'note pm-quiet', text: ' ' + tr('{n} with nothing today are hidden.', { n: quiet }) }) : null);
+    }
+    return wrap;
   }
   $('#pomo-close').addEventListener('click', () => { const d = $('#pomo'); if (typeof d.close === 'function') d.close(); else d.removeAttribute('open'); });
   $('#pomo').addEventListener('click', (e) => { if (e.target === e.currentTarget) e.currentTarget.close(); });
@@ -5682,6 +5747,14 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
       "No pomodoro yet today: the first one is on its way.": "今天還沒有番茄鐘，第一個快完成了。",
       "Closest": "最接近",
       "{t} of {full}": "{t} / {full}",
+      "{n} more teammates": "另外 {n} 個 teammate",
+      "teammates included": "含 teammate",
+      "{n} teammates": "{n} 個 teammate",
+      "Filter by session or teammate": "依 session 或 teammate 篩選",
+      "Nothing matches \"{q}\".": "沒有符合「{q}」的項目。",
+      "Show the top {n}": "只顯示前 {n} 名",
+      "Show all ({n})": "顯示全部（{n}）",
+      "{n} with nothing today are hidden.": "另有 {n} 個今天沒有紀錄，已隱藏。",
       "No pomodoro data yet. The collector starts counting when a session works.": "還沒有番茄鐘資料。session 開始工作後，collector 就會開始計算。",
       "The operator has not mirrored the pomodoro tally to this board yet (meta/pomodoro). Use board pomodoro in a terminal.": "operator 還沒有把番茄鐘統計同步到這個看板（meta/pomodoro）。請在終端機用 board pomodoro。",
     };

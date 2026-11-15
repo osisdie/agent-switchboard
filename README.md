@@ -595,8 +595,9 @@ Today adds them all up.
   `teammates +5 🍅 · 2h 20m` when its teammates focused. The Deck key **🍅 Today** shows the fleet
   total, teammates included (`19 · 9h 28m focus`), with a 7-day sparkline, and opens a panel with
   the sessions / teammates split, today's streams and person-hours of focus, the champion (most 🍅,
-  ties broken by focus) and runner-up, each session's count today with its teammates under it (a
-  name cut short shows in full on hover, focus or a tap), and the last 14 days. Hovering or focusing
+  ties broken by focus) and runner-up, the last 14 days, then one row per session with its teammates
+  folded under it (the top 10 with something today, "Show all", a filter past 10; a name cut short
+  shows in full on hover, focus or a tap). Hovering or focusing
   the 🍅 (the key, the panel title) explains what counts. A finished pomodoro gets a
   short burst of tomatoes (none with *reduce motion*).
 - `board pomodoro [today|week] [--json|--mirror]` prints the same tallies in a terminal (`--mirror`:

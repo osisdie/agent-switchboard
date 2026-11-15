@@ -66,7 +66,8 @@ KEY_JS = """() => { const c = document.querySelector('#deck-grid .dcell[data-dec
     sameRow: Math.abs(r.top - rw.top) < 2, wideRight: Math.abs(rw.right - g.right) < 14, leftEdge: Math.abs(r.left - g.left) < 14 }; }"""
 PANEL_JS = """() => { const d = document.getElementById('pomo'), r = d.getBoundingClientRect();
   return { open: d.open, title: document.getElementById('pomo-title').innerText.trim(), text: d.innerText.replace(/\\s+/g, ' '),
-    rows: [...d.querySelectorAll('.pm-list li')].map((li) => li.querySelector('.pm-code').textContent + '×' + li.querySelector('.pm-cnt').textContent.slice(1)),
+    rows: [...d.querySelectorAll('.pm-list li:not(.pm-more)')].map((li) => (li.classList.contains('pm-sub') ? '+' : '') + li.querySelector('.pm-code').textContent + '×' + li.querySelector('.pm-cnt').textContent.slice(1)),
+    toggles: [...d.querySelectorAll('.pm-tgl')].map((b) => b.dataset.tm + ':' + b.getAttribute('aria-expanded') + ':' + b.textContent),
     days: d.querySelectorAll('.pm-day').length, today: !!d.querySelector('.pm-day:last-child.today'), width: r.width, vw: innerWidth,
     scrollW: document.scrollingElement.scrollWidth }; }"""
 NAMES_JS = """() => [...document.querySelectorAll('#pomo .pm-list .pm-code')].map((e) => ({ text: e.textContent, title: e.title,
@@ -207,8 +208,15 @@ def main():
             check("pressing it opens the panel", pn["open"] and "Pomodoro" in pn["title"], pn["title"])
             check("  fleet total and focus", "AI fleet: 19 🍅 · 9h 28m focus" in pn["text"], pn["text"][:200])
             check("  the sessions / teammates breakdown", "Sessions 14 🍅 · 7h 3m focus + teammates 5 🍅 · 2h 2" in pn["text"], pn["text"][:300])
-            check("  per-session counts today, most first, teammates under their session",
-                  pn["rows"][:4] == ["DOCS×5", "checker×2", "writer×3", "API×3"] and len(pn["rows"]) == 8, pn["rows"])
+            check("  one row per session, its teammates included, most first", pn["rows"] == ["DOCS×10", "API×3", "QA×3", "OPS×2", "WEB×1", "DATA×0"], pn["rows"])
+            check("  the teammates folded under their session", pn["toggles"] == ["DOCS:false:▸ 2 teammates"], pn["toggles"])
+            pg.click("#pomo .pm-tgl")
+            pg.clock.run_for(100)
+            pn2 = pg.evaluate(PANEL_JS)
+            check("  a click unfolds them under it", pn2["rows"][:3] == ["DOCS×10", "+checker×2", "+writer×3"] and pn2["toggles"] == ["DOCS:true:▾ 2 teammates"]
+                  and pg.evaluate("() => document.activeElement.classList.contains('pm-tgl')"), (pn2["rows"], pn2["toggles"]))
+            check("  the chart before the list, the totals first", pg.evaluate("""() => { const b = document.getElementById('pomo-body');
+              const y = (s) => b.querySelector(s).getBoundingClientRect().top; return y('.pm-head') < y('.pm-champ') && y('.pm-champ') < y('.pm-hist') && y('.pm-hist') < y('.pm-list'); }"""))
             check("  14 days, today last", pn["days"] == 14 and pn["today"], (pn["days"], pn["today"]))
             check("  the rules are explained", "Every session and every teammate runs its own pomodoro. Each 25 minutes" in pn["text"]
                   and "a break never resets it" in pn["text"], pn["text"][-260:])
@@ -295,6 +303,8 @@ def main():
             check("phone: the cards render", open_paused(pg, PAGE, CARDS_UP))
             pg.click("#deck-grid .dkey.pomo")
             pg.clock.run_for(300)
+            pg.locator("#pomo .pm-tgl").tap()
+            pg.clock.run_for(100)
             names = pg.evaluate(NAMES_JS)
             by = {n["text"]: n for n in names}
             check("teammate rows: the whole name, under its session", [n["text"] for n in names] == ["API", long_name, "perf-next", "ux-actions", "WEB"], [n["text"] for n in names])
@@ -350,6 +360,54 @@ def main():
             w = pg.evaluate(POP_JS, "pomo-why-pop")
             check("  the explanation", w["shown"] and "專注 25 分鐘" in w["text"] and "teammate 正在活動" in w["text"] and "accumulate 模式" in w["text"], w)
             check("  the 🍅 button's name", pg.get_attribute("#pomo-why", "aria-label") == "什麼算一個番茄鐘")
+            pg.close()
+
+            print("panel: 160 streams (20 sessions x 7 teammates)")
+            big = {"today": "2026-11-15", "tz": "", "focus_ms": 1500000, "mode": "accumulate", "sessions": {},
+                   "days": [{"date": "2026-11-%02d" % (2 + i), "done": i, "focus_ms": 0, "sessions": {}} for i in range(14)], "updated_at": None}
+            for i in range(20):
+                lead, quiet = "S%02d" % i, i >= 15            # S15..S19: nothing today
+                big["sessions"][lead] = {"done": 0 if quiet else i % 4, "focus_ms": 0 if quiet else (i % 4) * 1500000 + i * 60000}
+                for j in range(7):
+                    name = "helper-%d-%d" % (i, j) if j else "solo-%02d" % i
+                    big["sessions"]["%s/%s" % (lead, name)] = {"done": 0 if quiet else (i + j) % 3, "focus_ms": 0 if quiet else ((i + j) % 3) * 1500000 + j * 30000}
+            fleet_done = sum(r["done"] for r in big["sessions"].values())
+            big["fleet"] = {"done": fleet_done, "focus_ms": sum(r["focus_ms"] for r in big["sessions"].values())}
+            big["days"][-1].update(done=fleet_done)
+            pg = new_page(claude_stub(big), viewport={"width": 390, "height": 860}, is_mobile=True, has_touch=True)
+            check("  the page renders the data", open_paused(pg, PAGE, "() => !!document.querySelector('#deck-grid .dkey.pomo.on')"))
+            t_open = time.perf_counter()   # real time: the paused page clock fakes performance.now too
+            pg.evaluate("() => document.querySelector('#deck-grid .dkey.pomo').click()")
+            ms = (time.perf_counter() - t_open) * 1000
+            check("opens in reasonable time (%d ms)" % ms, ms < 1500, ms)
+            pn = pg.evaluate(PANEL_JS)
+            rows = [r for r in pn["rows"] if not r.startswith("+")]
+            check("  the top 10 sessions, teammates folded", len(pn["rows"]) == 10 and len(rows) == 10 and len(pn["toggles"]) == 10, pn["rows"])
+            check("  the totals are exact", "AI fleet: %d 🍅" % fleet_done in pn["text"], (fleet_done, pn["text"][:80]))
+            check("  no horizontal scroll at 390 px", pn["scrollW"] <= pn["vw"] and pg.evaluate("() => { const d = document.getElementById('pomo'); return d.scrollWidth <= d.clientWidth; }"))
+            check("  Show all (20), the quiet ones counted", pg.evaluate("() => document.querySelector('#pomo .pm-all').textContent") == "Show all (20)"
+                  and "5 with nothing today are hidden." in pn["text"], pn["text"][-200:])
+            pg.click("#pomo .pm-all")
+            pn = pg.evaluate(PANEL_JS)
+            counts = [int(r.split("×")[1]) for r in pn["rows"]]
+            check("  Show all: every session, and their counts add up to the fleet", len(pn["rows"]) == 20 and sum(counts) == fleet_done
+                  and pg.evaluate("() => document.querySelector('#pomo .pm-all').textContent") == "Show the top 10", (len(pn["rows"]), sum(counts), fleet_done))
+            pg.click("#pomo .pm-all")
+            q = pg.locator("#pomo-q")
+            check("  a filter box (more than 10 rows)", q.count() == 1)
+            q.fill("S07")
+            pn = pg.evaluate(PANEL_JS)
+            check("  filter by session code", [r.split("×")[0] for r in pn["rows"]] == ["S07"] and pg.evaluate("() => document.activeElement.id") == "pomo-q", pn["rows"])
+            q.fill("helper-3-4")
+            pn = pg.evaluate(PANEL_JS)
+            check("  filter by teammate name: its session, unfolded to the match", [r.split("×")[0] for r in pn["rows"]] == ["S03", "+helper-3-4"], pn["rows"])
+            q.fill("solo-1")
+            pn = pg.evaluate(PANEL_JS)
+            check("  several matches, quiet sessions included", sorted(r.split("×")[0] for r in pn["rows"] if not r.startswith("+")) == ["S%02d" % i for i in range(10, 20)], pn["rows"])
+            q.fill("no-such-name")
+            check("  nothing matches: said so", 'Nothing matches "no-such-name".' in pg.evaluate(PANEL_JS)["text"])
+            q.fill("")
+            check("  cleared: the top 10 again", len(pg.evaluate(PANEL_JS)["rows"]) == 10)
             pg.close()
 
             print("the clock stops when the collector's data is stale")
