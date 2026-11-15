@@ -138,7 +138,8 @@ Copy everything below the line into `~/.claude/CLAUDE.md` (or a project `CLAUDE.
   - Check that panes are alive on every tick.
   - Recycle on every tick too: `TaskStop` each teammate that has delivered its final report, stopped
     or finished its role, then `kill-pane` leftover teammate panes this session spawned. Each idle
-    teammate still holds a whole agent process (typically 250–400 MB). Mention the count in the report only when something was recycled.
+    teammate still holds a whole agent process (typically 250–400 MB). Mention the count in the
+    report only when something was recycled.
   - When all teammates are done, recycle one last time, then `CronDelete` the check.
 - Teammates don't poll CI. They push, post the round note, report the head SHA and stop. The lead
   runs one background poll per MR and sends failures back.
