@@ -376,8 +376,9 @@ held send is logged.
 ```
 
 - Keys of `mutes` and `min_level`: `slack`, `desktop`, `email`, `line`, `sns`, `webhook`, `all`.
-  Unknown keys and malformed values are ignored. `until: null` (or a non-number) means until
-  unmuted; an expired mute is ignored at once and dropped on the next write.
+  Unknown keys and malformed values are ignored. `until: null` means until unmuted; a malformed
+  `until` (a string, a float, a bool) is ignored: the whole mute is dropped (fails open), and the
+  next write removes it; an expired mute is ignored at once and dropped on the next write.
 - `--by` follows the `board away` rule (`^(board:)?[A-Za-z0-9][A-Za-z0-9@._+:-]{0,199}$`).
   Every change appends `{type: "notify-prefs", action: "mute"|"unmute"|"level"|"presence", ...}`.
 

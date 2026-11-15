@@ -133,14 +133,20 @@ def _log(home, ev):
 
 # ------------------------------------------------------------------ reading
 
+def _valid_until(v):
+    """None (until unmuted) or epoch ms as a plain int; anything else is malformed."""
+    return v is None or (isinstance(v, int) and not isinstance(v, bool))
+
+
 def normalize(data):
     """The prefs document with every field validated; unknown or malformed entries are dropped."""
     data = data if isinstance(data, dict) else {}
     out = {"mutes": {}, "min_level": {}, "presence": {}}
     for t, m in (data.get("mutes") or {}).items() if isinstance(data.get("mutes"), dict) else []:
-        if t in TARGETS and isinstance(m, dict):
-            until = m.get("until")
-            out["mutes"][t] = {"until": until if isinstance(until, int) and not isinstance(until, bool) else None,
+        if t in TARGETS and isinstance(m, dict) and _valid_until(m.get("until")):
+            # A malformed until (a string, a float, a bool) drops the whole mute: read as "until
+            # unmuted" it would silence alerts for good. Fail open.
+            out["mutes"][t] = {"until": m.get("until"),
                                "by": str(m.get("by") or "?")[:200], "at": m.get("at") if isinstance(m.get("at"), int) else 0,
                                "include_urgent": m.get("include_urgent") is True}
     for t, lvl in (data.get("min_level") or {}).items() if isinstance(data.get("min_level"), dict) else []:
@@ -326,7 +332,7 @@ def _check_by(by):
 def _prune(data, now):
     mutes = data.get("mutes") if isinstance(data.get("mutes"), dict) else {}
     data["mutes"] = {t: m for t, m in mutes.items()
-                     if isinstance(m, dict) and (not isinstance(m.get("until"), int) or m["until"] > now)}
+                     if isinstance(m, dict) and _valid_until(m.get("until")) and (m.get("until") is None or m["until"] > now)}
 
 
 def _change(home, by, now, fn):

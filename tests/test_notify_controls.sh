@@ -352,7 +352,16 @@ expect "a broken prefs file never silences alerting" "1/1/0/0/0/0"
 echo '{"mutes":{"slack":{"until":"soon"},"nope":{}},"min_level":{"slack":"loud"}}' >"$P"
 reset_calls
 send warn k:f2 >/dev/null
-expect "  a malformed until means until unmuted; unknown entries are ignored" "0/1/0/0/0/0"
+expect "  a malformed until (string) is ignored: the mute is dropped; unknown entries too" "1/1/0/0/0/0"
+for bad in '1794654000000.5' 'true' '"1794654000000"'; do
+  printf '{"mutes":{"all":{"until":%s,"include_urgent":true}}}\n' "$bad" >"$P"
+  reset_calls
+  send warn "k:f-$bad" >/dev/null
+  expect "  a malformed until ($bad) on mute all --include-urgent is ignored" "1/1/0/0/0/0"
+done
+eq "  status shows no mute for it" "$("$B" mute status --json | jq -c .mutes)" "{}"
+"$B" mute slack --for 1h >/dev/null
+eq "  the next write drops the malformed entry" "$(jq -c '.mutes | keys' "$P")" '["slack"]'
 
 echo "cli:"
 fresh; rm -f "$BOARD_HOME/events.jsonl"
