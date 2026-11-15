@@ -1268,7 +1268,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       if (live) {
         box.append(h('div', { class: 'pq-opts', role: 'group', 'aria-label': 'Options' },
           opts.map((o, i) => h('button', { class: 'btn option pq-opt', type: 'button', dataset: { option: String(i + 1) },
-            onclick: () => answerDecision(d, str(o.label)) },
+            onclick: () => answerDecision(d, str(o.label), i + 1) },
             h('span', { text: (i + 1) + '. ' + str(o.label) }), o.description ? h('small', { text: str(o.description) }) : null))));
       } else {
         box.append(h('ol', { class: 'pq-opts' }, opts.map((o) => h('li', { class: 'pq-ro' },
@@ -2151,6 +2151,9 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     if (code === 'prefs_failed') { toast('The board server could not change the notification settings.', true); return; }
     if (code === 'bad_duration' || code === 'bad_level' || code === 'bad_channel' || code === 'bad_op') { toast('Not saved: ' + (e.message || 'the board server refused that setting.'), true); return; }
     if (code === 'stale') { toast('That prompt is no longer showing, so nothing was pressed. Handle it in the session.', true); return; }
+    if (code === 'partial') { toast('Your text was typed into the question but Enter was not pressed. Finish it in the session.', true); return; }
+    if (code === 'answer_in_session') { toast('This question can only be answered in the session.', true); return; }
+    if (code === 'bad_option') { toast('Not sent: that option no longer matches the question. Reload and try again.', true); return; }
     if (code === 'remote_refused' || code === 'unauthenticated' || code === 'csrf' || code === 'bad_host' || code === 'not_allowed' || code === 'press_refused') {
       toast('The board server refused this request' + (e.message ? ': ' + e.message : '.'), true); return;
     }
@@ -2173,7 +2176,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 
   // Called synchronously from a click / key press. Nothing is awaited before
   // room.sendToClaudeSession so the viewer's gesture still counts.
-  function answerDecision(d, answer) {
+  function answerDecision(d, answer, option) {
     if (!canAnswer()) return;
     if (S.demo) {
       const i = S.decisions.findIndex((x) => x.id === d.id);
@@ -2184,7 +2187,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     }
     const offline = operatorOffline(), appr = approverState();
     let writeP;
-    try { writeP = adapter.answer(d, answer); } catch (e) { writeP = Promise.reject(e); }
+    try { writeP = adapter.answer(d, answer, option); } catch (e) { writeP = Promise.reject(e); }
     // Nothing to ping when the operator is down or the answer will not be relayed.
     const sendP = offline || appr === false ? null : adapter.fastPath('decision', d.id);
     S.busy.add(d.id); S.confirm = null;
@@ -2456,7 +2459,8 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   /* ------------------------------------------------------------- adapters */
   // All board data goes through one adapter:
   //   subscribe()                         start the live feeds; they fill S and re-render
-  //   answer(d, answer)                   -> Promise (resolves when the answer is stored)
+  //   answer(d, answer, option?)          -> Promise (resolves when the answer is stored; option =
+  //                                          a pane question's clicked option number, local only)
   //   sendMessage(ids, targets, body, now) -> Promise (one message per target)
   //   fastPath(kind, id, extra)           -> Promise | null (wake the operator now, if possible)
   // claude: the claude.ai Artifact db (+ room fast path). local: board-serve's JSON/SSE API.
@@ -2548,7 +2552,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
           else if (S.mode === 'live' && !S.feedError) { S.feedError = 'Reconnecting to the board server…'; renderBanners(); }
         };
       },
-      answer(d, answer) { return post('/api/decisions/' + encodeURIComponent(d.id) + '/answer', { answer }); },
+      answer(d, answer, option) { return post('/api/decisions/' + encodeURIComponent(d.id) + '/answer', option ? { answer, option } : { answer }); },
       sendMessage(ids, targets, body) { return Promise.all(targets.map((to) => post('/api/messages', { to, body }))); },
       // Approvers only; board-serve runs `board away on|off --by board:<identity>`.
       setAway(state, said) { return post('/api/away', { state, said }); },

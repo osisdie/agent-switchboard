@@ -845,6 +845,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not isinstance(answer, str) or not answer.strip() or len(answer) > MAX_ANSWER:
             raise Refused(400, "bad_answer", "answer must be a non-empty string (max %d chars)" % MAX_ANSWER)
         answer = answer.strip()
+        # A pane question's option button also sends its number; board answer checks it against the label.
+        option = body.get("option")
+        if option is not None and (isinstance(option, bool) or not isinstance(option, int) or not 1 <= option <= 10):
+            raise Refused(400, "bad_option", "option must be an option number")
         home = self.server.home
         with self.server.write_lock:
             dec = read_json(os.path.join(home, "decisions", did + ".json"))
@@ -881,7 +885,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 snap = read_json(os.path.join(home, "snapshot.json")) or {}
                 code = next((s.get("code") for s in snap.get("sessions") or []
                              if isinstance(s, dict) and s.get("session_id") == dec.get("session_id")), None)
-            rc, out, err = self.board("answer", did, answer, "--by", by)
+            if option is not None and not pane_q:
+                raise Refused(400, "bad_option", "option is only for a question shown in a session")
+            rc, out, err = self.board("answer", did, answer, "--by", by,
+                                      *(("--option", str(option)) if option is not None else ()))
+            if rc == 2 and option is not None:
+                self.audit(ident, via, "answer", id=did, result="refused", reason="option does not match")
+                raise Refused(400, "bad_option", "that option does not match the question; reload and try again")
             if rc == 4:
                 log("board answer %s refused: %s" % (did, err))
                 self.audit(ident, via, "answer", id=did, result="unauthorized")
@@ -912,6 +922,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if rc == 3:
                 self.audit(ident, via, "press", id=did, code=code, key=answer, result="stale")
                 raise Refused(409, "stale", "the prompt is no longer showing; answer it in the session")
+            if rc == 5:  # free text typed into the picker, Enter not pressed
+                self.audit(ident, via, "press", id=did, code=code, key=answer, result="partial")
+                raise Refused(409, "partial", "keys were sent but Enter was not pressed; finish in the session")
             if rc == 4:  # board press: no matching approver answer, a truncated summary, not pressable
                 self.audit(ident, via, "press", id=did, code=code, key=answer, result="refused")
                 raise Refused(403, "press_refused", "the key press was refused; answer it in the session")

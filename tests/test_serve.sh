@@ -521,7 +521,14 @@ printf ' ☐ Color\n\nWhich color do you prefer for the test?\n\n❯ 1. Red\n   
 paneq d-1-pq1 tu_q1 "$Q1" true
 eq "state lists the pane question with its questions" "$(req GET /api/state >/dev/null; body '.decisions[] | select(.id=="d-1-pq1") | "\(.source)/\(.pressable)/\(.questions[0].options[1].description)"')" "pane/true/cool"
 : > "$FAKE_TMUX_LOG"
-eq "pane question: option answer 200" "$(post /api/decisions/d-1-pq1/answer '{"answer":"Blue"}')" "200"
+eq "pane question: option number that is not the label 400" "$(post /api/decisions/d-1-pq1/answer '{"answer":"Blue","option":1}')" "400"
+eq "  error bad_option" "$(body .error)" "bad_option"
+eq "  file untouched" "$(jq -r .status "$BOARD_HOME/decisions/d-1-pq1.json")" "pending"
+dec d-1-qo question
+eq "option on an ordinary question 400" "$(post /api/decisions/d-1-qo/answer '{"answer":"A","option":1}')" "400"
+eq "  untouched" "$(jq -r .status "$BOARD_HOME/decisions/d-1-qo.json")" "pending"
+rm -f "$BOARD_HOME/decisions/d-1-qo.json"
+eq "pane question: option answer 200" "$(post /api/decisions/d-1-pq1/answer '{"answer":"Blue","option":2}')" "200"
 eq "  status relayed" "$(body .status)" "relayed"
 grep -q '^send-keys -t %42 2$' "$FAKE_TMUX_LOG" && ok "  board press sent the option's number key" || bad "  board press sent the option's number key" "$(cat "$FAKE_TMUX_LOG")"
 eq "  decision file relayed, option 2" "$(jq -r '"\(.status)/\(.answer_index)"' "$BOARD_HOME/decisions/d-1-pq1.json")" "relayed/2"
@@ -539,6 +546,14 @@ eq "  status answered (relayed by message)" "$(body .status)/$(jq -r .relay "$BO
 grep -q send-keys "$FAKE_TMUX_LOG" && bad "  nothing pressed" "$(cat "$FAKE_TMUX_LOG")" || ok "  nothing pressed"
 grep -q '^decision d-1-pq3 answered' <<<"$("$REPO/bin/board-serve" --watch --once)" && ok "  --watch hands it to the operator" || bad "  --watch hands it to the operator"
 rm -f "$BOARD_HOME/decisions/d-1-pq3.json"
+paneq d-1-pq4 tu_q4 "$Q1" true
+: > "$FAKE_TMUX_LOG"
+eq "free text, picker never focuses Type something: 409" "$(post /api/decisions/d-1-pq4/answer '{"answer":"purple"}')" "409"
+eq "  error partial" "$(body .error)" "partial"
+grep -q 'Enter was not pressed' "$T/body" && ok "  says Enter was not pressed" || bad "  says Enter was not pressed" "$(cat "$T/body")"
+grep -q 'Enter$' "$FAKE_TMUX_LOG" && bad "  no Enter sent" "$(cat "$FAKE_TMUX_LOG")" || ok "  no Enter sent"
+eq "  press audited partial" "$(jq -s -r '[.[] | select(.type=="serve" and .action=="press")] | last | .result' "$BOARD_HOME/events.jsonl")" "partial"
+rm -f "$BOARD_HOME/decisions/d-1-pq4.json"
 cp "$T/state.saved" "$BOARD_HOME/state/$SID.json"
 printf ' Bash command\n   rm -rf build\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n' > "$FAKE_TMUX_SCREEN"
 
