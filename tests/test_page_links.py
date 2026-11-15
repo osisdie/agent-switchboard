@@ -62,6 +62,12 @@ STATE_JS = """() => {
 }"""
 
 
+# A stand-in for the Google Fonts stylesheet: one face whose file (on fonts.gstatic.com) the test
+# holds open, which keeps the load event from firing until it is released.
+FONT_CSS = ("@font-face { font-family: 'IBM Plex Sans'; font-display: swap;"
+            " src: url(https://fonts.gstatic.com/s/held/held.woff2) format('woff2'); }")
+
+
 def free_port():
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
@@ -135,6 +141,41 @@ def main():
             check("malformed id: left in the address bar", "d=" in s["search"], s)
             s = go(PAGE + "?demo=1#decisions")
             check("section anchors untouched", s["linked"] is None and not s["toasts"], s)
+
+            # The viewer starts typing in another card before the load event (a slow font): the
+            # deferred jump must not move focus, scroll, or the rest of the typing into the gate.
+            held = []
+            page.route("https://fonts.googleapis.com/**",
+                       lambda r: r.fulfill(status=200, content_type="text/css", body=FONT_CSS))
+            page.route("https://fonts.gstatic.com/**", lambda r: held.append(r))  # answered only when released
+            page.goto("about:blank")
+            page.goto(PAGE + "?demo=1&d=d-5-demo", wait_until="domcontentloaded")
+            page.wait_for_selector("#ans-d-2-demo")
+            for _ in range(50):
+                if held:
+                    break
+                page.wait_for_timeout(50)
+            pre = page.evaluate("() => document.readyState")
+            check("slow font holds the load event (precondition)", held and pre != "complete", (len(held), pre))
+            page.click("#ans-d-2-demo")
+            page.keyboard.type("keep ")
+            for r in held:
+                r.fulfill(status=404, body="")
+            page.wait_for_function("() => document.readyState === 'complete'")
+            page.wait_for_timeout(600)
+            page.keyboard.type("typing")
+            s = page.evaluate("""() => ({ active: document.activeElement.id,
+              other: document.getElementById('ans-d-2-demo').value,
+              gate: document.getElementById('ans-d-5-demo').value,
+              linked: !!document.querySelector('#dec-d-5-demo.linked') })""")
+            check("typing first: focus stays in the other card", s["active"] == "ans-d-2-demo", s)
+            check("typing first: all text in the other card, none in the gate",
+                  s["other"] == "keep typing" and s["gate"] == "", s)
+            check("typing first: the linked card is still highlighted", s["linked"], s)
+            page.unroute("https://fonts.googleapis.com/**")
+            page.unroute("https://fonts.gstatic.com/**")
+            # The released font answered 404 on purpose: that console line is not a page error.
+            errors[:] = [e for e in errors if not e.startswith("Failed to load resource")]
 
             page.emulate_media(reduced_motion="reduce")
             s = go(PAGE + "?demo=1&d=d-6-demo")

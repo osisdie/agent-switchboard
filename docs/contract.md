@@ -335,7 +335,9 @@ An optional public board URL makes every alert carry a link that opens the board
   - **Focus** goes to the card's free-text answer field when it has one, otherwise to the card
     itself (`tabindex=-1`). It never goes to an option button, so a single Space or Enter cannot
     answer a question, a gate or a permission prompt. The focus is set after the browser's own
-    fragment scroll, so the `#dec-<id>` form keeps it too.
+    fragment scroll, so the `#dec-<id>` form keeps it too. If the viewer has already clicked,
+    tapped or typed since the page opened (or focus is somewhere else), the card is only
+    highlighted: no scroll and no focus change, so typing never moves into the linked card.
   - **Afterwards** the `d`/`m`/`c` parameter is removed from the address bar (`history.replaceState`),
     so a reload does not open the card again. A hash is left as it is.
   - **Unknown or already answered** id (a valid pattern, but no card): a small notice says so.

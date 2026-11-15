@@ -1401,6 +1401,12 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     return null;
   }
   let linked = linkTarget();
+  // Has the viewer done anything since the page opened? Then the deferred jump below must not take
+  // the focus (or the scroll) away from them: typing could land in the linked card's field.
+  let userActed = false;
+  for (const ev of ['pointerdown', 'keydown', 'touchstart']) {
+    window.addEventListener(ev, () => { userActed = true; }, { capture: true, passive: true });
+  }
   // Run fn after the browser's own fragment scroll (#dec-<id> names the card's element id: the
   // browser scrolls to it once it exists, until the load event, and that moves focus to <body>).
   function afterFragmentScroll(fn) {
@@ -1421,10 +1427,13 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     afterFragmentScroll(() => {
       const card = document.getElementById(k.el + id);
       if (!card) { toast(k.gone); return; }
-      const still = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-      card.scrollIntoView({ block: 'center', behavior: still ? 'auto' : 'smooth' });
       card.classList.add('linked');
       setTimeout(() => card.classList.remove('linked'), 2600);
+      // The viewer is already busy (clicked, tapped, typed, or focus sits elsewhere): highlight only.
+      const ae = document.activeElement;
+      if (userActed || (ae && ae !== document.body && !card.contains(ae))) return;
+      const still = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      card.scrollIntoView({ block: 'center', behavior: still ? 'auto' : 'smooth' });
       const field = card.querySelector('.free input');
       if (field) field.focus({ preventScroll: true });
       else { card.tabIndex = -1; card.focus({ preventScroll: true }); }
