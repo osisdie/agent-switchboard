@@ -16,8 +16,18 @@ Thanks for helping. Keep changes small and focused, and keep the repo generic.
 ```bash
 export BOARD_HOME="$(mktemp -d)"
 tests/run.sh -v && tests/test_notify.sh -v && tests/test_notify_controls.sh -v && tests/test_serve.sh -v && tests/test_away.sh -v
+python3 tests/test_resources.py -v
+python3 tests/test_guard.py -v
+python3 tests/test_cards.py -v
+python3 tests/test_rc.py -v
+python3 tests/test_pomodoro.py -v
+python3 tests/test_scheduler.py -v
 python3 scripts/check-readme-sync.py
 ```
+
+The commands above are the ones CI runs (plus gitleaks and shellcheck). Page and site
+checks (`tests/test_page_*.py`, `tests/test_site.py`) need python playwright and skip
+without it; they are not run in CI.
 
 Shell scripts must pass `shellcheck -s bash` (CI checks the files listed in
 `.github/workflows/ci.yml`; add new scripts to that list).
