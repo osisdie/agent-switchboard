@@ -25,6 +25,16 @@
 #                                              approver's matching `board answer`, then checks
 #   board notify "text"                        send a Slack message (SLACK_WEBHOOK_URL)
 #   board ack KEY [KEY...]                     acknowledge alerts (board-notify ack; glob ok)
+#   board mute CHANNEL|all [--for 1h|--until HH:MM|ISO] [--include-urgent] [--by WHO]
+#   board unmute CHANNEL|all [--by WHO]
+#   board mute status [--json]                 pause push channels (urgent breaks through
+#                                              unless --include-urgent); channels: slack desktop
+#                                              email line sns webhook
+#   board notify-level CHANNEL|all info|warn|high|urgent|default [--by WHO]
+#                                              triage: only this level and up on that channel
+#   board notify-presence on|off [--level warn|high|urgent] [--by WHO]
+#                                              hold push below LEVEL while an approver watches
+#                                              the board (default on, high)
 #   board away on --by WHO --said "owner's words" [--replace]
 #   board away off --by WHO [--said "..."]     owner-away mode ($BOARD_HOME/owner-away)
 #   board away status [--quiet|--json]         exit 0 when the owner is away, 1 when not
@@ -135,6 +145,24 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
         echo "  post to SLACK_WEBHOOK_URL (env or <config dir>/.env); silent no-op when unset"
         echo "  --link appends the board link (BOARD_PUBLIC_URL / fleet.yaml board_url) that opens"
         echo "  decision, message or consensus ID, or the board root; nothing when no board URL is set" ;;
+    mute) echo "usage: board mute CHANNEL|all [--for 30m|1h|4h|2d | --until HH:MM|ISO] [--include-urgent] [--by WHO]"
+        echo "       board unmute CHANNEL|all [--by WHO]"
+        echo "       board mute status [--json]"
+        echo "  pause push notifications on one channel (slack desktop email line sns webhook) or all."
+        echo "  Without --for/--until the mute lasts until you unmute. --until HH:MM is the next such"
+        echo "  local time. Urgent alerts (production gate, usage limit, anything escalated to urgent)"
+        echo "  still break through unless the mute has --include-urgent. Held sends are logged in"
+        echo "  events.jsonl (alert-suppressed); nothing is replayed when the mute ends. unmute all"
+        echo "  removes every mute. Stored in \$BOARD_HOME/notify-prefs.json." ;;
+    unmute) sub_usage mute ;;
+    "mute status") echo "usage: board mute status [--json]   (mutes, min levels, presence policy, who is watching)" ;;
+    notify-level) echo "usage: board notify-level CHANNEL|all info|warn|high|urgent|default [--by WHO]"
+        echo "  triage: deliver only this level and up. The stricter of the 'all' floor and the"
+        echo "  channel's own floor applies. default removes the setting (fleet.yaml alerting.min_level"
+        echo "  or info applies again). Examples: board notify-level slack high; board notify-level email urgent" ;;
+    notify-presence) echo "usage: board notify-presence on|off [--level warn|high|urgent] [--by WHO]"
+        echo "  while an approver has the board open, visible and in use, hold push below LEVEL"
+        echo "  (default high). The board still shows everything; escalation timers keep running." ;;
     doctor) echo "usage: board doctor"
         echo "  check dependencies, config, hook installation and the collector" ;;
     away) echo "usage: board away on --by WHO --said \"owner's words\" [--replace]"
@@ -721,6 +749,11 @@ cmd_notify() {
   fi
   [ -n "$url" ] || return 0
   command -v curl >/dev/null 2>&1 || return 0
+  # Notification controls (board mute / notify-level / notify-presence): a plain notify is an
+  # info message on slack. Held = logged as alert-suppressed by the gate, nothing sent.
+  local grc=0
+  python3 "$REPO/lib/notify.py" gate --channel slack --level info --key notify >/dev/null 2>&1 || grc=$?
+  [ "$grc" = 10 ] && return 0
   local payload
   # Slack control sequences (<!channel>, <url|label>, <@U...>) come from & < >: escape them, as
   # lib/notify.py slack_escape does, so text from sessions or the owner can't ping or link.
@@ -1242,6 +1275,16 @@ cons_show() {
       "_Red lines never pass by consensus: \($red)._"' "$f"
 }
 
+# ---------------------------------------------------------------- notification controls
+PREFS="$REPO/lib/prefs.py"
+cmd_mute() {
+  case "${1:-}" in
+    status) shift; exec python3 "$PREFS" mute-status "$@" ;;
+    "") sub_usage mute >&2; exit 2 ;;
+  esac
+  exec python3 "$PREFS" mute "$@"
+}
+
 # ---------------------------------------------------------------- doctor
 cmd_doctor() {
   local bad=0
@@ -1304,11 +1347,11 @@ case "$sub" in
   # leading -h/--help asks for help.
   answer)
     case "${1:-}" in -h|--help) sub_usage answer; exit 0 ;; esac ;;
-  ls|snapshot|ask|decisions|mark|press|limit|notify|doctor|ack)
+  ls|snapshot|ask|decisions|mark|press|limit|notify|doctor|ack|unmute|notify-level|notify-presence)
     if wants_help "$@"; then sub_usage "$sub"; exit 0; fi ;;
   # proposals, notes and the owner's words are free text: only -h/--help right after the
   # subcommand (or instead of it) asks for help.
-  away|consensus)
+  away|consensus|mute)
     case "${1:-}" in -h|--help) sub_usage "$sub"; exit 0 ;; esac
     case "${2:-}" in -h|--help) sub_usage "$sub" "$1"; exit 0 ;; esac ;;
   task)
@@ -1330,6 +1373,10 @@ case "$sub" in
   notify) cmd_notify "$@" ;;
   ack) [ $# -gt 0 ] || { sub_usage ack >&2; exit 2; }; exec "$REPO/bin/board-notify" ack "$@" ;;
   doctor) cmd_doctor "$@" ;;
+  mute) cmd_mute "$@" ;;
+  unmute) [ $# -gt 0 ] || { sub_usage mute >&2; exit 2; }; exec python3 "$PREFS" unmute "$@" ;;
+  notify-level) [ $# -gt 0 ] || { sub_usage notify-level >&2; exit 2; }; exec python3 "$PREFS" level "$@" ;;
+  notify-presence) [ $# -gt 0 ] || { sub_usage notify-presence >&2; exit 2; }; exec python3 "$PREFS" presence "$@" ;;
   away) cmd_away "$@" ;;
   consensus) cmd_consensus "$@" ;;
   -h|--help|help) usage ;;

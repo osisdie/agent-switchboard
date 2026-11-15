@@ -33,7 +33,8 @@ jobs:
           shellcheck -s bash bin/board bin/board-collect bin/fleet-up hooks/board-hook.sh \
             scripts/install.sh scripts/setup-dev.sh tests/run.sh .githooks/pre-commit .githooks/commit-msg \
             bin/board-notify hooks/board-statusline-tap.sh tests/test_notify.sh \
-            bin/board-serve scripts/expose-cloudflare.sh tests/test_serve.sh tests/test_away.sh
+            bin/board-serve scripts/expose-cloudflare.sh tests/test_serve.sh tests/test_away.sh \
+            tests/test_notify_controls.sh
 
   readme-sync:
     runs-on: ubuntu-latest
@@ -54,6 +55,8 @@ jobs:
         run: tests/run.sh -v
       - name: notify tests
         run: tests/test_notify.sh -v
+      - name: notification controls tests
+        run: tests/test_notify_controls.sh -v
       - name: serve tests
         run: tests/test_serve.sh -v
       - name: away / consensus tests
