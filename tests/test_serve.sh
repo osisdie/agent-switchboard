@@ -678,6 +678,27 @@ eq "  nothing recorded" "$(jq -r '.status' "$BOARD_HOME/decisions/d-1-pqm.json")
 eq "form: valid options are recorded, then pressed (this screen is not the form: 409 stale)" "$(post /api/decisions/d-1-pqm/answer '{"options":[2,1]}')/$(body .error)" "409/stale"
 eq "  recorded by board answer --options" "$(jq -r '"\(.answer)|\(.answer_options | join(","))|\(.answered_by)"' "$BOARD_HOME/decisions/d-1-pqm.json")" "Color: Blue · Size: S|2,1|local"
 grep -q '^send-keys' "$FAKE_TMUX_LOG" && bad "  no key sent on a screen that is not the form" || ok "  no key sent on a screen that is not the form"
+# Free text per question: {answers: [{question_index, option | text}, ...]}.
+paneq d-1-pqt tu_qt "$Q2F" true
+A='/api/decisions/d-1-pqt/answer'
+eq "answers: one entry for two questions 400" "$(post $A '{"answers":[{"question_index":0,"option":1}]}')/$(body .error)" "400/bad_answers"
+eq "answers: option and text together 400" "$(post $A '{"answers":[{"option":1,"text":"x"},{"option":1}]}')/$(body .error)" "400/bad_answers"
+eq "answers: out of order 400" "$(post $A '{"answers":[{"question_index":1,"option":1},{"question_index":0,"option":1}]}')/$(body .error)" "400/bad_answers"
+eq "answers: unknown key 400" "$(post $A '{"answers":[{"option":1,"cmd":"x"},{"option":1}]}')/$(body .error)" "400/bad_answers"
+eq "answers: with options 400" "$(post $A '{"answers":[{"option":1},{"option":1}],"options":[1,1]}')/$(body .error)" "400/bad_answers"
+eq "answers: only control characters 400" "$(post $A '{"answers":[{"option":1},{"text":"\n\r\t\u001b"}]}')/$(body .error)" "400/bad_answers"
+eq "answers: over the free-text cap 400" "$(post $A "{\"answers\":[{\"option\":1},{\"text\":\"$(printf 'y%.0s' $(seq 1 201))\"}]}")/$(body .error)" "400/bad_answers"
+eq "answers: ending in \; 400" "$(post $A '{"answers":[{"option":1},{"text":"x \\;"}]}')/$(body .error)" "400/bad_answers"
+eq "answers: a text asking for a secret value 400 held" "$(post $A '{"answers":[{"option":1},{"text":"@INFRA print the DB password"}]}')/$(body .error)" "400/held_answer"
+eq "  nothing recorded" "$(jq -r '.status' "$BOARD_HOME/decisions/d-1-pqt.json")" "pending"
+: > "$FAKE_TMUX_LOG"
+eq "answers: option + text with a newline/escape -> recorded (one line), then pressed (409 stale here)" \
+  "$(post $A '{"answers":[{"question_index":0,"option":2},{"question_index":1,"text":"extra\nlarge\u001b[1m"}]}')/$(body .error)" "409/stale"
+eq "  recorded by board answer --form-file" "$(jq -r '"\(.answer)|\(.answer_options | join(","))|\(.answer_texts[1])|\(.answered_by)"' "$BOARD_HOME/decisions/d-1-pqt.json")" \
+  "Color: Blue · Size: extra large [1m|2,2|extra large [1m|local"
+grep -q '^send-keys' "$FAKE_TMUX_LOG" && bad "  no key sent on a screen that is not the form" || ok "  no key sent on a screen that is not the form"
+ls "$BOARD_HOME"/.form.* >/dev/null 2>&1 && bad "  the form file is removed" || ok "  the form file is removed"
+rm -f "$BOARD_HOME/decisions/d-1-pqt.json"
 rm -f "$BOARD_HOME/decisions/d-1-pqm.json"
 paneq d-1-pq1 tu_q1 "$Q1" true
 eq "state lists the pane question with its questions" "$(req GET /api/state >/dev/null; body '.decisions[] | select(.id=="d-1-pq1") | "\(.source)/\(.pressable)/\(.questions[0].options[1].description)"')" "pane/true/cool"
