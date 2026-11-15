@@ -93,6 +93,17 @@ def main():
         check("rerun: a different image is replaced",
               open(os.path.join(shots, "resources.webp"), "rb").read() != before["profile-menu.webp"]
               and "resources" in r.stdout and "resources        1280x860  @1x" in r.stdout and "(unchanged)" not in r.stdout.split("resources ")[-1], r.stdout)
+        # Same size, one digit different: a visible change must never pass as noise (1x and 2x).
+        digit = "() => { const n = document.getElementById('needs-n'); n.textContent = String(Number(n.textContent) + 1); }"
+        pct = "() => { const p = document.querySelector('#u-5h .u-p'); p.textContent = p.textContent.replace('91', '92'); }"
+        for shot, js, what in (("overview-light", digit, "the Needs-you count"), ("usage-popover", pct, "91% -> 92%"),
+                               ("phone-dark", pct, "91% -> 92% at 2x")):
+            prev = open(os.path.join(shots, shot + ".webp"), "rb").read()
+            r = subprocess.run([sys.executable, os.path.join(REPO, "scripts", "screenshots.py"), "--out", shots,
+                                "--only", shot, "--eval", js], capture_output=True, text=True, timeout=300)
+            check("rerun: one digit changed (%s) -> the file is replaced" % what,
+                  r.returncode == 0 and "(unchanged)" not in r.stdout and open(os.path.join(shots, shot + ".webp"), "rb").read() != prev,
+                  r.stdout + r.stderr[-300:])
         committed = sorted(os.listdir(os.path.join(REPO, "docs", "assets", "screenshots")))
         check("the committed set matches the script's list", committed == want, committed)
 

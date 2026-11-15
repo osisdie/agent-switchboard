@@ -10,9 +10,11 @@ docs/assets/screenshots/ by default, each under MAX_BYTES. Only demo data is sho
 session codes, example.com, no host names, emails or paths from this machine.
 
 Stable output: the page clock is frozen at DEMO_TIME (UTC, en-US), so relative times and dates
-are the same on every run. Chromium's rasterization still varies by a few levels on a few pixels,
-so an existing image is kept when the new render matches it within SAME_TOLERANCE (git stays clean). Google Fonts load when the network allows; offline, the fallback fonts
-are used (the images then differ slightly).
+are the same on every run. Chromium's rasterization still varies now and then: a few pixels,
+scattered over the page. An existing image is kept when the new render matches it within
+SAME_TOLERANCE (git stays clean). A visible change, even one digit, is clustered: it fails the
+per-tile cap and is written. Google Fonts load when the network allows; offline, the fallback
+fonts are used (the images then differ slightly).
 
 PLAYWRIGHT_CHROMIUM_EXECUTABLE points at a specific Chromium / headless shell when the one
 playwright expects is not installed.
@@ -29,9 +31,19 @@ REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 OUT = os.path.join(REPO, "docs", "assets", "screenshots")
 DEMO_TIME = dt.datetime(2026, 1, 15, 10, 30, tzinfo=dt.timezone.utc)
 MAX_BYTES = 200 * 1024
-# (big difference, share of pixels that may differ by more than it, share that may differ at all):
-# a few anti-aliased pixels may move a lot; a real change moves thousands.
-SAME_TOLERANCE = (24, 0.0002, 0.001)
+# When is a new render "the same" as the image on disk? Measured on this page: rasterization noise
+# moves at most ~16 pixels by more than `big` within any 16x16 tile at 2x (3 at 1x), scattered
+# over the page; a one-digit edit moves 19+ (1x) or 49+ (2x) pixels in one tile. So: every tile
+# under its cap, and only a sliver of the page different at all.
+SAME_TOLERANCE = {
+    "big": 24,             # a channel difference above this is a "big" pixel
+    "tile": 16,            # tile size in image pixels
+    "tile_cap": 10,        # big pixels allowed per tile at 1x ...
+    "tile_cap_per_dpr": 20,  # ... plus this much per extra device pixel ratio (2x: 30)
+    "small": 16,           # a channel difference above this counts as "different"
+    "big_share": 0.0002,   # share of the image that may be big pixels
+    "small_share": 0.001,  # share of the image that may differ at all
+}
 DESKTOP = {"width": 1280, "height": 860}
 PHONE = {"width": 390, "height": 844}
 
@@ -66,27 +78,34 @@ WEBP_JS = """async ([b64, q]) => {
 }"""
 
 
-SAME_JS = """async ([oldB64, newB64, bigDiff, bigShare, maxShare]) => {
+SAME_JS = """async ([oldB64, newB64, t, cap]) => {
   const load = async (src) => { const i = new Image(); i.src = src; await i.decode(); return i; };
   const [a, b] = await Promise.all([load('data:image/webp;base64,' + oldB64), load('data:image/webp;base64,' + newB64)]);
   if (a.naturalWidth !== b.naturalWidth || a.naturalHeight !== b.naturalHeight) return false;
   const px = (img) => { const c = document.createElement('canvas'); c.width = img.naturalWidth; c.height = img.naturalHeight;
     const g = c.getContext('2d'); g.drawImage(img, 0, 0); return g.getImageData(0, 0, c.width, c.height).data; };
-  const x = px(a), y = px(b);
+  const x = px(a), y = px(b), w = a.naturalWidth, tw = Math.ceil(w / t.tile);
+  const tiles = new Int32Array(tw * Math.ceil(a.naturalHeight / t.tile));
   let off = 0, big = 0;
-  for (let i = 0; i < x.length; i += 4) {
+  for (let i = 0, p = 0; i < x.length; i += 4, p++) {
     const d = Math.max(Math.abs(x[i] - y[i]), Math.abs(x[i + 1] - y[i + 1]), Math.abs(x[i + 2] - y[i + 2]));
-    if (d > bigDiff) big++;
-    if (d > 16) off++;
+    if (d > t.small) off++;
+    if (d > t.big) {
+      big++;
+      const k = Math.floor((p % w) / t.tile) + tw * Math.floor(Math.floor(p / w) / t.tile);
+      if (++tiles[k] > cap) return false;  // clustered: a visible change
+    }
   }
   const n = x.length / 4;
-  return big <= bigShare * n && off <= maxShare * n;
+  return big <= t.big_share * n && off <= t.small_share * n;
 }"""
 
 
-def same_image(conv, old, new):
-    """Do two WebP images show the same thing (within SAME_TOLERANCE)?"""
-    return bool(conv.evaluate(SAME_JS, [base64.b64encode(old).decode(), base64.b64encode(new).decode()] + list(SAME_TOLERANCE)))
+def same_image(conv, old, new, scale=1):
+    """Do two WebP images show the same thing (within SAME_TOLERANCE, at this device scale)?"""
+    t = SAME_TOLERANCE
+    cap = t["tile_cap"] + t["tile_cap_per_dpr"] * max(0, scale - 1)
+    return bool(conv.evaluate(SAME_JS, [base64.b64encode(old).decode(), base64.b64encode(new).decode(), t, cap]))
 
 
 def to_webp(conv, png):
@@ -144,6 +163,7 @@ def main(argv):
     ap.add_argument("--out", default=OUT)
     ap.add_argument("--only", default="")
     ap.add_argument("--list", action="store_true", help="print name<TAB>alt text and exit")
+    ap.add_argument("--eval", default="", help="JavaScript run in the page before each shot (tests: a one-digit edit)")
     args = ap.parse_args(argv[1:])
     if args.list:
         for name, (alt, *_rest) in SHOTS.items():
@@ -185,11 +205,13 @@ def main(argv):
             page.goto(page_url)
             page.wait_for_load_state("networkidle")
             page.evaluate("() => document.fonts.ready")
+            if args.eval:
+                page.evaluate(args.eval)
             page.wait_for_timeout(300)
             data = to_webp(conv, shoot(page, name))
             path = os.path.join(args.out, name + ".webp")
             old = open(path, "rb").read() if os.path.isfile(path) else None
-            if old and (old == data or same_image(conv, old, data)):
+            if old and (old == data or same_image(conv, old, data, scale)):
                 print("%-16s %4dx%-4d @%dx  %6d bytes  (unchanged)" % (name, viewport["width"], viewport["height"], scale, len(old)))
             else:
                 with open(path, "wb") as fh:
