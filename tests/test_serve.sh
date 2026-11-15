@@ -128,7 +128,7 @@ start
 # ---------------------------------------------------------------- state
 echo "state:"
 eq "GET /api/state 200" "$(req GET /api/state)" "200"
-eq "state keys" "$(body 'keys | join(",")')" "approvals,can_message,consensus,decisions,generated_at,ledger,me,messages,mode,operator,owner_away,replies,sessions,tasks,writable"
+eq "state keys" "$(body 'keys | join(",")')" "approvals,can_message,consensus,decisions,generated_at,ledger,me,messages,mode,notify,operator,owner_away,replies,sessions,tasks,writable"
 eq "me is local on loopback" "$(body .me)" "local"
 eq "mode local" "$(body .mode)" "local"
 eq "session CP needs-you" "$(body '.sessions[] | select(.code=="CP") | .state')" "needs-you"
@@ -245,6 +245,63 @@ eq "  state: owner_away null again" "$(req GET /api/state >/dev/null; body '.own
 eq "off again: unchanged" "$(post /api/away '{"state":"off"}')" "200"
 eq "  status" "$(body .status)" "unchanged"
 
+# ---------------------------------------------------------------- notification controls
+echo "notify prefs:"
+NP="$BOARD_HOME/notify-prefs.json"
+evlast() { jq -s -r --arg a "$1" '[.[] | select(.type=="serve" and .action==$a)] | last | '"$2" "$BOARD_HOME/events.jsonl"; }
+eq "state.notify: nothing muted" "$(req GET /api/state >/dev/null; body '.notify.mutes | length')" "0"
+eq "  channels are booleans (none configured here)" "$(body '[.notify.channels[]] | map(type) | unique | join(",")')" "boolean"
+eq "  breakthrough level" "$(body .notify.breakthrough)" "urgent"
+eq "  no watcher list in the state" "$(body '.notify.presence | has("present")')" "false"
+for b in '{"op":"snooze","channel":"slack"}' '{"op":"mute","channel":"pager"}' '{"op":"mute","channel":"slack","for":"99x"}'          '{"op":"mute","channel":"slack","for":"1h","until":"12:00"}' '{"op":"mute","channel":"slack","until":"2001-01-01T00:00:00Z"}'          '{"op":"mute","channel":"slack","for":"31d"}' '{"op":"mute","channel":"slack","for":1}' '{"op":"mute","channel":"slack","include_urgent":"yes"}'          '{"op":"level","channel":"slack","level":"loud"}' '{"op":"presence","reduce":"yes"}' '{"op":"presence","reduce":true,"level":"info"}'          '{"op":"mute","channel":"slack","for":"--help"}' '{"op":"level","channel":"--by","level":"high"}'; do
+  eq "bad body refused: $b" "$(post /api/notify-prefs "$b")" "400"
+done
+[ -e "$NP" ] && bad "  refused POSTs write nothing" || ok "  refused POSTs write nothing"
+eq "notify-prefs without X-Board refused" "$(req POST /api/notify-prefs -H 'Content-Type: application/json' -H "$ORIGIN" --data-binary '{"op":"unmute","channel":"all"}')" "403"
+eq "notify-prefs cross-origin refused" "$(req POST /api/notify-prefs -H 'Content-Type: application/json' -H 'X-Board: 1' -H 'Origin: https://evil.example' --data-binary '{"op":"unmute","channel":"all"}')" "403"
+eq "notify-prefs text/plain refused" "$(req POST /api/notify-prefs -H 'Content-Type: text/plain' -H 'X-Board: 1' -H "$ORIGIN" --data-binary '{"op":"unmute","channel":"all"}')" "415"
+big_np="$(python3 -c 'import json; print(json.dumps({"op":"unmute","channel":"all","pad":"x"*20000}))')"
+eq "notify-prefs over the body cap refused" "$(post /api/notify-prefs "$big_np")" "413"
+eq "notify-prefs non-JSON refused" "$(post /api/notify-prefs 'mute slack')" "400"
+eq "notify-prefs with a forwarded header refused" "$(post /api/notify-prefs '{"op":"unmute","channel":"all"}' -H 'X-Forwarded-For: 203.0.113.9')" "403"
+eq "approver mutes slack for 1h" "$(post /api/notify-prefs '{"op":"mute","channel":"slack","for":"1h"}')" "200"
+eq "  reply carries the new state" "$(body '.notify.mutes.slack.by')" "board:local"
+eq "  file written by the CLI, 0600" "$(jq -r '.mutes.slack.by' "$NP")/$(stat -c %a "$NP")" "board:local/600"
+eq "  audited" "$(evlast notify-prefs '.by + "/" + .op + "/" + .channel + "/" + .result')" "local/mute/slack/ok"
+eq "  state shows it" "$(req GET /api/state >/dev/null; body '.notify.mutes.slack.include_urgent')" "false"
+eq "mute all until an ISO time, urgent too" "$(post /api/notify-prefs "{\"op\":\"mute\",\"channel\":\"all\",\"until\":\"$(date -u -d '+3 hours' +%Y-%m-%dT%H:%M:%SZ)\",\"include_urgent\":true}")" "200"
+eq "  include_urgent stored" "$(jq -r '.mutes.all.include_urgent' "$NP")" "true"
+eq "unmute all" "$(post /api/notify-prefs '{"op":"unmute","channel":"all"}')" "200"
+eq "  every mute gone" "$(jq -c .mutes "$NP")" "{}"
+eq "slack high and up" "$(post /api/notify-prefs '{"op":"level","channel":"slack","level":"high"}')" "200"
+eq "  effective level in the reply" "$(body .notify.effective_min_level.slack)" "high"
+eq "level default" "$(post /api/notify-prefs '{"op":"level","channel":"slack","level":"default"}')" "200"
+eq "  back to info" "$(body .notify.effective_min_level.slack)" "info"
+eq "presence off" "$(post /api/notify-prefs '{"op":"presence","reduce":false}')" "200"
+eq "  reply" "$(body .notify.presence.reduce)" "false"
+eq "presence on at urgent" "$(post /api/notify-prefs '{"op":"presence","reduce":true,"level":"urgent"}')" "200"
+eq "  reply" "$(body '"\(.notify.presence.reduce)/\(.notify.presence.min_level)"')" "true/urgent"
+echo "presence:"
+PRF="$BOARD_HOME/presence.json"
+for b in '{}' '{"visible":"yes"}' '{"visible":true,"interaction_at":"now"}' '{"visible":true,"interaction_at":-5}' '{"visible":true,"interaction_at":true}'; do
+  eq "bad heartbeat refused: $b" "$(post /api/presence "$b")" "400"
+done
+eq "presence without X-Board refused" "$(req POST /api/presence -H 'Content-Type: application/json' -H "$ORIGIN" --data-binary '{"visible":true}')" "403"
+eq "heartbeat: visible" "$(post /api/presence "{\"visible\":true,\"interaction_at\":$(date +%s)000}")" "200"
+eq "  recorded under the server's identity" "$(jq -r '.local.visible|tostring' "$PRF")/$(jq -r '.local.via' "$PRF")" "true/loopback"
+eq "  presence.json 0600" "$(stat -c %a "$PRF")" "600"
+eq "  watching now (board mute status)" "$("$REPO/bin/board" mute status --json | jq -r '.presence.present | join(",")')" "local"
+n_pres() { jq -s '[.[] | select(.type=="serve" and .action=="presence")] | length' "$BOARD_HOME/events.jsonl"; }
+before="$(n_pres)"
+post /api/presence '{"visible":true,"interaction_at":null}' >/dev/null
+eq "  a routine heartbeat is not audited" "$(n_pres)" "$before"
+eq "  a far-future interaction is clamped to now" "$(post /api/presence '{"visible":true,"interaction_at":99999999999999}'; jq -r "(.local.interaction_at <= $(date +%s)000 + 1000)" "$PRF")" "200true"
+eq "heartbeat: hidden" "$(post /api/presence '{"visible":false}')" "200"
+eq "  visibility change audited" "$(n_pres)" "$((before + 1))"
+eq "  nobody watching now" "$("$REPO/bin/board" mute status --json | jq -r '.presence.present | length')" "0"
+eq "  the presence file does not change the state stream" "$(req GET /api/state >/dev/null; body 'has("presence")')" "false"
+rm -f "$NP" "$PRF"
+
 # ---------------------------------------------------------------- SSE
 echo "sse:"
 python3 - "$B" "$BOARD_HOME" > "$T/sse.out" 2>&1 <<'EOF' &
@@ -343,6 +400,11 @@ eq "  state says nobody is an approver" "$(req GET /api/state >/dev/null; body '
 eq "  --check says answers are refused" "$("$REPO/bin/board-serve" --check | grep -c 'answers  REFUSED')" "1"
 eq "empty approvers: away refused" "$(post /api/away '{"state":"on"}')" "403"
 eq "  error no_approvers" "$(body .error)" "no_approvers"
+eq "empty approvers: notify-prefs refused" "$(post /api/notify-prefs '{"op":"mute","channel":"all"}')" "403"
+eq "  error no_approvers" "$(body .error)" "no_approvers"
+eq "empty approvers: presence refused" "$(post /api/presence '{"visible":true}')" "403"
+eq "  error no_approvers" "$(body .error)" "no_approvers"
+[ -e "$BOARD_HOME/notify-prefs.json" ] || [ -e "$BOARD_HOME/presence.json" ] && bad "  nothing written" || ok "  nothing written"
 write_cfg "" "[boss@example.com]"
 start
 eq "approvers without local: loopback answer refused" "$(post /api/decisions/d-1-q2/answer '{"answer":"A"}')" "403"
@@ -354,6 +416,11 @@ eq "  away refused for a non-approver" "$(post /api/away '{"state":"on","said":"
 eq "  error not_approver" "$(body .error)" "not_approver"
 [ -e "$BOARD_HOME/owner-away" ] && bad "  no owner-away file" || ok "  no owner-away file"
 eq "  refusal audited" "$(jq -s -r '[.[] | select(.type=="serve" and .action=="away")] | last | .result + "/" + .reason' "$BOARD_HOME/events.jsonl")" "refused/not an approver"
+eq "  notify-prefs refused for a non-approver" "$(post /api/notify-prefs '{"op":"mute","channel":"slack","for":"1h"}')" "403"
+eq "  error not_approver" "$(body .error)" "not_approver"
+eq "  refusal audited" "$(jq -s -r '[.[] | select(.type=="serve" and .action=="notify-prefs")] | last | .result + "/" + .reason + "/" + .channel' "$BOARD_HOME/events.jsonl")" "refused/not an approver/slack"
+eq "  presence refused for a non-approver" "$(post /api/presence '{"visible":true}')" "403"
+[ -e "$BOARD_HOME/notify-prefs.json" ] || [ -e "$BOARD_HOME/presence.json" ] && bad "  nothing written" || ok "  nothing written"
 # MUST-FIX: a non-approver must never cancel an approver's answer that waits for the relay.
 dec d-1-q6 question
 BOARD_HOME="$BOARD_HOME" "$REPO/bin/board" answer d-1-q6 "ship it" --by boss@example.com >/dev/null
@@ -472,6 +539,11 @@ EOF
   eq "tunnel: an approver is not a release manager" "$(tpost /api/decisions/d-1-prod2/answer '{"answer":"approve"}' "${TUNNEL_HDRS[@]}" -H "$(jwt good)")" "403"
   dec d-1-prod2 question '{"task_id":"t-1","stage":"production","gate":"production","options":["approve","request changes"]}'
   eq "tunnel: the release manager approves production" "$(tpost /api/decisions/d-1-prod2/answer '{"answer":"approve"}' "${TUNNEL_HDRS[@]}" -H "$(jwt rm)")" "200"
+  eq "tunnel: an approver mutes from the phone" "$(tpost /api/notify-prefs '{"op":"mute","channel":"email","for":"4h"}' "${TUNNEL_HDRS[@]}" -H "$(jwt good)")" "200"
+  eq "  recorded as board:<email>" "$(jq -r .mutes.email.by "$BOARD_HOME/notify-prefs.json")" "board:boss@example.com"
+  eq "  heartbeat from the phone: the token's email" "$(tpost /api/presence '{"visible":true}' "${TUNNEL_HDRS[@]}" -H "$(jwt good)" >/dev/null; jq -r '.["boss@example.com"].via' "$BOARD_HOME/presence.json")" "cf-jwt"
+  eq "  a release manager who is not an approver may not" "$(tpost /api/notify-prefs '{"op":"unmute","channel":"all"}' "${TUNNEL_HDRS[@]}" -H "$(jwt rm)")" "403"
+  rm -f "$BOARD_HOME/notify-prefs.json" "$BOARD_HOME/presence.json"
   eq "tunnel: messages carry the email" "$(tpost /api/messages '{"to":"CP","body":"from phone"}' "${TUNNEL_HDRS[@]}" -H "$(jwt good)" >/dev/null; jq -r .by "$BOARD_HOME/messages/$(body .id).json")" "boss@example.com"
   # serve.tunnel.allowed_emails lets a viewer in who is not an approver: they read, never decide.
   tunnel_cfg
