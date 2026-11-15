@@ -123,7 +123,8 @@ def collect(pg):
 
 def main():
     zh = dictionary()
-    en_res = [(k, template_re(k)) for k, v in zh.items() if k.strip() != v.strip() and re.search(r"[A-Za-z]{2}", k)]
+    # English = two letters outside the placeholders ("{lvl} ≥ {t}" alone is no English).
+    en_res = [(k, template_re(k)) for k, v in zh.items() if k.strip() != v.strip() and re.search(r"[A-Za-z]{2}", re.sub(r"\{\w+\}", "", k))]
     zh_res = [(v, template_re(v)) for k, v in zh.items() if k.strip() != v.strip() and re.search(r"[㐀-鿿]", v)]
     with sync_playwright() as p:
         try:

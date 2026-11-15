@@ -299,7 +299,7 @@ def main():
                     check("%s: the Load row drives it (highlighted), memory does not" % tag,
                           y["load"]["drive"] and int(y["load"]["weight"]) >= 700 and y["load"]["color"] != y["lineColor"] and not y["memDrive"], y)
                     check("%s: one line why, per cpu against the threshold" % tag, y["why"] == (
-                        "負載 27.7 / 4 cpu = 每顆 cpu 6.93（高 ≥ 3.0）" if zh else "Load 27.7 / 4 cpu = 6.93 per cpu (high ≥ 3.0)"), y["why"])
+                        "負載 27.7 / 4 cpu = 每顆 cpu 6.93（高，門檻 ≥ 3.0）" if zh else "Load 27.7 / 4 cpu = 6.93 per cpu (high ≥ 3.0)"), y["why"])
                     check("%s: a since-boot OOM count is neutral and says so" % tag, not y["oom"]["hot"] and not y["oom"]["filled"]
                           and y["oom"]["text"] == ("開機以來 OOM 2" if zh else "OOM 2 since boot")
                           and y["oom"]["label"] == ("開機以來 2 次 OOM kill" if zh else "2 OOM kills since boot"), y["oom"])
@@ -316,7 +316,7 @@ def main():
                 t = st(pg, "sys")
                 first = (t.get("text") or "").split("\n")[0]
                 if res is RES_LOAD:
-                    want = ("原因：負載 27.7 / 4 cpu = 每顆 cpu 6.93（高 ≥ 3.0）；連續 2 次取樣都在 high" if zh
+                    want = ("原因：負載 27.7 / 4 cpu = 每顆 cpu 6.93（高，門檻 ≥ 3.0）；連續 2 次取樣都在 high" if zh
                             else "Why: Load 27.7 / 4 cpu = 6.93 per cpu (high ≥ 3.0); high for 2 samples in a row")
                 else:
                     want = "原因：最近 10 分鐘內有 OOM kill" if zh else "Why: an OOM kill in the last 10 minutes"
@@ -327,7 +327,7 @@ def main():
 
         print("System reason: easing, bad thresholds:")
         for res, lang, want in ((RES_EASE, "en", "Load 11.2 / 4 cpu = 2.80 per cpu (high from ≥ 3.0, easing)"),
-                                (RES_EASE, "zh-TW", "負載 11.2 / 4 cpu = 每顆 cpu 2.80（≥ 3.0 起算 高，正在回落）"),
+                                (RES_EASE, "zh-TW", "負載 11.2 / 4 cpu = 每顆 cpu 2.80（高，門檻 ≥ 3.0，正在回落）"),
                                 (RES_MEM_EASE, "en", "Memory 10% available (high from ≤ 8%, easing)"),
                                 (RES_LOAD, "en", "Load 27.7 / 4 cpu = 6.93 per cpu (high ≥ 3.0)"),
                                 (RES_BAD_THR, "en", "Load 27.7 / 4 cpu = 6.93 per cpu (high ≥ 3.0)")):
