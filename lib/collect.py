@@ -15,6 +15,9 @@ Usage: collect.py [--no-notify] [--baseline] [--verbose]
 - Adds the tasks ($BOARD_HOME/tasks/*.json) and the active usage limit to the snapshot.
 - Adds owner-away mode (`owner_away`: null or {since, by, said}) and the consensus items that are
   pending or were decided in the last 24 h (`consensus`, lib/away.py).
+- Samples system resources every resources.interval seconds into resources.json (lib/resources.py)
+  and adds only their digest (`resources`: null or {level, worst}) to the snapshot, so raw numbers
+  never change snapshot.json.
 """
 import glob
 import json
@@ -28,6 +31,7 @@ import away  # noqa: E402
 import fleet  # noqa: E402
 import limit  # noqa: E402
 import notify  # noqa: E402
+import resources  # noqa: E402
 
 FINAL = ("relayed", "stale", "timeout", "unauthorized")
 
@@ -213,6 +217,16 @@ def attach_tasks(sessions, tasks):
         s["stage"] = cur.get("stage") if cur else None
 
 
+def resources_digest(cfg, home, sessions, verbose=False):
+    """Sample resources when due; never breaks the collector."""
+    try:
+        return resources.step(cfg, home, sessions)
+    except Exception as exc:  # noqa: BLE001
+        if verbose:
+            print("resources: sample failed: %s: %s" % (type(exc).__name__, exc))
+        return None
+
+
 def alert(prev, snap, verbose):
     """Per-event alerts (board-notify), so the first alert does not wait for the next tick().
     tick() is the safety net: it opens alerts for anything these calls miss."""
@@ -255,7 +269,8 @@ def main(argv):
     attach_tasks(sessions, tasks)
     snap = {"generated_at": now, "sessions": sessions, "decisions": decisions, "tasks": tasks,
             "limit": limit.active(), "owner_away": away.away_record(home),
-            "consensus": away.consensus_items(home, now)}
+            "consensus": away.consensus_items(home, now),
+            "resources": resources_digest(cfg, home, sessions, verbose)}
 
     spath = os.path.join(home, "snapshot.json")
     prev = read_json(spath)

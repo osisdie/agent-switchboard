@@ -61,3 +61,5 @@ jobs:
         run: tests/test_serve.sh -v
       - name: away / consensus tests
         run: tests/test_away.sh -v
+      - name: resources tests
+        run: python3 tests/test_resources.py -v
