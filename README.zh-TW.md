@@ -7,13 +7,15 @@
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue?logo=python&logoColor=white)](#quick-start)
 [![Bash](https://img.shields.io/badge/shell-bash-4EAA25?logo=gnubash&logoColor=white)](bin/)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+[![live demo](https://img.shields.io/badge/live%20demo-try%20it%20in%20the%20browser-orange)](https://osisdie.github.io/agent-switchboard/demo.html)
 
 **文件：** [English](README.md) | 繁體中文
 
 > 以英文版 [README.md](README.md) 為準；這份翻譯可能會落後。
 
 替一整組長時間執行的 **Claude Code** session 準備的總機（switchboard）：用一個看板（**Agent Switchboard**）呈現誰在工作、誰卡住了，
-以及哪些事正在等人類做決定。你可以直接在看板上回答，用手機也行。
+以及哪些事正在等人類做決定。你可以直接在看板上回答，用手機也行。它也會為整組 session 的專注工作累計番茄鐘。可以先試試
+[線上 demo](https://osisdie.github.io/agent-switchboard/demo.html)（只有範例資料，不會送出任何東西）。
 
 同一個看板頁面可以走**兩種通道**：自架（`board-serve`，透過 Cloudflare Tunnel 並以 Cloudflare Access
 把關，手機就連得到），以及 claude.ai Artifact。**建議兩者並用**。請見

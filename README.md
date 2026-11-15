@@ -7,12 +7,14 @@
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue?logo=python&logoColor=white)](#quick-start)
 [![Bash](https://img.shields.io/badge/shell-bash-4EAA25?logo=gnubash&logoColor=white)](bin/)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+[![live demo](https://img.shields.io/badge/live%20demo-try%20it%20in%20the%20browser-orange)](https://osisdie.github.io/agent-switchboard/demo.html)
 
 **Docs:** English | [繁體中文](README.zh-TW.md)
 
 A switchboard for a fleet of long-running **Claude Code** sessions: one board, **Agent Switchboard**,
 that shows who is working, who is blocked, and what is waiting for a human decision. You can answer from the board,
-including from your phone.
+including from your phone. It also keeps a pomodoro tally of the fleet's focused work. Try the
+[live demo](https://osisdie.github.io/agent-switchboard/demo.html) first (sample data only, nothing is sent anywhere).
 
 The same board page runs on **two channels**: self-hosted (`board-serve`, reachable from your phone
 through a Cloudflare Tunnel behind Cloudflare Access) and a claude.ai Artifact. **Running both is the
@@ -32,7 +34,7 @@ All from the built-in demo data (`scripts/screenshots.py`). Try the [live demo](
 | <a href="docs/assets/screenshots/decisions.webp"><img src="docs/assets/screenshots/decisions.webp" width="420" alt="Decision cards: a permission prompt with Allow / Deny and a question with its options"></a><br>Decisions: permission prompts, questions, gates | <a href="docs/assets/screenshots/notifications.webp"><img src="docs/assets/screenshots/notifications.webp" width="420" alt="The Notifications dialog: mutes, triage floor and presence"></a><br>Notifications: mutes and triage |
 | <a href="docs/assets/screenshots/resources.webp"><img src="docs/assets/screenshots/resources.webp" width="420" alt="The Resources section: memory, swap, disks and per-session processes"></a><br>Resources: memory, disks, processes | <a href="docs/assets/screenshots/usage-popover.webp"><img src="docs/assets/screenshots/usage-popover.webp" width="420" alt="The usage popover: both windows with reset times, the threshold reached and the account"></a><br>Usage popover: resets, threshold, account |
 | <a href="docs/assets/screenshots/profile-menu.webp"><img src="docs/assets/screenshots/profile-menu.webp" width="420" alt="The profile menu: identity, roles, theme and language switchers, API keys"></a><br>Profile menu: theme and language | <a href="docs/assets/screenshots/phone-dark.webp"><img src="docs/assets/screenshots/phone-dark.webp" width="420" alt="The board on a phone, dark mode"></a><br>Phone, dark mode |
-| <a href="docs/assets/screenshots/pwa-standalone.webp"><img src="docs/assets/screenshots/pwa-standalone.webp" width="420" alt="The board as an iPhone home-screen app, clear of the status bar"></a><br>iPhone home-screen app |  |
+| <a href="docs/assets/screenshots/pwa-standalone.webp"><img src="docs/assets/screenshots/pwa-standalone.webp" width="420" alt="The board as an iPhone home-screen app, clear of the status bar"></a><br>iPhone home-screen app | <a href="docs/assets/screenshots/overview-zh.webp"><img src="docs/assets/screenshots/overview-zh.webp" width="420" alt="The board in Traditional Chinese (繁體中文)"></a><br>Overview, Traditional Chinese |
 
 ## The problem
 
