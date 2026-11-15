@@ -34,10 +34,11 @@ Usage: collect.py [--no-notify] [--baseline] [--verbose] [--apply-rc]
 - Card extras (teammates and their tasks, the statusline meter, recent tool calls, the last
   assistant text and prompt, ahead/behind, time in state) go to $BOARD_HOME/cards.json through
   lib/cards.py, never into the snapshot.
-- Remote Control per session (`rc`: {on, want, source, pending, last}, lib/rc.py). With
-  --apply-rc (the looping board-collect passes it) a session whose stored choice
-  (`board rc`) it does not follow yet gets it once it is idle: `rc.py apply --pending --auto`
-  runs in the background, under its own lock and retry rules.
+- Remote Control per session (`rc`: {on, want, source, blocked, pending, last}, lib/rc.py)
+  and session actions (`compact`: {queued, last, done_at}, lib/actions.py). With --apply-rc
+  (the looping board-collect passes it) what is pending for an idle session (a `board rc`
+  choice it does not follow yet, a queued compact) runs then: `actions.py apply --pending
+  --auto` in the background, under its own lock and retry rules.
 """
 import getpass
 import glob
@@ -56,6 +57,7 @@ import away  # noqa: E402
 import cards  # noqa: E402
 import fleet  # noqa: E402
 import limit  # noqa: E402
+import actions  # noqa: E402
 import notify  # noqa: E402
 import rc  # noqa: E402
 import resources  # noqa: E402
@@ -673,6 +675,7 @@ def main(argv):
     attach_tasks(sessions, tasks)
     try:
         rc.annotate(sessions, cfg, home, now)
+        actions.annotate(sessions, cfg, home, now)
     except (OSError, ValueError) as exc:  # never breaks the collector
         if verbose:
             print("rc: %s" % exc)
@@ -711,9 +714,9 @@ def main(argv):
     elif "--no-notify" not in argv and changed and isinstance(prev, dict):
         alert(prev, snap, verbose)
     if "--apply-rc" in argv:
-        todo = rc.auto_candidates(sessions, cfg, home, now)
-        if todo and rc.spawn_auto(home) and verbose:
-            print("rc: applying in the background for %s" % ", ".join(todo))
+        todo = actions.auto_candidates(sessions, cfg, home, now)
+        if todo and actions.spawn_auto(home) and verbose:
+            print("session actions: running in the background for %s" % ", ".join(todo))
     if "--no-notify" not in argv:
         for r in notify.tick():
             if verbose and r.get("status") not in (None, "deduped"):

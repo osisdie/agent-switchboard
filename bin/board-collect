@@ -8,9 +8,9 @@
 #                  (no alerts sent), and exit. Done automatically when alerts.json is missing.
 #   --no-notify    never alert (no board-notify calls, no tick)
 #   --verbose      print what changed
-#                  (looping, not --once: also applies a pending Remote Control choice to a
-#                  session that went idle, lib/rc.py; off with BOARD_RC_AUTO=0 or
-#                  fleet.yaml rc.auto_apply: false)
+#                  (looping, not --once: also runs what is pending for a session that went
+#                  idle: a Remote Control choice, a queued compact (lib/actions.py); off with
+#                  BOARD_ACTIONS_AUTO=0 or fleet.yaml session_actions.auto_apply: false)
 #   --interval N   poll interval in seconds (default: poll_interval in fleet.yaml, else 3)
 #
 # Uses inotifywait as a fast path when installed, otherwise plain polling.

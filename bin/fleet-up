@@ -15,6 +15,9 @@
 # `--remote-control CODE` is left out for a session that does not want Remote Control: the
 # owner's choice (`board rc on|off CODE|all`, $BOARD_HOME/rc-prefs.json), else fleet.yaml
 # (the session's `remote_control: true|false`, then a top-level `remote_control`), else on.
+# Claude Code ignores --remote-control while DO_NOT_TRACK is set; with `rc.unset_do_not_track:
+# true` such a session is started as `env -u DO_NOT_TRACK claude ...` (default false: the
+# environment is left as it is, and fleet-up only warns).
 # `initial_prompt` is single-line (newlines become spaces, since the command is typed into the
 # pane) and single-quoted for the shell; it is also used when a resume falls back to fresh.
 # With `collector: true` (default) it also makes sure a tmux session `switchboard` runs
@@ -71,6 +74,7 @@ fi
 log "fleet-up start (config: $(python3 "$FLEET" config-dir))"
 
 claude_bin="${CLAUDE_BIN:-claude}"
+unset_dnt="$(python3 "$FLEET" get rc.unset_do_not_track false)"
 # POSIX single-quoting (the pane's shell may not be bash, so no $'...' from printf %q).
 sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 fallback_s="$(python3 "$FLEET" get resume_fallback_seconds 15)"
@@ -105,9 +109,11 @@ while IFS= read -r line; do
   if [ "$rc_want" = off ]; then
     base="$claude_bin -n $q_code"
     log "$code: Remote Control off (board rc / fleet.yaml remote_control)"
+  elif [ -n "${DO_NOT_TRACK:-}" ] && [ "$unset_dnt" = true ]; then
+    base="env -u DO_NOT_TRACK $claude_bin -n $q_code --remote-control $q_code"
   else
     base="$claude_bin -n $q_code --remote-control $q_code"
-    [ -n "${DO_NOT_TRACK:-}" ] && log "$code: warning: DO_NOT_TRACK is set, so Claude Code ignores --remote-control"
+    [ -n "${DO_NOT_TRACK:-}" ] && log "$code: warning: DO_NOT_TRACK is set, so Claude Code ignores --remote-control (fleet.yaml rc.unset_do_not_track: true starts it without)"
   fi
   if [ -n "$extra" ]; then base_extra="$base $extra"; else base_extra="$base"; fi
   fresh="$base_extra"

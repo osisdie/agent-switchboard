@@ -45,22 +45,33 @@ DEFAULTS = {
         "focus_regex": r"(❯|>|›)",
         "submit_label": r"Submit answers",
     },
-    # Remote Control on running sessions (lib/rc.py): what the pane must show before and after
-    # `/remote-control` is typed (Claude Code's own screens; adjust when they change).
-    "rc": {
+    # Session actions (lib/actions.py): fixed slash commands typed into an idle session's empty
+    # prompt box, and what the pane must show before and after (Claude Code's own screens;
+    # adjust when they change).
+    "session_actions": {
         "auto_apply": True,
-        "command": "/remote-control",
         "lines": 30,
         "prompt_regex": r"^\u276f[ \u00a0]*$",
         "rule_regex": r"^\u2500{8,}",
         "busy_regex": r"esc to interrupt",
         "dialog_regex": r"Enter to select",
-        "disconnect_label": r"Disconnect this session",
-        "consent_regex": r"Never mind",
-        "unavailable_regex": r"Unknown command: /remote-control",
-        "confirm_seconds": 10,
         "retry_minutes": 10,
         "max_tries": 3,
+        "queue_hours": 12,
+        "rc_confirm_seconds": 10,
+        "rc_disconnect_label": r"Disconnect this session",
+        "rc_consent_regex": r"Never mind",
+        "rc_unavailable_regex": r"Unknown command: /remote-control",
+        "compact_running_regex": r"Compacting conversation",
+        "compact_done_regex": r"\u23bf\s+Compacted",
+        "compact_empty_regex": r"Not enough messages to compact",
+        "compact_start_seconds": 15,
+        "compact_seconds": 600,
+    },
+    # Remote Control at start (bin/fleet-up): unset_do_not_track starts claude with
+    # `env -u DO_NOT_TRACK` (Claude Code ignores Remote Control while DO_NOT_TRACK is set).
+    "rc": {
+        "unset_do_not_track": False,
     },
 }
 
@@ -115,6 +126,18 @@ LINK_PARAMS = (("d", DEC_ID_RE), ("m", MSG_ID_RE), ("c", CONS_ID_RE))
 LOCAL_HOSTS = ("127.0.0.1", "localhost")
 BOARD_PATH_RE = re.compile(r"[A-Za-z0-9._~/%-]*")
 HOST_LABEL_RE = re.compile(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?")
+
+
+def env_has(pid, name):
+    """Does process PID have NAME set (non-empty) in its environment? Reads only the names in
+    /proc/<pid>/environ of this user's own processes; never returns a value."""
+    try:
+        with open("/proc/%d/environ" % int(pid), "rb") as fh:
+            env = fh.read()
+    except (OSError, ValueError, TypeError):
+        return False
+    key = name.encode() + b"="
+    return any(item.startswith(key) and len(item) > len(key) for item in env.split(b"\0"))
 
 
 def safe_text(s):

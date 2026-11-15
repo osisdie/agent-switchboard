@@ -11,6 +11,8 @@ FAKE_TMUX_CFG names a JSON file:
                                           (e.g. the registry gains bridgeSessionId)
    "on_capture": {"1": {"path": P, "set": {...}}},
                                           the same, at capture-pane call N (from 1)
+   "seq": {"2": ["...", "..."]},          after send-keys call N, one screen per capture-pane
+                                          call, in order (the last one repeats)
    "fail_send": 2}                        send-keys call N fails (exit 1)
 Every call is appended to FAKE_TMUX_LOG, one line of arguments joined by "|".
 """
@@ -64,18 +66,24 @@ def main(argv):
         st = bump(state, "captures")
         mutate((cfg.get("on_capture") or {}).get(str(st["captures"])))
         screens = cfg.get("screens") or [""]
-        k = 0
-        try:
-            with open(state, encoding="utf-8") as fh:
-                k = int(json.load(fh).get("sends", 0))
-        except (OSError, ValueError):
-            pass
+        k = int(st.get("sends", 0))
+        seq = (cfg.get("seq") or {}).get(str(k))
+        if seq:
+            n = int(st.get("since_send", 0))
+            st["since_send"] = n + 1
+            with open(state, "w", encoding="utf-8") as fh:
+                json.dump(st, fh)
+            sys.stdout.write(seq[min(n, len(seq) - 1)] + "\n")
+            return 0
         sys.stdout.write(screens[min(k, len(screens) - 1)] + "\n")
         return 0
     if cmd == "send-keys":
         if not cfg_path:
             return 1
         st = bump(state, "sends")
+        st["since_send"] = 0
+        with open(state, "w", encoding="utf-8") as fh:
+            json.dump(st, fh)
         if cfg.get("fail_send") == st["sends"]:
             return 1
         mutate((cfg.get("on_send") or {}).get(str(st["sends"])))
