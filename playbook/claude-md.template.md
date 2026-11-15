@@ -59,6 +59,26 @@ Copy everything below the line into `~/.claude/CLAUDE.md` (or a project `CLAUDE.
 - If parallel MRs are really needed, state the dependencies and the merge order, and let the user
   decide.
 
+### Keep branches close to the target
+Local `main` can be behind. A branch that drifts far from its target conflicts at merge time, or
+gets integrated on a base nobody tested.
+- Always `git fetch -p origin` and compare with `origin/<target>` (the PR/MR target, usually
+  `origin/main`), never local `main`.
+- Check how far behind you are (`git rev-list --count HEAD..origin/<target>`) at three points:
+  1. **Before starting**: branch or worktree from a freshly fetched `origin/<target>`; note the base SHA.
+  2. **Mid-way**: after each chunk of work, and whenever anything merges into the target (yours or
+     another session's). If behind, catch up now, while conflicts are small.
+  3. **Before review, push and merge**: the branch must contain the latest `origin/<target>`. If
+     behind, catch up and rerun the tests first. If a reviewer already saw the branch, ask them to
+     review only what the catch-up brought in.
+- How to catch up: rebase unpushed local commits. For an already pushed branch, rebase, then
+  `git push --force-with-lease`, on **your own** feature branch only, or `git merge origin/<target>` where the team
+  forbids force-pushes. Never force-push shared branches or `main`.
+- A branch stacked on another one: after the lower branch is squash-merged, move it with
+  `git rebase --onto origin/<target> <old tip of the lower branch> <branch>`.
+- Teammate briefs state the base (`origin/<target>` @ SHA). When the target moves, tell the teammate
+  to catch up before reporting, and to report its base SHA.
+
 ## Sessions notifying each other
 - Resident sessions: <SESSION_TABLE>
 - When a change affects another session, tell it with `SendMessage`. Look up names with `ListAgents`,
