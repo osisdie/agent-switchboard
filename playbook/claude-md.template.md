@@ -123,7 +123,8 @@ Copy everything below the line into `~/.claude/CLAUDE.md` (or a project `CLAUDE.
 - The lead pane stays conversational. Teammates do planning, research, code, tests and builds,
   polling and long jobs. The lead only assigns, receives reports, decides, asks the user and does
   lookups that take seconds.
-- Recycle panes without being asked. After a merge, a final report or the end of a role, run
+- Recycle panes without being asked. After a merge, a final report, the end of a role, or on a
+  progress-check tick, run
   `TaskStop <name>`, then `kill-pane` any leftover pane **this session** spawned
   (`tmux list-panes -a`). Never touch other sessions' panes.
 - Progress is event-driven, with a 10-minute safety net. When you assign work, create a session-only
@@ -134,7 +135,12 @@ Copy everything below the line into `~/.claude/CLAUDE.md` (or a project `CLAUDE.
   - If a teammate has made no progress for more than 20 minutes, find out why, and nudge or reassign
     it.
   - Stay quiet while only teammates waiting on the user remain.
-  - Check that panes are alive on every tick. `CronDelete` when all teammates are done.
+  - Check that panes are alive on every tick.
+  - Recycle on every tick too: `TaskStop` each teammate that has delivered its final report, stopped
+    or finished its role, then `kill-pane` leftover teammate panes this session spawned. Each idle
+    teammate still holds a whole agent process (typically 250–400 MB). Mention the count in the
+    report only when something was recycled.
+  - When all teammates are done, recycle one last time, then `CronDelete` the check.
 - Teammates don't poll CI. They push, post the round note, report the head SHA and stop. The lead
   runs one background poll per MR and sends failures back.
 
