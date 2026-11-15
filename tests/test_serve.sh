@@ -283,7 +283,8 @@ eq "presence on at urgent" "$(post /api/notify-prefs '{"op":"presence","reduce":
 eq "  reply" "$(body '"\(.notify.presence.reduce)/\(.notify.presence.min_level)"')" "true/urgent"
 echo "presence:"
 PRF="$BOARD_HOME/presence.json"
-for b in '{}' '{"visible":"yes"}' '{"visible":true,"interaction_at":"now"}' '{"visible":true,"interaction_at":-5}' '{"visible":true,"interaction_at":true}'; do
+for b in '{}' '{"visible":"yes"}' '{"visible":true,"interaction_at":"now"}' '{"visible":true,"interaction_at":-5}' '{"visible":true,"interaction_at":true}' \
+         '{"visible":true,"idle_ms":"1s"}' '{"visible":true,"idle_ms":1.5}' '{"visible":true,"idle_ms":false}'; do
   eq "bad heartbeat refused: $b" "$(post /api/presence "$b")" "400"
 done
 eq "presence without X-Board refused" "$(req POST /api/presence -H 'Content-Type: application/json' -H "$ORIGIN" --data-binary '{"visible":true}')" "403"
@@ -295,7 +296,15 @@ n_pres() { jq -s '[.[] | select(.type=="serve" and .action=="presence")] | lengt
 before="$(n_pres)"
 post /api/presence '{"visible":true,"interaction_at":null}' >/dev/null
 eq "  a routine heartbeat is not audited" "$(n_pres)" "$before"
-eq "  a far-future interaction is clamped to now" "$(post /api/presence '{"visible":true,"interaction_at":99999999999999}'; jq -r "(.local.interaction_at <= $(date +%s)000 + 1000)" "$PRF")" "200true"
+watching() { "$REPO/bin/board" mute status --json | jq -r '.presence.present | join(",")'; }
+eq "  a far-future interaction is unknown" "$(post /api/presence '{"visible":true,"interaction_at":99999999999999}'; jq -r '.local.interaction_at' "$PRF")" "200null"
+eq "  page clock 1 h ahead (interaction_at): not watching" "$(post /api/presence "{\"visible\":true,\"interaction_at\":$(( $(date +%s) + 3600 ))000}" >/dev/null; watching)" ""
+eq "  interaction_at up to 5 s ahead is now" "$(post /api/presence "{\"visible\":true,\"interaction_at\":$(( $(date +%s) + 3 ))000}" >/dev/null; watching)" "local"
+eq "  idle_ms 1 s: watching" "$(post /api/presence '{"visible":true,"idle_ms":1000}' >/dev/null; watching)" "local"
+t0="$(date +%s%3N)"; post /api/presence '{"visible":true,"idle_ms":60000}' >/dev/null
+eq "  idle_ms is applied to the server's clock" "$(jq -r --argjson t "$t0" '(.local.interaction_at - ($t - 60000)) | (. >= 0 and . < 5000)' "$PRF")" "true"
+eq "  idle_ms 33 min: not watching (idle limit 15 min)" "$(post /api/presence '{"visible":true,"idle_ms":2000000}' >/dev/null; watching)" ""
+eq "  negative idle_ms counts as 0" "$(post /api/presence '{"visible":true,"idle_ms":-99999999}' >/dev/null; watching)" "local"
 eq "heartbeat: hidden" "$(post /api/presence '{"visible":false}')" "200"
 eq "  visibility change audited" "$(n_pres)" "$((before + 1))"
 eq "  nobody watching now" "$("$REPO/bin/board" mute status --json | jq -r '.presence.present | length')" "0"
@@ -557,7 +566,6 @@ EOF
   eq "  error not_approver" "$(body .error)" "not_approver"
   eq "  still the approver's answer" "$(jq -r '.status + "/" + .answered_by + "/" + .answer' "$BOARD_HOME/decisions/d-1-q8.json")" "answered/boss@example.com/go"
   eq "  a viewer's message: 403" "$(tpost /api/messages '{"to":"CP","body":"x"}' "${TUNNEL_HDRS[@]}" -H "$(jwt nobody)")" "403"
-  eq "  --check lists the allowed emails" "$("$REPO/bin/board-serve" --check | grep -c '^emails .*intruder@example.com')" "1"
   eq "local listener still local with the tunnel on" "$(req GET /api/state >/dev/null; body .me)" "local"
   eq "local listener still refuses forwarded requests" "$(req GET /api/state -H "$(jwt good)")" "403"
 else

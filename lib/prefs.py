@@ -47,6 +47,7 @@ LOCK_TIMEOUT_S = 10
 MAX_MUTE_MS = 30 * 24 * 3600 * 1000           # --for / --until at most 30 days ahead
 PRESENCE_KEEP_MS = 24 * 3600 * 1000           # presence entries older than this are dropped
 PRESENCE_MAX = 50
+FUTURE_SKEW_MS = 5000                         # an interaction_at further ahead than this is unknown
 BY_RE = re.compile(r"(board:)?[A-Za-z0-9][A-Za-z0-9@._+:-]{0,199}")
 FOR_RE = re.compile(r"([1-9][0-9]{0,4})([mhd])")
 HHMM_RE = re.compile(r"([01]?[0-9]|2[0-3]):([0-5][0-9])")
@@ -412,11 +413,13 @@ def set_presence(home, reduce, level, by, now=None):
 
 def record_presence(home, ident, visible, interaction_at, via, now=None):
     """A heartbeat from the board page of IDENTITY (board-serve's verified identity). Returns
-    True when the visible state changed (worth an audit line), False for a routine heartbeat."""
+    True when the visible state changed (worth an audit line), False for a routine heartbeat.
+    interaction_at is in the server's clock (board-serve derives it from the page's idle_ms). A
+    time more than FUTURE_SKEW_MS ahead is unknown (None: not watching), a smaller lead is now."""
     now = now if now is not None else now_ms()
     seen = interaction_at if isinstance(interaction_at, int) and not isinstance(interaction_at, bool) else None
     if seen is not None:
-        seen = min(seen, now)  # never in the future
+        seen = None if seen > now + FUTURE_SKEW_MS else min(seen, now)
     with Locked(home, PRESENCE_FILE) as st:
         data = {k: v for k, v in st.data.items()
                 if isinstance(v, dict) and isinstance(v.get("at"), int) and now - v["at"] < PRESENCE_KEEP_MS}

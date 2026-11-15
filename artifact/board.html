@@ -2065,7 +2065,8 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       setNotify(body) { return post('/api/notify-prefs', body); },
       presence(visible, interactionAt, leaving) {
         return call('/api/presence', { method: 'POST', keepalive: !!leaving, headers: { 'Content-Type': 'application/json', 'X-Board': '1' },
-          body: JSON.stringify({ visible, interaction_at: interactionAt }) });
+          // A duration, not a time: board-serve applies it to its own clock.
+          body: JSON.stringify({ visible, idle_ms: Math.max(0, Date.now() - interactionAt) }) });
       },
       fastPath() { return null; },
     };

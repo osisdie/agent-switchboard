@@ -167,7 +167,7 @@ $BOARD_HOME/
 | `POST /api/decisions/<id>/answer` `{answer}` | `<id>` must match `^d-[0-9]+-[a-z0-9]+$`. With empty `approvers` → 403 `no_approvers` (fails closed). The identity is then checked **before anything is written**, with the rule of `board answer` (`approvers`; for a production decision, gate or stage, `release_managers`, falling back to `approvers`): not allowed → 403 `not_approver`, audited, file untouched (so it can never cancel an approver's answer that waits for the relay). Otherwise `board answer <id> <answer> --by <identity>` (argv, no shell; an answer such as `--help` is recorded literally) → 200 `{status: "answered"}`. For `kind: "permission"` (`answer` = `allow`\|`deny`; `allow` with `summary_truncated` → 409 `review_in_session`), it then runs `board press <from> <answer> --expect <tool_use_id>` → 200 `{status: "relayed"}`; exit 3 → 409 `stale`; exit 4 → 403 `press_refused`. A decision already `relayed`/`stale`/`timeout` → 409 `gone`. |
 | `POST /api/messages` `{to, body}` | only for `approvers` ∪ `release_managers` (else 403 `not_approver`); writes `messages/<id>.json` (`^m-[0-9]+-[a-z0-9]+$`) with `status: "new"`, `by: <identity>` → 201 `{id}` |
 | `POST /api/notify-prefs` `{op, ...}` | Notification controls. `op` is `mute` `{channel, for?\|until?, include_urgent?}`, `unmute` `{channel}`, `level` `{channel, level}` or `presence` `{reduce, level?}`. `channel` is `slack`, `desktop`, `email`, `line`, `sns`, `webhook` or `all`; `for` matches `^[1-9][0-9]{0,4}[mhd]$` (at most 30 days); `until` is `HH:MM` or an ISO time in the next 30 days (a string of at most 64 characters); `include_urgent` and `reduce` are booleans; `level` is `info\|warn\|high\|urgent\|default` (`presence`: `warn\|high\|urgent`). Anything else → 400 `bad_op` / `bad_channel` / `bad_duration` / `bad_level` / `bad_body`, nothing run. Empty `approvers` → 403 `no_approvers`; identity not in `approvers` → 403 `not_approver`, audited. Otherwise `board mute\|unmute\|notify-level\|notify-presence … --by board:<identity>` (argv, no shell) → 200 `{status: "ok", notify}` (the new `notify` state). Failure → 500 `prefs_failed`. |
-| `POST /api/presence` `{visible, interaction_at?}` | The page's presence heartbeat. `visible` boolean, `interaction_at` epoch ms or null (else 400 `bad_body`; a time in the future is clamped to now). Same approver rule as `/api/notify-prefs`. Recorded in `presence.json` under the listener's verified identity, never one from the body → 200 `{status: "ok", visible}`. Audited only when the identity's `visible` changes. |
+| `POST /api/presence` `{visible, idle_ms?}` | The page's presence heartbeat. `visible` boolean; `idle_ms` integer ms since the viewer last clicked, tapped, scrolled or typed, or null (else 400 `bad_body`). The server records `interaction_at = <server now> − max(0, idle_ms)`, so a page clock that runs fast changes nothing. The older `interaction_at` (epoch ms in the page's clock, non-negative integer or null) is still accepted: up to 5 s ahead it counts as now, further ahead it is unknown (not watching). Same approver rule as `/api/notify-prefs`. Recorded in `presence.json` under the listener's verified identity, never one from the body → 200 `{status: "ok", visible}`. Audited only when the identity's `visible` changes. |
 | `POST /api/away` `{state: "on"\|"off", said?}` | `state` other than `on`/`off` → 400 `bad_state`; `said` not a string or over 500 chars → 400 `bad_said`. Empty `approvers` → 403 `no_approvers`; identity not in `approvers` → 403 `not_approver`, audited, nothing written. Otherwise `board away on\|off --by board:<identity> [--said <said>]` (argv, no shell; `on` without `said` records "away (set on the board)") → 200 `{away: true\|false, status: "on"\|"off"\|"unchanged"}`. `on` while already away keeps the existing record (`unchanged`). Failure → 500 `away_failed`. |
 
 Every request: `Host` from the listener's allowlist, else 421. Per listener, at most 64
@@ -403,11 +403,21 @@ removes a prefs floor so the config (else `info`) applies again.
 **Presence** (`$BOARD_HOME/presence.json`, 0600, `flock` on `presence.lock`, written by
 `board-serve` only): `{<identity>: {at, visible, interaction_at, via}}`. The page sends a
 heartbeat on load, every 30 s while visible, on every visibility change and on `pagehide`
-(`POST /api/presence`, approvers only; the identity is the listener's verified one). An identity
+(`POST /api/presence`, approvers only; the identity is the listener's verified one; the page
+sends how long it has been idle, `idle_ms`, and the server turns it into `interaction_at` with
+its own clock). An identity
 **is watching** when it is in `approvers` (case-insensitive), its last heartbeat says `visible`,
 is at most `window_seconds` old, and its `interaction_at` (last click, tap, scroll or key) is at
 most `idle_seconds` old (`0` = no idle limit). A page left open on an unattended screen therefore
 stops counting after 15 minutes. Entries older than a day are dropped; at most 50 are kept.
+Two limits, by design:
+
+- A heartbeat that arrives late (after the page's `pagehide` beacon, or when that beacon is
+  lost, for example on a dropped connection) can keep the identity counted as watching for at
+  most `window_seconds` after the page went away. Escalations that fall into that window are
+  held only if they are below `presence.min_level`.
+- Presence is not per person: **any one** approver watching reduces push for everyone, because
+  the channels are shared (one Slack webhook, one email list).
 
 **Delivery rule** (`lib/notify.py`, after dedupe and quiet hours, for every routed and configured
 channel of every delivery: first sends, escalation re-sends, repeats and retries):

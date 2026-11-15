@@ -23,7 +23,7 @@ listeners (docs/contract.md, "Local adapter API"):
                                        via `board away on|off --by board:<identity>`)
   POST /api/notify-prefs               {"op": "mute"|"unmute"|"level"|"presence", ...}  (approvers
                                        only; via `board mute|unmute|notify-level|notify-presence`)
-  POST /api/presence                   {"visible": bool, "interaction_at": ms}  (approvers only;
+  POST /api/presence                   {"visible": bool, "idle_ms": ms}  (approvers only;
                                        the board page's heartbeat, recorded in presence.json)
 
 --check prints the resolved settings and exits. --watch serves nothing: it prints one line per
@@ -979,15 +979,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def presence(self, body, ident, via):
         """The board page's heartbeat: this approver has the board open (visible or not). The
-        identity is the listener's verified one; only visible and the last interaction come from
-        the page. Audited when visibility changes, not on every heartbeat."""
-        visible, seen = body.get("visible"), body.get("interaction_at")
+        identity is the listener's verified one; only visible and how long ago the viewer last
+        interacted come from the page. idle_ms (a duration) is turned into a time with the
+        server's clock, so a page whose clock runs fast can't keep "watching" alive. The older
+        interaction_at (the page's clock) is accepted only up to 5 s ahead, else it is unknown.
+        Audited when visibility changes, not on every heartbeat."""
+        visible, seen, idle = body.get("visible"), body.get("interaction_at"), body.get("idle_ms")
         if not isinstance(visible, bool):
             raise Refused(400, "bad_body", "visible must be true or false")
+        if idle is not None and (not isinstance(idle, int) or isinstance(idle, bool)):
+            raise Refused(400, "bad_body", "idle_ms must be milliseconds or null")
         if seen is not None and (not isinstance(seen, int) or isinstance(seen, bool) or seen < 0):
             raise Refused(400, "bad_body", "interaction_at must be epoch ms or null")
         by = self.approver(ident, via, "presence")
-        changed = prefs.record_presence(self.server.home, by, visible, seen, via, now_ms())
+        now = now_ms()
+        if idle is not None:
+            seen = now - max(0, idle)
+        changed = prefs.record_presence(self.server.home, by, visible, seen, via, now)
         if changed:
             self.audit(ident, via, "presence", visible=visible, result="ok")
         return self.send_json(200, {"status": "ok", "visible": visible})
