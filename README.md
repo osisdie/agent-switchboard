@@ -468,7 +468,8 @@ while the operator session is rate-limited.
 - **Ack stops escalation.** Alerts ack themselves when the decision leaves `pending` (answered
   anywhere), the session leaves needs-you, or the limit episode ends. To ack by hand, run
   `board ack 'session:API:*'` (or `board-notify ack …`). Globs are allowed. Keys look like
-  `decision:<id>`, `session:<code>:needs-you`, `limit:<hit_at>`, `usage:<window>:<threshold>`.
+  `decision:<id>`, `session:<code>:needs-you`, `limit:<hit_at>`, `usage:<window>:<threshold>`, and
+  the resource and operator keys below.
 - **Board link:** with `board_url` (or `BOARD_PUBLIC_URL`) set, each alert links to its item on the
   board (`<board_url>/?d=<decision id>`, `?c=`, `?m=`, or the board root). See "Expose the board on
   your phone" and the contract's "Board links in alerts".
@@ -589,7 +590,8 @@ whatever is still open escalates and reaches you as usual. Turn it off or change
 - `urgent` breaks through every mute and presence by default: a production gate, a usage-limit
   hit, usage ≥ 95%, a permission prompt left 10 minutes, anything left 30 minutes, or any
   `board-notify send --level urgent`. Triage can't stop it either, since urgent is the top level.
-  (An operator-silent alert is not there yet; it comes with the resources change, as urgent.)
+  (The operator-silent alert, `operator:stale`, starts at high and breaks through once it turns
+  urgent after 30 minutes.)
 - Only a mute **with `--include-urgent`** stops urgent. That is the explicit "mute everything,
   including urgent" switch; use it with an expiry.
 - Quiet hours (`alerting.quiet_hours`) still apply on top: outside urgent, they hold and later
@@ -608,6 +610,28 @@ Artifact board they are read-only, mirrored by the operator into `meta/notify`.
 
 Settings live in `$BOARD_HOME/notify-prefs.json`; `board-notify status` shows the effective state
 without any credential. Details: the contract's "Notification controls".
+
+### System resources and a silent operator
+
+The collector also samples the machine every 15 s (`lib/resources.py`, zero tokens): memory,
+swap, memory pressure (PSI), load, disks, OOM kills, and what each session runs, teammates
+included. Teammates are the separate `claude` processes a session starts in extra tmux panes
+(`--agent-id`); stopped ones that are left running often hold 250–400 MB each. The board shows a
+**System 系統** tile and a **Resources 資源** section. Idle teammates are flagged there. The board
+**never stops a process**; it tells you, and the session stops its own.
+
+| Key | Level | When |
+|---|---|---|
+| `res:mem`, `res:swap`, `res:disk:<mount>` | warn → high | over `resources.thresholds` (hysteresis, 2-sample dwell); repeats hourly while open. Memory alerts name idle teammates to reclaim first |
+| `res:oom:<count>` | high | the kernel's OOM killer fired |
+| `res:idle-teammates:<code>` | info (warn under memory pressure) | a session's teammates idle past `resources.teammate_idle_minutes` (30) |
+| `operator:stale` | high → urgent after 30 min | the operator's heartbeat is over 10 min old, or `board-serve --watch` is not running while `serve.enabled`, and something waits to be relayed |
+
+`operator:stale` closes the gap where an operator session dies quietly: before it, only the
+page's banner showed it. Raw numbers live in `resources.json`; the snapshot only carries the
+level, so the operator's Monitor does not wake every sample. `board resources` prints the last
+sample, and `board doctor` shows which metrics this platform provides (macOS and others fall back
+to `ps`; what can't be read is shown as unavailable). Turn it off with `resources.enabled: false`.
 
 ## Operating under usage limits
 
@@ -940,7 +964,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 |---|---|
 | `docs/contract.md` | Binding data contract: local files, db collections, lifecycle stages & gates, relay formats, degraded mode |
 | `hooks/board-hook.sh` | Lifecycle hook: writes `state/<session_id>.json`, appends `events.jsonl`, always exits 0 |
-| `bin/board` | CLI: `ls`, `snapshot`, `ask`, `task new/stage/ls/show`, `decisions`, `answer`, `mark`, `limit`, `press`, `notify`, `mute`, `unmute`, `notify-level`, `notify-presence`, `away`, `consensus`, `doctor`. Exit codes: 3 = press refused, 4 = answer / vote refused |
+| `bin/board` | CLI: `ls`, `snapshot`, `ask`, `task new/stage/ls/show`, `decisions`, `answer`, `mark`, `limit`, `resources`, `press`, `notify`, `mute`, `unmute`, `notify-level`, `notify-presence`, `away`, `consensus`, `doctor`. Exit codes: 3 = press refused, 4 = answer / vote refused |
 | `bin/board-collect` | Zero-token collector: snapshot, diff, runs `board-notify` each loop; `--baseline` on first install |
 | `bin/board-notify`, `lib/notify.py` | Alerting: `send`, `ack`, `tick`, `test`, `status`, `gate`. Adapters (slack, desktop, email, line, sns, webhook), levels, escalation, ack, quiet hours, dedupe |
 | `lib/prefs.py` | Notification controls: mutes, min levels, presence (`board mute`, `notify-level`, `notify-presence`) and the delivery rule `lib/notify.py` applies |
@@ -959,7 +983,9 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `.github/workflows/ci.yml` | CI: gitleaks, shellcheck, tests, readme-sync |
 | `.gitleaks.toml` | gitleaks default rules plus a narrow allowlist for test fixtures |
 | `lib/away.py` | Reads owner-away mode and consensus items for the snapshot and `board-serve` |
-| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), and the optional headless checks of the page's alert links, notifications control, profile menu and theme, and home-screen app (`test_page_links.py`, `test_page_notify.py`, `test_page_profile.py`, `test_page_pwa.py`: need python playwright, skip without it; not run in CI) |
+| `lib/resources.py` | Resources sampler (memory, disks, OOM, per-session processes and teammates) for `resources.json`, the snapshot digest and `board resources` |
+| `docs/design/` | Design notes, e.g. `resources-and-scheduling.md` (resources, scheduler, lessons) |
+| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), the resources sampler (`test_resources.py`, fixture `/proc`), and the optional headless checks of the page's alert links, notifications control, profile menu and theme, and home-screen app (`test_page_links.py`, `test_page_notify.py`, `test_page_profile.py`, `test_page_pwa.py`: need python playwright, skip without it; not run in CI) |
 | `CONTRIBUTING.md` | Dev setup, tests, and the rule for keeping `README.zh-TW.md` in sync |
 | `fleet.example.yaml`, `.env.example` | Example config |
 

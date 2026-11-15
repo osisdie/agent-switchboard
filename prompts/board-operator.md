@@ -108,6 +108,11 @@ Waiting costs no tokens. When it fires:
      `$BOARD_HOME/usage.json`, and drop any other fields, such as `session_id`. Write it only when a
      `pct` or `resets_at` changed.
    - `meta/away` and `consensus/{id}` when `owner_away` or `consensus` changed (section 10).
+   - `meta/resources` when `snapshot.resources` (the level digest) changed, **at most every 10
+     minutes**: the output of `board resources --mirror`, as is (percentages bucketed to 5%, sizes
+     to 100 MB, no pids or paths). Raw resource numbers never wake you: the collector keeps them in
+     `resources.json`, outside the snapshot. Never alert, advise or stop anything because of them;
+     the collector already alerts (`res:*`).
 3. Re-arm the Monitor.
 
 **B. Board answers: a session cron every ~3 minutes, off `:00` and `:30`** (for example
@@ -417,6 +422,10 @@ It prints one line per item that needs you, once each, and nothing while there i
 | `consensus <id> <status>` | nothing to relay: the page shows it. Never a `[BOARD decision]` (section 10) |
 | `tick` (every 8 minutes) | rewrite `heartbeat_at` in `operator.json`; nothing else |
 
+Keep this Monitor running. While `serve.enabled` is on, the collector raises `operator:stale`
+(high, urgent after 30 minutes) when no `board-serve --watch` process exists or the heartbeat is
+older than `schedule.operator_stale_minutes` (10) and something waits for you.
+
 On every line, first re-read `operator.json`. If `operator_session` is no longer you, go passive
 (section 3): stop the Monitor and write nothing.
 
@@ -459,8 +468,9 @@ The page shows replies right away. `board-serve` pushes every change to open pag
 
 - **Ledger.** If you keep a cost ledger, write it to `$BOARD_HOME/ledger.json` in the
   `meta/ledger` shape (section 7). The Info dialog shows it.
-- **Usage and limits.** Nothing to mirror. `board-serve` reads `usage.json` and `limit.json`
-  directly. The same goes for the notification controls (section 11). Section 5's alerting and handover rules are unchanged.
+- **Usage, limits and resources.** Nothing to mirror. `board-serve` reads `usage.json`,
+  `limit.json` and `resources.json` directly. The same goes for the notification controls
+  (section 11). Section 5's alerting and handover rules are unchanged.
 - **Who decided.** `answered_by` is `local` or an email. In local mode, `approvers` and
   `release_managers` in `fleet.yaml` hold those values, not claude.ai user ids.
 - **Never** write decisions' `status`, `answer` or `answered_by` yourself, except through

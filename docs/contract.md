@@ -20,6 +20,8 @@ $BOARD_HOME/
   owner-away                # present = the owner is away (see "Owner away & consensus")
   consensus/<id>.json       # written by `board consensus` while the owner is away
   consensus.lock            # flock held by `board away on|off` and `board consensus propose|vote`
+  resources.json            # system resources, sampled by the collector (see "Resources")
+  resources-state.json      # the sampler's memory: previous counters, dwell state, teammate activity
 ```
 
 ### state/<session_id>.json
@@ -56,6 +58,7 @@ Map hook events to states like this:
   "decisions": [ { ...decision file... } ],
   "tasks": [ ... ], "limit": {...}|null,
   "owner_away": { "since": 0, "by": "CP", "said": "..." } | null,
+  "resources": { "level": "ok|warn|high|critical", "worst": "mem|swap|disk:<mount>|load|oom"|null } | null,
   "consensus": [ { "id": "c-...", "from": "CP", "participants": ["CP","API"], "ref": "...", "proposal": "...",
                    "status": "pending|agreed|objected|owner_back", "votes": [ {"by","vote","at","note"} ],
                    "created_at": 0, "updated_at": 0, "decided_at": 0|null } ] }
@@ -67,6 +70,9 @@ Map hook events to states like this:
 - **`owner_away`** is `null` when `$BOARD_HOME/owner-away` does not exist, else its record. A file
   that is not a JSON object (free text, empty) still means away: `{since: <mtime ms>, by: null,
   said: <first 300 chars>, legacy: true}`.
+- **`resources`** is only the digest of `resources.json`: it changes when a level changes, never
+  for raw numbers, so a Monitor on `snapshot.json` does not wake every sample. `null` when
+  `resources.enabled: false`.
 - **`consensus`** lists every `pending` item, plus `agreed` / `objected` / `owner_back` items for
   24 h after `decided_at`, oldest first. Text fields are clipped (proposal, ref, said: 300 chars;
   note: 200) and control characters become `?`.
@@ -126,6 +132,7 @@ Rules:
 | `meta/away` | operator | `{active: true, since, by, said, legacy?, updated_at}` while the owner is away, `{active: false, updated_at}` otherwise. The page shows the away banner only for `active: true`. |
 | `consensus/{id}` | operator | a `snapshot.consensus` item as it is. Read-only on the page: no page write path, never relayed as a `[BOARD decision]`. |
 | `meta/notify` | operator | the notification controls, read-only on the page: `board-notify status --json` → `.controls` without `presence.present`, plus `channels` (`{slack: true, ...}`, booleans only). See "Notification controls". |
+| `meta/resources` | operator | `board resources --mirror`: the `/api/state` `resources` block with percentages bucketed to 5% and sizes to 100 MB. Written only when `snapshot.resources` changes, at most every 10 minutes. Read-only on the page. |
 | `meta/ledger` | operator | `rows[]`: `{version, date, what, review, lead:{input,cache_read,cache_write,output,total}, teammate, note}` and `total{}`. The page renders this as the "版本與花費" (versions and cost) table in an Info dialog/footer. |
 
 ## Local adapter API (`bin/board-serve`, `lib/serve.py`)
@@ -199,11 +206,12 @@ State (`/api/state` and every SSE frame):
   "owner_away": {since, by, said, legacy?}|null,
   "consensus": [ snapshot.consensus items, newest 50 ],
   "notify":    { mutes, min_level, effective_min_level, presence: {reduce, min_level, window_seconds,
-                 idle_seconds}, breakthrough, updated_at, updated_by, channels: {slack: bool, ...} } | null }
+                 idle_seconds}, breakthrough, updated_at, updated_by, channels: {slack: bool, ...} } | null,
+  "resources": { see "Resources": resources.json without pids, paths or unknown fields }|null }
 ```
 
 The shape matches what the page reads from the Artifact db (`sessions/*`, `decisions/*`, `tasks/*`,
-`approvals/*`, `messages/*` + replies, `meta/operator`, `meta/ledger`). `task` is the title of the
+`approvals/*`, `messages/*` + replies, `meta/operator`, `meta/ledger`, `meta/resources`). `task` is the title of the
 session's current task. `approver_ids` is `[]` when nobody may answer.
 
 ### Who am I (`GET /api/me`) and API keys
@@ -338,7 +346,7 @@ Levels and the default routing (overridable in fleet.yaml under `alerting.routes
 | `urgent` | **L3**: unacknowledged 30 min, a production gate, a permission prompt unacknowledged 10 min, usage ≥ 95%, or limit hit | + line (+ sns) |
 
 - **Ack:** a decision leaves `pending`, or a session leaves needs-you. An ack stops escalation.
-- **State:** kept in `$BOARD_HOME/alerts.json` as `{key: {level, first_at, last_at, acked_at}}`. The key is `decision:<id>`, `session:<code>:needs-you` or `usage:<window>:<threshold>`.
+- **State:** kept in `$BOARD_HOME/alerts.json` as `{key: {level, first_at, last_at, acked_at}}`. The key is `decision:<id>`, `session:<code>:needs-you`, `usage:<window>:<threshold>`, `limit:<hit_at>`, or one of the resource and operator keys in "Resources".
 - **Quiet hours:** `alerting.quiet_hours: "23:00-08:00"`. Only `urgent` passes during them.
 - **Notification controls:** mutes, per-channel and global min levels and presence-aware reduction
   apply at delivery time; see "Notification controls".
@@ -504,6 +512,87 @@ Claude Code's statusline input JSON carries `rate_limits.five_hour` and `rate_li
   - "5h usage 90% — resets ~14:20 — prepare to switch account"
   - "weekly usage 95% — resets Mon 09:00 — switch account now"
 - The operator mirrors usage into `meta/operator.usage`. The page shows two meters (5h and 7d) with reset countdowns. At ≥90% it shows an amber "Prepare to switch account" banner, and at ≥95% or on limit-hit a red one, with a link to the failover section in Info.
+
+## Resources
+
+The collector (`lib/resources.py`, zero tokens) samples the machine every `resources.interval`
+seconds (default 15) into `$BOARD_HOME/resources.json`. It is rewritten only when a rounded value
+changed; `snapshot.json` carries only `{level, worst}`. The board shows it; **nothing in the board
+ever stops a process**.
+
+```json
+{ "at": 0, "platform": "linux|wsl|darwin|other", "level": "ok|warn|high|critical", "worst": "mem"|null,
+  "levels": { "mem": "ok", "swap": "ok", "load": "ok", "disk:/": "ok", "oom": "critical" },
+  "cpu": {"pct": 37, "ncpu": 16, "load": [1.2, 0.9, 0.8], "load_per_cpu": 0.08},
+  "mem": {"total_mb": 0, "available_mb": 0, "available_pct": 0, "psi_some_avg60": 0.0},
+  "swap": {"total_mb": 0, "used_pct": 0}, "oom_kills": 2, "oom_kills_delta": 0, "oom_recent": false,
+  "last_oom_at": null,
+  "disks": [ {"mount": "/", "total_mb": 0, "free_mb": 0, "free_pct": 0, "level": "ok",
+              "labels": ["$BOARD_HOME", "API"]} ],
+  "sessions": [ {"code": "API", "pid": 123, "rss_mb": 0, "cpu_pct": 0, "tree_rss_mb": 0, "heavy_n": 0,
+     "classes": {"test": {"n": 1, "rss_mb": 0, "cpu_pct": 0}},
+     "children": [ {"class": "test|build|browser|container|claude|other", "comm": "pytest", "pid": 0,
+                    "rss_mb": 0, "cpu_pct": 0, "age_s": 0, "heavy": true, "via": "<teammate>"|null} ],
+     "teammates": [ {"name": "reviewer", "pid": 0, "rss_mb": 0, "cpu_pct": 0, "age_s": 0, "idle_s": 0|null,
+                     "idle": false} ],
+     "teammates_n": 0, "teammates_rss_mb": 0, "idle_teammates_n": 0} ],
+  "orphan_teammates": [ teammate rows whose parent session is not live ],
+  "heavy_running": 1, "teammate_idle_minutes": 30, "operator": {"watch": true|false|null},
+  "unavailable": ["psi", "swap"], "interval": 15 }
+```
+
+- **Sources.** Linux/WSL: `/proc/{stat,loadavg,meminfo,vmstat,pressure/memory,uptime}` and
+  `/proc/<pid>/{stat,cmdline}`. Elsewhere: `os.getloadavg()`, `statvfs` and `ps -axo
+  pid=,ppid=,rss=,%cpu=,time=,etime=,args=`. A metric that cannot be read is listed in
+  `unavailable`, never reported as 0. CPU% is the delta against the previous sample (`null` on the
+  first one).
+- **Sessions.** Each live session's process tree is walked by ppid from its registry pid.
+  `children` keeps the top 3 per class; `classes` sums all of them. `rss_mb`/`cpu_pct` are the
+  claude process itself.
+- **Teammates** are separate `claude` processes started with `--agent-id <name>@<team>` /
+  `--agent-name`, usually in extra tmux panes (so not in the session's tree). A teammate belongs to
+  the session whose `session_id` equals its `--parent-session-id`; failing that, the session whose
+  tree contains it, or whose code or alias equals the `@<team>` part. The rest are
+  `orphan_teammates`. A teammate's `rss_mb`/`cpu_pct` cover its whole subtree, and its processes
+  also appear in the session's `children` with `via`. `idle_s` is the time since its subtree last
+  used ≥ 1% CPU or started a process (`null` on first sight); `idle` means `idle_s` ≥
+  `teammate_idle_minutes` × 60.
+- **Classes** match `comm` plus the base names of the first argv words (a shell is never a test):
+  test `pytest|jest|vitest|go test|cargo test|mvn|gradle`, build `tsc|webpack|vite build|cargo
+  build|docker build`, browser `chrome|chromium|firefox|headless_shell|playwright`, container
+  `docker|containerd`; `resources.process_classes` overrides or adds patterns. **Heavy** = test,
+  build or browser, or RSS > 1 GiB; `heavy_running` counts heavy processes whose parent is not
+  heavy (one browser = one).
+- **Privacy.** Command lines are matched and never stored (a teammate's argv carries keys): only
+  `comm`, the class and the teammate name leave the sampler. Disks list session codes and
+  `$BOARD_HOME`, never paths. `/api/state` and `meta/resources` also drop pids.
+- **Levels.** Per metric, from `resources.thresholds` `[warn, high]`: `mem_available_pct`,
+  `mem_available_mb`, `psi_mem_some_avg60` (the worst of the three is `mem`), `swap_used_pct`,
+  `load_per_cpu`, and per disk `disk_free_pct`/`disk_free_mb`. Hysteresis: a lower-is-worse value
+  leaves a level at threshold × 4/3 (enter at 15% available, leave at 20%), a higher-is-worse one
+  at threshold × 3/4. Dwell: a level changes after 2 equal samples in a row. `critical` = `high`
+  for 2 samples, or a new OOM kill (`oom`, held 10 minutes). `level`/`worst` are the maximum.
+- **Operator watch.** `operator.watch` is whether a `board-serve --watch` (`serve.py --watch`)
+  process exists. It is checked even with `resources.enabled: false` (then `resources.json` holds
+  only `{at, enabled: false, platform, operator}`).
+
+Alerts (in `notify.tick()`, auto-resolved when the condition is gone; a `resources.json` older than
+4 intervals leaves `res:*` as they are):
+
+| key | level | notes |
+|---|---|---|
+| `res:mem`, `res:swap`, `res:disk:<mount>` | warn → high (resource high or critical) | no time-based escalation; repeats every `repeat_minutes`. Memory alerts name idle teammates to reclaim first and the largest heavy processes. |
+| `res:oom:<count>` | high | once per OOM kill |
+| `res:idle-teammates:<code>`, `res:orphan-teammates` | info; warn while memory, swap or OOM is at warn or worse | teammates idle past `teammate_idle_minutes` (default 30); no repeat |
+| `operator:stale` | high → urgent after 30 min | `operator.json` `heartbeat_at` older than `schedule.operator_stale_minutes` (10), or missing / no `board-serve --watch` while `serve.enabled`, **and** something waits for the operator (a decision pending or answered, a new message) |
+
+The page shows a "System 系統" header tile (memory and swap bars, load, CPU, fullest disk, heavy
+jobs, OOM count) and a Resources section (per session: claude RSS/CPU, processes by class with
+the top 3, teammates with idle ones flagged; orphaned teammates; disks; unavailable metrics). A
+red banner shows at `critical`, and in local mode when `operator.watch` is `false`.
+
+`board resources [--json|--mirror] [--refresh]` prints the last sample; `board doctor` reports
+the platform, missing metrics, the sample's age and the operator watch.
 
 ## Owner away & consensus
 
