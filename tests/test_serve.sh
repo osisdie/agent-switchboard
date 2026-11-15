@@ -132,7 +132,7 @@ start
 # ---------------------------------------------------------------- state
 echo "state:"
 eq "GET /api/state 200" "$(req GET /api/state)" "200"
-eq "state keys" "$(body 'keys | join(",")')" "account,approvals,can_message,consensus,decisions,generated_at,ledger,me,messages,mode,notify,operator,owner_away,page_version,rc,replies,resources,sessions,tasks,writable"
+eq "state keys" "$(body 'keys | join(",")')" "account,approvals,can_message,consensus,decisions,generated_at,ledger,me,messages,mode,notify,operator,owner_away,page_version,pomodoro,rc,replies,resources,sessions,tasks,writable"
 eq "page_version is the hash of artifact/board.html" "$(body .page_version)" "$(sha256sum "$REPO/artifact/board.html" | cut -c1-12)"
 pv="$(body .page_version)"
 req GET / >/dev/null
@@ -231,6 +231,25 @@ eq "resources: no pids" "$(body '[.resources | .. | objects | has("pid")] | any'
 eq "resources: disks carry an id and labels, not paths" "$(body '.resources.disks[0] | .id + "/" + (.labels | join(",")) + "/" + (has("paths") or has("mount") | tostring)')" "disk1/\$BOARD_HOME,CP/false"
 eq "resources: no path anywhere" "$(body '[.resources | .. | strings | select(test("/"))] | length')" "0"
 eq "resources: unknown fields dropped" "$(body '.resources | has("cmdline")')" "false"
+
+echo "pomodoro:"
+# pomodoro.json as the collector writes it (lib/pomodoro.py); board_view() keeps numbers and codes.
+today="$(python3 -c 'import datetime; print(datetime.datetime.now(datetime.timezone.utc).date())')"
+jq -n --arg d "$today" --argjson now "$NOW" '{version: 1, at: $now,
+  settings: {focus_ms: 1500000, grace_ms: 120000, tz: "UTC"},
+  sessions: {CP: {state: "working", acc: 600000, away_since: null, done_at: ($now - 60000)},
+             "../bad": {state: "working", acc: 5}},
+  days: {($d): {CP: {done: 3, focus_ms: 5400000, note: "x"}}, "2000-01-01": {CP: {done: 9, focus_ms: 1}}},
+  notified: {}, extra: "/secret/path"}' > "$BOARD_HOME/pomodoro.json"
+for _ in $(seq 1 100); do req GET /api/state >/dev/null; [ "$(body '.pomodoro.fleet.done')" = 3 ] && break; sleep 0.1; done
+eq "pomodoro.json reaches /api/state" "$(body '.pomodoro.fleet | "\(.done)/\(.focus_ms)"')" "3/5400000"
+eq "pomodoro: keys" "$(body '.pomodoro | keys | join(",")')" "at,days,enabled,fleet,focus_ms,grace_ms,sessions,today,tz"
+eq "pomodoro: session row" "$(body '.pomodoro.sessions.CP | "\(.done)/\(.progress_ms)/\(.running)/\(.state)"')" "3/600000/true/working"
+eq "pomodoro: session keys" "$(body '.pomodoro.sessions.CP | keys | join(",")')" "done,done_at,focus_ms,progress_ms,running,state"
+eq "pomodoro: a bad code is dropped" "$(body '.pomodoro.sessions | keys | join(",")')" "CP"
+eq "pomodoro: 14 days, oldest first, today last" "$(body '.pomodoro | "\(.days | length)/\(.days[-1].date == .today)/\(.days[-1].sessions.CP)"')" "14/true/3"
+eq "pomodoro: days older than 14 dropped" "$(body '[.pomodoro.days[] | select(.date == "2000-01-01")] | length')" "0"
+eq "pomodoro: no path anywhere" "$(body '[.pomodoro | .. | strings | select(test("/"))] | length')" "0"
 
 eq "GET / 200" "$(req GET / -D "$T/hdr")" "200"
 grep -q '<meta name="board-mode" content="local">' "$T/body" && ok "page has the local-mode meta" || bad "page has the local-mode meta"

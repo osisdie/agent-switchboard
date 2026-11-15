@@ -39,6 +39,9 @@ Usage: collect.py [--no-notify] [--baseline] [--verbose] [--apply-rc]
   (the looping board-collect passes it) what is pending for an idle session (a `board rc`
   choice it does not follow yet, a queued compact) runs then: `actions.py apply --pending
   --auto` in the background, under its own lock and retry rules.
+- Pomodoro tallies: every run's session states advance each session's pomodoro timer
+  (lib/pomodoro.py) in $BOARD_HOME/pomodoro.json, never in the snapshot. --no-notify / --baseline
+  also hold its milestone notification (off unless fleet.yaml pomodoro.notify).
 """
 import getpass
 import glob
@@ -60,6 +63,7 @@ import limit  # noqa: E402
 import actions  # noqa: E402
 import notify  # noqa: E402
 import rc  # noqa: E402
+import pomodoro  # noqa: E402
 import resources  # noqa: E402
 
 FINAL = ("relayed", "stale", "timeout", "unauthorized")
@@ -688,6 +692,11 @@ def main(argv):
     except Exception as exc:  # noqa: BLE001 - never breaks the collector
         if verbose:
             print("cards: %s: %s" % (type(exc).__name__, exc))
+    try:  # pomodoro tallies (lib/pomodoro.py): pomodoro.json, zero tokens
+        pomodoro.run(cfg, home, sessions, now, notify_ok=not ({"--no-notify", "--baseline"} & set(argv)))
+    except Exception as exc:  # noqa: BLE001 - never breaks the collector
+        if verbose:
+            print("pomodoro: %s: %s" % (type(exc).__name__, exc))
 
     spath = os.path.join(home, "snapshot.json")
     prev = read_json(spath)

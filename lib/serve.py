@@ -15,7 +15,8 @@ listeners (docs/contract.md, "Local adapter API"):
                                        never "local"
 
   GET  /                               the board page, in local mode
-  GET  /api/state                      the board state (sessions, decisions, tasks, resources, ...)
+  GET  /api/state                      the board state (sessions, decisions, tasks, resources,
+                                       pomodoro, ...)
   GET  /api/events                     Server-Sent Events: the full state on every change
   GET  /api/me                         who is asking: identity, how it was verified, roles
   GET  /icon.svg, /favicon.png, /favicon.ico, /apple-touch-icon.png, /icons/icon-{192,512}.png,
@@ -64,6 +65,7 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import away  # noqa: E402
 import fleet  # noqa: E402
 import guard  # noqa: E402
+import pomodoro  # noqa: E402
 import limit  # noqa: E402
 import messages  # noqa: E402
 import notify  # noqa: E402
@@ -391,6 +393,7 @@ class StateBuilder:
                                     rc.PREFS_FILE, actions.QUEUE_FILE, actions.LAST_FILE)]
         paths.append(self.p("resources.json"))  # rewritten on a bucketed change, else every 60 s
         paths.append(self.p("cards.json"))      # card extras (lib/cards.py), rewritten when changed
+        paths.append(self.p("pomodoro.json"))   # pomodoro tallies (lib/pomodoro.py)
         for sub in ("decisions", "tasks", "consensus"):
             paths.append(self.p(sub))
             paths.extend(glob.glob(self.p(sub, "*.json")))
@@ -528,6 +531,7 @@ class StateBuilder:
                 "notify": notify_state(self.home),
                 "rc": rc_state(self.home),
                 "resources": resources.board_view(read_json(self.p("resources.json"))),
+                "pomodoro": pomodoro.board_view(read_json(self.p("pomodoro.json")), now_ms()),
                 "generated_at": snap.get("generated_at")})
 
 

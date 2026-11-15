@@ -24,6 +24,8 @@
 #   board resources [--json|--mirror] [--refresh]
 #                                              system resources, per-session processes and
 #                                              teammates (resources.json; read-only, kills nothing)
+#   board pomodoro [today|week] [--json|--mirror]
+#                                              the fleet's pomodoro tallies (pomodoro.json)
 #   board press CODE allow|deny --expect TOOL_USE_ID [--allow-truncated]
 #                                              answer a permission prompt via tmux: needs an
 #                                              approver's matching `board answer`, then checks
@@ -237,6 +239,10 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
         echo "  \$BOARD_HOME/resources.json (sampled by the collector every resources.interval seconds)."
         echo "  --json the raw file, --mirror the bucketed meta/resources document for the Artifact board,"
         echo "  --refresh samples now first. The board never stops a process." ;;
+    pomodoro) echo "usage: board pomodoro [today|week] [--json|--mirror]"
+        echo "  pomodoros the sessions finished (25 min of focus while working; \$BOARD_HOME/pomodoro.json)."
+        echo "  today: the fleet total and each session's count, focus and current pomodoro; week: the"
+        echo "  last 7 days. --json the board view, --mirror the meta/pomodoro document for the Artifact." ;;
     ack) echo "usage: board ack [--by WHO] KEY [KEY...]"
         echo "  stop escalation of open alerts (board-notify ack). KEY may be a glob: 'session:API:*'"
         echo "  ('*' = every open alert). --by is recorded as acked_by (default: cli)." ;;
@@ -777,6 +783,8 @@ cmd_limit() {
 }
 
 # ---------------------------------------------------------------- resources
+cmd_pomodoro() { python3 "$REPO/lib/pomodoro.py" show "$@"; }
+
 cmd_resources() {
   local a args=()
   for a in "$@"; do
@@ -1881,7 +1889,7 @@ case "$sub" in
   # leading -h/--help asks for help.
   answer)
     case "${1:-}" in -h|--help) sub_usage answer; exit 0 ;; esac ;;
-  ls|snapshot|ask|decisions|mark|press|limit|notify|doctor|ack|unmute|notify-level|notify-presence|resources|rc|session)
+  ls|snapshot|ask|decisions|mark|press|limit|notify|doctor|ack|unmute|notify-level|notify-presence|resources|rc|session|pomodoro)
     if wants_help "$@"; then sub_usage "$sub"; exit 0; fi ;;
   # proposals, notes and the owner's words are free text: only -h/--help right after the
   # subcommand (or instead of it) asks for help.
@@ -1905,6 +1913,7 @@ case "$sub" in
   task) guarded cmd_task "$@" ;;
   limit) cmd_limit "$@" ;;
   resources) cmd_resources "$@" ;;
+  pomodoro) guarded cmd_pomodoro "$@" ;;
   notify) cmd_notify "$@" ;;
   ack) [ $# -gt 0 ] || { sub_usage ack >&2; exit 2; }; exec "$REPO/bin/board-notify" ack "$@" ;;
   doctor) cmd_doctor "$@" ;;
