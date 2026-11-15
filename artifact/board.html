@@ -496,6 +496,18 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 .u-p { font-family: var(--f-mono); font-size: 13px; font-weight: 600; text-align: right; font-variant-numeric: tabular-nums; color: var(--ink); }
 .u-r { grid-column: 2 / -1; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .u-row.lvl-ok { --u: var(--cord); }
+/* usage popover: hover or focus the meter; on touch, tap to open and tap outside to close */
+.usage { position: relative; cursor: default; }
+.usage:focus-visible { outline: 2px solid var(--cord); outline-offset: 2px; }
+.u-pop { position: absolute; z-index: 9; top: calc(100% + 8px); left: 0; width: min(340px, calc(100vw - 32px)); display: grid; gap: 6px; padding: 12px 14px; border-radius: 8px; border: 1px solid var(--rule); background: var(--panel); color: var(--ink); box-shadow: 0 10px 30px rgb(0 0 0 / .18); font-size: 13px; line-height: 1.45; }
+.u-pop[hidden] { display: none; }
+.u-pop p { margin: 0; }
+.u-pop .k { color: var(--muted); }
+.u-pop .acct { overflow-wrap: anywhere; }
+.u-pop .lvls { display: flex; flex-wrap: wrap; gap: 4px; }
+.u-pop .lvls .esc { opacity: .45; }
+.u-pop .lvls .esc.on { opacity: 1; box-shadow: 0 0 0 1.5px currentColor; }
+@media (max-width: 480px) { .u-pop { left: auto; right: 0; } }
 .u-row.lvl-amber { --u: var(--lamp-glow); }
 .u-row.lvl-amber .u-p { color: var(--lamp); }
 .u-row.lvl-orange { --u: var(--heat); }
@@ -654,9 +666,10 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
         <div class="meter"><span class="n"><span class="lamp done"></span><span id="m-done">0</span></span><span class="l">Done / idle 閒置</span></div>
         <div class="meter"><span class="n"><span class="lamp offline"></span><span id="m-offline">0</span></span><span class="l">Offline 離線</span></div>
       </div>
-      <div class="usage" id="usage" aria-label="Claude usage against limits">
+      <div class="usage" id="usage" tabindex="0" aria-label="Claude usage against limits" aria-describedby="usage-pop">
         <div class="u-title"><span>Claude usage 用量</span><span id="u-upd"></span></div>
         <div class="u-row none" id="u-5h"><span class="u-k">5h</span><span class="u-bar" role="meter" aria-label="5-hour usage" aria-valuemin="0" aria-valuemax="100"><span style="width:0%"></span></span><span class="u-p">—</span><span class="u-r">not reported</span></div>
+        <div class="u-pop" id="usage-pop" role="tooltip" hidden></div>
         <div class="u-row none" id="u-7d"><span class="u-k">7d</span><span class="u-bar" role="meter" aria-label="Weekly usage" aria-valuemin="0" aria-valuemax="100"><span style="width:0%"></span></span><span class="u-p">—</span><span class="u-r">not reported</span></div>
       </div>
       <a class="sys" id="sys" href="#resources" aria-label="System resources" hidden>
@@ -998,8 +1011,55 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     }
     const upd = ts(S.operator && S.operator.usage && S.operator.usage.updated_at);
     $('#u-upd').textContent = upd ? rel(upd) : '';
+    renderUsagePop();
   }
   // Worst usage window for the switch-account banners: { level: 'prep'|'switch', text } or null.
+  // The usage popover: both windows, when they reset, when reported, the threshold reached and the
+  // account the sessions run on (the email only for approvers; board-serve decides, the Artifact
+  // mirror never carries it).
+  const THRESHOLDS = [{ at: 80, cls: 'warn', key: 'heads-up' }, { at: 90, cls: 'high', key: 'prepare to switch' }, { at: 95, cls: 'urgent', key: 'switch now' }];
+  function renderUsagePop() {
+    const pop = $('#usage-pop');
+    if (!pop || pop.hidden) return;
+    pop.textContent = '';
+    const live = S.mode === 'live' || S.mode === 'demo';
+    let worst = -1;
+    for (const w of WINDOWS) {
+      const u = live ? usageOf(w.key) : null;
+      if (u) worst = Math.max(worst, u.pct);
+      const when = u && u.resets ? (u.resets > Date.now() ? 'resets ~' + hhmm(u.resets) + ' (in ' + dur(u.resets - Date.now()) + ')' : 'reset due ' + hhmm(u.resets)) : 'reset time unknown';
+      pop.append(h('p', null, h('span', { class: 'k', text: (w.key === 'five_hour' ? '5-hour window' : 'Weekly') + ': ' }),
+        u ? u.pct + '% used · ' + when : 'not reported'));
+    }
+    const upd = ts(S.operator && S.operator.usage && S.operator.usage.updated_at);
+    pop.append(h('p', null, h('span', { class: 'k', text: 'Updated: ' }), upd ? rel(upd) + ' (' + hhmm(upd) + ')' : 'not reported yet'));
+    const hit = THRESHOLDS.filter((x) => worst >= x.at).pop();
+    pop.append(h('p', null, h('span', { class: 'k', text: 'Threshold: ' }), worst < 0 ? 'unknown' : hit ? hit.at + '% · ' + hit.key : 'below 80% · fine'));
+    pop.append(h('div', { class: 'lvls', 'aria-hidden': 'true' }, THRESHOLDS.map((x) => h('span', { class: 'esc ' + x.cls + (hit === x ? ' on' : ''), text: x.at + '% · ' + x.key }))));
+    const a = S.account;
+    const acct = a && a.email ? str(a.email) + (a.org ? ' · ' + str(a.org) : '') : a && a.hidden ? 'hidden' : isLocal() || S.demo ? 'not reported' : 'hidden';
+    pop.append(h('p', { class: 'acct' }, h('span', { class: 'k', text: 'Account: ' }), acct));
+  }
+  (() => {
+    const box = $('#usage'), pop = $('#usage-pop');
+    let touch = false;
+    const show = () => { if (pop.hidden) { pop.hidden = false; renderUsagePop(); } };
+    const hide = () => { pop.hidden = true; };
+    box.addEventListener('pointerenter', (e) => { if (e.pointerType === 'mouse') show(); });
+    box.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse' && document.activeElement !== box) hide(); });
+    box.addEventListener('focus', () => { if (!touch) show(); });
+    box.addEventListener('blur', () => { if (!touch) hide(); });
+    box.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !pop.hidden) { e.preventDefault(); hide(); } });
+    // Touch: a tap toggles it, a tap anywhere else closes it.
+    box.addEventListener('pointerdown', (e) => {
+      if (e.pointerType === 'mouse') return;
+      touch = true;
+      if (pop.hidden) show(); else hide();
+      setTimeout(() => { touch = false; }, 400);
+    });
+    document.addEventListener('pointerdown', (e) => { if (!pop.hidden && !(e.target instanceof Element && e.target.closest('#usage'))) hide(); });
+  })();
+
   function switchAdvice() {
     if (!(S.mode === 'live' || S.mode === 'demo')) return null;
     let worst = null;
@@ -2516,6 +2576,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       S.replies = new Map(Object.entries(st.replies && typeof st.replies === 'object' ? st.replies : {}).map(([k, v]) => [k, arr(v)]));
       S.me = str(st.me) || null; S.writable = st.writable !== false; S.userReady = true;
       S.canMessageLocal = st.can_message === true;
+      S.account = st.account && typeof st.account === 'object' ? st.account : null;
       for (const k of Object.keys(S.got)) S.got[k] = true;
       clearTimeout(loadTimer);
       S.mode = 'live'; S.slow = false; S.feedError = null; S.offlineDetail = null;
@@ -2752,6 +2813,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   function enterDemo() {
     const now = Date.now(), min = 60000;
     S.demo = true; S.mode = 'demo'; S.me = 'u_demo_you'; S.userReady = true; S.writable = true; S.feedError = null; S.slow = false;
+    S.account = { email: 'you@example.com', org: 'Example Org' };
     const frozen = params.get('offline') === '1';
     S.operator = { heartbeat_at: now - (frozen ? 47 : 2) * min, version: 'demo', owner_id: 'u_demo_you', approver_ids: ['u_demo_you', 'u_demo_lead'],
       operator_session: 'BOARD', account_hint: 'primary team account',
