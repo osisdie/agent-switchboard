@@ -324,8 +324,11 @@ An optional public board URL makes every alert carry a link that opens the board
   Slack handling: only a plain http(s) URL becomes a `<link>`, anything else is escaped text.
   Without a board URL there are no labels and no `ref`: the output is byte for byte the same as
   without this feature (pinned by `tests/test_notify.sh`).
-- `board notify --link ID|root "text"` appends the link to a plain notify; the consensus notifies
-  (`agreed`, `objected`, `owner_back`) link to their item.
+- `board notify --link ID|root "text"` appends the link to a plain notify. The `agreed` and
+  `objected` consensus notifies link to their item, as does the notify for an item returned
+  because it belongs to an earlier away period. The owner-back notify (`board away off`, or the
+  away file removed by hand) links to the item only when exactly one item came back, and to the
+  board root when several did.
 - **Page:** `board.html` reads `d`/`m`/`c` from `location.search` (or a `#<id>` / `#dec-<id>` hash),
   validates the id with the same pattern, and once that feed has loaded scrolls the card into view
   and highlights it briefly (no smooth scroll or fade with `prefers-reduced-motion`).
