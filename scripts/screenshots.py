@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+"""scripts/screenshots.py — render the README / Pages screenshots of the board from its demo data.
+
+  python3 scripts/screenshots.py [--out DIR] [--only NAME[,NAME...]] [--list]
+
+Opens the static demo page (scripts/build-site.py: artifact/board.html with the demo adapter
+forced on and the same small reset board-serve adds, here with the web fonts) in a headless
+Chromium (python playwright) and writes WebP images (converted in the browser, nothing to install) to
+docs/assets/screenshots/ by default, each under MAX_BYTES. Only demo data is shown: generic
+session codes, example.com, no host names, emails or paths from this machine.
+
+Stable output: the page clock is frozen at DEMO_TIME (UTC, en-US), so relative times and dates
+are the same on every run. Google Fonts load when the network allows; offline, the fallback fonts
+are used (the images then differ slightly).
+
+PLAYWRIGHT_CHROMIUM_EXECUTABLE points at a specific Chromium / headless shell when the one
+playwright expects is not installed.
+"""
+import argparse
+import base64
+import datetime as dt
+import os
+import sys
+import tempfile
+
+REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+OUT = os.path.join(REPO, "docs", "assets", "screenshots")
+DEMO_TIME = dt.datetime(2026, 1, 15, 10, 30, tzinfo=dt.timezone.utc)
+MAX_BYTES = 200 * 1024
+DESKTOP = {"width": 1280, "height": 860}
+PHONE = {"width": 390, "height": 844}
+
+# name: (alt text, viewport, color scheme, device scale factor)
+SHOTS = {
+    "overview-light": ("The board in light mode: decisions waiting, usage meters, owner-away banner", DESKTOP, "light", 1),
+    "overview-dark": ("The board in dark mode", DESKTOP, "dark", 1),
+    "session-card": ("Session cards by state, one expanded with its title, pending decisions, running tool and tmux target", DESKTOP, "light", 1),
+    "decisions": ("Decision cards: a permission prompt with Allow / Deny and a question with its options", DESKTOP, "light", 1),
+    "notifications": ("The Notifications dialog: mutes, triage floor and presence", {"width": 1280, "height": 1100}, "light", 1),
+    "resources": ("The Resources section: memory, swap, disks and per-session processes", DESKTOP, "light", 1),
+    "profile-menu": ("The profile menu: identity, roles, theme switcher and API keys", DESKTOP, "light", 1),
+    "phone-dark": ("The board on a phone, dark mode", PHONE, "dark", 2),
+    "pwa-standalone": ("The board as an iPhone home-screen app, clear of the status bar", {"width": 393, "height": 852}, "light", 2),
+}
+
+WEBP_JS = """async ([b64, q]) => {
+  const img = new Image();
+  img.src = 'data:image/png;base64,' + b64;
+  await img.decode();
+  const c = document.createElement('canvas');
+  c.width = img.naturalWidth; c.height = img.naturalHeight;
+  c.getContext('2d').drawImage(img, 0, 0);
+  const blob = await new Promise((ok) => c.toBlob(ok, 'image/webp', q));
+  if (!blob || blob.type !== 'image/webp') return null;
+  const buf = new Uint8Array(await blob.arrayBuffer());
+  let s = ''; for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+  return btoa(s);
+}"""
+
+
+def to_webp(conv, png):
+    """PNG bytes -> WebP bytes under MAX_BYTES (quality steps down as needed)."""
+    b64 = base64.b64encode(png).decode()
+    for q in (0.9, 0.82, 0.74, 0.66, 0.58, 0.5):
+        out = conv.evaluate(WEBP_JS, [b64, q])
+        if out is None:
+            raise SystemExit("screenshots: this Chromium cannot encode WebP")
+        data = base64.b64decode(out)
+        if len(data) <= MAX_BYTES:
+            return data
+    raise SystemExit("screenshots: an image stays over %d bytes" % MAX_BYTES)
+
+
+def union(page, sels, pad=12):
+    """The box around the elements, in page coordinates (bounding_box() is viewport-relative)."""
+    sx, sy = page.evaluate("() => [scrollX, scrollY]")
+    boxes = [page.locator(s).bounding_box() for s in sels]
+    boxes = [dict(b, x=b["x"] + sx, y=b["y"] + sy) for b in boxes if b]
+    x0, y0 = min(b["x"] for b in boxes) - pad, min(b["y"] for b in boxes) - pad
+    x1, y1 = max(b["x"] + b["width"] for b in boxes) + pad, max(b["y"] + b["height"] for b in boxes) + pad
+    return {"x": max(0, x0), "y": max(0, y0), "width": x1 - max(0, x0), "height": y1 - max(0, y0)}
+
+
+def shoot(page, name):
+    """Set the page up for one shot and return the PNG bytes."""
+    if name in ("overview-light", "overview-dark", "phone-dark", "pwa-standalone"):
+        return page.screenshot()
+    if name == "session-card":
+        page.click('article[aria-label="Session API"] .scard-toggle')
+        page.wait_for_timeout(150)
+        return page.screenshot(full_page=True, clip=union(page, ["#board .sec-head", "#board-cols"]))
+    if name == "decisions":
+        return page.screenshot(full_page=True, clip=union(page, ["#decisions .sec-head", "#dec-d-1-demo", "#dec-d-2-demo"]))
+    if name == "notifications":
+        page.click("#notif-btn")
+        page.wait_for_timeout(250)
+        return page.locator("#notif").screenshot()
+    if name == "resources":
+        return page.locator("#resources").screenshot()
+    if name == "profile-menu":
+        page.click("#acct-btn")
+        page.wait_for_timeout(200)
+        return page.screenshot(full_page=True, clip=union(page, ["#acct-btn", "#acct-panel"], pad=16))
+    raise KeyError(name)
+
+
+def main(argv):
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--out", default=OUT)
+    ap.add_argument("--only", default="")
+    ap.add_argument("--list", action="store_true", help="print name<TAB>alt text and exit")
+    args = ap.parse_args(argv[1:])
+    if args.list:
+        for name, (alt, *_rest) in SHOTS.items():
+            print("%s\t%s" % (name, alt))
+        return 0
+    names = [n for n in args.only.split(",") if n] or list(SHOTS)
+    unknown = [n for n in names if n not in SHOTS]
+    if unknown:
+        sys.exit("screenshots: unknown shot(s): %s" % ", ".join(unknown))
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        sys.exit("screenshots: python playwright is not installed")
+    os.makedirs(args.out, exist_ok=True)
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("build_site", os.path.join(REPO, "scripts", "build-site.py"))
+    site = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(site)
+    tmp = tempfile.mkdtemp(prefix="switchboard-shots.")
+    with open(os.path.join(tmp, "demo.html"), "w", encoding="utf-8") as fh:
+        fh.write(site.demo_html(keep_fonts=True))
+    page_url = "file://" + os.path.join(tmp, "demo.html")
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, executable_path=os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE") or None)
+        conv = browser.new_page()
+        for name in names:
+            _alt, viewport, scheme, scale = SHOTS[name]
+            ctx = browser.new_context(viewport=viewport, device_scale_factor=scale, color_scheme=scheme,
+                                      timezone_id="UTC", locale="en-US", reduced_motion="reduce")
+            if name == "pwa-standalone":
+                ctx.add_init_script("Object.defineProperty(navigator, 'standalone', { get: () => true });")
+            page = ctx.new_page()
+            page.clock.set_fixed_time(DEMO_TIME)
+            if name == "pwa-standalone":
+                cdp = ctx.new_cdp_session(page)
+                cdp.send("Emulation.setSafeAreaInsetsOverride", {"insets": {"top": 59, "bottom": 34, "left": 0, "right": 0}})
+            page.goto(page_url)
+            page.wait_for_load_state("networkidle")
+            page.evaluate("() => document.fonts.ready")
+            page.wait_for_timeout(300)
+            data = to_webp(conv, shoot(page, name))
+            path = os.path.join(args.out, name + ".webp")
+            with open(path, "wb") as fh:
+                fh.write(data)
+            print("%-16s %4dx%-4d @%dx  %6d bytes" % (name, viewport["width"], viewport["height"], scale, len(data)))
+            ctx.close()
+        browser.close()
+    import shutil
+    shutil.rmtree(tmp, ignore_errors=True)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
