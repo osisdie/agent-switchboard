@@ -134,7 +134,19 @@ def main():
             d = card(pg, "DOCS")
             check("collapsed: a working card says what is running", d["now"] == "Running Edit: …/configuration.md", d)
             check("collapsed: teammates, ctx and cost, time in state", d["meta"] == "2 teammates · ctx 34% · $2.10 · for 22m", d["meta"])
-            check("collapsed: a needs-you badge with the count", c["badge"] == "2 for you" and d["badge"] is None, (c["badge"], d["badge"]))
+            check("collapsed: a needs-you badge with the count", c["badge"] == "2" and d["badge"] is None, (c["badge"], d["badge"]))
+            overlap_js = """() => {
+              const bad = [];
+              for (const card of document.querySelectorAll('article.scard.has-rc')) {
+                const t = card.querySelector('.scard-top time').getBoundingClientRect(), a = card.querySelector(':scope > a.rc-link').getBoundingClientRect();
+                if (t.right > a.left + 1 && t.bottom > a.top && t.top < a.bottom) bad.push(card.getAttribute('aria-label'));
+              }
+              return bad; }"""
+            for vw in (1280, 390):
+                pg.set_viewport_size({"width": vw, "height": 860 if vw > 400 else 800})
+                pg.wait_for_timeout(100)
+                bad = pg.evaluate(overlap_js)
+                check("collapsed: the time never runs under the Remote Control link (%d px)" % vw, bad == [], bad)
             check("collapsed: no meta line without card extras", card(pg, "WEB")["meta"] is None, card(pg, "WEB")["meta"])
             check("collapsed: a Remote Control icon link beside the toggle, not inside it",
                   c["rc"] == ["#demo-session-api", "Open API in Remote Control", True], c["rc"])

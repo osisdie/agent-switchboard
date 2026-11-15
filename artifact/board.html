@@ -338,7 +338,9 @@ dialog.notif { width: min(720px, calc(100vw - 24px)); }
 .rc-link:hover { background: var(--cord-soft); }
 .scard.has-rc .scard-top time { margin-right: 28px; }
 .sdetail[hidden] { display: none; }
-.sbadge { flex: none; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 9px; background: var(--lamp); color: var(--panel); white-space: nowrap; }
+.sbadge { flex: none; min-width: 18px; box-sizing: border-box; text-align: center; font-size: 11px; font-weight: 700; padding: 1px 5px; border-radius: 9px; background: var(--lamp); color: var(--panel); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.scard-top .code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scard-top time { flex: none; white-space: nowrap; }
 .smeta { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .sd-sec { display: grid; gap: 6px; min-width: 0; }
 .sd-sec + .sd-sec { padding-top: 8px; border-top: 1px dashed var(--rule); }
@@ -1889,7 +1891,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
         h('span', { class: 'lamp ' + lampCls, 'aria-hidden': 'true' }),
         h('span', { class: 'code', text: s.code }),
         h('span', { class: 'schip ' + col, text: tr(STATE_LABEL[col]) }),
-        npend ? h('span', { class: 'sbadge', title: tr('Waiting for you: {n}', { n: npend }), text: tr('{n} for you', { n: npend }) }) : null,
+        npend ? h('span', { class: 'sbadge', title: tr('Waiting for you: {n}', { n: npend }), 'aria-label': tr('Waiting for you: {n}', { n: npend }), text: String(npend) }) : null,
         timeEl(s.updated_at)),
       h('span', { class: 'stitle' + (title || task || says ? '' : ' none'), text: title || task || says || tr('No title yet') }),
       where ? h('span', { class: 'swhere', text: where }) : null,
@@ -3951,7 +3953,6 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       "1 teammate": "1 個 teammate",
       "{n} teammates": "{n} 個 teammate",
       "Waiting for you: {n}": "等你處理：{n} 項",
-      "{n} for you": "待你 {n}",
       "Doing": "在做什麼",
       "In state": "目前狀態",
       "Says": "它說",
