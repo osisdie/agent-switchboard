@@ -58,6 +58,7 @@ from email.utils import formataddr, formatdate, make_msgid
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import fleet  # noqa: E402
+import guard  # noqa: E402
 import prefs  # noqa: E402
 
 LEVELS = ["info", "warn", "high", "urgent"]
@@ -192,11 +193,13 @@ def load_config():
 
 
 def scrub(text, env):
+    """An adapter error, before it is logged: channel credentials (process env included) become
+    ***, then the board's secret guard (lib/guard.py) runs over what is left."""
     text = str(text or "")
     for k, v in env.items():
         if v and len(v) >= 6 and any(h in k for h in SECRET_HINTS):
             text = text.replace(v, "***")
-    return text[:300]
+    return guard.scrub(text)[:300]
 
 
 def in_quiet_hours(cfg, now):
@@ -554,7 +557,7 @@ def _open_episode(prev, alert, now):
     return {
         "level": alert["level"], "first_at": now, "last_at": now, "acked_at": None, "resolved": False,
         "sent": dict((prev or {}).get("sent") or {}),
-        "title": alert["title"], "body": alert.get("body") or "", "url": alert.get("url"),
+        "title": guard.scrub(alert["title"]), "body": guard.scrub(alert.get("body") or ""), "url": alert.get("url"),
         "kind": alert.get("kind") or "generic", "escalate": bool(alert.get("escalate")),
         "repeat": alert.get("repeat", True), "resets_at": alert.get("resets_at"),
         "board": alert.get("board"),
@@ -627,8 +630,10 @@ def _deliver(key, e, now, env, cfg, force=False):
         e.pop("retry_at", None)
         res["status"] = "suppressed"
         return res
-    msg = with_board_link({"level": lvl, "key": key, "title": e.get("title") or key, "body": e.get("body") or "",
-                           "url": e.get("url"), "ts": now}, cfg, board_id(key, e))
+    # The secret guard runs on every delivery too (alerts.json may predate it, or be edited).
+    msg = with_board_link({"level": lvl, "key": key, "title": guard.scrub(e.get("title") or key),
+                           "body": guard.scrub(e.get("body") or ""),
+                           "url": guard.scrub(e.get("url"), structural=True), "ts": now}, cfg, board_id(key, e))
     res["channels"] = dispatch(msg, channels, env, cfg)
     if not channels or any(r["ok"] for r in res["channels"].values()):
         e.setdefault("sent", {})[lvl] = now
@@ -665,7 +670,8 @@ def send(level, key, title, body="", url=None, kind=None, escalate=None, repeat=
             else:
                 if rank(level) > rank(e.get("level")):
                     e["level"] = level
-                e.update({"title": title, "body": body or e.get("body") or "", "url": url or e.get("url"),
+                e.update({"title": guard.scrub(title), "body": guard.scrub(body) or e.get("body") or "",
+                          "url": url or e.get("url"),
                           "last_at": now})
                 if kind:
                     e["kind"] = kind
@@ -1025,7 +1031,8 @@ def _sync_resources_now(data, snap, now, fcfg=None):
             data[a["key"]] = _open_episode(e if a.get("repeat") and e else None, a, now)
             new.append(a["key"])
         elif rank(a["level"]) > rank(e.get("level")):
-            e.update({"level": a["level"], "title": a["title"], "body": a["body"], "last_at": now})
+            e.update({"level": a["level"], "title": guard.scrub(a["title"]), "body": guard.scrub(a["body"]),
+                      "last_at": now})
     return new
 
 

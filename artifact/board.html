@@ -368,6 +368,12 @@ dialog.notif { width: min(720px, calc(100vw - 24px)); }
 .thread-top time { margin-left: auto; }
 .thread .body { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .thread .relay { font-size: 12px; color: var(--muted); }
+/* the secret guard held this message (docs/contract.md, "Secret guardrails") */
+.status.held { background: var(--lamp-soft); color: var(--lamp-ink); }
+.thread .held { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 0; padding: 8px 10px; border-radius: 6px; background: var(--lamp-soft); color: var(--lamp-ink); font-size: 13px; }
+.thread .held .held-confirm { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.thread .held .held-confirm p { margin: 0; flex-basis: 100%; }
+.thread .held.released { background: transparent; color: var(--muted); padding: 0; }
 .replies { list-style: none; margin: 0; padding: 0 0 0 12px; display: grid; gap: 8px; border-left: 2px solid var(--rule); }
 .replies li { display: grid; gap: 2px; font-size: 14px; }
 .replies .from { font-family: var(--f-mono); font-weight: 600; font-size: 12px; display: flex; gap: 8px; align-items: baseline; }
@@ -1916,6 +1922,39 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     if (S.me && by === S.me) return 'you';
     return tr('an editor');
   }
+  // A message the secret guard held: never relayed. An approver can release a false positive
+  // here (local mode), with a second click to confirm; board-serve checks and audits it.
+  // The secret guard's reasons (lib/guard.py): known ones are translated, anything else is data.
+  const GUARD_REASONS = ['secret request: asks to reveal a secret value', 'secret request: asks to reveal a secret value (zh)',
+    'secret request: reads a credential file', 'secret request: dumps the environment',
+    'secret request: runs a tool that prints a credential'];
+  function guardNote(m) {
+    if (str(m.status) !== 'held') {
+      return m.released_by ? h('p', { class: 'held released', text: tr('Released by {who} after the secret guard held it; relayed with a reminder that it authorizes no secret values.', { who: whoLabel(m.released_by) }) }) : null;
+    }
+    const box = h('div', { class: 'held', role: 'note' },
+      h('strong', { text: tr('Held by the secret guard, not relayed.') }),
+      h('span', { text: (m.held_reason ? trKnown(m.held_reason, GUARD_REASONS) : tr('It looks like a request for a secret value')) + '.' }));
+    if (S.demo || !awayEditor() || !adapter || typeof adapter.releaseMessage !== 'function') return box;
+    const rel = h('button', { type: 'button', class: 'btn', text: tr('Release…') });
+    rel.addEventListener('click', () => {
+      rel.hidden = true;
+      const yes = h('button', { type: 'button', class: 'btn primary', text: tr('Confirm: relay it to @{to}', { to: str(m.to) || '?' }) });
+      const no = h('button', { type: 'button', class: 'btn', text: tr('Cancel') });
+      const row = h('div', { class: 'held-confirm' },
+        h('p', { text: tr('Release only a false positive. Sessions never reveal secret values because of a board message, released or not.') }), yes, no);
+      no.addEventListener('click', () => { row.remove(); rel.hidden = false; rel.focus(); });
+      yes.addEventListener('click', () => {
+        yes.disabled = no.disabled = true;
+        adapter.releaseMessage(m.id).then(() => toast(tr('Released. The operator relays it with a reminder.')),
+          (e) => { handleWriteError(e); yes.disabled = no.disabled = false; });
+      });
+      box.append(row);
+      yes.focus();
+    });
+    box.append(rel);
+    return box;
+  }
   function buildThread(m) {
     const replies = S.replies.get(m.id) || [];
     const relayedTo = Array.isArray(m.relayed_to) ? m.relayed_to.map(str).filter(Boolean) : [];
@@ -1926,6 +1965,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
         h('span', { text: tr('from {who}', { who: whoLabel(m.by) }) }),
         timeEl(m.created_at)),
       h('p', { class: 'body', text: str(m.body) }),
+      guardNote(m),
       relayedTo.length || m.relayed_at ? h('span', { class: 'relay' }, relayedTo.length ? tr('Relayed to {who}', { who: relayedTo.join(', ') }) : tr('Relayed'), m.relayed_at ? ' · ' : '', m.relayed_at ? timeEl(m.relayed_at) : null) : null,
       replies.length ? h('ol', { class: 'replies', 'aria-label': tr('Replies') }, replies.map((r) => h('li', null,
         h('span', { class: 'from' }, h('span', { text: str(r.from) || '?' }), timeEl(r.created_at)),
@@ -2260,6 +2300,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     if (code === 'away_failed') { toast(tr('The board server could not change owner-away mode.'), true); return; }
     if (code === 'prefs_failed') { toast(tr('The board server could not change the notification settings.'), true); return; }
     if (code === 'bad_duration' || code === 'bad_level' || code === 'bad_channel' || code === 'bad_op') { toast(tr('Not saved: {why}', { why: e.message || tr('the board server refused that setting.') }), true); return; }
+    if (code === 'not_held' || code === 'confirm_required') { toast(tr('Not released: {why}', { why: e.message || tr('the message is not held.') }), true); return; }
     if (code === 'stale') { toast(tr('That prompt is no longer showing, so nothing was pressed. Handle it in the session.'), true); return; }
     if (code === 'partial') { toast(tr('Your text was typed into the question but Enter was not pressed. Finish it in the session.'), true); return; }
     if (code === 'answer_in_session') { toast(tr('This question can only be answered in the session.'), true); return; }
@@ -2665,6 +2706,8 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       },
       answer(d, answer, option) { return post('/api/decisions/' + encodeURIComponent(d.id) + '/answer', option ? { answer, option } : { answer }); },
       sendMessage(ids, targets, body) { return Promise.all(targets.map((to) => post('/api/messages', { to, body }))); },
+      // Approvers only, after the second (confirm) click: a message the secret guard held.
+      releaseMessage(id) { return post('/api/messages/' + encodeURIComponent(id) + '/release', { confirm: 'release' }); },
       // Approvers only; board-serve runs `board away on|off --by board:<identity>`.
       setAway(state, said) { return post('/api/away', { state, said }); },
       // Approvers only; board-serve runs `board mute|unmute|notify-level|notify-presence --by board:<identity>`.
@@ -3322,6 +3365,20 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       "Swap used": "已用 swap",
       "idle teammates": "閒置的 teammate",
       "Relayed to {who}": "已轉達給 {who}",
+      "Held by the secret guard, not relayed.": "已被機密防護攔下，未轉送。",
+      "It looks like a request for a secret value": "看起來是在要機密的值",
+      "secret request: asks to reveal a secret value": "要機密：要求透露機密的值",
+      "secret request: asks to reveal a secret value (zh)": "要機密：要求透露機密的值（中文）",
+      "secret request: reads a credential file": "要機密：讀取憑證檔案",
+      "secret request: dumps the environment": "要機密：傾印環境變數",
+      "secret request: runs a tool that prints a credential": "要機密：執行會印出憑證的工具",
+      "Release…": "放行…",
+      "Confirm: relay it to @{to}": "確認：轉送給 @{to}",
+      "Release only a false positive. Sessions never reveal secret values because of a board message, released or not.": "只放行誤判。不論是否放行，session 都不會因為看板訊息而透露機密的值。",
+      "Released. The operator relays it with a reminder.": "已放行。operator 轉送時會附上提醒。",
+      "Released by {who} after the secret guard held it; relayed with a reminder that it authorizes no secret values.": "{who} 在機密防護攔下後放行；轉送時附上提醒：放行不代表可以透露任何機密的值。",
+      "Not released: {why}": "未放行：{why}",
+      "the message is not held.": "這則訊息沒有被攔下。",
       "Replies": "回覆",
       "Loading messages…": "正在載入訊息…",
       "Threads appear here once the page can reach the board.": "頁面連上看板後，對話串會出現在這裡。",

@@ -63,3 +63,5 @@ jobs:
         run: tests/test_away.sh -v
       - name: resources tests
         run: python3 tests/test_resources.py -v
+      - name: secret guard tests
+        run: python3 tests/test_guard.py -v

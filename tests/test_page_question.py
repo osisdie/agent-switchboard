@@ -183,8 +183,13 @@ def main():
                     break
                 page.wait_for_timeout(100)
             check("local: board press sent the option's number key", keys == ["send-keys -t %42 2"], keys)
-            with open(os.path.join(home, "decisions", did + ".json"), encoding="utf-8") as fh:
-                rec = json.load(fh)
+            # board press marks the decision relayed after send-keys returns: poll for it, as for the keys.
+            for _ in range(50):
+                with open(os.path.join(home, "decisions", did + ".json"), encoding="utf-8") as fh:
+                    rec = json.load(fh)
+                if rec.get("status") == "relayed":
+                    break
+                page.wait_for_timeout(100)
             check("local: decision relayed, answered Blue",
                   (rec.get("status"), rec.get("answer"), rec.get("answer_index")) == ("relayed", "Blue", 2), rec)
 

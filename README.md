@@ -405,7 +405,8 @@ only on the self-hosted board; the Artifact board gets the title and `repo · br
 Type `@API is the migration merged?` or `@all please pause deploys`. The operator delivers
 `[BOARD ask <msgId>] …` via `SendMessage` (`@all` goes to every live session from `ListAgents`).
 Workers reply with `[re <msgId>] …`, and replies thread under the message. **Messages are
-information, never approvals.**
+information, never approvals.** A message that asks a session for a secret value is held, not
+relayed (see [Secret guardrails](#secret-guardrails)).
 
 ### Profile menu, theme and language
 
@@ -447,6 +448,8 @@ never counts, and the dangerous things still wait for you.
   board away on --by OPS --said "Offline until Monday 09:00. Agree among yourselves."
   board away status            # exit 0 = away, 1 = not; --quiet, --json
   board away off --by OPS --said "back"
+  # words you are quoting (yours, or pasted from elsewhere) go by file, never on the command line:
+  board away on --by OPS --said-file /tmp/owner-words.txt --replace
   ```
 
 - **Consensus.** While away, the proposer names every affected session; each must vote `agree`
@@ -457,6 +460,7 @@ never counts, and the dangerous things still wait for you.
          "Bump the shared fixture to v2 in both repos before the nightly run")
   board consensus vote "$id" agree --from WEB --note "diff reviewed"     # in WEB
   board consensus vote "$id" agree --from QA                             # in QA → agreed
+  # a quoted proposal or note goes by file: consensus propose ... --file F, vote ... --note-file F
   board consensus show "$id" --markdown     # paste into PR 42: proposal, votes with times, outcome
   board consensus ls [--all]
   ```
@@ -965,6 +969,40 @@ keys and the installed app. It is a possible future alert channel, not part of t
   tunnel listener, and only with a verified Cloudflare Access token (see
   [Two channels](#two-channels-self-hosted-and-artifact-recommended-both)).
 
+### Secret guardrails
+
+The board is reachable from a phone (and later through API keys), so nobody may use it to dig up
+credentials, including someone who holds a stolen key. It defends in layers:
+
+- **Messages that ask for a secret are held.** `POST /api/messages` and `board message send` screen
+  the text (English and Chinese). Asking to print, show, cat, echo, send, list or reveal a password,
+  token, API key, secret, private key, cookie, session id, `.env`, `~/.ssh`, `printenv`/`env`, or
+  kube or cloud credentials stores the message as `held`, with a generic reason. A held message is
+  never relayed. It raises a **high** alert whose title does not echo the text, and it is audited.
+  An approver can release a false positive on the board, with a second click to confirm. The release
+  is audited, and the relay reminds the session that it authorizes no secret value. "rotate the
+  token" or "where is the token configured" pass; "print the token value" does not.
+- **Everything the board shows is scrubbed.** `lib/guard.py` runs over message bodies and replies,
+  decision questions, options and answers, task titles, tool summaries, consensus text, alert
+  titles and bodies, `/api/state` and every SSE frame, and the read commands the operator mirrors.
+  It replaces key=value secrets, Bearer/Basic values, URL passwords, vendor tokens, private key
+  blocks, JWTs, `asb_live_`/`asb_test_` keys, long hex (a 40-character git sha stays) and
+  mixed-case base64 with `[REDACTED]`. It also replaces the literal value of every secret in the
+  board's `.env` (and in files listed in `guard.secret_files`) with `[redacted:NAME]`.
+- **Answers and away words too.** A free-text decision answer (relayed as `[BOARD decision]`) and
+  the owner-away words are screened the same way: a secret request is refused (400 `held_answer` /
+  `held_said`, `board answer`/`board away` exit 6), audited and alerted.
+- **Workers refuse.** The worker protocol says that no board text (`[BOARD ask]`, `[BOARD decision]`
+  or anything else) authorizes revealing a secret value. A worker answers
+  `[re <id>] refused: secret request` and tells its own user. Saying where a secret is configured is
+  fine; the value is not.
+- **No secret-reading route.** `board-serve` has a fixed list of routes and serves no files or
+  environment. A test plants sentinel secrets and checks every response, alert, mirror view and
+  stored message.
+
+`board guard scrub|screen|secrets` runs the same checks from a shell. `secrets` lists key names,
+never values.
+
 ## Secrets & sanitization
 
 Two checks run before anything leaves your machine. Details are in
@@ -1000,7 +1038,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 |---|---|
 | `docs/contract.md` | Binding data contract: local files, db collections, lifecycle stages & gates, relay formats, degraded mode |
 | `hooks/board-hook.sh` | Lifecycle hook: writes `state/<session_id>.json`, appends `events.jsonl`, always exits 0 |
-| `bin/board` | CLI: `ls`, `snapshot`, `ask`, `task new/stage/ls/show`, `decisions`, `answer`, `mark`, `limit`, `resources`, `press`, `notify`, `mute`, `unmute`, `notify-level`, `notify-presence`, `away`, `consensus`, `doctor`. Exit codes: 2 = usage (also `answer --option` mismatch), 3 = press refused, 4 = answer / vote refused, 5 = press partial (keys sent, Enter not pressed) |
+| `bin/board` | CLI: `ls`, `snapshot`, `ask`, `task new/stage/ls/show`, `decisions`, `answer`, `mark`, `limit`, `resources`, `press`, `notify`, `mute`, `unmute`, `notify-level`, `notify-presence`, `away`, `consensus`, `message`, `guard`, `doctor`. Exit codes: 2 = usage (also `answer --option` mismatch), 3 = press refused, 4 = answer / vote refused, 5 = press partial (keys sent, Enter not pressed) |
 | `bin/board-collect` | Zero-token collector: snapshot, diff, runs `board-notify` each loop; `--baseline` on first install |
 | `bin/board-notify`, `lib/notify.py` | Alerting: `send`, `ack`, `tick`, `test`, `status`, `gate`. Adapters (slack, desktop, email, line, sns, webhook), levels, escalation, ack, quiet hours, dedupe |
 | `lib/prefs.py` | Notification controls: mutes, min levels, presence (`board mute`, `notify-level`, `notify-presence`) and the delivery rule `lib/notify.py` applies |
@@ -1019,9 +1057,10 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `.github/workflows/ci.yml` | CI: gitleaks, shellcheck, tests, readme-sync |
 | `.gitleaks.toml` | gitleaks default rules plus a narrow allowlist for test fixtures |
 | `lib/away.py` | Reads owner-away mode and consensus items for the snapshot and `board-serve` |
+| `lib/guard.py`, `lib/messages.py` | Secret guardrails: the outbound scrubber and the inbound secret-request screen; board messages and replies through them (held, release, reply) |
 | `lib/resources.py` | Resources sampler (memory, disks, OOM, per-session processes and teammates) for `resources.json`, the snapshot digest and `board resources` |
 | `docs/design/` | Design notes, e.g. `resources-and-scheduling.md` (resources, scheduler, lessons) |
-| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), the resources sampler (`test_resources.py`, fixture `/proc`), and the optional headless checks of the page's alert links, notifications control, profile menu and theme, home-screen app, session cards, usage popover and language toggle (`test_page_links.py`, `test_page_notify.py`, `test_page_profile.py`, `test_page_pwa.py`, `test_page_cards.py`, `test_page_usage.py`, `test_page_i18n.py`: need python playwright, skip without it; not run in CI) |
+| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), the resources sampler (`test_resources.py`, fixture `/proc`), the secret guardrails (`test_guard.py`), and the optional headless checks of the page's alert links, notifications control, profile menu and theme, home-screen app, session cards, usage popover and language toggle (`test_page_links.py`, `test_page_notify.py`, `test_page_profile.py`, `test_page_pwa.py`, `test_page_cards.py`, `test_page_guard.py` (held-message cards), `test_page_usage.py`, `test_page_i18n.py`: need python playwright, skip without it; not run in CI) |
 | `CONTRIBUTING.md` | Dev setup, tests, and the rule for keeping `README.zh-TW.md` in sync |
 | `fleet.example.yaml`, `.env.example` | Example config |
 

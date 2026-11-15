@@ -5,11 +5,11 @@
 # Usage:
 #   board ls [--refresh]                       table of sessions from snapshot.json
 #   board snapshot [--refresh]                 print snapshot.json
-#   board ask --from CODE "question" [--option X]... [--context T]
+#   board ask --from CODE "question"|--file PATH [--option X]... [--context T|--context-file PATH]
 #             [--task ID] [--stage S] [--gate G] [--artifact REF]
 #                                              create a question (or gate) decision, print its id
 #   board decisions [--status S] [--json]      list decisions
-#   board answer ID ANSWER --by WHO [--option N]
+#   board answer ID ANSWER|--answer-file PATH --by WHO [--option N]
 #                                              mark a decision answered (mirrors the board db);
 #                                              WHO must be in approvers (release_managers for
 #                                              gate:production), else it is marked unauthorized
@@ -42,14 +42,22 @@
 #   board notify-presence on|off [--level warn|high|urgent] [--by WHO]
 #                                              hold push below LEVEL while an approver watches
 #                                              the board (default on, high)
-#   board away on --by WHO --said "owner's words" [--replace]
-#   board away off --by WHO [--said "..."]     owner-away mode ($BOARD_HOME/owner-away)
+#   board away on --by WHO --said "owner's words"|--said-file PATH [--replace]
+#   board away off --by WHO [--said "..."|--said-file PATH]     owner-away mode ($BOARD_HOME/owner-away)
 #   board away status [--quiet|--json]         exit 0 when the owner is away, 1 when not
-#   board consensus propose --from CODE --to A,B[,..] [--ref REF] "proposal"
-#   board consensus vote ID agree|object --from CODE [--note T]
+#   board consensus propose --from CODE --to A,B[,..] [--ref REF] "proposal"|--file PATH
+#   board consensus vote ID agree|object --from CODE [--note T|--note-file PATH]
 #   board consensus ls [--all] | show ID [--markdown]
 #                                              decide among sessions while the owner is away
 #                                              (never for red lines, never for board asks)
+#   board message send --to CODE|all [--by WHO] "text"|-
+#                                              create a board message (screened by the secret
+#                                              guard: a secret request is held, not relayed)
+#   board message reply MSG_ID --from CODE "text"|-
+#                                              store a session's reply (secrets redacted)
+#   board message show MSG_ID [--json]         the relay text, or "held" (never relay it)
+#   board guard scrub|scrub-json|screen|has-marker|secrets
+#                                              the secret guard (lib/guard.py) for scripts
 #   board doctor                               check dependencies and installation
 #
 # Env: BOARD_HOME (default ~/.agent-switchboard), BOARD_CONFIG_DIR (default <repo>/tmp-local
@@ -60,13 +68,15 @@
 #             3 press refused: screen/state mismatch (no keys sent),
 #             4 refused: not authorized (answer: not an approver; press: no approver's answer;
 #             consensus: not a participant, or --from is not this tmux session),
-#             5 press stopped part-way (free text: some keys sent, Enter not pressed).
+#             5 press stopped part-way (free text: some keys sent, Enter not pressed),
+#             6 refused by the secret guard (`answer`, `away --said`: asks for a secret value).
 set -u
 
 REPO="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 BOARD_HOME="${BOARD_HOME:-$HOME/.agent-switchboard}"
 export BOARD_HOME
 FLEET="$REPO/lib/fleet.py"
+GUARD="$REPO/lib/guard.py"
 umask 077   # everything under BOARD_HOME is private to this user
 [ -d "$BOARD_HOME" ] || { mkdir -p "$BOARD_HOME" && chmod 700 "$BOARD_HOME"; } 2>/dev/null
 
@@ -77,6 +87,19 @@ need_jq() { command -v jq >/dev/null 2>&1 || die "jq is required"; }
 now_ms() { local t="${EPOCHREALTIME/./}"; echo $(( t / 1000 )); }
 
 config_dir() { python3 "$FLEET" config-dir; }
+# The secret guard (lib/guard.py): every free text the board stores, shows or alerts goes through it.
+# The text goes on stdin, never as an argument: guard.py must never mistake it for an option or "-".
+guard_scrub() { printf '%s' "$1" | python3 "$GUARD" scrub || true; }
+# from_file OPTION PATH — the text of a --*-file option. Free text that came from someone else (the
+# owner's words, a quoted proposal) goes by file, never inside a shell argument.
+from_file() { [ -n "${2:-}" ] && [ -r "$2" ] && [ -f "$2" ] || die "$1 needs a readable file"; cat -- "$2"; }
+guarded() {  # guarded CMD ARGS... — run a command whose output may be mirrored; stdout goes
+  # through the secret guard (records written before it, or edited by hand), exit status kept
+  local out rc
+  out="$("$@")"; rc=$?
+  [ -z "$out" ] || printf '%s\n' "$out" | python3 "$GUARD" scrub-out
+  return "$rc"
+}
 cfg_get() { python3 "$FLEET" get "$@"; }
 
 log_event() {  # log_event JSON
@@ -136,14 +159,15 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
         echo "  table of sessions (code, state, status, age, task stage, pending tool) from snapshot.json" ;;
     snapshot) echo "usage: board snapshot [--refresh]"
         echo "  print snapshot.json (--refresh rebuilds it first)" ;;
-    ask) echo "usage: board ask --from CODE \"question\" [--option X]... [--context T]"
+    ask) echo "usage: board ask --from CODE \"question\"|--file PATH [--option X]... [--context T|--context-file PATH]"
         echo "                 [--task ID] [--stage S] [--gate G] [--artifact REF]"
         echo "  create a decision and print its id. With --task/--gate it is a gate decision"
         echo "  (defaults: stage = the task's stage, gate = owner, options = approve / request changes)."
         echo "  stages: $STAGES" ;;
     decisions) echo "usage: board decisions [--status pending|answered|relayed|stale|timeout|unauthorized] [--json]" ;;
-    answer) echo "usage: board answer ID ANSWER --by WHO [--option N]"
+    answer) echo "usage: board answer ID ANSWER|--answer-file PATH --by WHO [--option N]"
         echo "  --option N (pane question): the clicked option; refused (exit 2) unless its label is ANSWER." 
+        echo "  a free-text answer that asks for a secret value is refused (exit 6, nothing written)."
         echo "  mark a decision answered. WHO must be in approvers (production gate or stage:"
         echo "  release_managers, falling back to approvers). Otherwise the decision is marked"
         echo "  unauthorized and the command exits 4. No approvers configured = refused (fails closed)."
@@ -209,8 +233,8 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
         echo "  (default high). The board still shows everything; escalation timers keep running." ;;
     doctor) echo "usage: board doctor"
         echo "  check dependencies, config, hook installation and the collector" ;;
-    away) echo "usage: board away on --by WHO --said \"owner's words\" [--replace]"
-        echo "       board away off --by WHO [--said \"...\"]"
+    away) echo "usage: board away on --by WHO --said \"owner's words\"|--said-file PATH [--replace]"
+        echo "       board away off --by WHO [--said \"...\"|--said-file PATH]"
         echo "       board away status [--quiet|--json]"
         echo "  owner-away mode. The owner is away while \$BOARD_HOME/owner-away exists, whatever its"
         echo "  content. Only a session that got the owner's own instruction turns it on or off."
@@ -218,11 +242,11 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
         echo "  (unless --replace). off: removes it; pending consensus items go back to the owner."
         echo "  status: exit 0 when away, 1 when not (--quiet prints nothing, --json the record);"
         echo "  2 for a usage error, so a typo never reads as \"not away\"." ;;
-    "away on") echo "usage: board away on --by WHO --said \"owner's words\" [--replace]" ;;
-    "away off") echo "usage: board away off --by WHO [--said \"...\"]" ;;
+    "away on") echo "usage: board away on --by WHO --said \"owner's words\"|--said-file PATH [--replace]" ;;
+    "away off") echo "usage: board away off --by WHO [--said \"...\"|--said-file PATH]" ;;
     "away status") echo "usage: board away status [--quiet|--json]   (exit 0 = away, 1 = not away, 2 = usage)" ;;
-    consensus) echo "usage: board consensus propose --from CODE --to A,B[,..] [--ref REF] \"proposal\""
-        echo "       board consensus vote ID agree|object --from CODE [--note T]"
+    consensus) echo "usage: board consensus propose --from CODE --to A,B[,..] [--ref REF] \"proposal\"|--file PATH"
+        echo "       board consensus vote ID agree|object --from CODE [--note T|--note-file PATH]"
         echo "       board consensus ls [--all]"
         echo "       board consensus show ID [--markdown]"
         echo "  while the owner is away, sessions decide cross-session questions by explicit consensus:"
@@ -233,8 +257,8 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
         echo "  Votes are self-attested: --from is declared by the caller, not verified. Each session"
         echo "  votes only as itself. Inside tmux, a --from that is not this tmux session is refused (exit 4)."
         red_lines_text | sed 's/^/  /' ;;
-    "consensus propose") echo "usage: board consensus propose --from CODE --to A,B[,..] [--ref REF] \"proposal\"   (prints the id)" ;;
-    "consensus vote") echo "usage: board consensus vote ID agree|object --from CODE [--note T]" ;;
+    "consensus propose") echo "usage: board consensus propose --from CODE --to A,B[,..] [--ref REF] \"proposal\"|--file PATH   (prints the id)" ;;
+    "consensus vote") echo "usage: board consensus vote ID agree|object --from CODE [--note T|--note-file PATH]" ;;
     "consensus ls") echo "usage: board consensus ls [--all]   (default: pending, plus anything decided in the last 24 h)" ;;
     "consensus show") echo "usage: board consensus show ID [--markdown]   (--markdown: a block to paste into the PR/ticket)" ;;
     *) usage ;;
@@ -303,6 +327,8 @@ cmd_ask() {
       --from) shift; from="${1:-}" ;;
       --option) shift; opts+=("${1:-}") ;;
       --context) shift; context="${1:-}" ;;
+      --context-file) shift; context="$(from_file --context-file "${1:-}")" || exit 1 ;;
+      --file) shift; [ -z "$question" ] || die "ask: only one question"; question="$(from_file --file "${1:-}")" || exit 1 ;;
       --task) shift; task="${1:-}" ;;
       --stage) shift; stage="${1:-}" ;;
       --gate) shift; gate="${1:-}" ;;
@@ -335,6 +361,7 @@ cmd_ask() {
     opts_json="[]"
   fi
   mkdir -p "$BOARD_HOME/decisions"
+  # The secret guard scrubs the question, options and context before they are stored.
   write_atomic "$(dec_path "$id")" "$(jq -n --arg id "$id" --arg from "$from" --arg q "$question" \
     --arg ctx "$context" --argjson opts "$opts_json" --argjson now "$now" \
     --arg task "$task" --arg stage "$stage" --arg gate "$gate" --arg art "$artifact" '
@@ -345,7 +372,7 @@ cmd_ask() {
       created_at: $now }
     + (if $task != "" or $gate != "" or $stage != "" then
          { task_id: ($task | nz), stage: ($stage | nz), gate: ($gate | nz), artifact_ref: ($art | nz) }
-       else {} end)')"
+       else {} end)' | { python3 "$GUARD" scrub-json || [ $? = 3 ]; })"
   if [ -n "$tf" ]; then
     write_atomic "$tf" "$(jq --arg id "$id" --arg stage "$stage" --arg gate "$gate" --argjson now "$now" '
       .gates = ((.gates // []) + [{ stage: $stage, gate: $gate, status: "pending", decision_id: $id,
@@ -425,6 +452,12 @@ cmd_answer() {
   need_jq
   local id="${1:-}" answer="${2:-}" by="" option=""
   if [ $# -ge 2 ]; then shift 2; else set --; fi
+  # --answer-file PATH: the answer from a file, so untrusted text (a db answer the operator mirrors)
+  # never goes through a shell argument.
+  if [ "$answer" = --answer-file ]; then
+    [ -n "${1:-}" ] && [ -f "$1" ] && [ -r "$1" ] || die "answer: --answer-file needs a readable file"
+    answer="$(cat -- "$1")"; shift
+  fi
   while [ $# -gt 0 ]; do
     case "$1" in
       --by) shift; by="${1:-}" ;;
@@ -436,6 +469,8 @@ cmd_answer() {
   [ -n "$id" ] && [ -n "$answer" ] && [ -n "$by" ] || { sub_usage answer >&2; exit 2; }
   local f; f="$(dec_path "$id")"
   [ -f "$f" ] || die "no such decision: $id"
+  local raw_answer="$answer"
+  answer="$(guard_scrub "$answer")"   # a free-text answer is shown on the board and relayed
   local cur; cur="$(jq -r '.status' "$f")"
   case "$cur" in
     pending|answered|unauthorized) ;;
@@ -477,6 +512,18 @@ cmd_answer() {
     exit 4
   fi
 
+  # An approver's free-text answer is relayed as [BOARD decision]: it must not ask for a secret value
+  # (one of the decision's own options always passes). Refused: exit 6, nothing written, audited,
+  # alerted. Checked after the approver check, so nobody else can raise these alerts.
+  local held
+  if held="$(printf '%s' "$raw_answer" | python3 "$GUARD" screen-answer "$f")"; then :; else
+    log_event "$(jq -cn --arg id "$id" --arg by "$by" --arg r "$held" --argjson now "$(now_ms)" \
+      '{ts: $now, type: "guard", action: "held-answer", id: $id, by: $by, reason: $r}')"
+    "$REPO/bin/board-notify" send --level high --key "guard:held-answer:$id" --board "$id" \
+      --title "A board answer was refused by the secret guard" >/dev/null 2>&1 || true
+    echo "board answer: refused by the secret guard ($held); nothing recorded" >&2
+    exit 6
+  fi
   update_decision "$id" '.status = "answered" | .answer = $a | .answered_by = $by | .answered_at = $now | .updated_at = $now' \
     --arg a "$answer" --arg by "$by" --argjson now "$now"
   log_event "$(jq -cn --arg id "$id" --arg by "$by" --argjson now "$now" '{ts: $now, type: "answer", id: $id, by: $by}')"
@@ -931,6 +978,7 @@ cmd_notify() {
   fi
   local text="${1:-}"
   [ -n "$text" ] || { sub_usage notify >&2; exit 2; }
+  text="$(guard_scrub "$text")"
   local link=""
   [ "$want_link" = 1 ] && link="$(board_link "$link_to")"
   local url="${SLACK_WEBHOOK_URL:-}"
@@ -1020,7 +1068,7 @@ valid_code() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$ ]]; }
 # Free text that BOARD may quote to every session must never look like a relay ("[BOARD decision
 # ...]", "[BOARD ask ...]"): "[BOARD" becomes "(BOARD", case-insensitively (lib/away.py does the same).
 JQ_DEFANG='def defang: gsub("\\[(?<b>board)"; "(\(.b)"; "i");'
-defang() { jq -rn --arg t "$1" "$JQ_DEFANG"'$t | defang'; }
+defang() { jq -rn --arg t "$(guard_scrub "$1")" "$JQ_DEFANG"'$t | defang'; }
 
 # code_of NAME → the fleet code NAME stands for (a code or one of its aliases), else NAME.
 code_of() {
@@ -1122,6 +1170,7 @@ away_set() {
     case "$1" in
       --by) shift; by="${1:-}" ;;
       --said) shift; said="${1:-}" ;;
+      --said-file) shift; said="$(from_file --said-file "${1:-}")" || exit 1 ;;
       --replace) [ "$action" = on ] || die "away off: unknown option --replace"; replace=1 ;;
       *) die "away $action: unknown option $1" ;;
     esac
@@ -1135,6 +1184,16 @@ away_set() {
   [[ $by =~ ^(board:)?[A-Za-z0-9][A-Za-z0-9@._+:-]{0,199}$ ]] \
     || die "away $action: --by must be a session code or board:<identity> (letters, digits, @ . _ + : -)"
   cap "--said" "$said" 2000
+  # The owner's words are broadcast to every session: they must not ask for a secret value.
+  local held
+  if [ -n "$said" ] && ! held="$(printf '%s' "$said" | python3 "$GUARD" screen)"; then
+    log_event "$(jq -cn --arg by "$by" --arg r "$held" --argjson now "$(now_ms)" \
+      '{ts: $now, type: "guard", action: "held-said", by: $by, reason: $r}')"
+    "$REPO/bin/board-notify" send --level high --key "guard:held-said:$(now_ms)" \
+      --title "Owner-away words were refused by the secret guard" >/dev/null 2>&1 || true
+    echo "board away: --said refused by the secret guard ($held); nothing changed" >&2
+    exit 6
+  fi
   said="$(defang "$said")"
 
   lock_board
@@ -1250,6 +1309,7 @@ cons_propose() {
       --from) shift; from="${1:-}" ;;
       --to) shift; to="${to:+$to,}${1:-}" ;;
       --ref) shift; ref="${1:-}" ;;
+      --file) shift; [ -z "$text" ] || die "consensus propose: only one proposal"; text="$(from_file --file "${1:-}")" || exit 1 ;;
       -*) die "consensus propose: unknown option $1" ;;
       *) [ -z "$text" ] || die "consensus propose: only one proposal"; text="$1" ;;
     esac
@@ -1320,6 +1380,7 @@ cons_vote() {
     case "$1" in
       --from) shift; from="${1:-}" ;;
       --note) shift; note="${1:-}" ;;
+      --note-file) shift; note="$(from_file --note-file "${1:-}")" || exit 1 ;;
       *) die "consensus vote: unknown option $1" ;;
     esac
     shift
@@ -1555,14 +1616,14 @@ case "$sub" in
     fi ;;
 esac
 case "$sub" in
-  ls) cmd_ls "$@" ;;
-  snapshot) cmd_snapshot "$@" ;;
+  ls) guarded cmd_ls "$@" ;;
+  snapshot) guarded cmd_snapshot "$@" ;;
   ask) cmd_ask "$@" ;;
-  decisions) cmd_decisions "$@" ;;
+  decisions) guarded cmd_decisions "$@" ;;
   answer) cmd_answer "$@" ;;
   mark) cmd_mark "$@" ;;
   press) cmd_press "$@" ;;
-  task) cmd_task "$@" ;;
+  task) guarded cmd_task "$@" ;;
   limit) cmd_limit "$@" ;;
   resources) cmd_resources "$@" ;;
   notify) cmd_notify "$@" ;;
@@ -1572,8 +1633,10 @@ case "$sub" in
   unmute) [ $# -gt 0 ] || { sub_usage mute >&2; exit 2; }; exec python3 "$PREFS" unmute "$@" ;;
   notify-level) [ $# -gt 0 ] || { sub_usage notify-level >&2; exit 2; }; exec python3 "$PREFS" level "$@" ;;
   notify-presence) [ $# -gt 0 ] || { sub_usage notify-presence >&2; exit 2; }; exec python3 "$PREFS" presence "$@" ;;
-  away) cmd_away "$@" ;;
-  consensus) cmd_consensus "$@" ;;
+  away) guarded cmd_away "$@" ;;
+  consensus) guarded cmd_consensus "$@" ;;
+  message) exec python3 "$REPO/lib/messages.py" "$@" ;;
+  guard) [ $# -gt 0 ] || { python3 "$GUARD" --help; exit 2; }; exec python3 "$GUARD" "$@" ;;
   -h|--help|help) usage ;;
   "") usage; exit 2 ;;
   *) echo "board: unknown command '$sub'" >&2; usage >&2; exit 2 ;;

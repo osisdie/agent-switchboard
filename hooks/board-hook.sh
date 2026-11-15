@@ -281,6 +281,19 @@ update() {
 
   { IFS= read -r st; IFS= read -r ev; IFS= read -r dec; IFS= read -r lim; } <<<"$out"
   [ -n "${st:-}" ] || return 0
+  # An AskUserQuestion picker carries free text (questions, headers, option labels and descriptions)
+  # into the state file and a pane-question decision: run those through the board's secret guard
+  # (lib/guard.py: literal .env values, JWTs, ... beyond the jq redact) before they are stored, so
+  # the stored labels are what the board shows and what an answer is checked against. Only for
+  # pickers (one python start while a picker is open), never on the hot path. If the guard fails,
+  # the jq-redacted text is kept.
+  case "$st$dec" in
+    *'"questions":'*)
+      guard_json() { local o rc; o="$(printf '%s' "$1" | python3 "$LIB/guard.py" scrub-json 2>/dev/null)"; rc=$?
+                     if { [ "$rc" = 0 ] || [ "$rc" = 3 ]; } && [ -n "$o" ]; then printf '%s' "$o"; else printf '%s' "$1"; fi; }
+      st="$(guard_json "$st")"
+      if [ -n "${dec:-}" ] && [ "$dec" != "null" ]; then dec="$(guard_json "$dec")"; fi ;;
+  esac
 
   tmp="$state_file.tmp.$$"
   printf '%s\n' "$st" > "$tmp" && mv -f "$tmp" "$state_file"
