@@ -327,10 +327,18 @@ An optional public board URL makes every alert carry a link that opens the board
 - `board notify --link ID|root "text"` appends the link to a plain notify; the consensus notifies
   (`agreed`, `objected`, `owner_back`) link to their item.
 - **Page:** `board.html` reads `d`/`m`/`c` from `location.search` (or a `#<id>` / `#dec-<id>` hash),
-  validates the id with the same pattern, and once that feed has loaded scrolls the card into view,
-  highlights it briefly (no animation with `prefers-reduced-motion`) and focuses its first answer
-  control. An unknown or already answered id shows a small notice. In the claude.ai Artifact the
-  query may not reach the page; then nothing happens.
+  validates the id with the same pattern, and once that feed has loaded scrolls the card into view
+  and highlights it briefly (no smooth scroll or fade with `prefers-reduced-motion`).
+  - **Focus** goes to the card's free-text answer field when it has one, otherwise to the card
+    itself (`tabindex=-1`). It never goes to an option button, so a single Space or Enter cannot
+    answer a question, a gate or a permission prompt. The focus is set after the browser's own
+    fragment scroll, so the `#dec-<id>` form keeps it too.
+  - **Afterwards** the `d`/`m`/`c` parameter is removed from the address bar (`history.replaceState`),
+    so a reload does not open the card again. A hash is left as it is.
+  - **Unknown or already answered** id (a valid pattern, but no card): a small notice says so.
+  - **Malformed** id (fails its pattern): ignored. Nothing is shown and the parameter stays in the
+    address bar.
+  - In the claude.ai Artifact the query may not reach the page; then nothing happens.
 
 ## Usage meter (approaching 5h / weekly limits)
 

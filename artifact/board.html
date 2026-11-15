@@ -1378,8 +1378,10 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   // Alerts link to <board>/?d=<decision id> (m= message, c= consensus); a #<id> or #dec-<id> hash
   // works too. The id must match the same strict pattern the server uses before it is looked up
   // (by getElementById, never inside a selector). Once the data is loaded the card is scrolled
-  // into view, highlighted briefly and its first answer control focused. In the claude.ai Artifact
-  // the query may not reach the page: then nothing happens.
+  // into view and highlighted briefly. Focus goes to the card's free-text answer field, or else to
+  // the card itself, never to an option button: one Space or Enter must not answer the decision.
+  // A malformed id is ignored and left in the address bar. In the claude.ai Artifact the query may
+  // not reach the page: then nothing happens.
   const LINKS = [
     { param: 'd', re: /^d-[0-9]+-[a-z0-9]+$/, el: 'dec-', feed: 'decisions', gone: 'This decision was already answered or no longer exists.' },
     { param: 'm', re: /^m-[0-9]+-[a-z0-9]+$/, el: 'thread-', feed: 'messages', gone: 'This message is no longer on the board.' },
@@ -1399,6 +1401,12 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     return null;
   }
   let linked = linkTarget();
+  // Run fn after the browser's own fragment scroll (#dec-<id> names the card's element id: the
+  // browser scrolls to it once it exists, until the load event, and that moves focus to <body>).
+  function afterFragmentScroll(fn) {
+    const go = () => requestAnimationFrame(() => requestAnimationFrame(fn));
+    if (document.readyState === 'complete') go(); else window.addEventListener('load', go, { once: true });
+  }
   function openLinked() {
     if (!linked) return;
     const { k, id } = linked;
@@ -1410,15 +1418,15 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       for (const x of LINKS) u.searchParams.delete(x.param);
       history.replaceState(history.state, '', u.pathname + u.search + u.hash);
     } catch (e) { /* a sandboxed frame may refuse: the link just stays in the address bar */ }
-    requestAnimationFrame(() => {
+    afterFragmentScroll(() => {
       const card = document.getElementById(k.el + id);
       if (!card) { toast(k.gone); return; }
       const still = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
       card.scrollIntoView({ block: 'center', behavior: still ? 'auto' : 'smooth' });
       card.classList.add('linked');
       setTimeout(() => card.classList.remove('linked'), 2600);
-      const ctl = card.querySelector('.confirm-row .btn, .opts .btn, .free input, .free .btn');
-      if (ctl) ctl.focus({ preventScroll: true });
+      const field = card.querySelector('.free input');
+      if (field) field.focus({ preventScroll: true });
       else { card.tabIndex = -1; card.focus({ preventScroll: true }); }
     });
   }
