@@ -473,8 +473,8 @@ def raw_view(doc, now):
 def bound_streams(sessions, cap=VIEW_TEAM_CAP):
     """The streams worth a row on the board: a 🍅 or focus today, or a current pomodoro (running, or
     paused with progress). At most `cap` teammates per session: the running ones always, then the
-    most 🍅 and focus; the rest fold into one "CODE/+others" row with their summed counts and
-    `streams`, so every total stays exact. Folded streams never run, so the row needs no clock."""
+    most 🍅 and focus; the rest fold into one "CODE/+others" row with their summed counts,
+    `streams` (how many) and `active` (how many with a 🍅 or focus today), so every total stays exact. Folded streams never run, so the row needs no clock."""
     keep = {c: v for c, v in sessions.items() if v["done"] or v["focus_ms"] or v["running"] or v["progress_ms"]}
     by_lead = {}
     for c, v in keep.items():
@@ -487,11 +487,13 @@ def bound_streams(sessions, cap=VIEW_TEAM_CAP):
         rows.sort(key=lambda cv: (not cv[1]["running"], -cv[1]["done"], -cv[1]["focus_ms"], cv[0]))
         for c, v in rows[max(cap, sum(1 for _, r in rows if r["running"])):]:
             folded.add(c)
+            # progress_ms stays 0 on purpose: the folded row is a tally, not a pomodoro (no ring, no clock)
             e = extra.setdefault(lead + "/" + OTHERS, {"done": 0, "focus_ms": 0, "progress_ms": 0, "running": False,
-                                                       "state": "folded", "done_at": None, "streams": 0})
+                                                       "state": "folded", "done_at": None, "streams": 0, "active": 0})
             e["done"] += v["done"]
             e["focus_ms"] += v["focus_ms"]
             e["streams"] += 1
+            e["active"] += 1 if v["done"] or v["focus_ms"] else 0   # kept only for a paused pomodoro: not active
     out = {c: v for c, v in keep.items() if c not in folded}
     out.update(extra)
     return {c: out[c] for c in sorted(out, key=lambda c: (parent_of(c), c))}
@@ -541,13 +543,20 @@ def board_view(doc, now):
 
 
 def mirror_view(view):
-    """meta/pomodoro for the Artifact: the daily totals (from raw_view), no running clock."""
+    """meta/pomodoro for the Artifact: the daily totals (from raw_view), no running clock. Bounded
+    like the board view: the streams with a 🍅 or focus today, at most VIEW_TEAM_CAP teammates per
+    session plus a "CODE/+others" row, and no per-day maps; fleet and days stay exact."""
     if not view:
         return None
+    counted = {c: v for c, v in view["sessions"].items() if v["done"] or v["focus_ms"]}
+    sessions = {}
+    for c, v in bound_streams(counted).items():
+        sessions[c] = {"done": v["done"], "focus_ms": v["focus_ms"]}
+        if "streams" in v:
+            sessions[c].update(streams=v["streams"], active=v["active"])
     return {"today": view["today"], "tz": view["tz"], "focus_ms": view["focus_ms"], "mode": view["mode"], "fleet": view["fleet"],
-            "sessions": {c: {"done": v["done"], "focus_ms": v["focus_ms"]} for c, v in view["sessions"].items()
-                         if v["done"] or v["focus_ms"]},
-            "days": view["days"], "updated_at": view["at"]}
+            "sessions": sessions, "days": [{k: d[k] for k in ("date", "done", "focus_ms")} for d in view["days"]],
+            "updated_at": view["at"]}
 
 
 def _mmss(ms):

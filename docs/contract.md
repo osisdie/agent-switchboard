@@ -1156,7 +1156,7 @@ there is no file):
                    "started_at": null, "progress_ms": 420000, "done_at": 1763191000000 },
     "WEB": { "done": 1, "focus_ms": 1800000, "running": false, "state": "needs-you",
              "started_at": null, "progress_ms": 360000, "done_at": 1763180000000 } },
-  "days": [ { "date": "2026-11-02", "done": 9, "focus_ms": 14580000 },   // no per-stream map (the CLI and the mirror have it)
+  "days": [ { "date": "2026-11-02", "done": 9, "focus_ms": 14580000 },   // no per-stream map (`board pomodoro --json` has it)
             … 14 entries, oldest first, today last … ] }
 ```
 
@@ -1176,8 +1176,8 @@ bucket (none while nothing runs):
 - Bounded however many teammates came and went: `sessions` lists only the streams with a 🍅 or focus
   today, or a current pomodoro (running, or paused with progress). A session with more than 50 such
   teammates keeps the running ones and then the most 🍅 and focus; the rest fold into one
-  `CODE/+others` row (`done`, `focus_ms`, `streams`: how many, `state: "folded"`, never running; `+`
-  never starts a teammate name). `fleet` and `days` count every stream, so they stay exact.
+  `CODE/+others` row (`done`, `focus_ms`, `streams`: how many, `active`: how many with a 🍅 or focus
+  today, `state: "folded"`, `progress_ms: 0`, never running; `+` never starts a teammate name). `fleet` and `days` count every stream, so they stay exact.
 - The page shows a session's own stream on its card's ring, its teammates' combined count and focus
   next to it ("teammates +N 🍅 · focus"), the fleet total on the 🍅 Today key, and in the panel the
   totals (kept in view while it scrolls), the champion, 14 days, then one row per session with its
@@ -1187,6 +1187,9 @@ bucket (none while nothing runs):
 **Artifact:** the operator may mirror `board pomodoro --mirror` to
 `meta/pomodoro` (`today, tz, focus_ms, mode, fleet, sessions: {stream: {done, focus_ms}}, days,
 updated_at`): daily totals only, no running clock, nothing sensitive. The page reads it read-only.
+Bounded like the board view: only streams with a 🍅 or focus today, at most 50 teammates per session
+plus a `CODE/+others` row (`streams`, `active`), and `days` without per-stream maps; `fleet` and
+`days` stay exact.
 
 **CLI:** `board pomodoro [today|week] [--json|--mirror]`.
 

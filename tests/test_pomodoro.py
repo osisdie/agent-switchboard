@@ -231,6 +231,31 @@ class BoundedView(unittest.TestCase):
         self.assertNotIn("sessions", view["days"][0])
         self.assertLess(len(json.dumps(view)), 400 * 1024)
 
+    def test_mirror_is_bounded_too(self):
+        now = T0 + 6 * 3600 * SEC
+        raw = pomodoro.raw_view(self.big_doc(now), now)
+        m = pomodoro.mirror_view(raw)
+        self.assertEqual(m["fleet"], raw["fleet"])
+        self.assertEqual([(d["date"], d["done"], d["focus_ms"]) for d in m["days"]], [(d["date"], d["done"], d["focus_ms"]) for d in raw["days"]])
+        self.assertTrue(all(set(d) == {"date", "done", "focus_ms"} for d in m["days"]))
+        self.assertEqual(sum(r["done"] for r in m["sessions"].values()), raw["fleet"]["done"])
+        self.assertEqual(sum(r["focus_ms"] for r in m["sessions"].values()), raw["fleet"]["focus_ms"])   # no clock: exact as is
+        for i in range(20):
+            lead = "S%02d" % i
+            team = [k for k in m["sessions"] if k.startswith(lead + "/")]
+            self.assertLessEqual(len(team), pomodoro.VIEW_TEAM_CAP + 1)
+            o = m["sessions"][lead + "/+others"]
+            self.assertEqual(set(o), {"done", "focus_ms", "streams", "active"})
+            self.assertEqual(o["streams"], o["active"])        # the mirror keeps only counted streams
+        self.assertLess(len(json.dumps(m)), 400 * 1024)
+        self.assertIn("sessions", raw["days"][-1])                 # raw_view itself is not changed
+
+    def test_others_counts_only_active_streams(self):
+        sessions = {"API/t%02d" % j: {"done": 1 if j < 55 else 0, "focus_ms": 60000 if j < 55 else 0, "running": False,
+                                      "progress_ms": 0 if j < 55 else 120000} for j in range(60)}
+        o = pomodoro.bound_streams(sessions)["API/+others"]
+        self.assertEqual((o["streams"], o["active"], o["progress_ms"]), (10, 5, 0))
+
     def test_small_fleet_is_unchanged(self):
         doc, _, t = play([(25, {"API": "working", "API/tests": "working"}), (5, {"API": "done", "API/tests": "working"})])
         view = pomodoro.board_view(dict(doc, settings={"tz": "UTC"}), t)

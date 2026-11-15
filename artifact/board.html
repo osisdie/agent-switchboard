@@ -3647,7 +3647,8 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
   // The top of the panel: today's streams, the person-hours, and the champion (most 🍅, then the
   // most focus) with the runner-up; none yet: the stream closest to its first.
   function pomoSummary(p, all, now, fleetFocus) {
-    const folded = all.filter(([, r]) => pomoFolded(r)).reduce((a, [, r]) => a + num(r.streams), 0);
+    // a folded row counts its active streams (a 🍅 or focus today), not the ones kept for a paused pomodoro
+    const folded = all.filter(([, r]) => pomoFolded(r)).reduce((a, [, r]) => a + (num(r.active) != null ? num(r.active) : num(r.streams)), 0);
     const streams = all.filter(([, r]) => !pomoFolded(r)).map(([k, r]) => ({ k, done: num(r.done) || 0, focus: pomoFocus(p, r, now), cur: pomoNow(p, r, now) }));
     const active = streams.filter((x) => x.done > 0 || x.focus > 0), tm = active.filter((x) => x.k.includes('/')).length + folded;
     const box = h('div', { class: 'pm-sum' },
