@@ -3,7 +3,8 @@
   - the "newer version" banner: a page served before board.html changed offers a reload (in the
     page's language) and never reloads by itself, so nothing being typed is lost;
   - the generic save error names the server's error code;
-  - a pane question whose text the hook clipped shows "(shortened)" and stays pressable.
+  - a pane question whose text the hook clipped shows "(shortened)" and stays pressable;
+  - ?demo=1 is ignored on a real board-serve (a crafted link never shows sample data).
 
 Needs python playwright and a Chromium it can launch; without them it prints "skipped" and
 exits 0, so it never blocks anyone. CI does not run it.
@@ -137,6 +138,18 @@ def main():
             ban = pg.query_selector("#new-version")
             check("the banner speaks the page's language", ban is not None and "看板有新版本" in ban.inner_text() and "重新載入" in ban.inner_text(),
                   ban.inner_text() if ban else None)
+            pg.close()
+
+            print("?demo=1 on a real board-serve:")
+            pg = browser.new_context(viewport={"width": 1100, "height": 900}).new_page()
+            pg.route("https://fonts.**", lambda r: r.abort())
+            pg.on("pageerror", lambda e: errors.append(str(e)))
+            pg.goto(base + "?demo=1")
+            pg.wait_for_timeout(900)
+            st = pg.evaluate("""() => ({ demoTag: !document.getElementById('demo-tag').hidden,
+              demoCards: document.querySelectorAll('[id$="-demo"]').length,
+              real: !!document.getElementById('dec-d-1794650400-aa11') })""")
+            check("ignored: the real board, no sample data", st == {"demoTag": False, "demoCards": 0, "real": True}, st)
             pg.close()
 
             print("clipped pane question:")

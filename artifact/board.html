@@ -3040,10 +3040,13 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   async function boot() {
     applyStatic();
     renderAll(); spy();
-    if (params.get('demo') === '1') { enterDemo(); return; }
     // board-serve injects a board-mode meta tag with content "local"; a published Artifact has none.
+    // On a real board-serve, ?demo=1 is ignored: a crafted link must never show sample data in
+    // place of the real decisions and alerts.
     const modeMeta = document.querySelector('meta[name="board-mode"]');
-    if (modeMeta && modeMeta.getAttribute('content') === 'local') {
+    const local = !!modeMeta && modeMeta.getAttribute('content') === 'local';
+    if (!local && params.get('demo') === '1') { enterDemo(); return; }
+    if (local) {
       adapter = localAdapter();
       adapter.subscribe();
       return;
