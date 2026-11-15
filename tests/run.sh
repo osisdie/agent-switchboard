@@ -1348,6 +1348,34 @@ seqpress tu_tc "$(mq3_q 1)" "$(mq3_q 1)" "$(mq3_q 2)" "$(mq3_q 2 'Type something
 eq "a wrapped text on the review is joined -> ok, submitted" "$?/$(keys_sent | grep -o 'send-keys -t %42 1|$')" "0/send-keys -t %42 1|"
 qdone tu_tc
 
+# The decision's status_reason on the new paths, and a hidden form (exit 7) clears the texts too.
+d="$(askq tu_td "$Q3F")"
+formf '[{"option":2},{"text":"teal green"},{"option":1}]' "$d"
+seqpress tu_td "$SCR" "$SCR"
+eq "form with text, the pane scrolled -> exit 7, pending, options and texts cleared" \
+  "$?/$(dj "$d" '"\(.status)/\(.answer_options)/\(.answer_texts)"')" "7/pending/null/null"
+qdone tu_td
+d="$(askq tu_te "$Q3F")"
+formf '[{"option":2},{"text":"teal green"},{"option":1}]' "$d"
+seqpress tu_te "$(mq3_q 1)" "$(mq3_q 1)" "$(mq3_q 2)" "$(mq3_q 2 'Type something.')" "$(mq3_q 2 'teal gre')"
+eq "echo mismatch -> status_reason partial" "$?/$(dj "$d" .status_reason)" "5/partial"
+qdone tu_te
+d="$(askq tu_tf "$Q3F")"
+formf '[{"option":2},{"text":"teal green"},{"option":1}]' "$d"
+FAKE_TMUX_MUTATE="$BOARD_HOME/state/$SID.json" FAKE_TMUX_MUTATE_AT=5 \
+  seqpress tu_tf "$(mq3_q 1)" "$(mq3_q 1)" "$(mq3_q 2)" "$(mq3_q 2 'Type something.')" "$(mq3_q 2 'teal green')"
+eq "the prompt moves on while typing -> exit 5, no Enter, status_reason moved_on" \
+  "$?/$(keys_sent)/$(dj "$d" .status_reason)" "5/send-keys -t %42 2|send-keys -t %42 3|send-keys -t %42 -l -- teal green|/moved_on"
+qdone tu_tf
+cp "$BOARD_CONFIG_DIR/fleet.yaml" "$T/fleet.yaml.ft"
+d="$(askq tu_tg "$Q3F")"
+formf '[{"option":2},{"text":"teal green"},{"option":1}]' "$d"
+printf 'press:\n  free_text_label: "(unclosed"\n' >> "$BOARD_CONFIG_DIR/fleet.yaml"
+seqpress tu_tg "$(mq3_q 1)" "$(mq3_q 1)"
+eq "an invalid press.free_text_label -> exit 3 before any key, status_reason config" "$?/$(keys_sent)/$(dj "$d" .status_reason)" "3//config"
+cp "$T/fleet.yaml.ft" "$BOARD_CONFIG_DIR/fleet.yaml"
+qdone tu_tg
+
 # One label cut short -> read-only, even with a short question.
 CLIPL="$(jq -cn --arg l "Option $(printf 'l%.0s' $(seq 1 100))" '[{question: "Which one?", header: "Pick", options: [{label: $l, description: ""}, {label: "No", description: ""}], multiSelect: false}]')"
 d="$(askq tu_q11 "$CLIPL")"

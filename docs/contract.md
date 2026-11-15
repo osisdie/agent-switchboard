@@ -420,7 +420,11 @@ time: a digit picks an option and moves to the next question; after the last one
   then it sends `Enter`. The review line of that question must equal the text; a text the review
   wraps continues on lines indented 4+ spaces (not a `●`, `→` or numbered row), which are joined
   to it first. A failed check after the first digit → exit 5 (partial):
-  typed text whose echo does not match is never confirmed with Enter.
+  typed text whose echo does not match is never confirmed with Enter. A form hidden by a scrolled pane goes
+  back to pending (exit 7) with `answer_options` and `answer_texts` cleared. The decision's
+  `status_reason` on these paths: `screen` (what the pane shows), `moved_on` (the hook state moved
+  past the prompt, before or after a key), `config` (`press.free_text_label` missing or not a
+  valid pattern), `partial` (keys sent, the form not submitted; the board words it so for a form).
 
 ## Artifact db (written by the BOARD operator session via Artifact write_db; page reads/writes)
 

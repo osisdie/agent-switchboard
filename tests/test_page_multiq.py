@@ -193,6 +193,8 @@ def main():
                   posts == [{"answers": [{"question_index": 0, "option": 2}, {"question_index": 1, "text": "tealgreen [2J"}]}], posts)
             kept = pg.evaluate("""(s) => ({ text: document.querySelector(s + ' .pq-text[data-q="2"]').value,
               pick: document.querySelector(s + ' .pq-opt[data-q="1"][data-option="2"]').getAttribute('aria-pressed') })""", sel)
+            toasts = pg.evaluate("() => [...document.querySelectorAll('.toast')].map((t) => t.textContent)")
+            check("a form's partial press says the form was not submitted", any("form but it was not submitted" in t for t in toasts), toasts)
             check("not delivered: the typed text and the pick are kept",
                   kept["pick"] == "true" and kept["text"].startswith("tealgreen"), kept)
             pg.unroute("**/api/decisions/*/answer")

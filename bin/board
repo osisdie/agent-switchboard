@@ -1120,7 +1120,7 @@ cmd_press() {
     attempt not_visible "$1" "${2:-}"
     local n; n="$(now_ms)"
     update_decision "$dec_id" '.status = "pending" | .answer = null | .answered_by = null | .answered_at = null
-        | .answer_index = null | .answer_options = null | .relay = null | .press_note = $note | .press_note_at = $now
+        | .answer_index = null | .answer_options = null | .answer_texts = null | .relay = null | .press_note = $note | .press_note_at = $now
         | .updated_at = $now | del(.status_reason)' \
       --arg note "$PRESS_SCREEN_NOTE" --argjson now "$n" >/dev/null 2>&1
     log_event "$(jq -cn --arg id "$dec_id" --arg r "$1" --argjson now "$n" \
@@ -1128,10 +1128,12 @@ cmd_press() {
     exit 7
   }
   # Stopped after some keys were sent (free text: Enter not pressed): exit 5, decision stale.
+  # partial MESSAGE [PANE] [CODE] — CODE: partial (the default), or moved_on when the hook state
+  # moved past this prompt while the keys went in.
   partial() {
     echo "board press: stopped — $1; keys sent, Enter not pressed: finish in the session" >&2
     attempt partial "$1" "${2:-}"
-    [ -n "$dec_id" ] && mark_status "$dec_id" stale "press partial: $1" partial >/dev/null 2>&1
+    [ -n "$dec_id" ] && mark_status "$dec_id" stale "press partial: $1" "${3:-partial}" >/dev/null 2>&1
     exit 5
   }
 
@@ -1442,10 +1444,16 @@ press_multi() {
     refuse "press.submit_label must be plain text (1-80 characters)" "$pane" config
   fi
   ftlabel="$(cfg_get press.free_text_label)"
-  [ -n "$ftlabel" ] || refuse "press.free_text_label is not configured" "$pane"
-  grep -Eq -- "$ftlabel" <<<'' 2>/dev/null; [ $? -le 1 ] || refuse "press.free_text_label is not a valid pattern (grep -E)" "$pane"
+  [ -n "$ftlabel" ] || refuse "press.free_text_label is not configured" "$pane" config
+  grep -Eq -- "$ftlabel" <<<'' 2>/dev/null; [ $? -le 1 ] || refuse "press.free_text_label is not a valid pattern (grep -E)" "$pane" config
   n="$(jq -r '.questions | length' "$df")"
-  fail() { if [ "$sent" = 0 ]; then refuse "$1" "$pane"; else partial "$1" "$pane"; fi; }
+  # fail MESSAGE [CODE] — before the first key a refusal (CODE, default screen), after it partial
+  # (moved_on when CODE is moved_on, else partial).
+  fail() {
+    if [ "$sent" = 0 ]; then refuse "$1" "$pane" "${2:-screen}"
+    elif [ "${2:-}" = moved_on ]; then partial "$1" "$pane" moved_on
+    else partial "$1" "$pane"; fi
+  }
   same_prompt() {
     [ "$(jq -r '[.state, (.pending.tool_use_id // ""), (.pending.summary_sha256 // "")] | join(" ")' "$sf")" \
       = "needs-you $expect $sha" ]
@@ -1560,7 +1568,7 @@ press_multi() {
     tries=1; [ "$sent" = 1 ] && tries="${BOARD_PRESS_TRIES:-20}"
     for ((i2 = 0; i2 < tries; i2++)); do
       [ "$i2" -gt 0 ] && sleep "${BOARD_PRESS_SETTLE:-0.15}"
-      same_prompt || fail "pending prompt changed"
+      same_prompt || fail "pending prompt changed" moved_on
       "$@" && return 0
     done
     return 1
@@ -1570,26 +1578,26 @@ press_multi() {
     key="$(jq -r --argjson i "$i" '.answer_options[$i]' "$df")"
     text="$(jq -r --argjson i "$i" '(.answer_texts // [])[$i] // empty' "$df")"
     await check_question "$i" || fail "$why"
-    same_prompt || fail "pending prompt changed (question $((i + 1)))"
+    same_prompt || fail "pending prompt changed (question $((i + 1)))" moved_on
     tmux send-keys -t "$pane" "$key" || fail "send-keys failed (question $((i + 1)))"
     sent=1; prev="$raw"
     if [ -n "$text" ]; then
       # Recomputed from the decision: one line of printable text (multi_check), never "\;" at the end.
       [[ $text == *[[:cntrl:]]* ]] && partial "free text of question $((i + 1)) contains control characters" "$pane"
       await check_ft_focus "$i" || partial "$why" "$pane"
-      same_prompt || partial "pending prompt changed before typing (question $((i + 1)))" "$pane"
+      same_prompt || partial "pending prompt changed before typing (question $((i + 1)))" "$pane" moved_on
       # tmux reads a trailing ";" as a command separator: escape it (the text never ends in "\;").
       send="$text"; [[ $send == *";" ]] && send="${send%;}\\;"
       tmux send-keys -t "$pane" -l -- "$send" || partial "send-keys failed (typing question $((i + 1)))" "$pane"
       want="$(nows <<<"$text")"; want="${want:0:20}"
       await check_typed "$i" || partial "$why" "$pane"
-      same_prompt || partial "pending prompt changed while typing (question $((i + 1))); Enter not pressed" "$pane"
+      same_prompt || partial "pending prompt changed while typing (question $((i + 1))); Enter not pressed" "$pane" moved_on
       tmux send-keys -t "$pane" Enter || partial "send-keys failed (Enter, question $((i + 1)))" "$pane"
       prev="$raw"
     fi
   done
   await check_review || partial "$why; nothing submitted" "$pane"
-  same_prompt || partial "pending prompt changed before submitting" "$pane"
+  same_prompt || partial "pending prompt changed before submitting" "$pane" moved_on
   tmux send-keys -t "$pane" "$digit" || partial "send-keys failed (submit)" "$pane"
 }
 

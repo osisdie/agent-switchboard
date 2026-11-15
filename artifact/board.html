@@ -2085,7 +2085,10 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
     config: 'the board\'s press settings are incomplete',
   };
   // Only the fixed codes are worded; anything else (free text a db record may carry) never reaches the page.
-  const reasonText = (d) => (typeof d.status_reason === 'string' && Object.hasOwn(REASONS, d.status_reason) ? tr(REASONS[d.status_reason]) : tr('reason not recorded'));
+  // A form of several questions is never "typed into the question": its keys went in, it was not submitted.
+  const isForm = (d) => Array.isArray(d.questions) && d.questions.length > 1;
+  const reasonText = (d) => (typeof d.status_reason === 'string' && Object.hasOwn(REASONS, d.status_reason)
+    ? tr(d.status_reason === 'partial' && isForm(d) ? 'keys were sent but the form was not submitted' : REASONS[d.status_reason]) : tr('reason not recorded'));
   function renderDecisions() {
     const pend = pendingDecisions();
     $('#dec-empty').hidden = pend.length > 0;
@@ -3851,7 +3854,11 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
     writeP.catch(() => {});
     (async () => {
       let ok = true, res = null;
-      try { res = await writeP; } catch (e) { ok = false; handleWriteError(e, !S.decisions.some((x) => x.id === d.id && isOpen(x))); }
+      try { res = await writeP; } catch (e) {
+        ok = false;
+        if (e && e.code === 'partial' && isForm(d)) toast(tr('Keys were sent to the form but it was not submitted. Finish it in the session.'), true);
+        else handleWriteError(e, !S.decisions.some((x) => x.id === d.id && isOpen(x)));
+      }
       S.busy.delete(d.id);
       // Drafts (typed text, picks) go only once the answer was accepted; anything not delivered
       // keeps them, so nothing typed is lost.
@@ -5429,6 +5436,8 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
       "Send answers": "送出回答",
       "Pick an option or type an answer for each question, then send them together.": "每題選一個選項或輸入回答，再一起送出。",
       "Type something for question {n}": "輸入第 {n} 題的回答",
+      "keys were sent but the form was not submitted": "按鍵已送出，但表單沒有送出",
+      "Keys were sent to the form but it was not submitted. Finish it in the session.": "按鍵已送到表單，但表單沒有送出。請到 session 中完成。",
       "Not delivered. Your answers are kept: try again or answer in the session.": "未送達。你的回答已保留：請再試一次，或到 session 中回答。",
       "Answer on the self-hosted board or in the session (multi-question form).": "請在自架看板或 session 中回答（多題表單）。",
       "Your choices are picked in {who}'s form one question at a time, then submitted.": "你的選擇會在 {who} 的表單中逐題選取，然後送出。",
