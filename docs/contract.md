@@ -527,8 +527,12 @@ logged to stderr only. Identities are matched against `approvers` / `release_man
 from the listener's allowlist (`http://127.0.0.1:<port>`, `http://localhost:<port>` /
 `https://<hostname>`; missing or `null` → 403 `csrf`), `Content-Type: application/json` (else
 415), at most 16 KiB (else 413). A POST refused before its body is read (413, 415, 403, ...) has
-up to 64 KiB of the body read and dropped (2 s at most) and is answered with `Connection: close`,
-so the client gets the refusal rather than a connection reset. `OPTIONS` and every other method → 405, and no
+up to 64 KiB of the body read and dropped (2 s at most in all, however slowly it arrives) and is
+answered with `Connection: close`, so the client gets the refusal rather than a connection reset.
+Request framing, for every method: `Transfer-Encoding` is not accepted, nor several
+`Content-Length` headers or one that is not digits (400 `bad_request`, connection closed); a body
+on a method that takes none (GET, HEAD, PUT, OPTIONS, ...) is dropped the same way and the
+connection closes after the one reply, so it is never read as another request. `OPTIONS` and every other method → 405, and no
 `Access-Control-*` header is ever sent. Every write appends `{type: "serve", action:
 "answer"|"press"|"message"|"message-release"|"away"|"notify-prefs"|"presence"|"alerts-ack"|"rc"|"session-action", by, via: "loopback"|"cf-jwt", id, result}` to
 `events.jsonl` (`presence` only when visibility changes).
