@@ -559,7 +559,7 @@ def render_page(nonce):
             '<meta name="mobile-web-app-capable" content="yes">'
             '<meta name="apple-mobile-web-app-capable" content="yes">'
             '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">'
-            '<meta name="apple-mobile-web-app-title" content="Switchboard">'
+            '<meta name="apple-mobile-web-app-title" content="Agent Switchboard">'
             '<style nonce="%s">%s</style>\n' % (nonce, RESET_CSS))
     return (head + body + "\n</html>\n").encode("utf-8")
 

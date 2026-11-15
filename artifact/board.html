@@ -1,4 +1,4 @@
-<title>Switchboard</title>
+<title>Agent Switchboard</title>
 <script>
 /* Theme before first paint. An explicit choice (light / dark) sets data-theme on the root; "system"
    sets none, so prefers-color-scheme decides. A data-theme the host already stamped (the claude.ai
@@ -637,7 +637,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     </div>
     <div class="brand">
       <div class="brand-row">
-        <h1>Switchboard</h1>
+        <h1>Agent Switchboard</h1>
         <span class="demo-tag" id="demo-tag" hidden>DEMO DATA</span>
         <span class="pill unknown" id="op-pill"><span class="lamp"></span><span id="op-text">Connecting…</span></span>
       </div>
@@ -1161,7 +1161,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     $('#nav-msg').textContent = S.messages.length;
     $('#nav-life').textContent = S.tasks.length;
     $('#nav-appr').textContent = S.approvals.length;
-    document.title = a.total ? '(' + a.total + ') Switchboard' : 'Switchboard';
+    document.title = a.total ? '(' + a.total + ') Agent Switchboard' : 'Agent Switchboard';
   }
 
   function renderBanners() {
@@ -2131,7 +2131,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     if (!room) return null;
     if (S.canSend !== 'available' && S.canSend !== 'available_if_summoned') return null;
     try {
-      return room.sendToClaudeSession(Object.assign({ label: 'Switchboard', kind, id }, extra || {}), { deliver: 'send' });
+      return room.sendToClaudeSession(Object.assign({ label: 'Agent Switchboard', kind, id }, extra || {}), { deliver: 'send' });
     } catch (e) { return Promise.reject(e); }
   }
   async function settle(writeP, sendP, okText) {

@@ -241,7 +241,7 @@ eq "icon with a foreign Host refused" "$(req GET /icon.svg -H 'Host: evil.exampl
 eq "icon through a proxy refused (no auth bypass)" "$(req GET /favicon.png -H 'X-Forwarded-For: 203.0.113.9')" "403"
 eq "manifest with a foreign Host refused" "$(req GET /manifest.webmanifest -H "Host: evil.example:$PORT")" "421"
 req GET /manifest.webmanifest >/dev/null
-eq "manifest: standalone at /" "$(body '.name + "|" + .short_name + "|" + .display + "|" + .start_url + "|" + .scope')" "Switchboard|Switchboard|standalone|/|/"
+eq "manifest: standalone at /" "$(body '.name + "|" + .short_name + "|" + .display + "|" + .start_url + "|" + .scope')" "Agent Switchboard|Switchboard|standalone|/|/"
 eq "manifest: colors from the board palette" "$(body '.background_color + "|" + .theme_color')" "#edf0f4|#edf0f4"
 eq "manifest: maskable 192 and 512" "$(body '[.icons[] | select(.purpose == "maskable") | .sizes] | join(",")')" "192x192,512x512"
 eq "manifest: every icon is served with its type" "$(body -r '.icons[] | .src + " " + .type' | while read -r src type; do
@@ -260,7 +260,7 @@ req GET / -D "$T/hdr" >/dev/null
 for tag in '<link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">' '<link rel="apple-touch-icon" href="/apple-touch-icon.png">' \
            '<link rel="icon" href="/favicon.png" sizes="32x32" type="image/png">' '<meta name="apple-mobile-web-app-capable" content="yes">' \
            '<meta name="mobile-web-app-capable" content="yes">' '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">' \
-           '<meta name="apple-mobile-web-app-title" content="Switchboard">' \
+           '<meta name="apple-mobile-web-app-title" content="Agent Switchboard">' \
            '<meta name="theme-color" content="#edf0f4" media="(prefers-color-scheme: light)">' \
            '<meta name="theme-color" content="#0f141a" media="(prefers-color-scheme: dark)">'; do
   grep -qF "$tag" "$T/body" && ok "page head: $tag" || bad "page head: $tag"

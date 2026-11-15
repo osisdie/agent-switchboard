@@ -142,7 +142,7 @@ def main():
                   h["manifest"] == "/manifest.webmanifest" and h["touch"] == "/apple-touch-icon.png"
                   and h["png"] == "/favicon.png" and h["svgIcon"] == "data:image/svg+xml,", h)
             check("head: home-screen app metas",
-                  (h["capable"], h["mcapable"], h["bar"], h["title"]) == ("yes", "yes", "black-translucent", "Switchboard"), h)
+                  (h["capable"], h["mcapable"], h["bar"], h["title"]) == ("yes", "yes", "black-translucent", "Agent Switchboard"), h)
             check("head: theme-color for light and dark",
                   h["themes"] == ["(prefers-color-scheme: light)=#edf0f4", "(prefers-color-scheme: dark)=#0f141a"], h)
             m = h.get("m") or {}
