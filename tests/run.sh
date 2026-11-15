@@ -777,11 +777,24 @@ FAKE_TMUX_SCREEN="$LSCREEN" press CP answer --expect tu_q10b
 eq "...start of the question and every label visible -> press ok" "$?" "0"
 eq "...sends the option's number key" "$(grep '^send-keys' "$FAKE_TMUX_LOG" | tail -1)" "send-keys -t %42 2"
 qdone tu_q10b
+d="$(askq tu_q10d "$LONGQ")"; "$B" answer "$d" "Blue" --by user-1 >/dev/null
+: > "$FAKE_TMUX_LOG"
+# The labels only in the scrollback above the question's start (an older picker), none after it.
+FAKE_TMUX_SCREEN="$(qscreen)
+$(printf '\nWhich color do you prefer for the test? context context context context\n\nEnter to select · ↑/↓ to navigate · Esc to cancel\n')" press CP answer --expect tu_q10d
+eq "...labels only above the clipped question's start -> exit 3, nothing sent" "$?/$(sent_keys)" "3/0"
+qdone tu_q10d
 d="$(askq tu_q10c "$LONGQ")"; "$B" answer "$d" "Blue" --by user-1 >/dev/null
 : > "$FAKE_TMUX_LOG"
 FAKE_TMUX_SCREEN="${LSCREEN/  2. Blue/  2. Teal}" press CP answer --expect tu_q10c
 eq "...a label missing on screen -> exit 3, nothing sent" "$?/$(sent_keys)" "3/0"
 qdone tu_q10c
+# A header cut short is tracked apart: the question is not "shortened", the card stays pressable.
+HDRQ="$(jq -cn --arg h "Header $(printf 'h%.0s' $(seq 1 60))" '[{question: "Which color?", header: $h, options: [{label: "Red", description: ""}, {label: "Blue", description: ""}], multiSelect: false}]')"
+d="$(askq tu_q12 "$HDRQ")"
+eq "a clipped header: header_clipped, not question_clipped, pressable" \
+  "$(dj "$d" '"\(.questions[0].header_clipped)/\(.questions[0].question_clipped)/\(.questions_clipped)/\(.labels_clipped)/\(.pressable)"')" "true/false/true/false/true"
+qdone tu_q12
 # One label cut short -> read-only, even with a short question.
 CLIPL="$(jq -cn --arg l "Option $(printf 'l%.0s' $(seq 1 100))" '[{question: "Which one?", header: "Pick", options: [{label: $l, description: ""}, {label: "No", description: ""}], multiSelect: false}]')"
 d="$(askq tu_q11 "$CLIPL")"

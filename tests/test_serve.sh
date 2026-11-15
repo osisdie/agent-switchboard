@@ -138,6 +138,18 @@ pv="$(body .page_version)"
 req GET / >/dev/null
 grep -q "<meta name=\"board-version\" content=\"$pv\">" "$T/body" && ok "  the served page carries the same version" || bad "  the served page carries the same version"
 req GET /api/state >/dev/null
+eq "a CRLF board.html: the page's version equals page_version (no false reload banner)" "$(python3 - "$REPO" "$T" <<'PY'
+import os, re, sys
+sys.path.insert(0, os.path.join(sys.argv[1], "lib"))
+import serve
+crlf = os.path.join(sys.argv[2], "board-crlf.html")
+with open(os.path.join(sys.argv[1], "artifact", "board.html"), "rb") as src, open(crlf, "wb") as dst:
+    dst.write(src.read().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
+serve.PAGE = crlf
+meta = re.search(rb'name="board-version" content="([0-9a-f]+)"', serve.render_page("n")).group(1).decode()
+print("same" if meta == serve.page_version() else "differs: %s %s" % (meta, serve.page_version()))
+PY
+)" "same"
 eq "account: null when not known" "$(body '.account')" "null"
 echo '{"oauthAccount":{"emailAddress":"owner@example.com","organizationName":"Example Org"}}' > "$CLAUDE_JSON"
 "$REPO/bin/board-collect" --once --no-notify >/dev/null 2>&1

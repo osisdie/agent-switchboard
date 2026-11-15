@@ -559,27 +559,37 @@ RESET_CSS = (":root{color-scheme:light;padding-top:env(safe-area-inset-top,0px);
              "img{max-width:100%}[hidden]{display:none!important}")
 
 
-_PAGE_VERSION = {"key": None, "version": None}
+_PAGE_VERSION = [(None, None)]  # [((mtime_ns, size), version)]: one tuple, replaced whole
+
+
+def file_version(raw):
+    """The version of board.html: a short hash of its bytes as they are on disk (CRLF included)."""
+    return hashlib.sha256(raw).hexdigest()[:12]
 
 
 def page_version():
-    """A short hash of artifact/board.html as it is now (cached by mtime and size). An open page
+    """The version of artifact/board.html as it is now (cached by mtime and size). An open page
     compares it with the version it was served with, to offer a reload after an update."""
     try:
         st = os.stat(PAGE)
     except OSError:
         return None
     key = (st.st_mtime_ns, st.st_size)
-    if _PAGE_VERSION["key"] != key:
+    cached_key, cached = _PAGE_VERSION[0]
+    if cached_key != key:
         with open(PAGE, "rb") as fh:
-            _PAGE_VERSION.update(key=key, version=hashlib.sha256(fh.read()).hexdigest()[:12])
-    return _PAGE_VERSION["version"]
+            cached = file_version(fh.read())
+        _PAGE_VERSION[0] = (key, cached)
+    return cached
 
 
 def render_page(nonce):
-    with open(PAGE, encoding="utf-8") as fh:
-        body = fh.read()
-    version = hashlib.sha256(body.encode("utf-8")).hexdigest()[:12]
+    # The bytes are hashed as they are, then decoded: a text-mode read would turn CRLF into LF and
+    # give a version that never equals page_version(), so every load would offer a reload.
+    with open(PAGE, "rb") as fh:
+        raw = fh.read()
+    version = file_version(raw)
+    body = raw.decode("utf-8")
     # Every inline <script> (the pre-paint theme script and the app) gets the CSP nonce;
     # nothing else in the page is executable.
     body = body.replace("<script>", '<script nonce="%s">' % nonce)

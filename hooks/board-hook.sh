@@ -139,12 +139,12 @@ def qinfo:
            | [ (.options // [])[0:10][]? | (if type == "object" then . else {label: .} end)
                | {l: (.label | qtext(80) | .t |= gsub("^\\s+|\\s+$"; "")), d: (.description | qtext(160))} ] as $os
            | { question: $q.t, header: $h.t, multiSelect: (.multiSelect == true),
-               question_clipped: ($q.c or $h.c),
+               question_clipped: $q.c, header_clipped: $h.c,
                options: [ $os[] | {label: .l.t, description: .d.t} ],
                lc: (any($os[]; .l.c) or (((.options // []) | length) > 10)) } ] as $out
       | { questions: [ $out[] | del(.lc) ],
           labels_clipped: (any($out[]; .lc) or ($qs | length) > 6),
-          clipped: (any($out[]; .lc or .question_clipped) or ($qs | length) > 6) } end;
+          clipped: (any($out[]; .lc or .question_clipped or .header_clipped) or ($qs | length) > 6) } end;
 JQ
 
 update() {

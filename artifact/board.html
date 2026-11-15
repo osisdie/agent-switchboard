@@ -1382,6 +1382,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     const live = pressable && !busy && canAnswer();
     const list = qs.length ? qs : [{ question: str(d.question) || tr('Question'), options: [] }];
     // The hook clips a long question (the picker in the session shows it whole); say so.
+    // Only the question text itself: a clipped header alone is not marked.
     const shortened = (q) => q.question_clipped === true || (d.questions_clipped === true && q.question_clipped == null && str(q.question).endsWith('…'));
     const shortNote = (q) => (shortened(q) ? h('span', { class: 'pq-short', text: ' ' + tr('(shortened)') }) : null);
     card.append(h('h3', null, h('span', { class: 'pq-asks', text: tr('{who} asks:', { who }) }), list.length === 1 ? str(list[0].question) : tr('{n} questions', { n: list.length }),

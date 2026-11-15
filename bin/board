@@ -885,7 +885,10 @@ cmd_press() {
       seen=0
     fi
     if [ "$seen" = 0 ]; then
+      # For a clipped question the labels must come after its start: labels only in the
+      # scrollback above the question do not count.
       local lab rest="$flat" all=1 nl=0
+      [ "$q_clip" = true ] && rest="${flat#*"$bind"}"
       while IFS= read -r lab; do
         lab="$(tr -d '[:space:]' <<<"$lab")"
         [ -n "$lab" ] || continue
