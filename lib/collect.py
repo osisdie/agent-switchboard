@@ -715,7 +715,7 @@ def main(argv):
         alert(prev, snap, verbose)
     if "--apply-rc" in argv:
         todo = actions.auto_candidates(sessions, cfg, home, now)
-        if todo and actions.spawn_auto(home) and verbose:
+        if todo and actions.spawn_auto(home, todo) and verbose:
             print("session actions: running in the background for %s" % ", ".join(todo))
     if "--no-notify" not in argv:
         for r in notify.tick():

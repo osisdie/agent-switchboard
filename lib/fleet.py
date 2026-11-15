@@ -55,11 +55,14 @@ DEFAULTS = {
         "rule_regex": r"^\u2500{8,}",
         "busy_regex": r"esc to interrupt",
         "dialog_regex": r"Enter to select",
+        # A vim-mode prompt (Enter does not submit there) or another mode line: refused.
+        "mode_regex": r"-- (NORMAL|VISUAL|VISUAL LINE) --",
         "retry_minutes": 10,
         "max_tries": 3,
         "queue_hours": 12,
         "rc_confirm_seconds": 10,
-        "rc_disconnect_label": r"Disconnect this session",
+        # Matched against the focused row of the dialog only (the text after the focus mark).
+        "rc_disconnect_label": r"^\s*\u276f?\s*Disconnect this session\s*$",
         "rc_consent_regex": r"Never mind",
         "rc_unavailable_regex": r"Unknown command: /remote-control",
         "compact_running_regex": r"Compacting conversation",
@@ -67,6 +70,11 @@ DEFAULTS = {
         "compact_empty_regex": r"Not enough messages to compact",
         "compact_start_seconds": 15,
         "compact_seconds": 600,
+        # Idle again with no "Compacting" line and no "Compacted" line for this long: interrupted.
+        "compact_idle_seconds": 5,
+        # How long a CLI call waits for another action on the same session before it only stores
+        # the request ("will apply when free").
+        "lock_wait_seconds": 20,
     },
     # Remote Control at start (bin/fleet-up): unset_do_not_track starts claude with
     # `env -u DO_NOT_TRACK` (Claude Code ignores Remote Control while DO_NOT_TRACK is set).
@@ -278,6 +286,9 @@ def load_fleet():
     for s in data.get("sessions") or []:
         if not isinstance(s, dict) or not s.get("code"):
             continue
+        if str(s["code"]) == "all":  # reserved: `board rc on|off all` means every session
+            sys.stderr.write("fleet.yaml: session code \"all\" is reserved; entry skipped\n")
+            continue
         sessions.append({
             "code": str(s["code"]),
             "cwd": os.path.expanduser(str(s.get("cwd") or "~")),
@@ -294,6 +305,8 @@ def load_fleet():
     top = data.get("aliases") or {}
     if isinstance(top, dict):
         for code, al in top.items():
+            if str(code) == "all":
+                continue
             match = [s for s in sessions if s["code"] == str(code)]
             if match:
                 match[0]["aliases"] = sorted(set(match[0]["aliases"]) | {str(a) for a in al or []})

@@ -65,13 +65,14 @@ ACTIONS = {"compact": "/compact", "rc_on": "/remote-control", "rc_off": "/remote
 QUEUED = ("compact",)
 QUEUE_FILE = "session-actions.json"
 LAST_FILE = "actions-last.json"
-RUN_LOCK = "actions-run.lock"
+RUN_LOCK_FMT = "actions-%s.lock"  # one per session code: one action at a time on a session
 CODE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 IDLE_STATES = ("done", "rest")
 # --auto never retries these for the same session process and action; a queued action is done.
 FINAL = ("confirmed", "already", "nothing", "started", "unavailable", "consent", "partial")
 RETRY = ("refused", "unconfirmed", "failed")
 EXIT = {"confirmed": 0, "already": 0, "deferred": 0, "offline": 0, "nothing": 0, "started": 0, "dropped": 0,
+        "busy": 0,
         "refused": 3, "partial": 5, "unconfirmed": 6, "unavailable": 6, "consent": 6, "failed": 1}
 
 
@@ -111,7 +112,7 @@ def load_queue(home, cfg=None, now=None):
     out = {}
     for code, e in data.items():
         if (CODE_RE.fullmatch(str(code)) and isinstance(e, dict) and e.get("action") in QUEUED
-                and isinstance(e.get("at"), int) and now - e["at"] <= max_ms):
+                and isinstance(e.get("at"), int) and now - e["at"] <= max_ms and e.get("sid")):
             out[str(code)] = e
     return out
 
@@ -136,22 +137,39 @@ def load_last(home):
     return {c: {a: r for a, r in v.items() if isinstance(r, dict)} for c, v in data.items() if isinstance(v, dict)}
 
 
-def record(home, code, action, sid, result, reason, now):
+def record(home, code, action, sid, result, reason, now, choice_at=None):
+    """Keeps the last attempt of ACTION on CODE. choice_at: for rc_on/rc_off, when the board
+    choice that asked for it was made (tries count per session process and choice)."""
     with prefs.Locked(home, LAST_FILE) as st:
         per = st.data.get(code) if isinstance(st.data.get(code), dict) else {}
         prev = per.get(action) if isinstance(per.get(action), dict) else {}
         same = prev.get("sid") == sid
-        tries = (int(prev.get("tries") or 0) if same else 0) + (0 if result in ("deferred", "already") else 1)
-        rec = {"sid": sid, "result": result, "reason": reason, "at": now, "tries": tries,
+        same_try = same and prev.get("choice_at") == choice_at
+        tries = (int(prev.get("tries") or 0) if same_try else 0) + (0 if result in ("deferred", "already", "busy") else 1)
+        rec = {"sid": sid, "result": result, "reason": reason, "at": now, "tries": tries, "choice_at": choice_at,
                "done_at": now if result == "confirmed" else (prev.get("done_at") if same else None)}
         per[action] = rec
         st.data[code] = per
     return rec
 
 
-def auto_allowed(cfg, rec, sid, now):
-    """--auto: may this action be tried on this session process now?"""
+def rc_settled(cfg, rec, sid, choice_at):
+    """Has the board finished trying this Remote Control choice (made at CHOICE_AT) on this
+    session process? Then a change made by hand in the session wins."""
+    if not rec or rec.get("sid") != sid or rec.get("choice_at") != choice_at:
+        return False
+    res = rec.get("result")
+    if res in FINAL:
+        return True
+    return res in RETRY and int(rec.get("tries") or 0) >= int(conf(cfg).get("max_tries") or 3)
+
+
+def auto_allowed(cfg, rec, sid, now, choice_at=None):
+    """--auto: may this action be tried on this session process now? (choice_at: a new board
+    choice for rc_on/rc_off starts over.)"""
     if not rec or rec.get("sid") != sid:
+        return True
+    if choice_at is not None and rec.get("choice_at") != choice_at:
         return True
     res = rec.get("result")
     if res in FINAL:
@@ -176,7 +194,7 @@ def annotate(sessions, cfg, home, now=None):
         e = q.get(code)
         rec = (last.get(code) or {}).get("compact")
         rec = rec if rec and sid and rec.get("sid") == sid else None
-        r["compact"] = {"queued": {"at": e["at"], "by": e.get("by")} if e and (not e.get("sid") or e.get("sid") == sid) else None,
+        r["compact"] = {"queued": {"at": e["at"], "by": e.get("by")} if e and e.get("sid") == sid else None,
                         "last": {"result": rec.get("result"), "at": rec.get("at")} if rec else None,
                         "done_at": rec.get("done_at") if rec else None}
     return sessions
@@ -200,16 +218,23 @@ def auto_candidates(sessions, cfg, home, now):
         if r.get("state") not in IDLE_STATES or r.get("status") != "idle" or not r.get("tmux_pane"):
             continue
         code, sid = r["code"], r.get("session_id")
+        if run_busy(home, code):
+            continue
+        at = (r.get("rc") or {}).get("at")
         jobs = [j for j in (_rc_job(r), "compact" if code in q else None) if j]
-        if any(auto_allowed(cfg, (last.get(code) or {}).get(j), sid, now) for j in jobs):
+        if any(auto_allowed(cfg, (last.get(code) or {}).get(j), sid, now, at if j.startswith("rc_") else None) for j in jobs):
             out.append(code)
     return out
 
 
-def run_busy(home):
-    """True while an applier holds actions-run.lock."""
+def lock_path(home, code):
+    return os.path.join(home, RUN_LOCK_FMT % code)
+
+
+def run_busy(home, code):
+    """True while an action runs on CODE (flock actions-<code>.lock)."""
     try:
-        with open(os.path.join(home, RUN_LOCK), "a") as fh:
+        with open(lock_path(home, code), "a") as fh:
             try:
                 fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
@@ -231,8 +256,9 @@ def spawn(home, args):
         return False
 
 
-def spawn_auto(home):
-    return False if run_busy(home) else spawn(home, ["apply", "--pending", "--auto"])
+def spawn_auto(home, codes):
+    """The collector's hand-off: `apply --auto CODE...` in the background."""
+    return spawn(home, ["apply", "--auto"] + list(codes)) if codes else False
 
 
 # ------------------------------------------------------------------ the pane
@@ -317,6 +343,49 @@ def idle_screen(lines, c):
         return "the session is working (esc to interrupt)"
     if _has(c, "dialog_regex", lines[i:]):
         return "a dialog is open"
+    if _has(c, "mode_regex", lines[i:]):
+        return "the prompt is in vim mode (-- NORMAL --): Enter would not submit"
+    return None
+
+
+def _proc_ppid(pid):
+    try:
+        with open("/proc/%d/stat" % int(pid), encoding="utf-8") as fh:
+            data = fh.read()
+        return int(data[data.rindex(")") + 2:].split()[1])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def pane_owns(pane_pid, pid, depth=20):
+    """Is PANE_PID (the pane's shell) the session process PID or one of its ancestors?"""
+    try:
+        pane_pid, cur = int(pane_pid), int(pid)
+    except (TypeError, ValueError):
+        return False
+    for _ in range(depth):
+        if cur == pane_pid:
+            return True
+        cur = _proc_ppid(cur)
+        if not cur or cur <= 1:
+            return False
+    return False
+
+
+def check_pane(row, pane):
+    """None when PANE is this session's pane: it exists, belongs to the registry's tmux session
+    (when the registry names one) and its process (#{pane_pid}) is an ancestor of the session
+    process. Else why not."""
+    rcode, out = _tmux("display-message", "-p", "-t", pane, "#{session_name}\t#{pane_pid}")
+    parts = out.strip().split("\t")
+    if rcode != 0 or len(parts) != 2:
+        return "tmux pane %s not found" % pane
+    name, pane_pid = parts
+    tsess = str(row.get("tmux") or "").split(":", 1)[0]
+    if tsess and name != tsess:
+        return "pane %s belongs to tmux session '%s', expected '%s'" % (pane, name, tsess)
+    if not pane_owns(pane_pid, row.get("pid")):
+        return "pane %s does not run this session's process (pid %s)" % (pane, row.get("pid"))
     return None
 
 
@@ -387,14 +456,7 @@ def run_action(home, cfg, row, action):
         return "refused", "the session has no tmux pane"
     if (st or {}).get("tmux_pane") and st["tmux_pane"] != pane:
         return "refused", "pane mismatch: hook saw %s, registry says %s" % (st["tmux_pane"], pane)
-    tsess = str(row.get("tmux") or "").split(":", 1)[0]
-    if tsess:
-        rcode, out = _tmux("display-message", "-p", "-t", pane, "#{session_name}")
-        if rcode != 0:
-            return "refused", "tmux pane %s not found" % pane
-        if out.strip() != tsess:
-            return "refused", "pane %s belongs to tmux session '%s', expected '%s'" % (pane, out.strip(), tsess)
-    why = idle_screen(_screen(pane, nlines), c)
+    why = check_pane(row, pane) or idle_screen(_screen(pane, nlines), c)
     if why:
         return "refused", why
     # Last look right before typing.
@@ -419,6 +481,23 @@ def run_action(home, cfg, row, action):
     return _disconnect(row, pane, c, nlines)
 
 
+def _escape_if_no_box(pane, c, nlines):
+    """After an unconfirmed Remote Control step: when Claude's empty input box is not on screen,
+    a dialog is probably open (the registry was wrong, or a dialog we did not expect). Escape
+    closes it without changing anything (it is "Continue" / "Never mind" in Claude's dialogs).
+    Returns True when Escape was sent."""
+    if idle_screen(_screen(pane, nlines), c) is None:
+        return False
+    _send(pane, "Escape")
+    return True
+
+
+def _rc_dialog(lines, c):
+    """Is Claude's Remote Control dialog (Disconnect / Show QR code / Continue) on screen?"""
+    label = _rx(c, "rc_disconnect_label")
+    return _has(c, "dialog_regex", lines) and any(label.search(ln.replace("\u276f", " ")) for ln in lines)
+
+
 def _confirm_rc_on(row, pane, c, nlines):
     secs = float(c.get("rc_confirm_seconds") or 10)
     deadline = time.time() + secs
@@ -430,27 +509,37 @@ def _confirm_rc_on(row, pane, c, nlines):
             return "confirmed", "Remote Control is on"
         lines = _screen(pane, nlines) or []
         if _has(c, "rc_unavailable_regex", lines):
+            _escape_if_no_box(pane, c, nlines)
             return "unavailable", "Claude does not offer /remote-control in this session (DO_NOT_TRACK set, not signed in to claude.ai, or turned off by policy)"
         if _has(c, "rc_consent_regex", lines):
             _send(pane, "Escape")
             return "consent", "Claude asks its one-time Remote Control confirmation; dismissed. Run /remote-control in the session once"
+        if _rc_dialog(lines, c):
+            _send(pane, "Escape")
+            return "refused", "Claude opened the Disconnect dialog: Remote Control was already on although the registry said off; closed it with Escape"
         if time.time() >= deadline:
-            return "unconfirmed", "bridgeSessionId did not appear within %gs" % secs
+            esc = _escape_if_no_box(pane, c, nlines)
+            return "unconfirmed", "bridgeSessionId did not appear within %gs%s" % (secs, "; closed an open dialog with Escape" if esc else "")
         time.sleep(0.5)
 
 
 def _disconnect(row, pane, c, nlines):
     secs = float(c.get("rc_confirm_seconds") or 10)
-    dialog, label = _rx(c, "dialog_regex"), _rx(c, "rc_disconnect_label")
+    label = _rx(c, "rc_disconnect_label")
     deadline = time.time() + min(secs, 6)
     while True:
         lines = _screen(pane, nlines) or []
-        if any(dialog.search(ln) for ln in lines) and any(label.search(ln) for ln in lines):
+        if _rc_dialog(lines, c):
             break
+        if _has(c, "rc_consent_regex", lines):
+            _send(pane, "Escape")
+            return "consent", "Claude asked its one-time Remote Control confirmation (Remote Control was off although the registry said on); dismissed with Escape"
         if _has(c, "rc_unavailable_regex", lines):
+            _escape_if_no_box(pane, c, nlines)
             return "unavailable", "Claude does not offer /remote-control in this session"
         if time.time() >= deadline:
-            return "unconfirmed", "the Remote Control dialog did not open; nothing else sent"
+            esc = _escape_if_no_box(pane, c, nlines)
+            return "unconfirmed", "the Remote Control dialog did not open%s" % ("; closed an unexpected screen with Escape" if esc else "; nothing else sent")
         time.sleep(0.3)
     for _ in range(4):
         cur = _focused(lines)
@@ -464,8 +553,9 @@ def _disconnect(row, pane, c, nlines):
             return "failed", "send-keys failed (Up); closed the dialog with Escape"
         _settle()
         lines = _screen(pane, nlines) or []
-        if not (any(dialog.search(ln) for ln in lines) and any(label.search(ln) for ln in lines)):
-            return "partial", "the Remote Control dialog closed unexpectedly"
+        if not _rc_dialog(lines, c):
+            esc = _escape_if_no_box(pane, c, nlines)
+            return "partial", "the Remote Control dialog closed unexpectedly%s" % ("; sent Escape" if esc else "")
     else:
         _send(pane, "Escape")
         return "refused", "could not focus \"Disconnect this session\"; closed the dialog with Escape (Remote Control stays on)"
@@ -481,14 +571,16 @@ def _disconnect(row, pane, c, nlines):
         if not _bridge(reg):
             return "confirmed", "Remote Control is off"
         if time.time() >= deadline:
-            return "unconfirmed", "bridgeSessionId did not disappear within %gs" % secs
+            esc = _escape_if_no_box(pane, c, nlines)
+            return "unconfirmed", "bridgeSessionId did not disappear within %gs%s" % (secs, "; sent Escape" if esc else "")
         time.sleep(0.5)
 
 
 def _confirm_compact(row, pane, c, nlines):
     start_by = time.time() + float(c.get("compact_start_seconds") or 15)
     end_by = time.time() + float(c.get("compact_seconds") or 600)
-    started = False
+    idle_for = float(c.get("compact_idle_seconds") or 5)
+    started, quiet_since = False, None
     while True:
         lines = _screen(pane, nlines) or []
         out = above_box(lines, c, "/compact")
@@ -504,6 +596,12 @@ def _confirm_compact(row, pane, c, nlines):
                 and _has(c, "compact_done_regex", out)):
             return "confirmed", "compacted"
         now = time.time()
+        if started and reg.get("status") == "idle" and not running:
+            quiet_since = quiet_since or now
+            if now - quiet_since >= idle_for:
+                return "unconfirmed", "the session is idle again without \"Compacted\" (interrupted?)"
+        else:
+            quiet_since = None
         if not started and now >= start_by:
             return "unconfirmed", "the compact did not start; nothing else sent"
         if now >= end_by:
@@ -513,29 +611,32 @@ def _confirm_compact(row, pane, c, nlines):
 
 # ------------------------------------------------------------------ applying what is pending
 
-class RunLock:
-    """One applier at a time per BOARD_HOME (flock actions-run.lock): --auto skips when busy."""
+class SessionLock:
+    """One action at a time on a session (flock actions-<code>.lock). acquire(wait_s) returns
+    False when another action still holds it after WAIT_S seconds."""
 
-    def __init__(self, home, wait_s):
-        self.path, self.wait_s = os.path.join(home, RUN_LOCK), wait_s
+    def __init__(self, home, code):
+        self.path, self.fh = lock_path(home, code), None
 
-    def __enter__(self):
+    def acquire(self, wait_s):
         self.fh = open(self.path, "a")  # noqa: SIM115
-        deadline = time.time() + self.wait_s
+        deadline = time.time() + wait_s
         while True:
             try:
                 fcntl.flock(self.fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                return self
+                return True
             except BlockingIOError:
                 if time.time() >= deadline:
                     self.fh.close()
-                    raise OSError("another session action is running; try again") from None
+                    self.fh = None
+                    return False
                 time.sleep(0.1)
 
-    def __exit__(self, *exc):
-        fcntl.flock(self.fh, fcntl.LOCK_UN)
-        self.fh.close()
-        return False
+    def release(self):
+        if self.fh:
+            fcntl.flock(self.fh, fcntl.LOCK_UN)
+            self.fh.close()
+            self.fh = None
 
 
 def refresh_snapshot():
@@ -555,40 +656,53 @@ def snapshot_rows(home):
 def apply(home, cfg, codes=None, auto=False, by=None, only=None):
     """Runs what is pending for CODES (None: every session with something pending). ONLY:
     "rc" or "compact". With explicit CODES and rc, the stored Remote Control choice is applied
-    even when the snapshot does not show it pending ("already" when it matches).
+    even when the snapshot does not show it pending ("already" when it matches): an explicit
+    action forces it. One action at a time per session (SessionLock): --auto skips a busy
+    session, a CLI call waits lock_wait_seconds and then only reports "busy" (the choice or the
+    queued compact is stored; the collector applies it when the session is free).
     Returns [(code, action, result, reason)]."""
     import rc  # noqa: WPS433 - rc imports this module lazily too
     out = []
-    with RunLock(home, 0 if auto else 60):
-        refresh_snapshot()
-        rows = snapshot_rows(home)
-        by_code = {r["code"]: r for r in rows}
-        now = now_ms()
-        q = load_queue(home, cfg, now)
-        last = load_last(home)
-        rcdata = rc.load(home)
-        targets = codes if codes is not None else [
-            r["code"] for r in rows if (only in (None, "rc") and _rc_job(r)) or (only in (None, "compact") and r["code"] in q)]
-        for code in targets:
-            row = by_code.get(code)
-            if row is None:
-                out.append((code, "-", "offline", "no such session on the board"))
-                continue
-            want, source = rc.wanted(code, cfg, rcdata)
-            jobs = []
-            if only in (None, "rc"):
-                job = _rc_job(row)
-                if job is None and codes is not None and only == "rc":
-                    job = "rc_" + want
-                if job and not (auto and not rc.explicit(source)):
-                    jobs.append(job)
-            if only in (None, "compact") and code in q:
-                jobs.append("compact")
+    refresh_snapshot()
+    rows = snapshot_rows(home)
+    by_code = {r["code"]: r for r in rows}
+    now = now_ms()
+    q = load_queue(home, cfg, now)
+    last = load_last(home)
+    rcdata = rc.load(home)
+    c = conf(cfg)
+    targets = codes if codes is not None else [
+        r["code"] for r in rows if (only in (None, "rc") and _rc_job(r)) or (only in (None, "compact") and r["code"] in q)]
+    for code in targets:
+        row = by_code.get(code)
+        if row is None:
+            out.append((code, "-", "offline", "no such session on the board"))
+            continue
+        want, source, choice_at = rc.wanted_at(code, cfg, rcdata)
+        jobs = []
+        if only in (None, "rc"):
+            job = _rc_job(row)
+            if job is None and codes is not None and only == "rc" and not auto:
+                job = "rc_" + want
+            if job and not (auto and not rc.explicit(source)):
+                jobs.append(job)
+        if only in (None, "compact") and code in q:
+            jobs.append("compact")
+        if not jobs:
+            continue
+        lock = SessionLock(home, code)
+        if not lock.acquire(0 if auto else float(c.get("lock_wait_seconds") or 20)):
+            if not auto:
+                out.append((code, jobs[0], "busy", "another action runs on this session; stored, will apply when it is free"))
+            continue
+        try:
             sid = row.get("session_id")
             for job in jobs:
-                if auto and (row.get("state") not in IDLE_STATES or not auto_allowed(cfg, (last.get(code) or {}).get(job), sid, now)):
+                is_rc = job.startswith("rc_")
+                if auto and (row.get("state") not in IDLE_STATES
+                             or not auto_allowed(cfg, (last.get(code) or {}).get(job), sid, now, choice_at if is_rc else None)):
                     continue
-                if job in QUEUED and q[code].get("sid") and q[code]["sid"] != sid:
+                if job in QUEUED and q[code].get("sid") != sid:
                     unqueue(home, code, by, op="drop", reason="the session restarted")
                     out.append((code, job, "dropped", "queued for an earlier session process"))
                     continue
@@ -597,15 +711,17 @@ def apply(home, cfg, codes=None, auto=False, by=None, only=None):
                 except Exception as exc:  # noqa: BLE001 - one bad session never stops the rest
                     res = ("failed", "error: %s" % exc.__class__.__name__)
                 out.append((code, job) + res)
-                rec = record(home, code, job, sid, res[0], res[1], now_ms()) if sid else None
+                rec = record(home, code, job, sid, res[0], res[1], now_ms(), choice_at if is_rc else None) if sid else None
                 log(home, {"op": "run", "code": code, "action": job, "result": res[0], "reason": res[1],
                            "auto": bool(auto), "by": by, "pane": row.get("tmux_pane")})
                 if job in QUEUED and res[0] != "deferred":
-                    gave_up = res[0] in RETRY and rec and int(rec.get("tries") or 0) >= int(conf(cfg).get("max_tries") or 3)
+                    gave_up = res[0] in RETRY and rec and int(rec.get("tries") or 0) >= int(c.get("max_tries") or 3)
                     if res[0] not in RETRY or gave_up:
                         unqueue(home, code, by, op="done", reason=res[0])
                 if res[0] not in ("confirmed", "already", "nothing"):
                     break  # the next action waits for the next idle moment
+        finally:
+            lock.release()
     if out:
         refresh_snapshot()
     return out
@@ -649,20 +765,22 @@ def main(argv):
         if args.cmd == "run":
             check_code(args.code)
             check_by(args.by)
+            refresh_snapshot()
             rows = {r["code"]: r for r in snapshot_rows(home)}
-            known = set(rows) | {s["code"] for s in cfg["sessions"]}
-            if args.code not in known:
-                refresh_snapshot()
-                rows = {r["code"]: r for r in snapshot_rows(home)}
-                if args.code not in set(rows) | known:
-                    raise UsageError("no such session: %s" % args.code)
-            queue(home, args.code, args.action, args.by, (rows.get(args.code) or {}).get("session_id"))
+            if args.code not in set(rows) | {s["code"] for s in cfg["sessions"]}:
+                raise UsageError("no such session: %s" % args.code)
+            sid = (rows.get(args.code) or {}).get("session_id")
+            if not sid:
+                print("%s %s: offline (the session is not running; nothing queued)" % (args.code, args.action))
+                return 0
+            queue(home, args.code, args.action, args.by, sid)
             if args.queue_only:
                 print("%s %s: queued (runs when the session is idle)" % (args.code, args.action))
                 return 0
             results = apply(home, cfg, [args.code], by=args.by, only=args.action)
             for code, action, res, reason in results:
-                note = " (queued: runs when the session is idle)" if res == "deferred" else ""
+                note = {"deferred": " (queued: runs when the session is idle)",
+                        "busy": " (queued: runs when the session is free)"}.get(res, "")
                 print("%s %s: %s (%s)%s" % (fleet.safe_text(code), action, res, fleet.safe_text(reason), note))
             return exit_for(results)
         if args.cmd == "cancel":
@@ -676,12 +794,7 @@ def main(argv):
                 check_code(c)
             if args.codes and args.pending:
                 raise UsageError("give CODEs or --pending, not both")
-            try:
-                results = apply(home, cfg, args.codes or None, auto=args.auto, by=args.by, only=args.only)
-            except OSError:
-                if args.auto:
-                    return 0  # another applier runs; the collector tries again later
-                raise
+            results = apply(home, cfg, args.codes or None, auto=args.auto, by=args.by, only=args.only)
             for code, action, res, reason in results:
                 print("%s %s: %s (%s)" % (fleet.safe_text(code), action, res, fleet.safe_text(reason)))
             return 0 if args.auto else exit_for(results)

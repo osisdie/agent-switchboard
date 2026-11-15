@@ -4,6 +4,7 @@ real tmux server.
 
 FAKE_TMUX_CFG names a JSON file:
   {"session": "CP",                       display-message answer (the pane's tmux session)
+   "pane_pid": 123,                       ... and its #{pane_pid} (default 1)
    "screens": ["...", "..."],             capture-pane shows screens[k], k = send-keys calls so
                                           far (the last screen repeats)
    "on_send": {"2": {"path": P, "set": {...}}},
@@ -56,7 +57,10 @@ def main(argv):
     state = (cfg_path or "/nonexistent") + ".state"
     cmd = argv[0] if argv else ""
     if cmd == "display-message":
-        print(cfg.get("session", "CP"))
+        if any("#{pane_pid}" in a for a in argv):
+            print("%s\t%s" % (cfg.get("session", "CP"), cfg.get("pane_pid", 1)))
+        else:
+            print(cfg.get("session", "CP"))
         return 0
     if cmd == "list-panes":
         return 0

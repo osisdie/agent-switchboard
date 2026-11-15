@@ -124,18 +124,34 @@ def clear_choice(home, target, by, now=None):
 
 def wanted(code, cfg, data):
     """(on|off, source): source is session, all (board rc), fleet (fleet.yaml) or default."""
+    return wanted_at(code, cfg, data)[:2]
+
+
+def wanted_at(code, cfg, data):
+    """(on|off, source, at): `at` is when the board choice was made (None for fleet.yaml and
+    the default)."""
     e = data["sessions"].get(code)
     if e:
-        return e["state"], "session"
+        return e["state"], "session", e.get("at")
     if data["all"]:
-        return data["all"]["state"], "all"
+        return data["all"]["state"], "all", data["all"].get("at")
     for s in cfg.get("sessions") or []:
         if s.get("code") == code and isinstance(s.get("remote_control"), bool):
-            return ("on" if s["remote_control"] else "off"), "fleet"
+            return ("on" if s["remote_control"] else "off"), "fleet", None
     top = cfg.get("remote_control")
     if isinstance(top, bool):
-        return ("on" if top else "off"), "fleet"
-    return "on", "default"
+        return ("on" if top else "off"), "fleet", None
+    return "on", "default", None
+
+
+def started_at(pid):
+    """When the session process started (registry startedAt, ms), or 0."""
+    try:
+        with open(os.path.join(fleet.sessions_dir(), "%d.json" % int(pid)), encoding="utf-8") as fh:
+            v = json.load(fh).get("startedAt")
+        return v if isinstance(v, int) and not isinstance(v, bool) else 0
+    except (OSError, ValueError, TypeError, AttributeError):
+        return 0
 
 
 def explicit(source):
@@ -145,35 +161,48 @@ def explicit(source):
 # ------------------------------------------------------------------ the board's view
 
 def annotate(sessions, cfg, home, now=None):
-    """Adds `rc` to every snapshot row: {on: bool|None (None: not running), want, source,
-    blocked: "do_not_track"|None (the process has DO_NOT_TRACK set: no Remote Control at
-    runtime), pending (an explicit choice the running session does not follow yet and can
-    get), last: the last rc_on/rc_off attempt for this session process, or None}."""
+    """Adds `rc` to every snapshot row: {on: bool|None (None: not running), want, source, at
+    (when the board choice was made), blocked: "do_not_track"|None (the process has
+    DO_NOT_TRACK set: no Remote Control at runtime), pending, last}.
+
+    pending: the board will still try to make this running session follow an explicit choice.
+    That is only so for a choice made after the session process started, and only until the
+    board has tried it once for this (choice, process): after that a change made by hand in the
+    session wins until the owner changes the choice again (`board rc` / the board's toggle,
+    which also forces it at once)."""
     import actions  # noqa: WPS433 - actions imports this module lazily
     data = load(home)
     last_all = actions.load_last(home)
     for r in sessions:
         code = str(r.get("code") or "")
-        want, source = wanted(code, cfg, data)
+        want, source, at = wanted_at(code, cfg, data)
         running = bool(r.get("session_id"))
+        sid = r.get("session_id")
         on = bool(r.get("remote_url")) if running else None
         blocked = "do_not_track" if running and not on and fleet.env_has(r.get("pid"), "DO_NOT_TRACK") else None
         rec = (last_all.get(code) or {}).get("rc_" + want)
         last = None
-        if rec and running and rec.get("sid") == r.get("session_id"):
+        if rec and running and rec.get("sid") == sid:
             last = {"want": want, "result": rec.get("result"), "reason": rec.get("reason"), "at": rec.get("at")}
-        pending = bool(running and explicit(source) and "/" not in code and on != (want == "on"))
+        pending = bool(running and explicit(source) and "/" not in code and on != (want == "on")
+                       and isinstance(at, int) and at > started_at(r.get("pid"))
+                       and not actions.rc_settled(cfg, rec, sid, at))
         if blocked and want == "on":
             pending = False
-        r["rc"] = {"on": on, "want": want, "source": source, "blocked": blocked, "pending": pending, "last": last}
+        r["rc"] = {"on": on, "want": want, "source": source, "at": at, "blocked": blocked, "pending": pending,
+                   "last": last}
     return sessions
 
 
 def page_state(home, cfg=None):
     """The board page's view of the choices (rc-prefs.json): {all, sessions: {CODE: on|off}}."""
     data = load(home)
+    at = {c: e.get("at") for c, e in data["sessions"].items()}
+    if data["all"]:
+        at["all"] = data["all"].get("at")
     return {"all": data["all"]["state"] if data["all"] else None,
             "sessions": {c: e["state"] for c, e in sorted(data["sessions"].items())},
+            "at": at,
             "updated_at": data.get("updated_at")}
 
 
@@ -260,7 +289,7 @@ def main(argv):
             codes = None if args.target == "all" else [args.target]
             results = actions.apply(home, cfg, codes, by=args.by, only="rc")
             for code, action, res, reason in results:
-                note = " (will apply when idle)" if res == "deferred" else ""
+                note = {"deferred": " (will apply when idle)", "busy": " (stored; will apply when the session is free)"}.get(res, "")
                 print("  %s: %s (%s)%s" % (fleet.safe_text(code), res, fleet.safe_text(reason), note))
             return actions.exit_for(results)
         if args.cmd == "apply":
@@ -268,12 +297,7 @@ def main(argv):
                 _check(c, "cli")
             if args.codes and args.pending:
                 raise UsageError("give CODEs or --pending, not both")
-            try:
-                results = actions.apply(home, cfg, args.codes or None, auto=args.auto, by=args.by, only="rc")
-            except OSError:
-                if args.auto:
-                    return 0  # another applier runs; the collector tries again later
-                raise
+            results = actions.apply(home, cfg, args.codes or None, auto=args.auto, by=args.by, only="rc")
             for code, action, res, reason in results:
                 print("%s: %s %s (%s)" % (fleet.safe_text(code), action, res, fleet.safe_text(reason)))
             return 0 if args.auto else actions.exit_for(results)
