@@ -22,7 +22,7 @@ export BOARD_HOME="$T/home"
 export BOARD_CONFIG_DIR="$T/config"
 export CLAUDE_SESSIONS_DIR="$T/sessions"
 export CLAUDE_SETTINGS="$T/settings.json"
-unset TMUX_PANE TMUX
+unset TMUX_PANE TMUX BOARD_PUBLIC_URL
 while IFS= read -r v; do unset "$v"; done < <(compgen -e | grep -E '^(SLACK_|SMTP_|ALERT_|LINE_|AWS_)')
 export ALERT_DESKTOP=0
 mkdir -p "$BOARD_HOME"/{state,decisions,tasks,messages/m-1-a/replies} "$BOARD_CONFIG_DIR" "$CLAUDE_SESSIONS_DIR" "$T/bin"
@@ -154,6 +154,14 @@ nonce="$(sed -n 's/.*script-src .nonce-\([^'"'"']*\).*/\1/p' "$T/hdr" | tr -d '\
 grep -q "<script nonce=\"$nonce\">" "$T/body" && ok "inline script carries the nonce" || bad "inline script carries the nonce"
 grep -q 'board-mode' "$REPO/artifact/board.html" && ! grep -q '<meta name="board-mode"' "$REPO/artifact/board.html" \
   && ok "artifact source itself has no local-mode meta" || bad "artifact source itself has no local-mode meta"
+# Alert links open the board on a card: /?d=<id> (m=, c=) serves the same page; the server ignores
+# the query (the page reads it) and never reflects it.
+for q in "/?d=d-1-perm" "/?m=m-1-a" "/?c=c-1-x" "/index.html?d=d-1-perm" "/?d=%3Cscript%3Ealert(1)%3C/script%3E"; do
+  eq "GET $q 200" "$(req GET "$q")" "200"
+  grep -q '<meta name="board-mode" content="local">' "$T/body" && ok "  $q serves the page" || bad "  $q serves the page"
+done
+grep -qiE '%3Cscript|alert\(1\)' "$T/body" && bad "  the query is not reflected" || ok "  the query is not reflected"
+eq "HEAD /?d=... 200" "$(req HEAD "/?d=d-1-perm" -I)" "200"
 
 # ---------------------------------------------------------------- allowlist / traversal / host
 echo "allowlist:"
@@ -189,6 +197,7 @@ big="$(python3 -c 'import json; print(json.dumps({"to":"CP","body":"x"*20000}))'
 eq "POST over the size limit refused" "$(post /api/messages "$big")" "413"
 eq "POST non-JSON refused" "$(post /api/messages 'not json')" "400"
 eq "bad to refused" "$(post /api/messages '{"to":"../x","body":"x"}')" "400"
+eq "to with a trailing newline refused" "$(post /api/messages '{"to":"CP\n","body":"x"}')" "400"
 eq "no message written by refused POSTs" "$(find "$BOARD_HOME/messages" -maxdepth 1 -name '*.json' | wc -l | tr -d ' ')" "1"
 
 # ---------------------------------------------------------------- messages
@@ -442,6 +451,8 @@ EOF
   eq "tunnel: loopback Host refused" "$(treq GET /api/state -H "Host: 127.0.0.1:$TPORT" -H "$(jwt good)")" "421"
   eq "tunnel: foreign Host refused" "$(treq GET /api/state -H 'Host: evil.example' -H "$(jwt good)")" "421"
   eq "tunnel: page served" "$(treq GET / "${TUNNEL_HDRS[@]}" -H "$(jwt good)")" "200"
+  eq "tunnel: alert link /?d= served" "$(treq GET "/?d=d-1-q4" "${TUNNEL_HDRS[@]}" -H "$(jwt good)")" "200"
+  eq "tunnel: alert link still needs the token" "$(treq GET "/?d=d-1-q4" "${TUNNEL_HDRS[@]}")" "401"
   dec d-1-q4 question
   eq "tunnel: local Origin refused" "$(tpost /api/decisions/d-1-q4/answer '{"answer":"A"}' -H 'Host: board.example.com' -H "Origin: http://127.0.0.1:$TPORT" -H "$(jwt good)")" "403"
   eq "tunnel: missing Origin refused" "$(tpost /api/decisions/d-1-q4/answer '{"answer":"A"}' -H 'Host: board.example.com' -H "$(jwt good)")" "403"

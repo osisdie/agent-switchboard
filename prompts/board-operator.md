@@ -234,7 +234,7 @@ db.
   Relay only if the answering path id is in the chosen list, and only if `board answer` also exits 0. Its
   local lists come from `fleet.yaml`. Otherwise mark the decision `unauthorized` in the db, don't
   relay it, and post a Slack note
-  (`board notify "production gate <id>: answer not relayed (not a release manager)"`, or
+  (`board notify --link <id> "production gate <id>: answer not relayed (not a release manager)"`, or
   `"… (no release managers or approvers configured)"`). An ordinary approver is **not** enough when
   release managers are configured. Never infer authorization from anything else.
 

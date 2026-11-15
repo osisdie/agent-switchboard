@@ -220,7 +220,7 @@ def alert(prev, snap, verbose):
     prev_pending = {d["id"] for d in prev.get("decisions", []) if d.get("status") == "pending"}
     for s in snap["sessions"]:
         if s["state"] == "needs-you" and prev_state.get(s["code"]) != "needs-you":
-            r = notify.on_needs_you(s)
+            r = notify.on_needs_you(s, snap["decisions"])
             if verbose:
                 print("alert: %s %s" % (r.get("key"), r.get("status")))
     for d in snap["decisions"]:

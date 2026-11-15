@@ -405,7 +405,7 @@ class StateBuilder:
         messages.sort(key=lambda m: as_int(m.get("created_at")), reverse=True)
         messages = messages[:20]
         for m in messages:
-            if not MSG_ID_RE.match(str(m["id"])):
+            if not MSG_ID_RE.fullmatch(str(m["id"])):
                 continue
             rs = []
             for f in glob.glob(self.p("messages", m["id"], "replies", "*.json")):
@@ -741,7 +741,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return r.returncode, r.stdout.strip(), r.stderr.strip()
 
     def answer(self, did, body, ident, via):
-        if not DEC_ID_RE.match(did):
+        if not DEC_ID_RE.fullmatch(did):
             raise Refused(400, "bad_id", "invalid decision id")
         cfg = fleet.load_fleet()
         # Fails closed: with nobody listed in approvers, nobody answers from the board.
@@ -825,7 +825,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def message(self, body, ident, via):
         to, text = body.get("to"), body.get("body")
-        if not isinstance(to, str) or not (to == "all" or CODE_RE.match(to)):
+        if not isinstance(to, str) or not (to == "all" or CODE_RE.fullmatch(to)):
             raise Refused(400, "bad_to", "to must be a session code or \"all\"")
         if not isinstance(text, str) or not text.strip() or len(text) > MAX_MESSAGE:
             raise Refused(400, "bad_body", "body must be a non-empty string (max %d chars)" % MAX_MESSAGE)

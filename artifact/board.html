@@ -439,6 +439,10 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 .toasts { position: fixed; z-index: 20; left: 50%; transform: translateX(-50%); bottom: calc(16px + env(safe-area-inset-bottom, 0px)); display: grid; gap: 8px; width: min(520px, calc(100vw - 32px)); pointer-events: none; }
 .toast { pointer-events: auto; padding: 10px 14px; border-radius: 6px; background: var(--ink); color: var(--paper); font-size: 14px; box-shadow: 0 6px 20px rgb(0 0 0 / .25); }
 .toast.bad { background: var(--deny); color: #fff; }
+/* a card opened from an alert link (?d= / ?m= / ?c=) */
+.linked { outline: 3px solid var(--cord); outline-offset: 3px; animation: linked 2.4s ease-out both; }
+@keyframes linked { 0%, 40% { outline-color: var(--cord); } 100% { outline-color: transparent; } }
+@media (prefers-reduced-motion: reduce) { .linked { animation: none; outline-color: var(--cord); } }
 @media (max-width: 480px) {
   .brand h1 { font-size: 34px; }
   .meters, .meter-group, .needs-tile, .usage { width: 100%; }
@@ -636,7 +640,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     operator: null, ledger: null,
     away: null, consensus: [],   // owner-away record ({since, by, said}) | null; consensus items
     replies: new Map(),
-    got: { sessions: false, decisions: false, messages: false, tasks: false, approvals: false, operator: false },
+    got: { sessions: false, decisions: false, messages: false, tasks: false, approvals: false, operator: false, consensus: false },
     slow: false, feedError: null, offlineDetail: null,
     me: null, userReady: false, writable: null,   // writable: true | false | null (unknown → let writes decide)
     canEditBoard: null, canMessageLocal: false,          // claude mode: Editor/Owner (writes shared docs, sends messages); Contributors only answer
@@ -1272,7 +1276,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   function buildThread(m) {
     const replies = S.replies.get(m.id) || [];
     const relayedTo = Array.isArray(m.relayed_to) ? m.relayed_to.map(str).filter(Boolean) : [];
-    return h('li', { class: 'thread' },
+    return h('li', { id: 'thread-' + str(m.id), class: 'thread' },
       h('div', { class: 'thread-top' },
         h('span', { class: 'to', text: '→ @' + (str(m.to) || '?') }),
         h('span', { class: 'status ' + str(m.status), text: str(m.status) || 'new' }),
@@ -1308,7 +1312,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     const parts = Array.isArray(c.participants) ? c.participants.map(str) : [];
     const agreed = parts.filter((p) => last.has(p) && str(last.get(p).vote) === 'agree').length;
     const st = str(c.status), ref = str(c.ref), refUrl = safeUrl(ref);
-    return h('article', { class: 'ccard', 'aria-label': 'Consensus ' + str(c.id) + ', ' + (CONS_LABEL[st] || st) },
+    return h('article', { id: 'cons-' + str(c.id), class: 'ccard', 'aria-label': 'Consensus ' + str(c.id) + ', ' + (CONS_LABEL[st] || st) },
       h('div', { class: 'top' },
         h('span', { class: 'cst ' + st.replace(/[^a-z_]/g, ''), text: CONS_LABEL[st] || st || 'unknown' }),
         h('span', { class: 'muted' }, 'from ', h('span', { class: 'code-chip', text: str(c.from) || '?' })),
@@ -1368,7 +1372,73 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   }
   $('#away-form').addEventListener('submit', (ev) => { ev.preventDefault(); setAway('on', $('#away-said').value.trim()); });
 
-  function renderAll() { renderHeader(); renderBanners(); renderDecisions(); renderConsensus(); renderTasks(); renderBoard(); renderMessages(); renderApprovals(); if ($('#info').open) renderLedger(); }
+  function renderAll() { renderHeader(); renderBanners(); renderDecisions(); renderConsensus(); renderTasks(); renderBoard(); renderMessages(); renderApprovals(); if ($('#info').open) renderLedger(); openLinked(); }
+
+  /* ----------------------------------------------------------- deep links */
+  // Alerts link to <board>/?d=<decision id> (m= message, c= consensus); a #<id> or #dec-<id> hash
+  // works too. The id must match the same strict pattern the server uses before it is looked up
+  // (by getElementById, never inside a selector). Once the data is loaded the card is scrolled
+  // into view and highlighted briefly. Focus goes to the card's free-text answer field, or else to
+  // the card itself, never to an option button: one Space or Enter must not answer the decision.
+  // A malformed id is ignored and left in the address bar. In the claude.ai Artifact the query may
+  // not reach the page: then nothing happens.
+  const LINKS = [
+    { param: 'd', re: /^d-[0-9]+-[a-z0-9]+$/, el: 'dec-', feed: 'decisions', gone: 'This decision was already answered or no longer exists.' },
+    { param: 'm', re: /^m-[0-9]+-[a-z0-9]+$/, el: 'thread-', feed: 'messages', gone: 'This message is no longer on the board.' },
+    { param: 'c', re: /^c-[0-9]+-[a-z0-9]+$/, el: 'cons-', feed: 'consensus', gone: 'This consensus item was decided over a day ago or no longer exists.' },
+  ];
+  function linkTarget() {
+    for (const k of LINKS) {
+      const v = params.get(k.param);
+      if (v != null) return k.re.test(v) ? { k, id: v } : null;
+    }
+    let hash = '';
+    try { hash = decodeURIComponent(location.hash.slice(1)); } catch (e) { return null; }
+    for (const k of LINKS) {
+      const id = hash.startsWith(k.el) ? hash.slice(k.el.length) : hash;
+      if (k.re.test(id)) return { k, id };
+    }
+    return null;
+  }
+  let linked = linkTarget();
+  // Has the viewer done anything since the page opened? Then the deferred jump below must not take
+  // the focus (or the scroll) away from them: typing could land in the linked card's field.
+  let userActed = false;
+  for (const ev of ['pointerdown', 'keydown', 'touchstart']) {
+    window.addEventListener(ev, () => { userActed = true; }, { capture: true, passive: true });
+  }
+  // Run fn after the browser's own fragment scroll (#dec-<id> names the card's element id: the
+  // browser scrolls to it once it exists, until the load event, and that moves focus to <body>).
+  function afterFragmentScroll(fn) {
+    const go = () => requestAnimationFrame(() => requestAnimationFrame(fn));
+    if (document.readyState === 'complete') go(); else window.addEventListener('load', go, { once: true });
+  }
+  function openLinked() {
+    if (!linked) return;
+    const { k, id } = linked;
+    // Wait for that feed (and, for a decision, for the viewer's rights: the answer controls).
+    if (!S.demo && !(S.mode === 'live' && S.got[k.feed] && (k.feed !== 'decisions' || S.userReady))) return;
+    linked = null;
+    try {
+      const u = new URL(location.href);
+      for (const x of LINKS) u.searchParams.delete(x.param);
+      history.replaceState(history.state, '', u.pathname + u.search + u.hash);
+    } catch (e) { /* a sandboxed frame may refuse: the link just stays in the address bar */ }
+    afterFragmentScroll(() => {
+      const card = document.getElementById(k.el + id);
+      if (!card) { toast(k.gone); return; }
+      card.classList.add('linked');
+      setTimeout(() => card.classList.remove('linked'), 2600);
+      // The viewer is already busy (clicked, tapped, typed, or focus sits elsewhere): highlight only.
+      const ae = document.activeElement;
+      if (userActed || (ae && ae !== document.body && !card.contains(ae))) return;
+      const still = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      card.scrollIntoView({ block: 'center', behavior: still ? 'auto' : 'smooth' });
+      const field = card.querySelector('.free input');
+      if (field) field.focus({ preventScroll: true });
+      else { card.tabIndex = -1; card.focus({ preventScroll: true }); }
+    });
+  }
 
   /* ------------------------------------------------------- writes + relay */
   function fastPath(kind, id, extra) {
@@ -1643,11 +1713,11 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       }, feedFailed('sessions'));
       db.collection('decisions').orderBy('created_at', 'desc').limit(200).onSnapshot((snap) => {
         S.decisions = docs(snap);
-        S.got.decisions = true; maybeLoaded(snap); renderHeader(); renderDecisions(); renderTasks();
+        S.got.decisions = true; maybeLoaded(snap); renderHeader(); renderDecisions(); renderTasks(); openLinked();
       }, feedFailed('decisions'));
       db.collection('messages').orderBy('created_at', 'desc').limit(MAX_THREADS).onSnapshot((snap) => {
         S.messages = docs(snap); S.got.messages = true;
-        syncReplySubs(); renderHeader(); renderMessages();
+        syncReplySubs(); renderHeader(); renderMessages(); openLinked();
       }, feedFailed('messages'));
       db.doc('meta/operator').onSnapshot((snap) => { S.operator = snap.exists ? snap.data() : null; S.got.operator = true; renderAll(); }, feedFailed('operator status'));
       db.collection('tasks').orderBy('updated_at', 'desc').limit(50).onSnapshot((snap) => {
@@ -1663,7 +1733,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
         S.away = d && d.active === true ? d : null; renderBanners(); renderConsensus();
       }, () => {});
       db.collection('consensus').orderBy('created_at', 'desc').limit(50).onSnapshot((snap) => {
-        S.consensus = docs(snap); renderConsensus();
+        S.consensus = docs(snap); S.got.consensus = true; renderConsensus(); openLinked();
       }, () => {});
     } catch (e) {
       feedFailed('the board')(e);
@@ -1807,46 +1877,46 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       { code: 'MOBILE', aliases: ['MOBILE', 'app'], state: 'offline', status: 'idle', task: 'Release notes draft', tmux: null, remote_url: null, pending: null, updated_at: now - 5 * 60 * min },
     ];
     S.decisions = [
-      { id: 'd-demo-1', kind: 'permission', from: 'API', question: 'Run the staging migration?', tool_use_id: 'toolu_demo1', tool_name: 'Bash', summary: 'npm run migrate -- --env staging', status: 'pending', answer: null, created_at: now - 4 * min, escalation_level: 'warn', notified_via: ['slack', 'desktop'] },
-      { id: 'd-demo-2', kind: 'question', from: 'WEB', question: 'Keep the old settings URL as a redirect, or remove it?', options: ['Keep redirect', 'Remove it'], context: 'Two external links still point at /settings/legacy.', status: 'pending', answer: null, created_at: now - 9 * min },
-      { id: 'd-demo-3', kind: 'question', from: 'QA', question: 'Quarantine the flaky upload test?', options: ['Yes', 'No'], status: 'relayed', answer: 'Yes', answered_by: 'u_demo_you', answered_at: now - 30 * min, relayed_at: now - 29 * min, created_at: now - 34 * min },
-      { id: 'd-demo-8', kind: 'permission', from: 'DATA', tool_name: 'Bash', summary: 'psql "$STAGING_URL" -f migrations/2041_backfill_orders.sql && psql "$STAGING_URL" -c "UPDATE orders SET region = lower(region) WHERE region IS NOT NULL" && ./scripts/reindex.sh --all --concurrently --batch-size 5000 && ./scripts/notify.sh ops "backfill done" …', summary_truncated: true, tool_use_id: 'toolu_demo8', status: 'pending', answer: null, created_at: now - 2 * min },
-      { id: 'd-demo-4', kind: 'permission', from: 'OPS', tool_name: 'Bash', summary: 'kubectl rollout restart deploy/web', status: 'stale', answer: null, created_at: now - 3 * 60 * min },
-      { id: 'd-demo-5', kind: 'question', from: 'API', question: 'Test results for order pagination are in. Approve and move to Deploy?', options: ['approve', 'request changes'], context: '412 tests pass; 2 evals regressed by under 1%.', task_id: 't-101', stage: 'test', gate: 'test-review', artifact_ref: '#demo-evals', status: 'pending', answer: null, created_at: now - 6 * min },
-      { id: 'd-demo-6', kind: 'question', from: 'OPS', question: 'Release the certificate rotation to production?', options: ['approve', 'request changes'], task_id: 't-103', stage: 'production', gate: 'production', artifact_ref: '#demo-review-findings', status: 'pending', answer: null, created_at: now - 15 * min, escalation_level: 'urgent', notified_via: ['slack', 'desktop', 'email', 'line'] },
-      { id: 'd-demo-7', kind: 'question', from: 'WEB', question: 'Sign off the settings page spec?', options: ['approve', 'request changes'], task_id: 't-102', stage: 'design', gate: 'design-signoff', artifact_ref: '#demo-spec', status: 'unauthorized', answer: 'approve', answered_by: 'u_demo_other', answered_at: now - 18 * min, created_at: now - 25 * min },
+      { id: 'd-1-demo', kind: 'permission', from: 'API', question: 'Run the staging migration?', tool_use_id: 'toolu_demo1', tool_name: 'Bash', summary: 'npm run migrate -- --env staging', status: 'pending', answer: null, created_at: now - 4 * min, escalation_level: 'warn', notified_via: ['slack', 'desktop'] },
+      { id: 'd-2-demo', kind: 'question', from: 'WEB', question: 'Keep the old settings URL as a redirect, or remove it?', options: ['Keep redirect', 'Remove it'], context: 'Two external links still point at /settings/legacy.', status: 'pending', answer: null, created_at: now - 9 * min },
+      { id: 'd-3-demo', kind: 'question', from: 'QA', question: 'Quarantine the flaky upload test?', options: ['Yes', 'No'], status: 'relayed', answer: 'Yes', answered_by: 'u_demo_you', answered_at: now - 30 * min, relayed_at: now - 29 * min, created_at: now - 34 * min },
+      { id: 'd-8-demo', kind: 'permission', from: 'DATA', tool_name: 'Bash', summary: 'psql "$STAGING_URL" -f migrations/2041_backfill_orders.sql && psql "$STAGING_URL" -c "UPDATE orders SET region = lower(region) WHERE region IS NOT NULL" && ./scripts/reindex.sh --all --concurrently --batch-size 5000 && ./scripts/notify.sh ops "backfill done" …', summary_truncated: true, tool_use_id: 'toolu_demo8', status: 'pending', answer: null, created_at: now - 2 * min },
+      { id: 'd-4-demo', kind: 'permission', from: 'OPS', tool_name: 'Bash', summary: 'kubectl rollout restart deploy/web', status: 'stale', answer: null, created_at: now - 3 * 60 * min },
+      { id: 'd-5-demo', kind: 'question', from: 'API', question: 'Test results for order pagination are in. Approve and move to Deploy?', options: ['approve', 'request changes'], context: '412 tests pass; 2 evals regressed by under 1%.', task_id: 't-101', stage: 'test', gate: 'test-review', artifact_ref: '#demo-evals', status: 'pending', answer: null, created_at: now - 6 * min },
+      { id: 'd-6-demo', kind: 'question', from: 'OPS', question: 'Release the certificate rotation to production?', options: ['approve', 'request changes'], task_id: 't-103', stage: 'production', gate: 'production', artifact_ref: '#demo-review-findings', status: 'pending', answer: null, created_at: now - 15 * min, escalation_level: 'urgent', notified_via: ['slack', 'desktop', 'email', 'line'] },
+      { id: 'd-7-demo', kind: 'question', from: 'WEB', question: 'Sign off the settings page spec?', options: ['approve', 'request changes'], task_id: 't-102', stage: 'design', gate: 'design-signoff', artifact_ref: '#demo-spec', status: 'unauthorized', answer: 'approve', answered_by: 'u_demo_other', answered_at: now - 18 * min, created_at: now - 25 * min },
     ];
     S.tasks = [
       { id: 't-101', title: 'Paginate the orders endpoint', owner: 'API', stage: 'test', updated_at: now - 6 * min,
         artifacts: { intent: '3f9c2a1', plan: 'e41b7d0', evals: '#demo-evals' },
-        gates: [{ stage: 'plan', gate: 'plan', status: 'approved' }, { stage: 'design', gate: 'design', status: 'skipped' }, { stage: 'build', gate: 'build-review', status: 'approved' }, { stage: 'test', gate: 'test-review', status: 'pending', decision_id: 'd-demo-5' }] },
+        gates: [{ stage: 'plan', gate: 'plan', status: 'approved' }, { stage: 'design', gate: 'design', status: 'skipped' }, { stage: 'build', gate: 'build-review', status: 'approved' }, { stage: 'test', gate: 'test-review', status: 'pending', decision_id: 'd-5-demo' }] },
       { id: 't-102', title: 'Settings page redesign', owner: 'WEB', stage: 'design', updated_at: now - 18 * min,
         artifacts: { intent: '#demo-intent', spec: '#demo-spec' },
-        gates: [{ stage: 'plan', gate: 'plan', status: 'approved' }, { stage: 'design', gate: 'design-signoff', status: 'pending', decision_id: 'd-demo-7' }] },
+        gates: [{ stage: 'plan', gate: 'plan', status: 'approved' }, { stage: 'design', gate: 'design-signoff', status: 'pending', decision_id: 'd-7-demo' }] },
       { id: 't-103', title: 'Rotate staging and production certificates', owner: 'OPS', stage: 'production', updated_at: now - 15 * min,
         artifacts: { intent: '9a0c1f2', plan: '77d2e9b', evals: '#demo-evals-ops', review: '#demo-review-findings' },
-        gates: [{ stage: 'plan', status: 'approved' }, { stage: 'design', status: 'skipped' }, { stage: 'build', status: 'approved' }, { stage: 'test', status: 'approved' }, { stage: 'deploy', status: 'approved' }, { stage: 'production', gate: 'production', status: 'pending', decision_id: 'd-demo-6' }] },
+        gates: [{ stage: 'plan', status: 'approved' }, { stage: 'design', status: 'skipped' }, { stage: 'build', status: 'approved' }, { stage: 'test', status: 'approved' }, { stage: 'deploy', status: 'approved' }, { stage: 'production', gate: 'production', status: 'pending', decision_id: 'd-6-demo' }] },
       { id: 't-099', title: 'Fix the flaky upload test', owner: 'QA', stage: 'maintain', updated_at: now - 26 * 60 * min,
         artifacts: { intent: 'c0ffee1', plan: 'b4d5e6f', evals: '#demo-evals-qa', review: '#demo-review-qa' },
         gates: [{ stage: 'plan', status: 'approved' }, { stage: 'design', status: 'skipped' }, { stage: 'build', status: 'approved' }, { stage: 'test', status: 'approved' }, { stage: 'deploy', status: 'approved' }, { stage: 'production', status: 'approved' }] },
     ];
     S.approvals = [
-      { id: 'a-6', decision_id: 'd-demo-x6', task_id: 't-103', stage: 'deploy', gate: 'deploy-review', answer: 'approve', answered_by: 'u_demo_you', answered_at: now - 22 * min, relayed_at: now - 21 * min },
-      { id: 'a-5', decision_id: 'd-demo-x5', task_id: 't-101', stage: 'build', gate: 'build-review', answer: 'approve', answered_by: 'u_demo_lead', answered_at: now - 75 * min, relayed_at: now - 74 * min },
-      { id: 'a-4', decision_id: 'd-demo-x4', task_id: 't-102', stage: 'plan', gate: 'plan', answer: 'approve', answered_by: 'u_demo_you', answered_at: now - 3 * 60 * min, relayed_at: now - 3 * 60 * min + 40000 },
-      { id: 'a-3', decision_id: 'd-demo-x3', task_id: 't-103', stage: 'test', gate: 'test-review', answer: 'request changes', answered_by: 'u_demo_lead', answered_at: now - 5 * 60 * min, relayed_at: now - 5 * 60 * min + 60000 },
-      { id: 'a-2', decision_id: 'd-demo-x2', task_id: 't-099', stage: 'production', gate: 'production', answer: 'approve', answered_by: 'u_demo_you', answered_at: now - 27 * 60 * min, relayed_at: now - 27 * 60 * min + 30000 },
+      { id: 'a-6', decision_id: 'd-6-demox', task_id: 't-103', stage: 'deploy', gate: 'deploy-review', answer: 'approve', answered_by: 'u_demo_you', answered_at: now - 22 * min, relayed_at: now - 21 * min },
+      { id: 'a-5', decision_id: 'd-5-demox', task_id: 't-101', stage: 'build', gate: 'build-review', answer: 'approve', answered_by: 'u_demo_lead', answered_at: now - 75 * min, relayed_at: now - 74 * min },
+      { id: 'a-4', decision_id: 'd-4-demox', task_id: 't-102', stage: 'plan', gate: 'plan', answer: 'approve', answered_by: 'u_demo_you', answered_at: now - 3 * 60 * min, relayed_at: now - 3 * 60 * min + 40000 },
+      { id: 'a-3', decision_id: 'd-3-demox', task_id: 't-103', stage: 'test', gate: 'test-review', answer: 'request changes', answered_by: 'u_demo_lead', answered_at: now - 5 * 60 * min, relayed_at: now - 5 * 60 * min + 60000 },
+      { id: 'a-2', decision_id: 'd-2-demox', task_id: 't-099', stage: 'production', gate: 'production', answer: 'approve', answered_by: 'u_demo_you', answered_at: now - 27 * 60 * min, relayed_at: now - 27 * 60 * min + 30000 },
     ];
     S.messages = [
-      { id: 'm-demo-2', to: 'all', body: 'Pause any deploys until 15:00, staging is being rebuilt.', by: 'u_demo_you', created_at: now - 12 * min, status: 'relayed', relayed_to: ['API', 'WEB', 'DOCS', 'OPS', 'QA', 'DATA'], relayed_at: now - 11 * min },
-      { id: 'm-demo-1', to: 'DOCS', body: 'Add a section on the new config flags to the upgrade guide.', by: 'u_demo_editor', created_at: now - 40 * min, status: 'replied', relayed_to: ['DOCS'], relayed_at: now - 39 * min },
+      { id: 'm-2-demo', to: 'all', body: 'Pause any deploys until 15:00, staging is being rebuilt.', by: 'u_demo_you', created_at: now - 12 * min, status: 'relayed', relayed_to: ['API', 'WEB', 'DOCS', 'OPS', 'QA', 'DATA'], relayed_at: now - 11 * min },
+      { id: 'm-1-demo', to: 'DOCS', body: 'Add a section on the new config flags to the upgrade guide.', by: 'u_demo_editor', created_at: now - 40 * min, status: 'replied', relayed_to: ['DOCS'], relayed_at: now - 39 * min },
     ];
-    S.replies = new Map([['m-demo-1', [{ id: 'r1', from: 'DOCS', body: 'Added under "Configuration changes", with a table of old and new flag names.', created_at: now - 31 * min }]]]);
+    S.replies = new Map([['m-1-demo', [{ id: 'r1', from: 'DOCS', body: 'Added under "Configuration changes", with a table of old and new flag names.', created_at: now - 31 * min }]]]);
     S.away = { since: now - 95 * min, by: 'OPS', said: 'Offline until tomorrow 09:00. Agree among yourselves; anything risky waits for me.' };
     S.consensus = [
-      { id: 'c-demo-2', from: 'API', participants: ['API', 'WEB', 'QA'], ref: '#decisions', proposal: 'Bump the shared test fixture to v2 in both repos before the nightly run.', status: 'pending', created_at: now - 20 * min,
+      { id: 'c-2-demo', from: 'API', participants: ['API', 'WEB', 'QA'], ref: '#decisions', proposal: 'Bump the shared test fixture to v2 in both repos before the nightly run.', status: 'pending', created_at: now - 20 * min,
         votes: [{ by: 'API', vote: 'agree', note: 'proposer', at: now - 20 * min }, { by: 'WEB', vote: 'agree', note: 'Fixture diff reviewed.', at: now - 14 * min }] },
-      { id: 'c-demo-1', from: 'DATA', participants: ['DATA', 'OPS'], ref: null, proposal: 'Rename the staging queue to match the new naming scheme.', status: 'objected', created_at: now - 70 * min, decided_at: now - 61 * min,
+      { id: 'c-1-demo', from: 'DATA', participants: ['DATA', 'OPS'], ref: null, proposal: 'Rename the staging queue to match the new naming scheme.', status: 'objected', created_at: now - 70 * min, decided_at: now - 61 * min,
         votes: [{ by: 'DATA', vote: 'agree', note: 'proposer', at: now - 70 * min }, { by: 'OPS', vote: 'object', note: 'A consumer still reads the old name.', at: now - 61 * min }] },
     ];
     S.ledger = { rows: [

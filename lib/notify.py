@@ -4,7 +4,7 @@ and "Usage meter"). Python stdlib only (+ pyyaml through lib/fleet.py). Costs ze
 
 Usage:
   notify.py send --level info|warn|high|urgent --key KEY --title T [--body B] [--url U]
-                 [--kind KIND] [--escalate|--no-escalate] [--json]
+                 [--board ID] [--kind KIND] [--escalate|--no-escalate] [--json]
   notify.py ack KEY [KEY...]        stop escalation (KEY may be a glob, e.g. 'session:API:*')
   notify.py tick [--json]           escalation pass + snapshot discovery + usage thresholds
   notify.py test --channel slack|desktop|email|line|sns|webhook [--level L]
@@ -15,6 +15,13 @@ Log:    $BOARD_HOME/events.jsonl  {ts, type:"alert", key, channel, level, ok, er
 Config: $BOARD_CONFIG_DIR/.env (channel credentials; the process environment wins) and the
         `alerting:` block of fleet.yaml, on top of an optional alerting.yaml in the same dir.
 Test hooks: BOARD_NOW_MS (fake clock, epoch ms).
+
+Board link: when a public board URL is set (BOARD_PUBLIC_URL, or `board_url` in fleet.yaml; see
+lib/fleet.py), every delivery carries <board>/?d=<id> (decision), ?c= (consensus), ?m= (message)
+or the board root as its `url`, worked out at delivery time from the alert's `board` id or its key.
+A caller's own --url (an artifact or session link) is then sent as `ref`, and both lines are
+labelled ("Decide on the board: …", "Open the session: …"). Unset: no link, no labels, and the
+message is byte for byte what it was before.
 
 A send never raises: every adapter failure is caught, logged and reported in the result.
 """
@@ -139,24 +146,7 @@ def fmt_time(ms, weekday=False):
 
 def load_env():
     """Channel settings: <config dir>/.env, overridden by the process environment."""
-    env = {}
-    path = os.path.join(fleet.config_dir(), ".env")
-    try:
-        with open(path, encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                k, v = line.split("=", 1)
-                k = k.strip()
-                if k.startswith("export "):
-                    k = k[7:].strip()
-                v = v.strip()
-                if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
-                    v = v[1:-1]
-                env[k] = v
-    except OSError:
-        pass
+    env = fleet.read_dotenv()
     for k, v in os.environ.items():
         if k.startswith(ENV_PREFIXES) and v:
             env[k] = v
@@ -177,9 +167,11 @@ def load_config():
                 cfg = fleet._merge(cfg, data)  # noqa: SLF001
         except Exception as exc:  # pragma: no cover
             sys.stderr.write("alerting.yaml: %s\n" % exc)
-    block = fleet.load_fleet().get("alerting")
+    fl = fleet.load_fleet()
+    block = fl.get("alerting")
     if isinstance(block, dict):
         cfg = fleet._merge(cfg, block)  # noqa: SLF001
+    cfg["board_url"] = fleet.board_url(fl)  # validated; None = alerts carry no board link
     return cfg
 
 
@@ -280,13 +272,27 @@ def spawn_detached(argv, cwd=None):
 
 # ------------------------------------------------------------------ adapters
 
+def labelled(label, text):
+    """'Label: text' when the line has a label (only with a board link), else the text as is."""
+    return "%s: %s" % (label, text) if label else text
+
+
+def link_lines(msg, render=str):
+    """The url line and the ref line, each labelled when a board link is in play."""
+    out = []
+    if msg.get("url"):
+        out.append(labelled(msg.get("url_label"), render(msg["url"])))
+    if msg.get("ref"):
+        out.append(labelled(msg.get("ref_label") or "Link", render(msg["ref"])))
+    return out
+
+
 def text_of(msg, with_level=True):
     head = ("[%s] " % msg["level"].upper() if with_level else "") + msg["title"]
     parts = [head]
     if msg.get("body"):
         parts.append(msg["body"])
-    if msg.get("url"):
-        parts.append(msg["url"])
+    parts += link_lines(msg)
     return "\n".join(parts)
 
 
@@ -305,7 +311,7 @@ def slack_escape(s):
 def slack_link(url):
     """A link only for a plain http(s) URL; anything else is shown as escaped text."""
     u = str(url).strip()
-    if re.match(r"^https?://[^\s<>|]+$", u):
+    if re.fullmatch(r"https?://[^\s<>|]+", u):
         return "<%s>" % u.replace("&", "&amp;")  # Slack wants & escaped inside links too
     return slack_escape(u)
 
@@ -316,8 +322,9 @@ def a_slack(msg, env, cfg):
     parts = [("[%s] " % msg["level"].upper()) + slack_escape(msg["title"])]
     if msg.get("body"):
         parts.append(slack_escape(msg["body"]))
-    if msg.get("url"):
-        parts.append(slack_link(msg["url"]))
+    # Labels are our own constants; links (board and ref alike) go through slack_link, so only a
+    # plain http(s) URL becomes a link and anything else is escaped text.
+    parts += link_lines(msg, slack_link)
     # The mention is added after escaping: it is the only markup that comes from our own config.
     text = " ".join(x for x in (mention, icon, "\n".join(parts)) if x)
     return http_post(env["SLACK_WEBHOOK_URL"], {"text": text})
@@ -344,7 +351,7 @@ try {
 
 def a_desktop(msg, env, cfg):
     title = "%s %s" % (cfg.get("subject_prefix") or "", msg["title"])
-    body = "\n".join(x for x in (msg.get("body"), msg.get("url")) if x)
+    body = "\n".join(x for x in [msg.get("body")] + link_lines(msg) if x)
     ps = shutil.which("powershell.exe")
     if ps:
         urgent = msg["level"] == "urgent"
@@ -449,6 +456,8 @@ def a_sns(msg, env, cfg):
 def a_webhook(msg, env, cfg):
     payload = {"source": "agent-switchboard", "level": msg["level"], "key": msg.get("key"),
                "title": msg["title"], "body": msg.get("body") or "", "url": msg.get("url"), "ts": msg.get("ts")}
+    if msg.get("ref"):
+        payload["ref"] = msg["ref"]
     headers = {"Authorization": env["ALERT_WEBHOOK_AUTH"]} if env.get("ALERT_WEBHOOK_AUTH") else None
     return http_post(env["ALERT_WEBHOOK_URL"], payload, headers)
 
@@ -532,7 +541,40 @@ def _open_episode(prev, alert, now):
         "title": alert["title"], "body": alert.get("body") or "", "url": alert.get("url"),
         "kind": alert.get("kind") or "generic", "escalate": bool(alert.get("escalate")),
         "repeat": alert.get("repeat", True), "resets_at": alert.get("resets_at"),
+        "board": alert.get("board"),
     }
+
+
+def board_id(key, e=None):
+    """The board card an alert is about: the entry's explicit `board` id, else the id in a
+    decision:/consensus:/message: key. None = the board root."""
+    if e and e.get("board"):
+        return e["board"]
+    for prefix in ("decision:", "consensus:", "message:"):
+        if key.startswith(prefix):
+            return key[len(prefix):]
+    return None
+
+
+BOARD_LABELS = {"d": "Decide on the board", "c": "View on the board", "m": "View on the board"}
+REF_LABELS = (("session:", "Open the session"), ("decision:", "Open the artifact"))
+
+
+def with_board_link(msg, cfg, item_id=None):
+    """Point msg at the board when a board URL is configured: the board link becomes `url`, the
+    original url (session or artifact link) becomes `ref`, and both get a label so they are easy
+    to tell apart on a phone. Unset: msg is returned untouched."""
+    link = fleet.board_link(cfg.get("board_url"), item_id)
+    if link:
+        ref = msg.get("url")
+        msg["url"] = link
+        param = link.rsplit("/?", 1)[1][:1] if "/?" in link else ""
+        msg["url_label"] = BOARD_LABELS.get(param, "Open the board")
+        if ref and ref != link:
+            msg["ref"] = ref
+            key = str(msg.get("key") or "")
+            msg["ref_label"] = next((lbl for pre, lbl in REF_LABELS if key.startswith(pre)), "Link")
+    return msg
 
 
 def _deliver(key, e, now, env, cfg, force=False):
@@ -555,8 +597,8 @@ def _deliver(key, e, now, env, cfg, force=False):
         return res
     routes = (cfg.get("routes") or {}).get(lvl) or []
     channels = [c for c in routes if c in ADAPTERS and enabled(c, env)]
-    msg = {"level": lvl, "key": key, "title": e.get("title") or key, "body": e.get("body") or "",
-           "url": e.get("url"), "ts": now}
+    msg = with_board_link({"level": lvl, "key": key, "title": e.get("title") or key, "body": e.get("body") or "",
+                           "url": e.get("url"), "ts": now}, cfg, board_id(key, e))
     res["channels"] = dispatch(msg, channels, env, cfg)
     if not channels or any(r["ok"] for r in res["channels"].values()):
         e.setdefault("sent", {})[lvl] = now
@@ -572,7 +614,7 @@ def _deliver(key, e, now, env, cfg, force=False):
 # ------------------------------------------------------------------ public API
 
 def send(level, key, title, body="", url=None, kind=None, escalate=None, repeat=None, resets_at=None,
-         now=None, env=None, cfg=None):
+         board=None, now=None, env=None, cfg=None):
     """Raise (or re-raise) alert KEY at LEVEL. Never raises; returns a result dict."""
     try:
         if level not in LEVELS:
@@ -585,7 +627,7 @@ def send(level, key, title, body="", url=None, kind=None, escalate=None, repeat=
         if repeat is None:
             repeat = bool(escalate)  # only alerts that can be acked/resolved re-alert
         alert = {"level": level, "title": title, "body": body, "url": url, "kind": kind, "escalate": escalate,
-                 "repeat": repeat, "resets_at": resets_at}
+                 "repeat": repeat, "resets_at": resets_at, "board": board}
         with Store() as st:
             e = st.data.get(key)
             if e is None or e.get("acked_at") or e.get("resolved"):
@@ -597,6 +639,8 @@ def send(level, key, title, body="", url=None, kind=None, escalate=None, repeat=
                           "last_at": now})
                 if kind:
                     e["kind"] = kind
+                if board:
+                    e["board"] = board
             st.data[key] = e
             return _deliver(key, e, now, env, cfg)
     except Exception as exc:  # noqa: BLE001
@@ -634,7 +678,20 @@ def resolve(key, now=None):
 
 # Alert builders: one per collector event. Each returns the kwargs for send().
 
-def needs_you_alert(session):
+def permission_decision_id(session, decisions):
+    """Id of the pending permission decision behind a session's prompt (same tool_use_id), if any."""
+    tid = (session.get("pending") or {}).get("tool_use_id")
+    if not tid:
+        return None
+    for d in decisions or []:
+        if (isinstance(d, dict) and d.get("kind") == "permission" and d.get("status") == "pending"
+                and d.get("tool_use_id") == tid
+                and (d.get("from") == session.get("code") or d.get("session_id") == session.get("session_id"))):
+            return d.get("id")
+    return None
+
+
+def needs_you_alert(session, decisions=None):
     code = session.get("code") or "?"
     p = session.get("pending") or {}
     if p:
@@ -642,7 +699,8 @@ def needs_you_alert(session):
     else:
         body = "waiting for input"
     return {"level": "warn", "key": "session:%s:needs-you" % code, "title": "%s needs you" % code, "body": body,
-            "url": session.get("remote_url"), "kind": "permission" if p else "needs-you", "escalate": True}
+            "url": session.get("remote_url"), "kind": "permission" if p else "needs-you", "escalate": True,
+            "board": permission_decision_id(session, decisions)}
 
 
 def decision_alert(d):
@@ -682,8 +740,8 @@ def usage_alert(label, kid, pct, resets_ms, threshold, level):
             "title": "%s usage %d%% — %s — %s" % (label, int(pct), when, advice), "body": ""}
 
 
-def on_needs_you(session, **kw):
-    return send(**needs_you_alert(session), **kw)
+def on_needs_you(session, decisions=None, **kw):
+    return send(**needs_you_alert(session, decisions), **kw)
 
 
 def on_decision(decision, **kw):
@@ -723,7 +781,7 @@ def _sync_snapshot(data, snap, now):
             if not e.get("acked_at"):
                 e["acked_at"] = now
                 e["acked_by"] = "auto"
-    alerts = [needs_you_alert(s) for s in sessions.values() if s.get("state") == "needs-you"]
+    alerts = [needs_you_alert(s, pending.values()) for s in sessions.values() if s.get("state") == "needs-you"]
     for d in pending.values():
         if d.get("kind") == "permission" and not fleet.is_production(d):
             continue  # covered by the session's needs-you alert
@@ -737,6 +795,8 @@ def _sync_snapshot(data, snap, now):
         if e is None or e.get("resolved"):
             data[a["key"]] = _open_episode(e, a, now)
             new.append(a["key"])
+        elif e.get("board") != a.get("board"):
+            e["board"] = a.get("board")  # a session's next permission prompt: link to its card
     return new
 
 
@@ -868,8 +928,8 @@ def test_channel(channel, level="info", env=None, cfg=None):
     if not enabled(channel, env):
         return {"channel": channel, "ok": False, "error": "not configured"}
     now = now_ms()
-    msg = {"level": level, "key": "test:%s" % channel, "title": "test alert", "ts": now,
-           "body": "agent-switchboard test — if you can read this, the %s channel works." % channel}
+    msg = with_board_link({"level": level, "key": "test:%s" % channel, "title": "test alert", "ts": now,
+                           "body": "agent-switchboard test — if you can read this, the %s channel works." % channel}, cfg)
     r = dispatch(msg, [channel], env, cfg)[channel]
     return {"channel": channel, "ok": r["ok"], "error": r["error"]}
 
@@ -903,6 +963,7 @@ def main(argv):
     p.add_argument("--title", required=True)
     p.add_argument("--body", default="")
     p.add_argument("--url")
+    p.add_argument("--board", help="decision/message/consensus id to open on the board (default: from KEY)")
     p.add_argument("--kind")
     g = p.add_mutually_exclusive_group()
     g.add_argument("--escalate", dest="escalate", action="store_true", default=None)
@@ -920,7 +981,8 @@ def main(argv):
     args = ap.parse_args(argv)
 
     if args.cmd == "send":
-        r = send(args.level, args.key, args.title, args.body, args.url, kind=args.kind, escalate=args.escalate)
+        r = send(args.level, args.key, args.title, args.body, args.url, kind=args.kind, escalate=args.escalate,
+                 board=args.board)
         _print_result(r, args.json)
         return 0
     if args.cmd == "ack":
