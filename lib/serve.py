@@ -122,7 +122,7 @@ DECISION_KEYS = ("id", "kind", "from", "question", "options", "context", "tool_u
                  "hint", "hint_at", "resolved_by", "resolved_via", "resolved_at", "resolve_note",
                  "created_at", "updated_at", "task_id", "stage", "gate", "artifact_ref",
                  "escalation_level", "notified_via", "summary_truncated",
-                 "labels_clipped", "answer_options",
+                 "labels_clipped", "answer_options", "press_note",
                  # pane questions (an AskUserQuestion picker): source "pane"
                  "source", "questions", "questions_clipped", "pressable", "answer_index", "relay")
 OPERATOR_KEYS = ("heartbeat_at", "version", "operator_session", "account_hint")
@@ -1122,6 +1122,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if rc == 3:
                 self.audit(ident, via, "press", id=did, code=code, key=answer, result="stale")
                 raise Refused(409, "stale", "the prompt is no longer showing; answer it in the session")
+            if rc == 7:  # the prompt still waits but is not on screen (scrolled): pending again
+                self.audit(ident, via, "press", id=did, code=code, key=answer, result="not_visible")
+                raise Refused(409, "screen_not_ready",
+                              "the session's screen is scrolled or covered, so the prompt is not visible; "
+                              "try again, or answer in the session")
             if rc == 5:  # free text typed into the picker, Enter not pressed
                 self.audit(ident, via, "press", id=did, code=code, key=answer, result="partial")
                 raise Refused(409, "partial", "keys were sent but Enter was not pressed; finish in the session")

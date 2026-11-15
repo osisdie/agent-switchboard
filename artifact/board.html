@@ -273,6 +273,8 @@ dialog.notif { width: min(720px, calc(100vw - 24px)); }
 .code-chip { font-family: var(--f-mono); font-weight: 600; font-size: 13px; color: var(--ink); background: var(--off-soft); padding: 1px 7px; border-radius: 3px; }
 .dcard h3 { font-size: 18px; font-weight: 650; font-stretch: 92%; line-height: 1.3; overflow-wrap: anywhere; }
 .dcard .ctx { margin: 0; color: var(--muted); font-size: 14px; overflow-wrap: anywhere; }
+.dcard .ctx.press-note { color: var(--lamp-ink); }
+.sdetail .note.in-session { color: var(--lamp-ink); }
 .cmd { margin: 0; font-family: var(--f-mono); font-size: 13px; line-height: 1.45; padding: 10px 12px; border-radius: 5px; background: var(--paper); border: 1px solid var(--rule); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; }
 .cmd b { color: var(--cord); font-weight: 600; }
 .opts { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -1830,6 +1832,7 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
     const shortNote = (q) => (shortened(q) ? h('span', { class: 'pq-short', text: ' ' + tr('(shortened)') }) : null);
     card.append(h('h3', null, h('span', { class: 'pq-asks', text: tr('{who} asks:', { who }) }), list.length === 1 ? str(list[0].question) : tr('{n} questions', { n: list.length }),
       list.length === 1 ? shortNote(list[0]) : null));
+    if (d.status === 'pending' && d.press_note) card.append(pressNote());
     list.forEach((q, qi) => {
       const opts = (Array.isArray(q.options) ? q.options : []).map((o) => (o && typeof o === 'object' ? o : { label: str(o) }));
       const box = h('section', { class: 'pq-q', 'aria-label': tr('Question {n}', { n: qi + 1 }) });
@@ -1934,6 +1937,8 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
     const title = str(d.question) || (isPerm ? tr('{tool} wants to run', { tool: str(d.tool_name) || tr('A tool') }) : isGate ? tr('Approve {stage}?', { stage: stageName(d.stage || d.gate) }) : tr('Question'));
     card.append(h('h3', { text: title }));
     if (d.context) card.append(h('p', { class: 'ctx', text: str(d.context) }));
+    // The last press found the session's screen scrolled: nothing was pressed, it can be answered again.
+    if (d.status === 'pending' && d.press_note) card.append(pressNote());
     if (isPerm) {
       card.append(h('pre', { class: 'cmd' }, h('b', { text: str(d.tool_name) || 'tool' }), d.summary ? '\n' + str(d.summary) : ''));
     }
@@ -2320,12 +2325,22 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
       // Pending
       const decs = sessionDecisions(s);
       const p = s.pending && typeof s.pending === 'object' ? s.pending : null;
-      if (p && p.decision_id && !decs.some((d) => d.id === p.decision_id)) decs.push({ id: str(p.decision_id), kind: 'permission', tool_name: p.tool_name });
-      if (decs.length) {
+      // The prompt the session waits on, when its decision is no longer pending (a press found the
+      // screen scrolled, or it went stale) while the session still shows that prompt: no dead link,
+      // a note to answer it in the session.
+      const waitDec = p && p.decision_id && !decs.some((d) => d.id === p.decision_id) ? S.decisions.find((d) => d.id === p.decision_id) : null;
+      if (p && p.decision_id && !decs.some((d) => d.id === p.decision_id) && !waitDec) decs.push({ id: str(p.decision_id), kind: 'permission', tool_name: p.tool_name });
+      const inSession = waitDec && col === 'needs' && waitDec.status !== 'pending' && waitDec.status !== 'answered'
+        ? h('span', { class: 'note in-session', text: waitDec.press_note ? tr('Answer in the session (screen scrolled)') : tr('Answer in the session: the board can no longer press this prompt') }) : null;
+      if (decs.length || inSession) {
         const pe = section('Pending', 'pending');
-        const nq = decs.filter((d) => d.kind !== 'permission').length;
-        pe.row('Waiting', tr('{d} decisions, {q} questions', { d: decs.length - nq, q: nq }));
-        pe.row('Open', h('ul', null, decs.map((d) => h('li', null, h('a', { href: '#dec-' + str(d.id), text: d.kind === 'permission' ? tr('Permission: {tool}', { tool: str(d.tool_name) || tr('a tool') }) : clip(d.question, 100) || tr('A question') })))));
+        if (decs.length) {
+          const nq = decs.filter((d) => d.kind !== 'permission').length;
+          pe.row('Waiting', tr('{d} decisions, {q} questions', { d: decs.length - nq, q: nq }));
+          pe.row('Open', h('ul', null, decs.map((d) => h('li', null, h('a', { href: '#dec-' + str(d.id), text: d.kind === 'permission' ? tr('Permission: {tool}', { tool: str(d.tool_name) || tr('a tool') }) : clip(d.question, 100) || tr('A question') }),
+            d.press_note ? h('span', { class: 'note', text: ' · ' + tr('screen was scrolled; try again') }) : null))));
+        }
+        if (inSession) pe.row('In session', inSession);
         pe.add();
       }
       // Where
@@ -3717,6 +3732,8 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
     toast(okText + ' · ' + (operatorOffline() ? tr('queued until the operator returns.') : sent ? tr('Sent to operator.') : queuedText()));
     return true;
   }
+  // The last press found the session's screen scrolled: nothing was pressed, it can be answered again.
+  const pressNote = () => h('p', { class: 'ctx press-note', text: tr('The session\'s screen was scrolled, so nothing was pressed. Try again, or answer in the session.') });
   function handleWriteError(e, gone) {
     const code = e && e.code;
     // Local adapter (board-serve) answers; never produced by the claude.ai db.
@@ -3730,6 +3747,7 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
     if (code === 'not_held' || code === 'confirm_required') { toast(tr('Not released: {why}', { why: e.message || tr('the message is not held.') }), true); return; }
     if (code === 'stale') { toast(tr('That prompt is no longer showing, so nothing was pressed. Handle it in the session.'), true); return; }
     if (code === 'not_a_board_ask') { toast(tr('Only a question asked with board ask can be closed this way.'), true); return; }
+    if (code === 'screen_not_ready') { toast(tr('The session\'s screen is scrolled, so nothing was pressed. Try again, or answer in the session.'), true); return; }
     if (code === 'partial') { toast(tr('Your text was typed into the question but Enter was not pressed. Finish it in the session.'), true); return; }
     if (code === 'answer_in_session') { toast(tr('This question can only be answered in the session.'), true); return; }
     if (code === 'bad_option') { toast(tr('Not sent: that option no longer matches the question. Reload and try again.'), true); return; }
@@ -5273,6 +5291,12 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
       "{name}: not reported": "{name}：未回報",
       "{name}: {pct}%, resets in {in}": "{name}：{pct}%，{in} 後重設",
       "stale": "過時",
+      "Answer in the session (screen scrolled)": "請在 session 中回答（畫面已捲動）",
+      "In session": "在 session 中",
+      "Answer in the session: the board can no longer press this prompt": "請在 session 中回答：看板已無法替這個提示按鍵",
+      "screen was scrolled; try again": "畫面曾捲動，請再試一次",
+      "The session's screen was scrolled, so nothing was pressed. Try again, or answer in the session.": "session 的畫面曾捲動，所以沒有按下任何鍵。請再試一次，或在 session 中回答。",
+      "The session's screen is scrolled, so nothing was pressed. Try again, or answer in the session.": "session 的畫面已捲動，所以沒有按下任何鍵。請再試一次，或在 session 中回答。",
       "due": "已到",
       "↻ {in}": "↻ {in}",
       "5h burn": "5h 消耗",
