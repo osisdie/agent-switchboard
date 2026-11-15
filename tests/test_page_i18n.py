@@ -184,6 +184,8 @@ def main():
               "Keep the old settings URL as a redirect, or remove it?" in page_text and "Paginate the orders endpoint" in page_text
               and "API" in texts, None)
         check("the product name stays", pg.inner_text("h1") == "Agent Switchboard")
+        wrap = pg.evaluate("() => [...document.querySelectorAll('.u-k')].map((e) => [e.textContent, e.getClientRects().length && e.getBoundingClientRect().height < 22])")
+        check("meter labels stay on one line in 繁體中文", all(ok for _t, ok in wrap), wrap)
         set_lang(pg, "en")
         check("back to English", pg.inner_text("#h-decisions") == "Decisions" and pg.evaluate("() => document.documentElement.lang") == "en")
         pg.close()

@@ -112,6 +112,9 @@ def main():
             check("updated", "Updated: 1m ago" in t, t)
             check("threshold reached", "Threshold: 90% · prepare to switch" in t, t)
             check("account (demo)", "Account: you@example.com · Example Org" in t, t)
+            lay = pg.evaluate("""() => { const p = document.getElementById('usage-pop'); const ps = [...p.querySelectorAll('p')].map((e) => e.getBoundingClientRect());
+              return { flow: ps.every((r, i) => i === 0 || r.top >= ps[i - 1].bottom - 1), pos: getComputedStyle(p.querySelector('p:last-of-type')).position }; }""")
+            check("its lines stack in order (no line taken out of the flow)", lay == {"flow": True, "pos": "static"}, lay)
             pg.mouse.move(5, 5)
             pg.wait_for_timeout(100)
             check("leaving closes it", not pg.evaluate(POP_JS)["open"])

@@ -491,7 +491,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 /* ---------- usage meters + escalation ---------- */
 .usage { display: grid; gap: 8px; align-content: center; padding: 10px 14px; border: 1px solid var(--rule); border-radius: var(--r); background: var(--panel); min-width: 230px; }
 .usage .u-title { font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; gap: 8px; }
-.u-row { display: grid; grid-template-columns: 26px minmax(60px, 1fr) 42px; align-items: center; gap: 2px 8px; --u: var(--off); }
+.u-row { display: grid; grid-template-columns: minmax(26px, max-content) minmax(60px, 1fr) 42px; align-items: center; gap: 2px 8px; --u: var(--off); }
 .u-k { font-family: var(--f-mono); font-size: 12px; font-weight: 600; color: var(--muted); }
 .u-bar { height: 8px; border-radius: 4px; background: var(--off-soft); overflow: hidden; }
 .u-bar > span { display: block; height: 100%; border-radius: 4px; background: var(--u); }
@@ -505,7 +505,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 .u-pop[hidden] { display: none; }
 .u-pop p { margin: 0; }
 .u-pop .k { color: var(--muted); }
-.u-pop .acct { overflow-wrap: anywhere; }
+.u-pop .u-acct { overflow-wrap: anywhere; }
 .u-pop .lvls { display: flex; flex-wrap: wrap; gap: 4px; }
 .u-pop .lvls .esc { opacity: .45; }
 .u-pop .lvls .esc.on { opacity: 1; box-shadow: 0 0 0 1.5px currentColor; }
@@ -595,7 +595,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 .sys { display: grid; gap: 6px; align-content: center; padding: 10px 14px; border: 1px solid var(--rule); border-radius: var(--r); background: var(--panel); min-width: 230px; color: var(--ink); text-decoration: none; }
 .sys:hover { border-color: var(--cord); }
 .sys .u-title { font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; align-items: center; gap: 8px; }
-.sys .u-row { grid-template-columns: 34px minmax(60px, 1fr) 42px; }
+.sys .u-row { grid-template-columns: minmax(34px, max-content) minmax(60px, 1fr) 42px; }
 .sys .s-line { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; display: flex; flex-wrap: wrap; gap: 2px 10px; }
 .sys .s-line b { font-weight: 600; color: var(--ink); }
 .lvl { font-family: var(--f-mono); font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; padding: 1px 7px; border-radius: 9px; background: var(--off-soft); color: var(--muted); white-space: nowrap; }
@@ -1080,7 +1080,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     pop.append(h('div', { class: 'lvls', 'aria-hidden': 'true' }, THRESHOLDS.map((x) => h('span', { class: 'esc ' + x.cls + (hit === x ? ' on' : ''), text: x.at + '% · ' + tr(x.key) }))));
     const a = S.account;
     const acct = a && a.email ? str(a.email) + (a.org ? ' · ' + str(a.org) : '') : tr(a && a.hidden ? 'hidden' : isLocal() || S.demo ? 'not reported' : 'hidden');
-    pop.append(h('p', { class: 'acct' }, h('span', { class: 'k', text: tr('Account: ') }), acct));
+    pop.append(h('p', { class: 'u-acct' }, h('span', { class: 'k', text: tr('Account: ') }), acct));
   }
   (() => {
     const box = $('#usage'), pop = $('#usage-pop');
