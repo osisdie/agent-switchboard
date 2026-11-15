@@ -19,6 +19,8 @@ listeners (docs/contract.md, "Local adapter API"):
   GET  /api/events                     Server-Sent Events: the full state on every change
   POST /api/decisions/<id>/answer      {"answer": "..."}   (via `board answer` / `board press`)
   POST /api/messages                   {"to": "CODE"|"all", "body": "..."}
+  POST /api/away                       {"state": "on"|"off", "said": "..."}   (approvers only;
+                                       via `board away on|off --by board:<identity>`)
 
 --check prints the resolved settings and exits. --watch serves nothing: it prints one line per
 item the local-mode operator must relay (see prompts/board-operator.md, "Local mode").
@@ -39,6 +41,7 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import away  # noqa: E402
 import fleet  # noqa: E402
 import limit  # noqa: E402
 
@@ -306,8 +309,8 @@ class StateBuilder:
     def signature(self):
         h = hashlib.sha1()
         paths = [self.p(n) for n in ("snapshot.json", "usage.json", "limit.json", "operator.json",
-                                    "ledger.json", "events.jsonl")]
-        for sub in ("decisions", "tasks"):
+                                    "ledger.json", "events.jsonl", "owner-away")]
+        for sub in ("decisions", "tasks", "consensus"):
             paths.append(self.p(sub))
             paths.extend(glob.glob(self.p(sub, "*.json")))
         for root, dirs, files in os.walk(self.p("messages")):
@@ -430,6 +433,8 @@ class StateBuilder:
         return {"sessions": sessions, "decisions": decisions, "tasks": tasks[:50],
                 "approvals": approvals[:100], "messages": messages, "replies": replies,
                 "operator": operator, "ledger": ledger if isinstance(ledger, dict) else None,
+                "owner_away": away.away_record(self.home),
+                "consensus": away.consensus_items(self.home, now_ms())[-50:],
                 "generated_at": snap.get("generated_at")}
 
 
@@ -716,6 +721,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if path == "/api/messages":
                 body = self.read_body()
                 return self.message(body, ident, via)
+            if path == "/api/away":
+                body = self.read_body()
+                return self.set_away(body, ident, via)
             raise Refused(404, "not_found")
         except Refused as exc:
             return self.refuse(exc)
@@ -837,6 +845,45 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return self.send_json(201, {"id": mid, "status": "new"})
 
 
+    def set_away(self, body, ident, via):
+        """Owner-away mode from the board: approvers only (the rule of an ordinary answer)."""
+        state, said = body.get("state"), body.get("said", "")
+        if state not in ("on", "off"):
+            raise Refused(400, "bad_state", "state must be \"on\" or \"off\"")
+        if said is None:
+            said = ""
+        if not isinstance(said, str) or len(said) > MAX_ANSWER:
+            raise Refused(400, "bad_said", "said must be a string (max %d chars)" % MAX_ANSWER)
+        said = said.strip()
+        cfg = fleet.load_fleet()
+        approvers = fleet.id_list(cfg, "approvers")
+        if not approvers:
+            self.audit(ident, via, "away", state=state, result="refused", reason="no approvers configured")
+            raise Refused(403, "no_approvers", "fleet.yaml approvers is empty: nobody may change this")
+        by = match_id(ident, approvers)
+        if by is None:
+            self.audit(ident, via, "away", state=state, result="refused", reason="not an approver")
+            raise Refused(403, "not_approver", "only approvers change owner-away mode")
+        home = self.server.home
+        with self.server.write_lock:
+            was = away.away_record(home) is not None
+            args = ["away", state, "--by", "board:%s" % by]
+            if state == "on":
+                args += ["--said", said or "away (set on the board)"]
+            elif said:
+                args += ["--said", said]
+            rc, out, err = self.board(*args)
+            now_away = away.away_record(home) is not None
+            if rc != 0 or now_away != (state == "on"):
+                log("board away %s failed (rc %d): %s %s" % (state, rc, err, out))
+                self.audit(ident, via, "away", state=state, result="error", rc=rc)
+                raise Refused(500, "away_failed", "owner-away mode could not be changed")
+            result = "unchanged" if was == now_away else state
+            self.audit(ident, via, "away", state=state, result=result)
+        self.hub_kick()
+        return self.send_json(200, {"away": now_away, "status": result})
+
+
 class Server(http.server.ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
@@ -885,8 +932,18 @@ class Server(http.server.ThreadingHTTPServer):
 
 
 def actionable(home):
-    """What a local-mode operator has to relay: answered question/gate decisions, new messages."""
+    """What a local-mode operator has to relay: answered question/gate decisions, new messages,
+    the owner-away state (`away on|off`, broadcast to every session when it changes) and each
+    consensus status (`consensus <id> <status>`, mirrored, never relayed as a decision)."""
     out = []
+    rec = away.away_record(home)
+    if rec:
+        out.append((as_int(rec.get("since")), "away on", ("a", "on", rec.get("since"))))
+    else:
+        out.append((0, "away off", ("a", "off")))
+    for c in away.consensus_items(home, now_ms()):
+        out.append((as_int(c.get("updated_at")), "consensus %s %s" % (c["id"], c["status"]),
+                    ("c", c["id"], c["status"])))
     for path in glob.glob(os.path.join(home, "decisions", "*.json")):
         d = read_json(path)
         if isinstance(d, dict) and d.get("status") == "answered" and d.get("kind") != "permission":

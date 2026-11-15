@@ -128,7 +128,7 @@ start
 # ---------------------------------------------------------------- state
 echo "state:"
 eq "GET /api/state 200" "$(req GET /api/state)" "200"
-eq "state keys" "$(body 'keys | join(",")')" "approvals,can_message,decisions,generated_at,ledger,me,messages,mode,operator,replies,sessions,tasks,writable"
+eq "state keys" "$(body 'keys | join(",")')" "approvals,can_message,consensus,decisions,generated_at,ledger,me,messages,mode,operator,owner_away,replies,sessions,tasks,writable"
 eq "me is local on loopback" "$(body .me)" "local"
 eq "mode local" "$(body .mode)" "local"
 eq "session CP needs-you" "$(body '.sessions[] | select(.code=="CP") | .state')" "needs-you"
@@ -199,6 +199,42 @@ mf="$BOARD_HOME/messages/$mid.json"
 [ -f "$mf" ] && ok "message file written" || bad "message file written" "$mid"
 eq "message fields" "$(jq -r '[.to, .body, .by, .status] | join("|")' "$mf" 2>/dev/null)" "CP|please rebase|local|new"
 eq "message write logged with identity" "$(jq -s -r '[.[] | select(.type=="serve" and .action=="message")] | last | .by + "/" + .via' "$BOARD_HOME/events.jsonl")" "local/loopback"
+
+# ---------------------------------------------------------------- owner away (POST /api/away)
+echo "away:"
+AWF="$BOARD_HOME/owner-away"
+eq "state: owner_away null" "$(req GET /api/state >/dev/null; body '.owner_away')" "null"
+eq "state: consensus empty" "$(body '.consensus | length')" "0"
+eq "bad state refused" "$(post /api/away '{"state":"maybe"}')" "400"
+eq "  error bad_state" "$(body .error)" "bad_state"
+eq "missing state refused" "$(post /api/away '{"said":"x"}')" "400"
+eq "said not a string refused" "$(post /api/away '{"state":"on","said":42}')" "400"
+eq "  error bad_said" "$(body .error)" "bad_said"
+long_said="$(python3 -c 'import json; print(json.dumps({"state":"on","said":"x"*600}))')"
+eq "said over the limit refused" "$(post /api/away "$long_said")" "400"
+eq "away without X-Board refused" "$(req POST /api/away -H 'Content-Type: application/json' -H "$ORIGIN" --data-binary '{"state":"on"}')" "403"
+eq "away cross-origin refused" "$(req POST /api/away -H 'Content-Type: application/json' -H 'X-Board: 1' -H 'Origin: https://evil.example' --data-binary '{"state":"on"}')" "403"
+eq "away text/plain refused" "$(req POST /api/away -H 'Content-Type: text/plain' -H 'X-Board: 1' -H "$ORIGIN" --data-binary '{"state":"on"}')" "415"
+big_away="$(python3 -c 'import json; print(json.dumps({"state":"on","said":"x"*20000}))')"
+eq "away over the body cap refused" "$(post /api/away "$big_away")" "413"
+[ -e "$AWF" ] && bad "refused POSTs write nothing" || ok "refused POSTs write nothing"
+eq "approver turns away on" "$(post /api/away '{"state":"on","said":"back tomorrow; agree among yourselves"}')" "200"
+eq "  reply" "$(body '"\(.away)/\(.status)"')" "true/on"
+eq "  file by board:<identity>" "$(jq -r '.by + "|" + .said' "$AWF")" "board:local|back tomorrow; agree among yourselves"
+eq "  file mode 0600" "$(stat -c %a "$AWF")" "600"
+eq "  state shows owner_away" "$(req GET /api/state >/dev/null; body '.owner_away.by')" "board:local"
+eq "  audited" "$(jq -s -r '[.[] | select(.type=="serve" and .action=="away")] | last | .by + "/" + .state + "/" + .result' "$BOARD_HOME/events.jsonl")" "local/on/on"
+eq "on again: unchanged" "$(post /api/away '{"state":"on","said":"other words"}')" "200"
+eq "  status unchanged, record kept" "$(body .status)/$(jq -r .said "$AWF")" "unchanged/back tomorrow; agree among yourselves"
+cid="$("$REPO/bin/board" consensus propose --from CP --to AI --ref PR-1 "bump the shared fixture" 2>/dev/null)"
+eq "state lists the consensus item" "$(req GET /api/state >/dev/null; body --arg id "$cid" '.consensus[] | select(.id == $id) | .status + "/" + (.participants | join(","))')" "pending/CP,AI"
+eq "approver turns away off" "$(post /api/away '{"state":"off","said":"I am back"}')" "200"
+eq "  reply" "$(body '"\(.away)/\(.status)"')" "false/off"
+[ -e "$AWF" ] && bad "  file removed" || ok "  file removed"
+eq "  pending consensus went back to the owner" "$(jq -r .status "$BOARD_HOME/consensus/$cid.json")" "owner_back"
+eq "  state: owner_away null again" "$(req GET /api/state >/dev/null; body '.owner_away')" "null"
+eq "off again: unchanged" "$(post /api/away '{"state":"off"}')" "200"
+eq "  status" "$(body .status)" "unchanged"
 
 # ---------------------------------------------------------------- SSE
 echo "sse:"
@@ -296,6 +332,8 @@ eq "  error no_approvers" "$(body .error)" "no_approvers"
 eq "  decision untouched" "$(jq -r .status "$BOARD_HOME/decisions/d-1-q2.json")" "pending"
 eq "  state says nobody is an approver" "$(req GET /api/state >/dev/null; body '.operator.approver_ids | length')" "0"
 eq "  --check says answers are refused" "$("$REPO/bin/board-serve" --check | grep -c 'answers  REFUSED')" "1"
+eq "empty approvers: away refused" "$(post /api/away '{"state":"on"}')" "403"
+eq "  error no_approvers" "$(body .error)" "no_approvers"
 write_cfg "" "[boss@example.com]"
 start
 eq "approvers without local: loopback answer refused" "$(post /api/decisions/d-1-q2/answer '{"answer":"A"}')" "403"
@@ -303,6 +341,10 @@ eq "  error not_approver" "$(body .error)" "not_approver"
 eq "  file untouched" "$(jq -r '.status + "/" + (.answered_by // "none")' "$BOARD_HOME/decisions/d-1-q2.json")" "pending/none"
 eq "  message refused for a non-approver" "$(post /api/messages '{"to":"CP","body":"x"}')" "403"
 eq "  can_message false" "$(req GET /api/state >/dev/null; body .can_message)" "false"
+eq "  away refused for a non-approver" "$(post /api/away '{"state":"on","said":"x"}')" "403"
+eq "  error not_approver" "$(body .error)" "not_approver"
+[ -e "$BOARD_HOME/owner-away" ] && bad "  no owner-away file" || ok "  no owner-away file"
+eq "  refusal audited" "$(jq -s -r '[.[] | select(.type=="serve" and .action=="away")] | last | .result + "/" + .reason' "$BOARD_HOME/events.jsonl")" "refused/not an approver"
 # MUST-FIX: a non-approver must never cancel an approver's answer that waits for the relay.
 dec d-1-q6 question
 BOARD_HOME="$BOARD_HOME" "$REPO/bin/board" answer d-1-q6 "ship it" --by boss@example.com >/dev/null
@@ -511,7 +553,7 @@ EOF
 # ---------------------------------------------------------------- --watch (operator input)
 echo "watch:"
 w="$("$REPO/bin/board-serve" --watch --once)"
-eq "--watch lists answered questions and new messages, oldest first" "$(tr '\n' ',' <<<"$w")" \
+eq "--watch lists answered questions and new messages, oldest first" "$(grep -v '^away \|^consensus ' <<<"$w" | tr '\n' ',')" \
   "$(python3 - "$BOARD_HOME" <<'EOF2'
 import glob, json, os, sys
 h = sys.argv[1]; out = []
@@ -531,9 +573,14 @@ grep -q '^message m-1-a ' <<<"$w" && bad "--watch skips replied messages" "$w" |
 "$REPO/bin/board-serve" --watch --tick 1 > "$T/watch.out" & wpid=$!
 sleep 0.5
 echo '{"id":"m-3-late","to":"CP","body":"x","by":"local","created_at":9,"status":"new"}' > "$BOARD_HOME/messages/m-3-late.json"
+"$REPO/bin/board" away on --by CP --said "watch test" >/dev/null
+wcid="$("$REPO/bin/board" consensus propose --from CP --to AI "watch test" 2>/dev/null)"
 sleep 2.2
 kill "$wpid" 2>/dev/null; wait "$wpid" 2>/dev/null
 eq "--watch prints a new message once" "$(grep -c '^message m-3-late new$' "$T/watch.out")" "1"
+eq "--watch reports the owner-away state, then its change" "$(grep -c '^away off$' "$T/watch.out")/$(grep -c '^away on$' "$T/watch.out")" "1/1"
+eq "--watch reports a consensus status once" "$(grep -c "^consensus $wcid pending\$" "$T/watch.out")" "1"
+"$REPO/bin/board" away off --by CP >/dev/null
 grep -q '^tick$' "$T/watch.out" && ok "--watch ticks" || bad "--watch ticks" "$(cat "$T/watch.out")"
 
 # ---------------------------------------------------------------- fleet-up
