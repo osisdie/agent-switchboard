@@ -321,6 +321,81 @@ class BoundedView(unittest.TestCase):
         self.assertEqual(doc["days"], {})
 
 
+class DayView(unittest.TestCase):
+    """GET /api/pomodoro/day: one kept day's breakdown, on demand, bounded like the board view."""
+
+    def doc(self, now, per=70):
+        past = "2026-11-10"
+        per_day = {"API": {"done": 4, "focus_ms": 110 * MIN}, "WEB": {"done": 0, "focus_ms": 0},
+                   "DOCS": {"done": 1, "focus_ms": 30 * MIN, "note": "x"}, "../bad": {"done": 9, "focus_ms": 1}}
+        for j in range(per):
+            per_day["API/tm-%03d" % j] = {"done": j % 3, "focus_ms": (j % 3) * 25 * MIN + j * 1000}
+        return past, {"version": 2, "at": now, "settings": {"tz": "UTC", "mode": "accumulate"},
+                      "sessions": {"API": {"state": "working", "acc": 5 * MIN, "away_since": None, "done_at": None, "seen_at": now}},
+                      "days": {past: per_day, "2026-10-01": {"API": {"done": 7, "focus_ms": 1}},
+                               DAY: {"API": {"done": 1, "focus_ms": 26 * MIN}}}, "notified": {}}
+
+    def test_caps_and_exact_totals(self):
+        now = T0
+        past, doc = self.doc(now)
+        v = pomodoro.day_view(doc, past, now)
+        self.assertEqual(set(v), {"date", "today", "tz", "fleet", "sessions"})
+        self.assertEqual((v["date"], v["today"], v["tz"]), (past, DAY, "UTC"))
+        raw = doc["days"][past]
+        good = {c: r for c, r in raw.items() if c != "../bad"}
+        self.assertEqual(v["fleet"]["done"], sum(r["done"] for r in good.values()))
+        self.assertEqual(v["fleet"]["focus_ms"], sum(r["focus_ms"] for r in good.values()))
+        self.assertEqual(v["fleet"]["teammates_done"], sum(r["done"] for c, r in good.items() if "/" in c))
+        # every sum over the rows is exact, the folded row included
+        self.assertEqual(sum(r["done"] for r in v["sessions"].values()), v["fleet"]["done"])
+        self.assertEqual(sum(r["focus_ms"] for r in v["sessions"].values()), v["fleet"]["focus_ms"])
+        team = [c for c in v["sessions"] if c.startswith("API/") and c != "API/+others"]
+        self.assertEqual(len(team), pomodoro.VIEW_TEAM_CAP)
+        others = v["sessions"]["API/+others"]
+        active = sum(1 for j in range(70) if j)   # every teammate but tm-000 focused that day (j * 1000 ms)
+        self.assertEqual(others["streams"] + len(team), active)
+        self.assertEqual(others["active"], others["streams"])
+        self.assertEqual(set(others), {"done", "focus_ms", "streams", "active"})
+        self.assertEqual(set(v["sessions"]["API"]), {"done", "focus_ms"})
+        self.assertNotIn("WEB", v["sessions"])       # nothing that day: no row
+        self.assertNotIn("../bad", v["sessions"])    # a malformed code is dropped
+        self.assertEqual(v["sessions"]["DOCS"], {"done": 1, "focus_ms": 30 * MIN})
+        # the most 🍅 and focus are kept, the rest folded
+        self.assertTrue(all("API/tm-%03d" % j in v["sessions"] for j in range(70) if j % 3), team)
+        self.assertLess(len(json.dumps(v)), 64 * 1024)
+
+    def test_today_and_an_empty_kept_day(self):
+        past, doc = self.doc(T0)
+        v = pomodoro.day_view(doc, DAY, T0)
+        self.assertEqual(v["fleet"]["done"], 1)
+        self.assertEqual(v["sessions"], {"API": {"done": 1, "focus_ms": 26 * MIN}})
+        v = pomodoro.day_view(doc, "2026-11-02", T0)     # the oldest kept day, nothing recorded
+        self.assertEqual((v["fleet"], v["sessions"]), ({"done": 0, "focus_ms": 0, "teammates_done": 0}, {}))
+
+    def test_unknown_day(self):
+        past, doc = self.doc(T0)
+        for d in ("2026-11-01", "2026-10-01", "2026-11-16", "2030-01-01"):   # before the 14 kept days, kept in the file, future
+            self.assertIsNone(pomodoro.day_view(doc, d, T0), d)
+        self.assertIsNone(pomodoro.day_view(None, past, T0))
+        self.assertIsNone(pomodoro.day_view("junk", past, T0))
+
+    def test_bad_date(self):
+        past, doc = self.doc(T0)
+        for d in ("", "2026-11-1", "2026/11/10", "2026-13-01", "2026-02-30", "2026-11-10 ", " 2026-11-10",
+                  "2026-11-10\n", "20261110", "../pomodoro", None, 20261110, "２０２６-11-10"):
+            with self.assertRaises(ValueError, msg=repr(d)):
+                pomodoro.day_view(doc, d, T0)
+
+    def test_follows_the_timezone(self):
+        # 2026-11-15 08:00 UTC is still 2026-11-14 in Honolulu (UTC-10): its 14 days end a day earlier
+        past, doc = self.doc(T0)
+        doc["settings"]["tz"] = "Pacific/Honolulu"
+        if pomodoro.tzinfo("Pacific/Honolulu") is None:
+            self.skipTest("no tz database")
+        self.assertEqual(pomodoro.day_view(doc, "2026-11-01", T0)["today"], "2026-11-14")
+        self.assertIsNone(pomodoro.day_view(doc, DAY, T0))
+
+
 class Settings(unittest.TestCase):
     def test_defaults_and_clamps(self):
         st = pomodoro.settings({})

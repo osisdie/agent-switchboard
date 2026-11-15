@@ -43,6 +43,8 @@ listeners (docs/contract.md, "Local adapter API"):
   POST /api/rc                         {"code": "CODE"|"all", "state": "on"|"off"}  (the same for
                                        Remote Control, also for all sessions)
   GET  /api/lessons[?q=TEXT]           the scheduler's lessons (also in /api/state), searchable
+  GET  /api/pomodoro/day?d=YYYY-MM-DD one kept day's per-stream pomodoro breakdown (read-only,
+                                       on demand; the pushed view has daily totals only)
   POST /api/lessons                    {"title", "rule"?, "cause"?, "resolution"?}  (approvers only;
                                        via `board lesson add --by board:<identity> --file <0600 tmp>`)
   POST /api/lessons/<id>               {"action": "edit"|"activate"|"retire"|"delete", ...}  (approvers
@@ -986,9 +988,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
             cfg = fleet.load_fleet()
             return self.send_json(200, guard.scrub_tree({
                 "lessons": rows, "can_edit": match_id(ident, fleet.id_list(cfg, "approvers")) is not None}))
+        if path == "/api/pomodoro/day":
+            return self.pomodoro_day()
         if path in STATIC:
             return self.static(*STATIC[path])
         return self.send_json(404, {"error": "not_found"})
+
+    def pomodoro_day(self):
+        """GET /api/pomodoro/day?d=YYYY-MM-DD: one kept day's per-stream breakdown, fetched by the
+        page when a past day is selected (the pushed view carries daily totals only, so SSE stays
+        small). Exactly one `d`, nothing else; 400 for a bad date, 404 outside the 14 kept days."""
+        qs = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query, keep_blank_values=True)
+        d = qs.get("d") or []
+        if set(qs) != {"d"} or len(d) != 1:
+            return self.send_json(400, {"error": "bad_request", "detail": "expected ?d=YYYY-MM-DD"})
+        try:
+            view = pomodoro.day_view(read_json(os.path.join(self.server.home, "pomodoro.json")), d[0], now_ms())
+        except ValueError:
+            return self.send_json(400, {"error": "bad_request", "detail": "expected ?d=YYYY-MM-DD"})
+        if view is None:
+            return self.send_json(404, {"error": "not_found"})
+        return self.send_json(200, guard.scrub_tree(view))
 
     def state_for(self, ident):
         with self.server.hub.cond:

@@ -508,6 +508,7 @@ $BOARD_HOME/
 | `GET /api/state` | the state below, built from `$BOARD_HOME`, plus `page_version`: a short hash of `artifact/board.html` as it is now. The page board-serve renders carries its own as `<meta name="board-version">` (both hash the file's bytes as they are on disk). When the two differ (board.html was updated after the tab opened) the page shows a "newer version — Reload" banner and never reloads by itself. The banner comes with the next state frame, which is sent when anything on the board changes (keepalives carry no state), so it can show up some time after the update |
 | `GET /api/me` | who is asking, from the verified identity and `fleet.yaml` only (never from request headers): see "Who am I" below. Same `Host` and identity checks as `/api/state` (no or bad JWT on the tunnel → 401, a forwarded request on the local listener → 403) |
 | `GET /icon.svg`, `/favicon.png`, `/favicon.ico` (the PNG), `/apple-touch-icon.png` (+ `-precomposed`), `/icons/icon-192.png`, `/icons/icon-512.png`, `/manifest.webmanifest` | a fixed map to files under `artifact/` (nothing else there is served; the request path is never joined onto a directory), with `image/svg+xml`, `image/png` or `application/manifest+json`, `Cache-Control: private, max-age=86400` and `Content-Security-Policy: default-src 'none'`. Same Host and identity checks as every route, so through the tunnel they need Access too. The page itself gets `manifest-src 'self'` in its CSP |
+| `GET /api/pomodoro/day?d=YYYY-MM-DD` | one kept day's per-stream pomodoro breakdown, read-only and on demand (the pushed `pomodoro` view has daily totals only, so SSE stays small): see "Pomodoro". Exactly one `d`, a real date, nothing else in the query (else 400 `bad_request`); a day outside the 14 kept, or no `pomodoro.json` → 404. Same `Host` and identity checks as `/api/state` (anyone who may view the board may read it) |
 | `GET /api/events` | `text/event-stream`: `event: state` with the full state at once and after every change (1 s mtime poll; only when the state differs), `: keepalive` every 25 s |
 | `POST /api/decisions/<id>/answer` `{answer}` | `<id>` must match `^d-[0-9]+-[a-z0-9]+$`. With empty `approvers` → 403 `no_approvers` (fails closed). The identity is then checked **before anything is written**, with the rule of `board answer` (`approvers`; for a production decision, gate or stage, `release_managers`, falling back to `approvers`): not allowed → 403 `not_approver`, audited, file untouched (so it can never cancel an approver's answer that waits for the relay). `board answer` exit 8 (the gate's task was busy) → 409 `task_busy`: try again. Otherwise `board answer <id> --answer-file <tmp> --by <identity>` (argv, no shell; the answer goes by a 0600 file under `$BOARD_HOME` that is removed afterwards, so `-`, `--help` or `--answer-file` typed as an answer are recorded literally) → 200 `{status: "answered"}`. For `kind: "permission"` (`answer` = `allow`\|`deny`; `allow` with `summary_truncated` → 409 `review_in_session`), it then runs `board press <from> <answer> --expect <tool_use_id>` → 200 `{status: "relayed"}`; exit 3 → 409 `stale`; exit 4 → 403 `press_refused`; exit 7 → 409 `screen_not_ready` (the decision is pending again). A pane question (`source: "pane"`) that is not `pressable` → 409 `answer_in_session`, untouched. A pressable form of several questions takes `{options: [i, j, ...]}` instead of `answer` (2–4 numbers, one per question, 1–8, no `answer`/`option`); a wrong count, a number out of its question's range, a boolean, free text, or `options` on any other decision → 400 `bad_options`, untouched. It runs `board answer <id> --options i,j --by <identity>`, then `board press` like below. With free text for some questions it takes `{answers: [{question_index, option} \| {question_index, text}, ...]}` instead (one entry per question, in order, exactly one of `option` 1–8 or `text` per entry, no `options`/`answer`/`option`); text is cleaned as by `board answer --form-file` and must then be 1–200 characters, not ending in `\;` and not the "Type something" row itself (else 400 `bad_answers`; `question_index`, when given, an integer equal to the entry's position), and each text is screened by the secret guard before anything is written: a request for a secret or a secret-shaped value → 400 `held_answer`, audited; it goes to `board answer <id> --form-file <0600 tmp file> --by <identity>` (removed afterwards), then `board press`; an optional `option` (1–10, a pane question's clicked button) goes to `board answer --option` (mismatch → 400 `bad_option`, untouched; `option` on any other decision → 400); otherwise, when `board answer` set `relay: "press"`, it runs `board press <from> answer --expect <tool_use_id>` with the same results (plus exit 5 → 409 `partial`), and with `relay: "operator"` it returns 200 `{status: "answered"}` for the operator to relay. A decision already `relayed`/`stale`/`timeout` → 409 `gone`. |
 | `POST /api/messages` `{to, body}` | only for `approvers` ∪ `release_managers` (else 403 `not_approver`); writes `messages/<id>.json` (`^m-[0-9]+-[a-z0-9]+$`) with `by: <identity>`, the body scrubbed, and `status: "new"`, or `"held"` when the secret guard flags it → 201 `{id, status, reason?}` (see "Secret guardrails") |
@@ -1170,7 +1171,7 @@ there is no file):
                    "started_at": null, "progress_ms": 420000, "done_at": 1763191000000 },
     "WEB": { "done": 1, "focus_ms": 1800000, "running": false, "state": "needs-you",
              "started_at": null, "progress_ms": 360000, "done_at": 1763180000000 } },
-  "days": [ { "date": "2026-11-02", "done": 9, "focus_ms": 14580000 },   // no per-stream map (`board pomodoro --json` has it)
+  "days": [ { "date": "2026-11-02", "done": 9, "focus_ms": 14580000 },   // no per-stream map (GET /api/pomodoro/day and `board pomodoro --json` have it)
             … 14 entries, oldest first, today last … ] }
 ```
 
@@ -1197,6 +1198,31 @@ bucket (none while nothing runs):
   totals (kept in view while it scrolls), the champion, 14 days, then one row per session with its
   teammates included and folded under it: the top 10 sessions with something today, "Show all", and
   a filter by session or teammate once there are more than 10.
+- Each of the 14 days is a tab (click, tap, Enter/Space; ←/→ move between days, Home/End jump to the
+  oldest/today; `aria-selected` and a tinted, underlined bar mark the pick). Today is picked by
+  default and uses this view. Picking a past day shows its total, its champion and its sessions
+  (same rows, teammates folded) below the chart, from the endpoint below, fetched only then and
+  cached while the panel is open (a loading line, an error with "Try again"). The demo makes a
+  day's breakdown up from its totals (the same every time); the Artifact keeps the days pickable
+  for their totals and says "Daily totals only on this board". Nothing polls.
+
+**`GET /api/pomodoro/day?d=YYYY-MM-DD`** (`day_view`; board-serve only): one of the 14 kept days
+(today included), in the document's `settings.tz`:
+
+```json
+{ "date": "2026-11-10", "today": "2026-11-15", "tz": "",
+  "fleet": { "done": 12, "focus_ms": 19440000, "teammates_done": 3 },   // every stream that day
+  "sessions": { "API": { "done": 4, "focus_ms": 6600000 },
+                "API/tests": { "done": 3, "focus_ms": 4800000 },
+                "API/+others": { "done": 1, "focus_ms": 1700000, "streams": 9, "active": 9 },
+                "WEB": { "done": 4, "focus_ms": 6340000 } } }
+```
+
+Numbers, codes and teammate names only (scrubbed like the state), no clock. `sessions` lists the
+streams with a 🍅 or focus that day, at most 50 teammates per session (the most 🍅, then focus) and
+the rest folded into `CODE/+others` (`streams`, `active`), so every sum over the rows equals
+`fleet`. `tz` is the setting only when it names a real zone (else `""`). A malformed or impossible
+date → 400; a day before the 14 kept or after today, or no file → 404.
 
 **Artifact:** the operator may mirror `board pomodoro --mirror` to
 `meta/pomodoro` (`today, tz, focus_ms, mode, fleet, sessions: {stream: {done, focus_ms}}, days,

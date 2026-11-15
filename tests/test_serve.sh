@@ -292,6 +292,27 @@ eq "pomodoro: 14 days, oldest first, today last, no per-stream map" "$(body '.po
 eq "pomodoro: days older than 14 dropped" "$(body '[.pomodoro.days[] | select(.date == "2000-01-01")] | length')" "0"
 eq "pomodoro: no path anywhere" "$(body '[.pomodoro | .. | strings | select(test("/"))] | length')" "0"
 
+# GET /api/pomodoro/day: one kept day's breakdown on demand; the pushed view stays totals only.
+past="$(python3 -c 'import datetime; print(datetime.datetime.now(datetime.timezone.utc).date() - datetime.timedelta(days=3))')"
+old_day="$(python3 -c 'import datetime; print(datetime.datetime.now(datetime.timezone.utc).date() - datetime.timedelta(days=14))')"
+jq --arg d "$past" --arg o "$old_day" '.days[$d] = {CP: {done: 2, focus_ms: 3000000}, "CP/helper": {done: 1, focus_ms: 1600000}, WEB: {done: 0, focus_ms: 0}}
+  | .days[$o] = {CP: {done: 5, focus_ms: 1}}' "$BOARD_HOME/pomodoro.json" > "$T/pomo.json" && mv "$T/pomo.json" "$BOARD_HOME/pomodoro.json"
+sse_before="$(for _ in $(seq 1 100); do req GET /api/state >/dev/null; [ "$(body -c "[.pomodoro.days[] | select(.date == \"$past\") | .done]")" = "[3]" ] && break; sleep 0.1; done; body -c '.pomodoro')"
+eq "day: 200 for a kept day" "$(req GET "/api/pomodoro/day?d=$past")" "200"
+eq "day: the per-stream breakdown, exact totals" "$(body -c '[.date == $d, .fleet, .sessions]' --arg d "$past")" '[true,{"done":3,"focus_ms":4600000,"teammates_done":1},{"CP":{"done":2,"focus_ms":3000000},"CP/helper":{"done":1,"focus_ms":1600000}}]'
+eq "day: keys" "$(body '[keys[]] | join(",")')" "date,fleet,sessions,today,tz"
+eq "day: today is served too" "$(req GET "/api/pomodoro/day?d=$today" >/dev/null; body -c '.sessions')" '{"CP":{"done":3,"focus_ms":5400000}}'
+eq "day: older than the 14 kept days 404" "$(req GET "/api/pomodoro/day?d=$old_day")" "404"
+eq "day: a future day 404" "$(req GET "/api/pomodoro/day?d=2999-01-01")" "404"
+for q in "" "?d=" "?d=2026-1-5" "?d=2026-02-30" "?d=yesterday" "?d=$past&d=$past" "?d=$past&x=1" "?D=$past" "?d=..%2Fpomodoro.json"; do
+  eq "day: bad query '$q' 400" "$(req GET "/api/pomodoro/day$q")" "400"
+done
+eq "day: a foreign Host refused" "$(req GET "/api/pomodoro/day?d=$past" -H 'Host: evil.example')" "421"
+eq "day: a forwarded request refused" "$(req GET "/api/pomodoro/day?d=$past" -H 'X-Forwarded-For: 203.0.113.9')" "403"
+eq "day: POST not routed" "$(post "/api/pomodoro/day?d=$past" '{}')" "404"
+eq "day: no extra SSE payload (the pushed view has no per-stream day map)" "$(req GET /api/state >/dev/null; body -c '[.pomodoro.days[] | keys] | unique')" '[["date","done","focus_ms"]]'
+eq "day: fetching a day changes nothing in the pushed view" "$(req GET /api/state >/dev/null; body -c '.pomodoro')" "$sse_before"
+
 eq "GET / 200" "$(req GET / -D "$T/hdr")" "200"
 grep -q '<meta name="board-mode" content="local">' "$T/body" && ok "page has the local-mode meta" || bad "page has the local-mode meta"
 grep -qi '^content-security-policy:.*script-src .nonce-' "$T/hdr" && ok "page sent with a nonce CSP" || bad "page sent with a nonce CSP"
@@ -1014,6 +1035,8 @@ EOF
   eq "tunnel me: release manager" "$(treq GET /api/me "${TUNNEL_HDRS[@]}" -H "$(jwt rm)" >/dev/null; body '(.roles | join(",")) + "/" + (.is_release_manager | tostring)')" "release_manager/true"
   eq "tunnel me: no JWT refused" "$(treq GET /api/me "${TUNNEL_HDRS[@]}")" "401"
   eq "  generic error" "$(body '.error + "/" + .detail')" "unauthenticated/Cloudflare Access token missing"
+  eq "tunnel day: no JWT refused" "$(treq GET "/api/pomodoro/day?d=$past" "${TUNNEL_HDRS[@]}")" "401"
+  eq "tunnel day: a verified approver reads it" "$(treq GET "/api/pomodoro/day?d=$past" "${TUNNEL_HDRS[@]}" -H "$(jwt good)")" "200"
   eq "tunnel me: expired JWT refused" "$(treq GET /api/me "${TUNNEL_HDRS[@]}" -H "$(jwt expired)")" "401"
   eq "tunnel me: foreign Host refused" "$(treq GET /api/me -H 'Host: evil.example' -H "$(jwt good)")" "421"
   eq "tunnel me: an email outside the list refused" "$(treq GET /api/me "${TUNNEL_HDRS[@]}" -H "$(jwt nobody)")" "403"
@@ -1039,6 +1062,7 @@ EOF
   eq "tunnel: a verified email outside the list gets 403 on state" "$(treq GET /api/state "${TUNNEL_HDRS[@]}" -H "$(jwt nobody)")" "403"
   eq "  error not_allowed" "$(body .error)" "not_allowed"
   eq "  ... and on the page" "$(treq GET / "${TUNNEL_HDRS[@]}" -H "$(jwt nobody)")" "403"
+  eq "  ... and on a pomodoro day" "$(treq GET "/api/pomodoro/day?d=$past" "${TUNNEL_HDRS[@]}" -H "$(jwt nobody)")" "403"
   eq "  ... and on answers" "$(tpost /api/decisions/d-1-q5/answer '{"answer":"A"}' "${TUNNEL_HDRS[@]}" -H "$(jwt nobody)")" "403"
   eq "  file untouched" "$(jq -r .status "$BOARD_HOME/decisions/d-1-q5.json")" "pending"
   dec d-1-prod2 question '{"task_id":"t-1","stage":"production","gate":"production","options":["approve","request changes"]}'
@@ -1080,6 +1104,7 @@ EOF
   eq "  a viewer gets no doing / prompt on a card" "$(body '[.sessions[] | .card // {} | has("doing") or has("prompt")] | any')" "false"
   eq "tunnel me: a listed viewer (not an approver)" "$(treq GET /api/me "${TUNNEL_HDRS[@]}" -H "$(jwt nobody)")" "200"
   eq "  viewer role only" "$(body '.identity + "/" + .via + "/" + (.roles | join(",")) + "/" + (.is_approver | tostring) + "/" + (.is_release_manager | tostring)')" "intruder@example.com/access/viewer/false/false"
+  eq "  a listed viewer reads a pomodoro day" "$(treq GET "/api/pomodoro/day?d=$past" "${TUNNEL_HDRS[@]}" -H "$(jwt nobody)")" "200"
   dec d-1-q8 question
   BOARD_HOME="$BOARD_HOME" "$REPO/bin/board" answer d-1-q8 "go" --by boss@example.com >/dev/null
   eq "  a viewer's answer on an approver-answered decision: 403" "$(tpost /api/decisions/d-1-q8/answer '{"answer":"stop"}' "${TUNNEL_HDRS[@]}" -H "$(jwt nobody)")" "403"
