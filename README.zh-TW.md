@@ -363,7 +363,11 @@ pane 標題裡的任務、執行中或閒置、記憶體用量）、已用的 co
   `approve` 讓任務進入下一個階段，`request changes` 則讓它留在同一個階段修改。
 - **問題**。worker 執行 `board ask --from API "Ship behind a flag?" --option yes --option no`，
   同時也在自己的 pane 裡發問。你可以在看板或 pane 上回答，先回答的算數。operator 會把看板上的回答以
-  `[BOARD decision <id>] <answer> (by owner on board)` 的格式轉發。
+  `[BOARD decision <id>] <answer> (by owner on board)` 的格式轉發。如果是在 pane（或另一個 session）
+  裡回答的，worker 會用 `board resolve <id> --from API --in-pane` 關閉卡片（狀態 `answered_in_pane`）。
+  如果它忘了，當那個 session 在提問之後收到新的指示並完成一輪，卡片會顯示「可能已在 session 中回答」，
+  核可者可以按 **標記為已在 session 中回答** 關閉（會先要求確認，不會傳送任何內容給 session）。卡片
+  絕不會被自動關閉。
 - **權限提示**。卡片會顯示工具名稱，以及其輸入內容的摘要（最多 200 個字元），讓你知道自己允許的是什麼。
   摘要裡看起來像 token 的值會被替換成 `[REDACTED]`。按下 **Allow** 或 **Deny** 後，operator 會執行
   `board answer <id> allow|deny --by <you>`，接著執行 `board press <CODE> allow|deny --expect <tool_use_id>`。

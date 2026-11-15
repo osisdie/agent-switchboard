@@ -16,8 +16,10 @@ shows the human a board and relays their answers.
      `board ask --from <CODE> --file <question file> --option "<A>" --option "<B>"`
      (optional `--context-file <file>`). I write the question (one line, no secrets) to the file
      with my file-writing tool; a short question of my own words may go inline in single quotes.
-- Whichever answer comes first wins. If it was answered in the pane, carry on. A late board answer
-  for the same question is ignored, and I say so in one line.
+- Whichever answer comes first wins. If it was answered in the pane (or by the owner in another
+  session), close the board card right away with `board resolve <id> --from <CODE> --in-pane`
+  (optional `--note-file <file>`: one line, no secrets), then carry on. A late board answer for the
+  same question is ignored, and I say so in one line.
 - Don't stop all work while waiting. Continue with whatever doesn't depend on the answer.
 
 ### Lifecycle gates (when working on a task)

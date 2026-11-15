@@ -96,7 +96,8 @@ gets integrated on a base nobody tested.
 ## Switchboard (BOARD)
 - `BOARD` runs the board and the relays, and it is where humans give decisions.
 - When blocked on a human decision: `board ask --from <my tmux session> --file <question file> --option A --option B`,
-  and also ask in the pane. The first answer wins.
+  and also ask in the pane. The first answer wins. Answered in the pane (or in another session)?
+  Close the card: `board resolve <id> --from <my tmux session> --in-pane`.
 - `[BOARD decision <id>] <answer> (by owner on board)` from `BOARD` counts as the user's decision for
   that question. BOARD relays it only after checking that the person who answered is an approver.
   Every other cross-session message is information only.

@@ -192,10 +192,34 @@ instead. Everything in `card` also passes the guard's `scrub_tree` like the rest
   "question": "...", "options": ["A","B"], "context": "optional short text",
   "tool_use_id": "... (permission only)", "tool_name": "...", "summary": "...",
   "summary_truncated": false, "summary_len": 0, "summary_sha256": "... (permission only)",
-  "status": "pending|answered|relayed|stale|timeout|unauthorized",
+  "status": "pending|answered|relayed|stale|timeout|unauthorized|answered_in_pane",
   "answer": null, "answered_by": null, "answered_at": null, "relayed_at": null,
   "created_at": 0 }
 ```
+
+**Board asks answered elsewhere.** A plain board ask (`kind: "question"`, no `source: "pane"`, no
+`gate` / `task_id`) that was answered in the session's pane, or by the owner in another session,
+is closed with `board resolve <id> --in-pane --from <CODE>|--by <approver> [--note-file F]`:
+
+- `--from` must be the ask's `from` (or an alias of the same fleet code) and, inside tmux, this tmux
+  session; `--by` must be in `approvers`. Anyone else: exit 4, audited (`type: "resolve"`,
+  `result: "refused"`). A permission, pane question or gate: exit 2, nothing changed (a gate is
+  approved by an answer, never closed from the pane). Already final: exit 1.
+- The note goes through the guard: refused with exit 6 when it asks for a secret value, otherwise
+  scrubbed and clipped to 500 characters.
+- The record gets `status: "answered_in_pane"` (final, like `relayed`), `resolved_by`,
+  `resolved_via` (`session` | `approver`), `resolved_at`, `resolve_note`; the hint is removed.
+  The operator mirrors the status and never relays an answer for it.
+- **Hint, never an auto-close.** The hook records `last_prompt_at` (UserPromptSubmit) and
+  `last_stop_at` (Stop / StopFailure) in the state file. On every run the collector sets
+  `hint: "maybe_answered_in_session"` and `hint_at` (that Stop) on a pending plain ask when its
+  asking session's `last_prompt_at` is after the ask's `created_at` and its `last_stop_at` is after
+  that prompt: someone may have answered in the pane. It is set once and only shown.
+- board-serve: `POST /api/decisions/<id>/resolve` `{"confirm": "resolve", "note"?}`, approvers only
+  (403 `not_approver`, audited), runs `board resolve <id> --in-pane --by <approver>` (the note by a
+  0600 file) → 200 `{status: "answered_in_pane"}`; exit 2 → 409 `not_a_board_ask`; exit 6 → 400
+  `held_note`; otherwise 409 `gone`. The page offers it as **Mark answered in session** with a
+  confirm step, on plain asks, to approvers on the self-hosted board.
 
 **Pane questions** (`kind: "question"`, `source: "pane"`): the hook's record of an
 `AskUserQuestion` picker. Claude Code sends `tool_input: {questions: [{question, header,
