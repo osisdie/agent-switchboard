@@ -21,6 +21,18 @@ recommended setup.** See [Two channels](#two-channels-self-hosted-and-artifact-r
 > Status: early. The data contract is in [`docs/contract.md`](docs/contract.md). Everything else
 > follows it.
 
+## Screenshots
+
+All from the built-in demo data (`scripts/screenshots.py`). Try the [live demo](https://osisdie.github.io/agent-switchboard/demo.html) in your browser: sample data only, nothing is sent anywhere.
+
+| | |
+|---|---|
+| <a href="docs/assets/screenshots/overview-light.webp"><img src="docs/assets/screenshots/overview-light.webp" width="420" alt="The board in light mode: decisions waiting, usage meters, owner-away banner"></a><br>Overview, light | <a href="docs/assets/screenshots/overview-dark.webp"><img src="docs/assets/screenshots/overview-dark.webp" width="420" alt="The board in dark mode"></a><br>Overview, dark |
+| <a href="docs/assets/screenshots/session-card.webp"><img src="docs/assets/screenshots/session-card.webp" width="420" alt="Session cards by state, one expanded with its title, pending decisions, running tool and tmux target"></a><br>Session cards, one expanded | <a href="docs/assets/screenshots/decisions.webp"><img src="docs/assets/screenshots/decisions.webp" width="420" alt="Decision cards: a permission prompt with Allow / Deny and a question with its options"></a><br>Decisions: permission prompts, questions, gates |
+| <a href="docs/assets/screenshots/notifications.webp"><img src="docs/assets/screenshots/notifications.webp" width="420" alt="The Notifications dialog: mutes, triage floor and presence"></a><br>Notifications: mutes and triage | <a href="docs/assets/screenshots/resources.webp"><img src="docs/assets/screenshots/resources.webp" width="420" alt="The Resources section: memory, swap, disks and per-session processes"></a><br>Resources: memory, disks, processes |
+| <a href="docs/assets/screenshots/usage-popover.webp"><img src="docs/assets/screenshots/usage-popover.webp" width="420" alt="The usage popover: both windows with reset times, the threshold reached and the account"></a><br>Usage popover: resets, threshold, account | <a href="docs/assets/screenshots/profile-menu.webp"><img src="docs/assets/screenshots/profile-menu.webp" width="420" alt="The profile menu: identity, roles, theme and language switchers, API keys"></a><br>Profile menu: theme and language |
+| <a href="docs/assets/screenshots/phone-dark.webp"><img src="docs/assets/screenshots/phone-dark.webp" width="420" alt="The board on a phone, dark mode"></a><br>Phone, dark mode | <a href="docs/assets/screenshots/pwa-standalone.webp"><img src="docs/assets/screenshots/pwa-standalone.webp" width="420" alt="The board as an iPhone home-screen app, clear of the status bar"></a><br>iPhone home-screen app |
+
 ## The problem
 
 You run several resident Claude Code sessions in tmux, one per repo or area (say `API`, `WEB`,
@@ -1054,16 +1066,18 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `prompts/board-operator.md` | Standing instructions for the `BOARD` operator session |
 | `snippets/worker-protocol.md` | Paste-in block for every worker session's `CLAUDE.md` |
 | `playbook/` | Lessons for running many Claude Code sessions: SDLC delivery harness, collaboration, publishing, repo hygiene, CLAUDE.md template |
-| `scripts/` | `install.sh`, `setup-dev.sh` (git hooks + gitleaks), `expose-cloudflare.sh` (tunnel + Access steps), `check-readme-sync.py` (README translation structure + bold check, run in CI), `render-icons.py` (PNG icons from the SVGs) |
+| `scripts/` | `install.sh`, `setup-dev.sh` (git hooks + gitleaks), `expose-cloudflare.sh` (tunnel + Access steps), `check-readme-sync.py` (README translation structure + bold check, run in CI), `render-icons.py` (PNG icons from the SVGs), `screenshots.py` (the README / Pages screenshots from the demo data), `build-site.py` (the static Pages site: landing page + demo) |
 | `.githooks/pre-commit` | refuses `tmp*/` paths; gitleaks on staged changes + banned-terms check |
 | `.githooks/commit-msg` | secret patterns + banned terms in the commit message |
 | `.github/workflows/ci.yml` | CI: gitleaks, shellcheck, tests, readme-sync |
+| `.github/workflows/pages.yml` | Builds and deploys the static demo site to GitHub Pages (on push to main) |
+| `docs/assets/screenshots/` | Screenshots for the README and the Pages site (`scripts/screenshots.py`) |
 | `.gitleaks.toml` | gitleaks default rules plus a narrow allowlist for test fixtures |
 | `lib/away.py` | Reads owner-away mode and consensus items for the snapshot and `board-serve` |
 | `lib/guard.py`, `lib/messages.py` | Secret guardrails: the outbound scrubber and the inbound secret-request screen; board messages and replies through them (held, release, reply) |
 | `lib/resources.py` | Resources sampler (memory, disks, OOM, per-session processes and teammates) for `resources.json`, the snapshot digest and `board resources` |
 | `docs/design/` | Design notes, e.g. `resources-and-scheduling.md` (resources, scheduler, lessons) |
-| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), the resources sampler (`test_resources.py`, fixture `/proc`), the secret guardrails (`test_guard.py`), and the optional headless checks of the page's alert links, notifications control, profile menu and theme, home-screen app, session cards, usage popover and language toggle (`test_page_links.py`, `test_page_notify.py`, `test_page_profile.py`, `test_page_pwa.py`, `test_page_cards.py`, `test_page_guard.py` (held-message cards), `test_page_usage.py`, `test_page_i18n.py`: need python playwright, skip without it; not run in CI) |
+| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), the resources sampler (`test_resources.py`, fixture `/proc`), the secret guardrails (`test_guard.py`), and the optional headless checks of the page's alert links, notifications control, profile menu and theme, home-screen app, session cards, usage popover and language toggle (`test_page_links.py`, `test_page_notify.py`, `test_page_profile.py`, `test_page_pwa.py`, `test_page_cards.py`, `test_page_guard.py` (held-message cards), `test_page_usage.py`, `test_page_i18n.py`, plus `test_site.py` for the screenshots and the Pages site: need python playwright, skip without it; not run in CI) |
 | `CONTRIBUTING.md` | Dev setup, tests, and the rule for keeping `README.zh-TW.md` in sync |
 | `fleet.example.yaml`, `.env.example` | Example config |
 

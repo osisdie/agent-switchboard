@@ -3041,12 +3041,14 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   async function boot() {
     applyStatic();
     renderAll(); spy();
-    // board-serve injects a board-mode meta tag with content "local"; a published Artifact has none.
+    // board-serve injects a board-mode meta tag with content "local"; a published Artifact has none;
+    // the static demo (scripts/build-site.py) has "demo": demo data only, never a server or claude.use.
     // On a real board-serve, ?demo=1 is ignored: a crafted link must never show sample data in
     // place of the real decisions and alerts.
     const modeMeta = document.querySelector('meta[name="board-mode"]');
-    const local = !!modeMeta && modeMeta.getAttribute('content') === 'local';
-    if (!local && params.get('demo') === '1') { enterDemo(); return; }
+    const mode = modeMeta ? modeMeta.getAttribute('content') : null;
+    const local = mode === 'local';
+    if (mode === 'demo' || (!local && params.get('demo') === '1')) { enterDemo(); return; }
     if (local) {
       adapter = localAdapter();
       adapter.subscribe();
