@@ -316,8 +316,14 @@ An optional public board URL makes every alert carry a link that opens the board
   session to its next prompt.
 - **Delivery:** the link is worked out when an alert is delivered, so escalations and repeats carry
   it. It is the message's `url` (Slack `<link>`, a plain line in email, LINE, SNS and the desktop
-  toast, `url` in the webhook JSON). The caller's own url (an artifact or session link) is kept and
-  sent as `ref` (a `ref: …` line; `ref` in the webhook JSON).
+  toast, `url` in the webhook JSON). The caller's own url (an artifact or session link) moves to the
+  next line as `ref` (`ref` in the webhook JSON). Both lines are labelled so they are easy to tell
+  apart on a phone: `Decide on the board: <link>` (`View on the board:` for consensus and
+  messages, `Open the board:` for the root), then `Open the session: <link>` for needs-you alerts,
+  `Open the artifact: <link>` for decisions, `Link: <link>` otherwise. Both links get the same
+  Slack handling: only a plain http(s) URL becomes a `<link>`, anything else is escaped text.
+  Without a board URL there are no labels and no `ref`: the output is byte for byte the same as
+  without this feature (pinned by `tests/test_notify.sh`).
 - `board notify --link ID|root "text"` appends the link to a plain notify; the consensus notifies
   (`agreed`, `objected`, `owner_back`) link to their item.
 - **Page:** `board.html` reads `d`/`m`/`c` from `location.search` (or a `#<id>` / `#dec-<id>` hash),

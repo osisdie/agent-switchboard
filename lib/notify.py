@@ -19,8 +19,9 @@ Test hooks: BOARD_NOW_MS (fake clock, epoch ms).
 Board link: when a public board URL is set (BOARD_PUBLIC_URL, or `board_url` in fleet.yaml; see
 lib/fleet.py), every delivery carries <board>/?d=<id> (decision), ?c= (consensus), ?m= (message)
 or the board root as its `url`, worked out at delivery time from the alert's `board` id or its key.
-A caller's own --url (an artifact or session link) is then sent as `ref`. Unset: no link, and the
-message is exactly what it was before.
+A caller's own --url (an artifact or session link) is then sent as `ref`, and both lines are
+labelled ("Decide on the board: …", "Open the session: …"). Unset: no link, no labels, and the
+message is byte for byte what it was before.
 
 A send never raises: every adapter failure is caught, logged and reported in the result.
 """
@@ -271,15 +272,27 @@ def spawn_detached(argv, cwd=None):
 
 # ------------------------------------------------------------------ adapters
 
+def labelled(label, text):
+    """'Label: text' when the line has a label (only with a board link), else the text as is."""
+    return "%s: %s" % (label, text) if label else text
+
+
+def link_lines(msg, render=str):
+    """The url line and the ref line, each labelled when a board link is in play."""
+    out = []
+    if msg.get("url"):
+        out.append(labelled(msg.get("url_label"), render(msg["url"])))
+    if msg.get("ref"):
+        out.append(labelled(msg.get("ref_label") or "Link", render(msg["ref"])))
+    return out
+
+
 def text_of(msg, with_level=True):
     head = ("[%s] " % msg["level"].upper() if with_level else "") + msg["title"]
     parts = [head]
     if msg.get("body"):
         parts.append(msg["body"])
-    if msg.get("url"):
-        parts.append(msg["url"])
-    if msg.get("ref"):
-        parts.append("ref: %s" % msg["ref"])
+    parts += link_lines(msg)
     return "\n".join(parts)
 
 
@@ -309,10 +322,9 @@ def a_slack(msg, env, cfg):
     parts = [("[%s] " % msg["level"].upper()) + slack_escape(msg["title"])]
     if msg.get("body"):
         parts.append(slack_escape(msg["body"]))
-    if msg.get("url"):
-        parts.append(slack_link(msg["url"]))
-    if msg.get("ref"):
-        parts.append("ref: " + slack_link(msg["ref"]))
+    # Labels are our own constants; links (board and ref alike) go through slack_link, so only a
+    # plain http(s) URL becomes a link and anything else is escaped text.
+    parts += link_lines(msg, slack_link)
     # The mention is added after escaping: it is the only markup that comes from our own config.
     text = " ".join(x for x in (mention, icon, "\n".join(parts)) if x)
     return http_post(env["SLACK_WEBHOOK_URL"], {"text": text})
@@ -339,7 +351,7 @@ try {
 
 def a_desktop(msg, env, cfg):
     title = "%s %s" % (cfg.get("subject_prefix") or "", msg["title"])
-    body = "\n".join(x for x in (msg.get("body"), msg.get("url"), msg.get("ref")) if x)
+    body = "\n".join(x for x in [msg.get("body")] + link_lines(msg) if x)
     ps = shutil.which("powershell.exe")
     if ps:
         urgent = msg["level"] == "urgent"
@@ -544,14 +556,24 @@ def board_id(key, e=None):
     return None
 
 
+BOARD_LABELS = {"d": "Decide on the board", "c": "View on the board", "m": "View on the board"}
+REF_LABELS = (("session:", "Open the session"), ("decision:", "Open the artifact"))
+
+
 def with_board_link(msg, cfg, item_id=None):
-    """Point msg at the board when a board URL is configured; the original url becomes `ref`."""
+    """Point msg at the board when a board URL is configured: the board link becomes `url`, the
+    original url (session or artifact link) becomes `ref`, and both get a label so they are easy
+    to tell apart on a phone. Unset: msg is returned untouched."""
     link = fleet.board_link(cfg.get("board_url"), item_id)
     if link:
         ref = msg.get("url")
         msg["url"] = link
+        param = link.rsplit("/?", 1)[1][:1] if "/?" in link else ""
+        msg["url_label"] = BOARD_LABELS.get(param, "Open the board")
         if ref and ref != link:
             msg["ref"] = ref
+            key = str(msg.get("key") or "")
+            msg["ref_label"] = next((lbl for pre, lbl in REF_LABELS if key.startswith(pre)), "Link")
     return msg
 
 
