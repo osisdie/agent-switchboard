@@ -36,6 +36,7 @@ python3 "$REPO/tests/fake_proc.py" "$T/proc" && export BOARD_PROC_ROOT="$T/proc"
 unset TMUX_PANE TMUX BOARD_PUBLIC_URL
 while IFS= read -r v; do unset "$v"; done < <(compgen -e | grep -E '^(SLACK_|SMTP_|ALERT_|LINE_|AWS_)')
 export ALERT_DESKTOP=0
+export BOARD_TASK_LOCK_WAIT=1   # a held task lock times out in 1 s (board answer under board-serve)
 mkdir -p "$BOARD_HOME"/{state,decisions,tasks,messages/m-1-a/replies} "$BOARD_CONFIG_DIR" "$CLAUDE_SESSIONS_DIR" "$T/bin"
 
 pass=0; fail=0
@@ -611,6 +612,11 @@ echo "answers:"
 eq "answer from loopback 200" "$(post /api/decisions/d-1-q1/answer '{"answer":"A"}')" "200"
 eq "  status answered" "$(jq -r '.status + "/" + .answered_by + "/" + .answer' "$BOARD_HOME/decisions/d-1-q1.json")" "answered/local/A"
 eq "  answer logged with identity" "$(jq -s -r '[.[] | select(.type=="serve" and .action=="answer")] | last | .by + "/" + .result' "$BOARD_HOME/events.jsonl")" "local/answered"
+(flock "$BOARD_HOME/tasks/t-1.json.lock" sleep 3) & lockpid=$!; sleep 0.2
+eq "gate answer while the task is locked: 409" "$(post /api/decisions/d-1-gate/answer '{"answer":"approve"}')" "409"
+eq "  error task_busy" "$(body .error)" "task_busy"
+eq "  decision and gate still pending" "$(jq -r .status "$BOARD_HOME/decisions/d-1-gate.json")/$(jq -r '.gates[0].status' "$BOARD_HOME/tasks/t-1.json")" "pending/pending"
+wait "$lockpid"
 eq "gate answer 200" "$(post /api/decisions/d-1-gate/answer '{"answer":"approve"}')" "200"
 eq "  gate approved on the task" "$(jq -r '.gates[0].status + "/" + .gates[0].approved_by' "$BOARD_HOME/tasks/t-1.json")" "approved/local"
 eq "  approval shows up in state" "$(req GET /api/state >/dev/null; body '[.approvals[].decision_id] | index("d-1-gate") != null')" "true"
