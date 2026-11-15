@@ -92,6 +92,7 @@ Copy everything below the line into `~/.claude/CLAUDE.md` (or a project `CLAUDE.
   `board consensus propose --from <CODE> --to <affected sessions> --ref <MR/ticket> "<proposal>"` and
   sends it to **every** affected session (when unsure, to every resident session). Each must reply
   `board consensus vote <id> agree`; silence is not agreement; any objection parks it for the owner.
+  Votes are self-attested (`--from` is not verified): vote only as yourself.
 - Leave a record: paste `board consensus show <id> --markdown` into the MR/ticket (proposal, every
   agreement, times). `board consensus` sends the notify.
 - **Red lines never pass by consensus**: production deploys, deleting real data, irreversible

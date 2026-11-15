@@ -57,6 +57,8 @@ shows the human a board and relays their answers.
   the proposal to **every affected session**. Each answers with
   `board consensus vote <id> agree|object --from <its CODE> [--note ...]`. Everyone must agree;
   **silence is not agreement**; one objection parks it for the owner. I act only on `agreed`.
+- Votes are self-attested: the CLI does not verify `--from`. I vote and propose **only as myself**
+  (my own `<CODE>`), never for another session.
 - I put the record in the PR/ticket (`board consensus show <id> --markdown`); `board consensus`
   already sends the notify.
 - **Red lines never pass by consensus** and wait for the owner: production deploys, deleting real

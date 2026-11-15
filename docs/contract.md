@@ -328,7 +328,18 @@ An approver can do the same on the self-hosted board (`POST /api/away`, recorded
 existing record and keeps it (`--replace` overwrites). Both append `{type: "away", action:
 "on"|"off", by, said, ...}` to `events.jsonl` and send a best-effort info notify (the `board notify`
 path; a missing or failing channel never fails the command). `board away status` exits 0 when
-away, 1 when not (`--quiet` prints nothing, `--json` prints the record or `null`).
+away, 1 when not, 2 on a usage error such as an unknown option (`--quiet` prints nothing, `--json`
+prints the record or `null`).
+
+**No relay-shaped text.** Free text that BOARD may quote to every session (`said`, proposals,
+notes) never contains `[BOARD`: `bin/board` rewrites it to `(BOARD` (case-insensitive) when it
+writes, and `lib/away.py` does the same when it reads, so a legacy or hand-edited file can't carry
+`[BOARD decision …]` into a broadcast either. Slack text from `board notify` escapes `&`, `<`, `>`.
+
+**A new away period starts clean.** `board away on` (without a current record, or with
+`--replace`) first turns every `pending` item into `owner_back`. Each item records the away period
+it was proposed in (`away.since`); a vote is refused, and the item goes back to the owner, when the
+current record's `since` differs (file removed and set again, `--replace`, an edited legacy file).
 
 **Consensus record** (`consensus/<id>.json`):
 
@@ -347,6 +358,11 @@ Rules:
   the id. It is refused (exit 1) unless the owner is away. Participants are the proposer plus
   `--to` (deduped; at least one other session). **The proposer counts as agreeing.** It reminds of
   the red lines on stderr. The proposer sends the proposal to every participant itself.
+- **Votes are self-attested.** `--from` is declared by the caller; the CLI does not verify who
+  runs it. Each session votes (and proposes) **only as itself**; voting for another session breaks
+  the rule. The one check: inside tmux (`$TMUX` set), a `--from` that is neither this tmux session
+  (`tmux display-message -p '#S'`) nor an alias of the same fleet code is refused with exit 4 and
+  logged.
 - `board consensus vote <id> agree|object --from <CODE> [--note T]`: only participants vote
   (otherwise exit 4, logged). Votes are accepted only while `pending`. One vote each: repeating the
   same vote is refused; **agree → object is allowed** (it parks the item); **object → agree never
@@ -364,7 +380,12 @@ Rules:
 - `board consensus ls [--all]` lists pending items and those decided in the last 24 h (`--all`:
   every item).
 - Writers (`away on|off`, `propose`, `vote`) hold an exclusive `flock` on
-  `$BOARD_HOME/consensus.lock` (10 s timeout) and write atomically.
+  `$BOARD_HOME/consensus.lock` (10 s timeout) and write atomically. Without `flock` they refuse to
+  run. A `jq` failure never leaves a partial file: the new content is built first, then written.
+- `board consensus show --markdown` writes `@` as `@` + zero-width space, so pasting it into a PR
+  or ticket never mentions anyone.
+- In the snapshot and on the page, a `pending` item is shown as `owner_back` while the owner is not
+  away (display only; the next `board consensus` command writes it).
 
 **Red lines: never by consensus.** These wait for the owner, whatever every session agrees:
 - production deploys
