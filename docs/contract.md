@@ -163,6 +163,7 @@ $BOARD_HOME/
 |---|---|
 | `GET /` | the board page (nonce CSP, `no-store`). Any query is ignored by the server and never reflected: `/?d=<id>` (alert links, see "Board links in alerts") serves the same page, which reads the query itself. |
 | `GET /api/state` | the state below, built from `$BOARD_HOME` |
+| `GET /api/me` | who is asking, from the verified identity and `fleet.yaml` only (never from request headers): see "Who am I" below. Same `Host` and identity checks as `/api/state` (no or bad JWT on the tunnel → 401, a forwarded request on the local listener → 403) |
 | `GET /api/events` | `text/event-stream`: `event: state` with the full state at once and after every change (1 s mtime poll; only when the state differs), `: keepalive` every 25 s |
 | `POST /api/decisions/<id>/answer` `{answer}` | `<id>` must match `^d-[0-9]+-[a-z0-9]+$`. With empty `approvers` → 403 `no_approvers` (fails closed). The identity is then checked **before anything is written**, with the rule of `board answer` (`approvers`; for a production decision, gate or stage, `release_managers`, falling back to `approvers`): not allowed → 403 `not_approver`, audited, file untouched (so it can never cancel an approver's answer that waits for the relay). Otherwise `board answer <id> <answer> --by <identity>` (argv, no shell; an answer such as `--help` is recorded literally) → 200 `{status: "answered"}`. For `kind: "permission"` (`answer` = `allow`\|`deny`; `allow` with `summary_truncated` → 409 `review_in_session`), it then runs `board press <from> <answer> --expect <tool_use_id>` → 200 `{status: "relayed"}`; exit 3 → 409 `stale`; exit 4 → 403 `press_refused`. A decision already `relayed`/`stale`/`timeout` → 409 `gone`. |
 | `POST /api/messages` `{to, body}` | only for `approvers` ∪ `release_managers` (else 403 `not_approver`); writes `messages/<id>.json` (`^m-[0-9]+-[a-z0-9]+$`) with `status: "new"`, `by: <identity>` → 201 `{id}` |
@@ -203,6 +204,40 @@ State (`/api/state` and every SSE frame):
 The shape matches what the page reads from the Artifact db (`sessions/*`, `decisions/*`, `tasks/*`,
 `approvals/*`, `messages/*` + replies, `meta/operator`, `meta/ledger`). `task` is the title of the
 session's current task. `approver_ids` is `[]` when nobody may answer.
+
+### Who am I (`GET /api/me`) and API keys
+
+```json
+{ "identity": "local|<email>", "via": "local|access",
+  "roles": ["approver", "release_manager"] | ["viewer"],
+  "is_approver": true, "is_release_manager": false,
+  "api_keys": [ ... ] }
+```
+
+- `via` is `local` for the local listener and `access` for the tunnel (a verified Cloudflare Access
+  JWT). The audit log keeps its own names (`loopback` / `cf-jwt`).
+- `is_approver`: the identity is in `approvers`. `is_release_manager` is the effective rule for a
+  production decision: in `release_managers`, or in `approvers` when `release_managers` is empty.
+  `roles` lists what is true, or `["viewer"]` when neither is. All matches are case-insensitive.
+- `api_keys` is **reserved** for the key backend (a later change) and absent until it exists. The page
+  shows "API keys are not enabled on this board" without it. Its shape, one entry per key issued to
+  this identity (an owner email, or `local`):
+
+  ```json
+  { "id": "key_…", "name": "Phone shortcut", "scopes": ["state:read"],
+    "created_at": 0, "expires_at": 0|null, "last_used_at": 0|null,
+    "status": "active|revoked|expired" }
+  ```
+
+  Times are epoch ms; `null` means no expiry / never used. `scopes` are opaque strings defined by
+  the key backend. **The key secret is never returned** by this or any later read: it is shown once,
+  when the key is created. Create and revoke endpoints come with the backend.
+
+The page's profile menu (header, top right) reads this route in local mode. In Artifact mode it
+uses the `user` capability instead (`me()`: `canEdit`, `isOwner`; the name stays empty because the
+page does not declare the `profile` scope) and takes roles from `meta/operator.approver_ids` /
+`release_manager_ids`. Sign-out links to `/cdn-cgi/access/logout` and is shown only when
+`via` is `access`.
 
 **Operator in local mode** (`prompts/board-operator.md` section 9): `board-serve --watch` prints
 `decision <id> answered`, `message <id> new`, `away on|off` and `consensus <id> <status>` (once

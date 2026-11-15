@@ -1,4 +1,18 @@
 <title>Switchboard</title>
+<script>
+/* Theme before first paint. An explicit choice (light / dark) sets data-theme on the root; "system"
+   sets none, so prefers-color-scheme decides. A data-theme the host already stamped (the claude.ai
+   viewer) is left alone, and the menu then follows it. */
+(() => {
+  const root = document.documentElement, host = root.getAttribute('data-theme');
+  let own = null;
+  if (!host) {
+    try { own = localStorage.getItem('switchboard.theme'); } catch (e) { /* storage blocked */ }
+    if (own === 'light' || own === 'dark') root.setAttribute('data-theme', own); else own = null;
+  }
+  window.switchboardTheme = { host: host || null, own };
+})();
+</script>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -6,6 +20,7 @@
 <style>
 /* Layout: a patch panel. Masthead with the lamp counter, a decision strip on top, four jack columns, the message line at the foot. */
 :root {
+  color-scheme: light;
   --paper: #edf0f4;
   --panel: #fbfcfd;
   --ink: #16202c;
@@ -461,6 +476,51 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 .failover p { margin: 0 0 8px; color: var(--muted); max-width: 72ch; }
 .thresholds { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 
+/* ---------- profile menu (header, top right): identity, roles, theme, API keys ---------- */
+.mast { position: relative; padding-right: 56px; }
+.acct { position: absolute; top: 28px; right: 0; z-index: 8; }
+.acct [hidden] { display: none !important; }
+.acct-btn { display: grid; place-items: center; width: 42px; height: 42px; padding: 0; border-radius: 50%; border: 1px solid var(--rule); background: var(--panel); cursor: pointer; }
+.acct-btn:hover, .acct-btn[aria-expanded="true"] { border-color: var(--cord); }
+.avatar { display: grid; place-items: center; flex: none; width: 32px; height: 32px; border-radius: 50%; background: var(--cord); color: var(--cord-ink); font-family: var(--f-mono); font-size: 13px; font-weight: 600; letter-spacing: .02em; }
+.avatar.lg { width: 44px; height: 44px; font-size: 16px; }
+.acct-panel { position: absolute; right: 0; top: calc(100% + 8px); width: min(340px, calc(100vw - 32px)); max-height: calc(100vh - 120px); max-height: calc(100dvh - 120px); overflow: auto; display: grid; gap: 16px; padding: 16px; border-radius: 10px; border: 1px solid var(--rule); background: var(--panel); color: var(--ink); box-shadow: 0 10px 30px rgb(0 0 0 / .18); }
+.acct-panel:focus { outline: none; }
+.acct-panel:focus-visible { outline: 2px solid var(--cord); outline-offset: 2px; }
+.acct-who { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.acct-who > div { min-width: 0; }
+.acct-name { margin: 0; font-weight: 600; font-size: 15px; overflow-wrap: anywhere; }
+.acct-via { margin: 0; font-size: 13px; color: var(--muted); }
+.acct-roles { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.acct-roles li { font-size: 12px; font-weight: 600; padding: 2px 9px; border-radius: 999px; background: var(--off-soft); color: var(--muted); }
+.acct-roles li.approver { background: var(--ok-soft); color: var(--ok); }
+.acct-roles li.release_manager { background: var(--lamp-soft); color: var(--lamp-ink); }
+.acct-sec { display: grid; gap: 8px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.acct-sec legend, .acct-sec h3 { padding: 0; margin: 0 0 2px; font-family: var(--f-mono); font-size: 11px; font-weight: 500; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+.acct-note { margin: 0; font-size: 13px; color: var(--muted); }
+.seg { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; }
+.seg label { position: relative; display: flex; align-items: center; justify-content: center; min-height: 36px; font-size: 13px; font-weight: 500; color: var(--muted); cursor: pointer; }
+.seg label + label { border-left: 1px solid var(--rule); }
+.seg input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: inherit; }
+.seg label:has(input:checked) { background: var(--cord-soft); color: var(--cord); }
+.seg label:has(input:focus-visible) { outline: 2px solid var(--cord); outline-offset: -2px; }
+.acct-sec:disabled .seg label { cursor: not-allowed; opacity: .6; }
+.keys { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.keys li { display: grid; gap: 4px; min-width: 0; padding: 8px 10px; border: 1px solid var(--rule); border-radius: 6px; background: var(--paper); font-size: 13px; }
+.keys li.none { color: var(--muted); }
+.keys .k-top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
+.keys .k-name { font-weight: 600; overflow-wrap: anywhere; }
+.keys .k-id { font-family: var(--f-mono); font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.keys .k-scopes { display: flex; flex-wrap: wrap; gap: 4px; }
+.keys .k-meta { font-size: 12px; color: var(--muted); }
+.keys .status.active { background: var(--ok-soft); color: var(--ok); }
+.keys li.revoked, .keys li.expired { opacity: .72; }
+.acct-out { justify-self: start; font-weight: 500; }
+@media (max-width: 860px) {
+  .mast { padding-right: 0; }
+  .brand { padding-right: 56px; }
+}
+
 /* ---------- toast ---------- */
 .toasts { position: fixed; z-index: 20; left: 50%; transform: translateX(-50%); bottom: calc(16px + env(safe-area-inset-bottom, 0px)); display: grid; gap: 8px; width: min(520px, calc(100vw - 32px)); pointer-events: none; }
 .toast { pointer-events: auto; padding: 10px 14px; border-radius: 6px; background: var(--ink); color: var(--paper); font-size: 14px; box-shadow: 0 6px 20px rgb(0 0 0 / .25); }
@@ -479,6 +539,36 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 
 <div class="wrap">
   <header class="mast" id="top">
+    <div class="acct" id="acct">
+      <button class="acct-btn" id="acct-btn" type="button" aria-expanded="false" aria-controls="acct-panel" aria-label="Account, theme and API keys">
+        <span class="avatar" id="acct-avatar" aria-hidden="true">?</span>
+      </button>
+      <div class="acct-panel" id="acct-panel" role="region" aria-labelledby="acct-name" tabindex="-1" hidden>
+        <div class="acct-who">
+          <span class="avatar lg" id="acct-avatar-lg" aria-hidden="true">?</span>
+          <div>
+            <p class="acct-name" id="acct-name">Checking who you are…</p>
+            <p class="acct-via" id="acct-via"></p>
+          </div>
+        </div>
+        <ul class="acct-roles" id="acct-roles" aria-label="Your roles on this board"></ul>
+        <fieldset class="acct-sec" id="acct-theme">
+          <legend>Theme</legend>
+          <div class="seg">
+            <label><input type="radio" name="sb-theme" value="light">Light</label>
+            <label><input type="radio" name="sb-theme" value="dark">Dark</label>
+            <label><input type="radio" name="sb-theme" value="system">System</label>
+          </div>
+          <p class="acct-note" id="acct-theme-note" hidden>Following the theme set in the claude.ai viewer. Change it there.</p>
+        </fieldset>
+        <section class="acct-sec" aria-labelledby="acct-keys-h">
+          <h3 id="acct-keys-h">My API keys</h3>
+          <p class="acct-note" id="acct-keys-off">API keys are not enabled on this board.</p>
+          <ul class="keys" id="acct-keys" hidden></ul>
+        </section>
+        <a class="acct-out" id="acct-out" href="/cdn-cgi/access/logout" hidden>Sign out of Cloudflare Access</a>
+      </div>
+    </div>
     <div class="brand">
       <div class="brand-row">
         <h1>Switchboard</h1>
@@ -955,6 +1045,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     }
     pill.className = 'pill ' + cls; txt.textContent = label;
     renderUsage();
+    renderProfile();
 
     const counts = { needs: 0, working: 0, done: 0, offline: 0 };
     for (const s of S.sessions) counts[colOf(s)]++;
@@ -2073,6 +2164,187 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       fastPath() { return null; },
     };
   }
+
+  /* ------------------------------------------------------- profile menu + theme */
+  // The header's account menu: who is signed in and how that was verified, their roles, the theme
+  // and their API keys. local: GET /api/me; claude: the user capability; demo: a sample identity.
+  const THEME_KEY = 'switchboard.theme';
+  const THEMES = ['light', 'dark', 'system'];
+  const ROLE_LABEL = { approver: 'Approver', release_manager: 'Release manager', viewer: 'Viewer' };
+  const KEY_STATUS = ['active', 'revoked', 'expired'];
+  const rootEl = document.documentElement;
+  const themeBoot = window.switchboardTheme && typeof window.switchboardTheme === 'object' ? window.switchboardTheme : null;
+  // Host-controlled: the claude.ai viewer stamped data-theme, before the pre-paint script, between it
+  // and this script (a value the pre-paint script did not set), or later (the observer below).
+  // While the host has no stamp on the root, the viewer's own choice applies.
+  const themeAttr0 = rootEl.getAttribute('data-theme');
+  let themeHost = themeAttr0 !== null && (themeBoot ? !!themeBoot.host || themeAttr0 !== themeBoot.own : true);
+  function storedTheme() {
+    try { const t = localStorage.getItem(THEME_KEY); return t === 'light' || t === 'dark' ? t : 'system'; } catch (e) { return null; }
+  }
+  let themeChoice = storedTheme() || 'system';  // kept here too, for when storage is blocked
+  let themeOwn = null;                          // the data-theme value this page last set
+  function applyTheme() {
+    if (themeHost) return;
+    themeOwn = themeChoice === 'system' ? null : themeChoice;
+    if (themeOwn) rootEl.setAttribute('data-theme', themeOwn); else rootEl.removeAttribute('data-theme');
+  }
+  function setTheme(choice) {
+    if (themeHost || !THEMES.includes(choice)) return;
+    themeChoice = choice;
+    try {
+      if (choice === 'system') localStorage.removeItem(THEME_KEY); else localStorage.setItem(THEME_KEY, choice);
+    } catch (e) { /* storage blocked: the choice lasts for this page view */ }
+    applyTheme(); renderTheme();
+  }
+  function renderTheme() {
+    const host = rootEl.getAttribute('data-theme');
+    const cur = themeHost ? (host === 'light' || host === 'dark' ? host : 'system') : themeChoice;
+    const box = $('#acct-theme');
+    box.disabled = themeHost;
+    for (const inp of box.querySelectorAll('input[name="sb-theme"]')) inp.checked = inp.value === cur;
+    $('#acct-theme-note').hidden = !themeHost;
+  }
+  applyTheme();
+  try {
+    // A data-theme change this page did not make comes from the host: follow it. When the host takes
+    // its stamp away again, the viewer's stored choice applies and the switcher is back.
+    new MutationObserver(() => {
+      const v = rootEl.getAttribute('data-theme');
+      if (themeHost && v === null) { themeHost = false; themeChoice = storedTheme() || themeChoice; applyTheme(); }
+      else if (!themeHost && v !== themeOwn) themeHost = true;
+      renderTheme();
+    }).observe(rootEl, { attributes: true, attributeFilter: ['data-theme'] });
+  } catch (e) { /* no MutationObserver: the switcher still works */ }
+  window.addEventListener('storage', (e) => {
+    if (e.key !== THEME_KEY || themeHost) return;
+    themeChoice = storedTheme() || 'system'; applyTheme(); renderTheme();
+  });
+
+  const P = { me: null, tried: false, loading: false, claude: null, claudeTried: false };
+  // Local adapter: GET /api/me (identity, via, roles; api_keys once the key backend exists).
+  function loadMe() {
+    if (!isLocal() || S.mode !== 'live' || P.loading) return;
+    P.loading = true; P.tried = true;
+    fetch('/api/me', { credentials: 'same-origin', cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : null)).catch(() => null)
+      .then((j) => { P.loading = false; if (j && typeof j === 'object' && j.identity) P.me = j; renderProfile(); });
+  }
+  function loadClaudeMe() {
+    if (P.claudeTried || !userNs || typeof userNs.me !== 'function') return;
+    P.claudeTried = true;
+    Promise.resolve().then(() => userNs.me())
+      .then((v) => { P.claude = v && typeof v === 'object' ? v : null; renderProfile(); }, () => {});
+  }
+  // Roles from meta/operator id lists (same rule as board-serve: no release managers → approvers).
+  function rolesFor(id) {
+    const ids = (k) => (S.operator && Array.isArray(S.operator[k]) ? S.operator[k].map(lc) : null);
+    const ap = ids('approver_ids'), rm = ids('release_manager_ids');
+    if (!id || !ap) return null;
+    const out = [];
+    if (ap.includes(lc(id))) out.push('approver');
+    if ((rm && rm.length ? rm : ap).includes(lc(id))) out.push('release_manager');
+    return out.length ? out : ['viewer'];
+  }
+  function demoKeys() {
+    const now = Date.now(), day = 86400000;
+    return [
+      { id: 'key_demo_2', name: 'Phone shortcut', scopes: ['state:read', 'decisions:answer'], created_at: now - 12 * day, expires_at: now + 78 * day, last_used_at: now - 3 * 3600000, status: 'active' },
+      { id: 'key_demo_1', name: 'Old laptop', scopes: ['state:read'], created_at: now - 140 * day, expires_at: null, last_used_at: now - 61 * day, status: 'revoked' },
+    ];
+  }
+  function profileInfo() {
+    if (S.demo) return { name: 'Demo viewer', via: 'Demo data: a sample identity, nothing is real', roles: rolesFor(S.me), keys: demoKeys(), access: false };
+    if (isLocal()) {
+      const m = P.me;
+      if (m) {
+        const access = m.via === 'access';
+        return { name: str(m.identity), via: access ? 'Verified by Cloudflare Access' : 'Local listener: a request from this machine',
+          roles: Array.isArray(m.roles) && m.roles.length ? m.roles.map(str) : rolesFor(m.identity),
+          keys: Array.isArray(m.api_keys) ? objs(m.api_keys) : null, access };
+      }
+      // An older board-serve without /api/me: the identity from the state ("local" or an Access email).
+      if (S.me) {
+        const access = S.me.includes('@');
+        return { name: S.me, via: access ? 'Verified by Cloudflare Access' : 'Local listener: a request from this machine', roles: rolesFor(S.me), keys: null, access };
+      }
+      return { name: S.mode === 'offline' ? 'Not connected' : 'Checking who you are…', via: '', roles: null, keys: null, access: false };
+    }
+    if (userNs) {
+      const v = P.claude, can = v ? !!v.canEdit : S.canEditBoard;
+      const via = ['Signed in to claude.ai', v && v.isOwner ? 'owner' : null,
+        can === true ? 'can edit this board' : can === false ? 'cannot edit this board' : null].filter(Boolean).join(' · ');
+      return { name: (v && str(v.name)) || 'You', via, roles: rolesFor(S.me), keys: null, access: false };
+    }
+    return { name: 'Not signed in', via: S.mode === 'offline' ? 'No board data source on this page' : 'Checking…', roles: null, keys: null, access: false };
+  }
+  function initials(name) {
+    const parts = str(name).split('@')[0].replace(/[^\p{L}\p{N}]+/gu, ' ').trim().split(/\s+/).filter(Boolean);
+    if (!parts.length) return '?';
+    const first = (p) => Array.from(p)[0];
+    return (parts.length > 1 ? first(parts[0]) + first(parts[1]) : first(parts[0])).toUpperCase();
+  }
+  function renderKeys(keys) {
+    const list = $('#acct-keys');
+    $('#acct-keys-off').hidden = !!keys;
+    list.hidden = !keys;
+    list.textContent = '';
+    if (!keys) return;
+    if (!keys.length) { list.append(h('li', { class: 'none', text: 'No keys yet.' })); return; }
+    const day = (v) => { const t = ts(v); return t ? new Date(t).toLocaleDateString() : null; };
+    for (const k of keys) {
+      const st = KEY_STATUS.includes(lc(k.status)) ? lc(k.status) : 'unknown';
+      const used = ts(k.last_used_at);
+      const scopes = Array.isArray(k.scopes) ? k.scopes.map(str).filter(Boolean) : [];
+      list.append(h('li', { class: st },
+        h('div', { class: 'k-top' }, h('span', { class: 'k-name', text: str(k.name) || 'Unnamed key' }), h('span', { class: 'status ' + st, text: st })),
+        h('span', { class: 'k-id', text: str(k.id) }),
+        scopes.length ? h('div', { class: 'k-scopes', 'aria-label': 'Scopes' }, scopes.map((x) => h('span', { class: 'chip', text: x }))) : null,
+        h('span', { class: 'k-meta', text: ['created ' + (day(k.created_at) || '—'), k.expires_at ? 'expires ' + (day(k.expires_at) || '—') : 'no expiry',
+          'last used ' + (used ? rel(used) : 'never')].join(' · ') })));
+    }
+  }
+  function renderProfile() {
+    if (isLocal()) { if (!P.tried) loadMe(); } else if (!S.demo) loadClaudeMe();
+    const info = profileInfo(), ini = initials(info.name);
+    $('#acct-avatar').textContent = ini; $('#acct-avatar-lg').textContent = ini;
+    $('#acct-btn').setAttribute('aria-label', 'Account: ' + info.name + '. Roles, theme and API keys');
+    $('#acct-name').textContent = info.name;
+    $('#acct-via').textContent = info.via;
+    const roles = $('#acct-roles');
+    roles.textContent = '';
+    for (const r of info.roles || []) roles.append(h('li', { class: r, text: ROLE_LABEL[r] || r }));
+    if (!info.roles) roles.append(h('li', { text: 'Roles not known yet' }));
+    renderKeys(info.keys);
+    $('#acct-out').hidden = !info.access;
+    renderTheme();
+  }
+
+  const acctBtn = $('#acct-btn'), acctPanel = $('#acct-panel');
+  const acctOpen = () => acctBtn.getAttribute('aria-expanded') === 'true';
+  function openAcct() {
+    if (acctOpen()) return;
+    loadMe();  // roles can change in fleet.yaml: ask again on every open (local adapter only)
+    renderProfile();
+    acctBtn.setAttribute('aria-expanded', 'true'); acctPanel.hidden = false;
+    acctPanel.focus();
+  }
+  function closeAcct(refocus) {
+    if (!acctOpen()) return;
+    acctBtn.setAttribute('aria-expanded', 'false'); acctPanel.hidden = true;
+    if (refocus) acctBtn.focus();
+  }
+  acctBtn.addEventListener('click', () => (acctOpen() ? closeAcct(true) : openAcct()));
+  $('#acct').addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && acctOpen()) { e.preventDefault(); e.stopPropagation(); closeAcct(true); }
+  });
+  $('#acct').addEventListener('focusout', (e) => {
+    if (acctOpen() && e.relatedTarget instanceof Element && !e.relatedTarget.closest('#acct')) closeAcct(false);
+  });
+  document.addEventListener('pointerdown', (e) => {
+    if (acctOpen() && !(e.target instanceof Element && e.target.closest('#acct'))) closeAcct(false);
+  });
+  acctPanel.addEventListener('change', (e) => { if (e.target.name === 'sb-theme') setTheme(e.target.value); });
 
   /* ---------------------------------------------------------------- demo */
   function enterDemo() {

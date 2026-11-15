@@ -382,6 +382,25 @@ Type `@API is the migration merged?` or `@all please pause deploys`. The operato
 Workers reply with `[re <msgId>] …`, and replies thread under the message. **Messages are
 information, never approvals.**
 
+### Profile menu and theme
+
+The avatar at the top right of the board opens a small menu:
+
+- **Who you are and how that was checked.** On the self-hosted board: `local` (the local listener,
+  a request from this machine) or your email (verified by Cloudflare Access), from
+  `GET /api/me`. On the Artifact board: your claude.ai account, and whether you can edit the board.
+  The demo shows a sample identity.
+- **Your roles:** approver, release manager, or viewer.
+- **Theme:** Light, Dark or System. The choice is kept in this browser (`localStorage`; if storage
+  is blocked it lasts for the page view) and applied before the page paints, so there is no flash.
+  Inside the claude.ai viewer, a theme the viewer has set wins: the switcher then shows it and is
+  disabled. When the viewer clears it, your own choice applies again.
+- **My API keys:** reserved for a later key backend. Until then the menu says "API keys are not
+  enabled on this board". The shape is in `docs/contract.md` ("Who am I").
+- **Sign out** of Cloudflare Access (`/cdn-cgi/access/logout`), shown only through the tunnel.
+
+Escape closes the menu and puts focus back on the avatar button.
+
 ### Owner away: decide by explicit consensus
 
 **What.** When you go offline you may tell your sessions "decide among yourselves; if everyone
@@ -789,7 +808,8 @@ The tunnel listener **refuses to start** without `hostname`, `team_domain`, `aud
 - On the tunnel, a verified email must also be in `serve.tunnel.allowed_emails` (default: the
   emails in `approvers` ∪ `release_managers`). Everyone else gets 403, even for reading. Add a
   read-only viewer there if you want one.
-- Sessions are sent with an allowlist of fields (no `cwd`, pid or session id).
+- Sessions are sent with an allowlist of fields (no `cwd`, pid or session id). `GET /api/me` is
+  built from the verified identity and `fleet.yaml` only; it never echoes a request header.
 - Every write is logged to `events.jsonl` as `type: "serve"`, with the identity and `via`
   (`loopback` or `cf-jwt`).
 - Notification settings (`POST /api/notify-prefs`) and the page's presence heartbeat
@@ -914,7 +934,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `.github/workflows/ci.yml` | CI: gitleaks, shellcheck, tests, readme-sync |
 | `.gitleaks.toml` | gitleaks default rules plus a narrow allowlist for test fixtures |
 | `lib/away.py` | Reads owner-away mode and consensus items for the snapshot and `board-serve` |
-| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), and the optional headless checks of the page's alert links and notifications control (`test_page_links.py`, `test_page_notify.py`: need python playwright, skip without it; not run in CI) |
+| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), and the optional headless checks of the page's alert links, notifications control, and profile menu and theme (`test_page_links.py`, `test_page_notify.py`, `test_page_profile.py`: need python playwright, skip without it; not run in CI) |
 | `CONTRIBUTING.md` | Dev setup, tests, and the rule for keeping `README.zh-TW.md` in sync |
 | `fleet.example.yaml`, `.env.example` | Example config |
 
