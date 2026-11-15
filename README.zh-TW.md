@@ -363,6 +363,23 @@ flowchart LR
 送出 `[BOARD ask <msgId>] …`（`@all` 會送給 `ListAgents` 列出的每個存活 session）。worker 用
 `[re <msgId>] …` 回覆，回覆會串在原訊息底下。**訊息只是資訊，絕不是核准。**
 
+### 個人選單與主題
+
+看板右上角的頭像會打開一個小選單：
+
+- **你是誰、怎麼驗證的。** 自架看板上是 `local`（local listener，來自這台機器的請求）或你的 email
+  （由 Cloudflare Access 驗證），資料來自 `GET /api/me`。Artifact 看板上是你的 claude.ai 帳號，
+  以及你能不能編輯這個看板。demo 顯示一個範例身分。
+- **你的角色：** approver、release manager 或 viewer。
+- **主題：** 淺色、深色或跟隨系統。選擇存在這個瀏覽器裡（`localStorage`；儲存被封鎖時只在這次瀏覽
+  有效），並在頁面繪製前套用，所以不會閃一下。在 claude.ai 檢視器裡，以檢視器設定的主題為準：
+  切換器會顯示該主題並停用。
+- **我的 API 金鑰：** 保留給之後的金鑰後端。在那之前，選單會顯示「API keys are not enabled on this
+  board」。資料格式寫在 `docs/contract.md`（"Who am I"）。
+- **登出** Cloudflare Access（`/cdn-cgi/access/logout`），只有透過 tunnel 時才會出現。
+
+按 Escape 會關閉選單，焦點回到頭像按鈕。
+
 ### 主人不在時：以明確的共識做決定
 
 **是什麼**。你離線時，可能會跟各個 session 說「你們自己商量，大家都同意就去做」。owner-away
@@ -733,7 +750,8 @@ bin/board-serve              # local: http://127.0.0.1:39410
   只有核准者和 release manager 可以傳送訊息。
 - 在 tunnel 上，經過驗證的 email 還必須在 `serve.tunnel.allowed_emails` 裡（預設：`approvers` ∪
   `release_managers` 裡的 email）。其他人一律得到 403，連讀取都不行。如果想加一位唯讀檢視者，就加在這裡。
-- session 資料只送出允許清單裡的欄位（不含 `cwd`、pid 或 session ID）。
+- session 資料只送出允許清單裡的欄位（不含 `cwd`、pid 或 session ID）。`GET /api/me` 只根據驗證過的
+  身分和 `fleet.yaml` 產生，絕不回傳任何請求標頭。
 - 每一次寫入都會以 `type: "serve"` 記錄到 `events.jsonl`，並附上身分和 `via`（`loopback` 或 `cf-jwt`）。
 - 通知設定（`POST /api/notify-prefs`）和頁面的在場心跳（`POST /api/presence`）只限核准者，`approvers`
   為空時一律拒絕，而且身分取自監聽器，絕不取自請求內容。
@@ -845,7 +863,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `.github/workflows/ci.yml` | CI：gitleaks、shellcheck、測試、readme-sync |
 | `.gitleaks.toml` | gitleaks 預設規則，加上針對測試 fixture 的小範圍允許清單 |
 | `lib/away.py` | 為 snapshot 和 `board-serve` 讀取 owner-away 模式與共識項目 |
-| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`），以及選用的頁面告警連結與通知控制 headless 檢查（`test_page_links.py`、`test_page_notify.py`：需要 python playwright，沒有就略過；CI 不執行） |
+| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`），以及選用的頁面告警連結、通知控制、個人選單與主題 headless 檢查（`test_page_links.py`、`test_page_notify.py`、`test_page_profile.py`：需要 python playwright，沒有就略過；CI 不執行） |
 | `CONTRIBUTING.md` | 開發環境設定、測試，以及讓 `README.zh-TW.md` 保持同步的規則 |
 | `fleet.example.yaml`、`.env.example` | 設定範例 |
 
