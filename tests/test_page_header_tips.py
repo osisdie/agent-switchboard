@@ -2,11 +2,14 @@
 """tests/test_page_header_tips.py — optional headless check of the header popovers in
 artifact/board.html: every tile, meter and pill in the header (demo tag, operator, owner away,
 notifications, needs you, working, done, offline, Claude usage, system) has a role=tooltip
-popover tied to it by aria-describedby, which opens on mouse hover, on keyboard focus and on a
+popover tied to it by aria-describedby (a role=group disclosure with aria-expanded and
+aria-controls when it holds buttons), which opens on mouse hover, on keyboard focus and on a
 tap, closes on Escape, on leaving it and on a tap outside, stays inside a 390 px screen without
 side scrolling, shows the detail behind the number, and is in 繁體中文 when the page is. A link
-tile only opens its popover on a tap, and still follows the link on a click. On the Artifact page
-the operator popover says so.
+tile only opens its popover on a tap (its popover links on), and still follows the link on a
+click or Enter. Escape with the focus inside a popover puts it back on the box. No popover shows a
+session card's own text (what it is doing, its prompt). On the Artifact page the operator
+popover says so.
 
 Needs python playwright and a Chromium it can launch; without them it prints "skipped" and
 exits 0, so it never blocks anyone. CI does not run it.
@@ -47,25 +50,30 @@ def check(name, cond, detail=None):
             print("       " + str(detail)[:400])
 
 
-# box id -> (popover id, text the English popover shows)
+# box id -> (popover id, text the English popover shows, holds buttons)
 TIPS = {
-    "demo-tag": ("demo-pop", "Sample data"),
-    "op-pill": ("op-pop", "Last heartbeat:"),
-    "away-pill": ("away-pop", "Pending consensus:"),
-    "notif-pill": ("notif-pop", "Slack · muted"),
-    "needs-tile": ("needs-pop", "Oldest:"),
-    "mt-working": ("working-pop", "DOCS"),
-    "mt-done": ("done-pop", "Sessions:"),
-    "mt-offline": ("offline-pop", "last seen"),
-    "usage": ("usage-pop", "5-hour window:"),
-    "sys": ("sys-pop", "Memory:"),
+    "demo-tag": ("demo-pop", "Sample data", False),
+    "op-pill": ("op-pop", "Last heartbeat:", False),
+    "away-pill": ("away-pop", "Pending consensus:", True),
+    "notif-pill": ("notif-pop", "Slack · muted", True),
+    "needs-tile": ("needs-pop", "Oldest:", True),
+    "mt-working": ("working-pop", "DOCS", False),
+    "mt-done": ("done-pop", "Sessions:", False),
+    "mt-offline": ("offline-pop", "last seen", False),
+    "usage": ("usage-pop", "5-hour window:", False),
+    "sys": ("sys-pop", "Memory:", True),
 }
-STATE_JS = """(box) => { const b = document.getElementById(box), id = b.getAttribute('aria-describedby');
+# The demo session cards' own text: what a session is doing and its prompt never go in a popover.
+CARD_TEXT = ("The migration is ready", "Add cursor pagination", "Two teammates are drafting", "Write the v2 upgrade guide")
+STATE_JS = """(box) => { const b = document.getElementById(box);
+  const id = b.getAttribute('aria-describedby') || b.getAttribute('aria-controls');
   const p = id && document.getElementById(id); if (!p) return { id };
   const r = p.getBoundingClientRect();
   return { id, role: p.getAttribute('role'), open: !p.hidden && r.width > 0, text: p.innerText, left: r.left, right: r.right,
+    described: b.getAttribute('aria-describedby'), expanded: b.getAttribute('aria-expanded'), controls: b.getAttribute('aria-controls'),
+    labelledby: p.getAttribute('aria-labelledby'), buttons: p.querySelectorAll('button, a, input').length,
     vw: document.documentElement.clientWidth, sw: document.scrollingElement.scrollWidth,
-    others: [...document.querySelectorAll('[role="tooltip"]')].filter((x) => x !== p && !x.hidden).map((x) => x.id) }; }"""
+    others: [...document.querySelectorAll('.u-pop')].filter((x) => x !== p && !x.hidden).map((x) => x.id) }; }"""
 CLAUDE_STUB = """(() => {
   const snap = (docs) => ({ docs, metadata: { fromCache: false } });
   const query = () => { const q = { orderBy: () => q, limit: () => q, onSnapshot(cb) { setTimeout(() => cb(snap([])), 0); return () => {}; } }; return q; };
@@ -103,21 +111,58 @@ def main():
         pg = new_page()
         pg.goto(PAGE + "?demo=1")
         pg.wait_for_selector("#needs-tile")
-        for box, (pid, want) in TIPS.items():
+        seen = []
+        for box, (pid, want, inter) in TIPS.items():
             pg.mouse.move(5, 880)
             pg.hover("#" + box)
             s = st(pg, box)
-            check("%s: hover opens #%s (role=tooltip, aria-describedby)" % (box, pid),
-                  s.get("id") == pid and s.get("role") == "tooltip" and s.get("open") and not s.get("others"), s)
+            if inter:
+                check("%s: hover opens #%s, a disclosure (role=group, aria-expanded, aria-controls, no tooltip)" % (box, pid),
+                      s.get("id") == pid and s.get("role") == "group" and s.get("expanded") == "true" and s.get("controls") == pid
+                      and s.get("labelledby") == box and not s.get("described") and s.get("buttons") > 0 and s.get("open") and not s.get("others"), s)
+            else:
+                check("%s: hover opens #%s, a text-only tooltip (role=tooltip, aria-describedby)" % (box, pid),
+                      s.get("id") == pid and s.get("role") == "tooltip" and s.get("described") == pid and s.get("expanded") is None
+                      and s.get("buttons") == 0 and s.get("open") and not s.get("others"), s)
             check("%s: shows the detail (%r)" % (box, want), want in (s.get("text") or ""), s.get("text"))
+            seen.append(s.get("text") or "")
             pg.mouse.move(5, 880)
             pg.wait_for_timeout(250)
-            check("%s: leaving closes it" % box, not st(pg, box)["open"])
+            check("%s: leaving closes it" % box, not st(pg, box)["open"] and st(pg, box).get("expanded") in (None, "false"))
             pg.focus("#" + box)
             check("%s: focus opens it" % box, st(pg, box)["open"])
             pg.keyboard.press("Escape")
             check("%s: Escape closes it" % box, not st(pg, box)["open"])
             pg.evaluate("() => document.activeElement && document.activeElement.blur()")
+        check("no popover shows a session card's own text (doing, prompt)",
+              not any(c in t for t in seen for c in CARD_TEXT), [c for t in seen for c in CARD_TEXT if c in t])
+        check("notification pill named for screen readers", pg.get_attribute("#notif-pill", "aria-label") == "Notifications: 1 muted",
+              pg.get_attribute("#notif-pill", "aria-label"))
+        # Escape with the focus inside a popover: closed, focus back on its box, not reopened.
+        pg.focus("#needs-tile")
+        pg.focus("#needs-pop-go")
+        pg.keyboard.press("Escape")
+        check("Escape inside a popover: closed, focus back on its box",
+              not st(pg, "needs-tile")["open"] and pg.evaluate("() => document.activeElement.id") == "needs-tile", st(pg, "needs-tile"))
+        pg.evaluate("() => document.activeElement && document.activeElement.blur()")
+        # Moved on resize: opened by focus at 1280, narrowed to 420.
+        pg.focus("#sys")
+        pg.set_viewport_size({"width": 420, "height": 900})
+        pg.wait_for_timeout(100)
+        s = st(pg, "sys")
+        check("an open popover is placed again on resize", s["open"] and s["left"] >= 0 and s["right"] <= s["vw"], s)
+        pg.set_viewport_size({"width": 1280, "height": 900})
+        pg.evaluate("() => document.activeElement && document.activeElement.blur()")
+        pg.mouse.move(5, 880)
+        pg.wait_for_timeout(200)
+        # Enter on the link tiles still follows their links.
+        for box, hsh in (("needs-tile", "#decisions"), ("sys", "#resources")):
+            pg.evaluate("() => { history.replaceState(null, '', location.pathname + location.search); scrollTo(0, 0); }")
+            pg.focus("#" + box)
+            pg.keyboard.press("Enter")
+            check("Enter on #%s still goes to %s" % (box, hsh), pg.evaluate("() => location.hash") == hsh)
+            pg.evaluate("() => document.activeElement && document.activeElement.blur()")
+        pg.mouse.move(5, 880)
         # The needs popover links to the oldest wait; the tile itself still follows its link.
         pg.hover("#needs-tile")
         pg.click("#needs-pop-go")
@@ -133,7 +178,7 @@ def main():
         pg = new_page(viewport={"width": 390, "height": 844}, has_touch=True)
         pg.goto(PAGE + "?demo=1")
         pg.wait_for_selector("#needs-tile")
-        for box, (pid, _want) in TIPS.items():
+        for box, (pid, _want, _inter) in TIPS.items():
             pg.tap("#" + box)
             pg.wait_for_timeout(50)
             s = st(pg, box)
@@ -146,6 +191,15 @@ def main():
         pg.tap("h1")
         check("a tap outside closes it", not st(pg, "sys")["open"])
         check("a tap on a link tile does not follow the link", pg.evaluate("() => location.hash") == "")
+        # ...its popover links on: System -> Resources, Needs you -> Decisions.
+        for box, link, head in (("sys", "#sys-pop-sec", "h-resources"), ("needs-tile", "#needs-pop-sec", "h-decisions")):
+            pg.evaluate("() => scrollTo(0, 0)")
+            pg.tap("#" + box)
+            pg.wait_for_timeout(50)
+            pg.tap(link)
+            pg.wait_for_timeout(300)
+            check("tap %s, then its %s link: popover closed, at the section" % (box, link),
+                  not st(pg, box)["open"] and pg.evaluate("() => document.activeElement.id") == head, pg.evaluate("() => document.activeElement.id"))
 
         print("繁體中文:")
         pg.tap("#acct-btn")
@@ -153,8 +207,12 @@ def main():
         pg.keyboard.press("Escape")
         pg.wait_for_timeout(100)
         cjk = re.compile(r"[一-鿿]")
-        english = ("Oldest:", "Waiting:", "Sessions:", "Memory:", "Last heartbeat:", "Pending consensus:", "Sample data", "Updated:")
-        for box, (pid, _want) in TIPS.items():
+        english = ("Oldest:", "Waiting:", "Sessions:", "Memory:", "Last heartbeat:", "Pending consensus:", "Sample data", "Updated:",
+                   "Resources →", "Decisions →")
+        check("notification pill name in 繁體中文", (pg.get_attribute("#notif-pill", "aria-label") or "").startswith("通知："),
+              pg.get_attribute("#notif-pill", "aria-label"))
+        for box, (pid, _want, _inter) in TIPS.items():
+            pg.evaluate("() => scrollTo(0, 0)")
             pg.tap("#" + box)
             pg.wait_for_timeout(50)
             s = st(pg, box)
@@ -175,6 +233,9 @@ def main():
               pg.evaluate("() => document.getElementById('away-pill').hidden && document.getElementById('notif-pill').hidden"))
         pg.hover("#needs-tile")
         check("needs popover with nothing waiting", "Nothing is waiting." in st(pg, "needs-tile")["text"])
+        pg.click("#needs-pop-sec")
+        pg.wait_for_timeout(300)
+        check("...still links on to Decisions", not st(pg, "needs-tile")["open"] and pg.evaluate("() => document.activeElement.id") == "h-decisions")
         pg.close()
 
         check("no page errors", not errors, errors)

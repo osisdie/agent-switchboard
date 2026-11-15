@@ -1276,41 +1276,59 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     pop.style.left = Math.round(x - pr.left) + 'px';
     pop.style.top = Math.round(br.bottom + 8 - pr.top) + 'px';
   }
-  function hidePops(except) { for (const o of HPOPS) if (o !== except) o.pop.hidden = true; }
-  function attachPop(box, pop, render) {
-    const P = { box, pop, render, touch: false, tapped: false, timer: 0 };
+  // RESTORE: a popover that holds the focus hands it back to its box before it closes.
+  function hidePops(except, restore) { for (const o of HPOPS) if (o !== except) o.hide(restore); }
+  // A text-only popover is a tooltip (role=tooltip, aria-describedby). One with buttons is a
+  // non-modal disclosure instead: aria-expanded / aria-controls on the box, the panel a group
+  // named by its box.
+  function attachPop(box, pop, render, interactive) {
+    const P = { box, pop, render, touch: false, tapped: false, quiet: false, timer: 0 };
     HPOPS.push(P);
-    box.setAttribute('aria-describedby', pop.id);
+    if (interactive) {
+      pop.setAttribute('role', 'group'); pop.setAttribute('aria-labelledby', box.id);
+      box.setAttribute('aria-controls', pop.id); box.setAttribute('aria-expanded', 'false');
+    } else {
+      pop.setAttribute('role', 'tooltip'); box.setAttribute('aria-describedby', pop.id);
+    }
     const inside = (n) => n instanceof Node && (box.contains(n) || pop.contains(n));
+    const sync = () => { if (interactive) box.setAttribute('aria-expanded', pop.hidden ? 'false' : 'true'); };
     P.paint = () => { if (!pop.hidden && !pop.contains(document.activeElement)) { render(pop); placePop(box, pop); } };
-    const show = () => { clearTimeout(P.timer); if (!pop.hidden) return; hidePops(P); pop.hidden = false; render(pop); placePop(box, pop); };
-    const hide = () => { pop.hidden = true; };
+    P.place = () => { if (!pop.hidden) placePop(box, pop); };
+    P.hide = (restore) => {
+      if (pop.hidden) return;
+      if (restore && pop.contains(document.activeElement)) { P.quiet = true; box.focus({ preventScroll: true }); P.quiet = false; }
+      pop.hidden = true; sync();
+    };
+    const show = () => { clearTimeout(P.timer); if (!pop.hidden) return; hidePops(P, true); pop.hidden = false; sync(); render(pop); placePop(box, pop); };
     for (const el of [box, pop]) {
       el.addEventListener('pointerenter', (e) => { if (e.pointerType === 'mouse') show(); });
       el.addEventListener('pointerleave', (e) => {
         if (e.pointerType !== 'mouse') return;
         clearTimeout(P.timer);
-        P.timer = setTimeout(() => { if (!inside(document.activeElement)) hide(); }, 80);
+        P.timer = setTimeout(() => { if (!inside(document.activeElement)) P.hide(); }, 80);
       });
     }
-    box.addEventListener('focus', () => { if (!P.touch) show(); });
-    box.addEventListener('focusout', (e) => { if (!P.touch && !inside(e.relatedTarget)) hide(); });
-    pop.addEventListener('focusout', (e) => { if (!inside(e.relatedTarget)) hide(); });
-    box.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !pop.hidden) { e.preventDefault(); hide(); } });
+    box.addEventListener('focus', () => { if (!P.touch && !P.quiet) show(); });
+    box.addEventListener('focusout', (e) => { if (!P.touch && !inside(e.relatedTarget)) P.hide(); });
+    pop.addEventListener('focusout', (e) => { if (!inside(e.relatedTarget)) P.hide(); });
+    box.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !pop.hidden) { e.preventDefault(); P.hide(true); } });
     box.addEventListener('pointerdown', (e) => {
       if (e.pointerType === 'mouse') return;
       P.touch = true; P.tapped = true;
-      if (pop.hidden) show(); else hide();
-      setTimeout(() => { P.touch = false; }, 400);
+      if (pop.hidden) show(); else P.hide();
+      setTimeout(() => { P.touch = false; P.tapped = false; }, 400);
     });
+    box.addEventListener('pointercancel', () => { P.tapped = false; });
     box.addEventListener('click', (e) => { if (P.tapped) { P.tapped = false; e.preventDefault(); } });
     return P;
   }
   document.addEventListener('pointerdown', (e) => {
-    for (const o of HPOPS) if (!o.pop.hidden && !(e.target instanceof Node && (o.box.contains(e.target) || o.pop.contains(e.target)))) o.pop.hidden = true;
+    for (const o of HPOPS) if (!o.pop.hidden && !(e.target instanceof Node && (o.box.contains(e.target) || o.pop.contains(e.target)))) o.hide();
   });
-  // Escape closes them wherever the focus is (one may have opened on hover).
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hidePops(null); });
+  // Escape closes them wherever the focus is (one may have opened on hover); focus inside one
+  // goes back to its box.
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hidePops(null, true); });
+  window.addEventListener('resize', () => { for (const o of HPOPS) o.place(); });
   function refreshPops() { for (const o of HPOPS) o.paint(); }
   attachPop($('#usage'), $('#usage-pop'), () => renderUsagePop());
 
@@ -1486,14 +1504,18 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     const np = $('#notif-pill'), N = S.notify && typeof S.notify === 'object' ? S.notify : null, muted = activeMutes();
     np.hidden = !N;
     $('#notif-pill-lamp').className = 'nlamp' + (muted.length ? ' muted' : '');
-    $('#notif-pill-t').textContent = !muted.length ? tr('Push on') : muted.some((m) => m.target === 'all') ? tr('All muted') : tr('{n} muted', { n: muted.length });
+    const state = !muted.length ? tr('Push on') : muted.some((m) => m.target === 'all') ? tr('All muted') : tr('{n} muted', { n: muted.length });
+    $('#notif-pill-t').textContent = state;
+    np.setAttribute('aria-label', tr('Notifications: {state}', { state }));
   }
   const popLine = (k, ...v) => h('p', null, h('span', { class: 'k', text: k }), ...v);
   const sinceOf = (s) => (s.card && ts(s.card.state_since)) || ts(s.updated_at) || 0;
   function needsPop(pop) {
     pop.textContent = '';
     const t = hitlTargets(), now = Date.now();
-    if (!t.length) { pop.append(h('p', { text: tr('Nothing is waiting.') })); return; }
+    const onward = () => h('p', null, h('button', { class: 'golink', type: 'button', id: 'needs-pop-sec',
+      onclick: () => { hidePops(null); goSection('decisions'); }, text: tr('Decisions →') }));
+    if (!t.length) { pop.append(h('p', { text: tr('Nothing is waiting.') }), onward()); return; }
     const who = (x) => (x.dec ? str(x.dec.from) : str(x.session.code)) || '?';
     pop.append(popLine(tr('Waiting: '), tr(t.length === 1 ? '{n} item, longest first' : '{n} items, longest first', { n: t.length })));
     pop.append(h('ul', null, t.slice(0, 8).map((x) => h('li', null, h('span', { class: 'mono', text: who(x) }),
@@ -1502,6 +1524,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     const o = t[0];
     pop.append(popLine(tr('Oldest: '), h('button', { class: 'golink', type: 'button', id: 'needs-pop-go',
       onclick: () => { hidePops(null); revealTarget(o); }, text: tr('{who}, waiting {t} →', { who: who(o), t: compactDur(now - o.since) }) })));
+    pop.append(onward());
   }
   function statePop(col) {
     return (pop) => {
@@ -1520,6 +1543,11 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   }
   function sysPop(pop) {
     pop.textContent = '';
+    sysPopBody(pop);
+    pop.append(h('p', null, h('button', { class: 'golink', type: 'button', id: 'sys-pop-sec',
+      onclick: () => { hidePops(null); goSection('resources'); }, text: tr('Resources →') })));
+  }
+  function sysPopBody(pop) {
     const r = resView();
     if (!r) { pop.append(h('p', { text: tr('No resource data yet.') })); return; }
     const levels = r.levels && typeof r.levels === 'object' ? r.levels : {};
@@ -1576,21 +1604,22 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     pop.append(h('p', { text: tr('Sample data, on this page only: answers, messages and settings go nowhere.') }));
   }
   function wirePops() {
-    const pop = (box, id, render, where) => {
-      const el = h('div', { class: 'u-pop', id, role: 'tooltip', hidden: true });
+    // INTERACTIVE: the popover holds buttons (a disclosure, not a tooltip).
+    const pop = (box, id, render, interactive, where) => {
+      const el = h('div', { class: 'u-pop', id, hidden: true });
       (where || box).after(el);
-      attachPop(box, el, render);
+      attachPop(box, el, render, interactive);
     };
     pop($('#demo-tag'), 'demo-pop', demoPop);
     pop($('#op-pill'), 'op-pop', opPop);
-    pop($('#away-pill'), 'away-pop', awayPop);
-    pop($('#notif-pill'), 'notif-pop', notifPop);
-    pop($('#needs-tile'), 'needs-pop', needsPop);
+    pop($('#away-pill'), 'away-pop', awayPop, true);
+    pop($('#notif-pill'), 'notif-pop', notifPop, true);
+    pop($('#needs-tile'), 'needs-pop', needsPop, true);
     const group = $('#mt-working').parentElement;
-    pop($('#mt-working'), 'working-pop', statePop('working'), group);
-    pop($('#mt-done'), 'done-pop', statePop('done'), group);
-    pop($('#mt-offline'), 'offline-pop', statePop('offline'), group);
-    pop($('#sys'), 'sys-pop', sysPop);
+    pop($('#mt-working'), 'working-pop', statePop('working'), false, group);
+    pop($('#mt-done'), 'done-pop', statePop('done'), false, group);
+    pop($('#mt-offline'), 'offline-pop', statePop('offline'), false, group);
+    pop($('#sys'), 'sys-pop', sysPop, true);
   }
 
   function renderBanners() {
@@ -4912,6 +4941,9 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       "Pending consensus: ": "待決共識：",
       "Consensus →": "共識 →",
       "Sample data, on this page only: answers, messages and settings go nowhere.": "示範資料，只在這個頁面：回答、訊息和設定都不會送出。",
+      "Decisions →": "決策 →",
+      "Resources →": "資源 →",
+      "Notifications: {state}": "通知：{state}",
     };
   }
 })();

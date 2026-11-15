@@ -821,10 +821,10 @@ viewer of the Artifact board, sees "account: hidden". Turn it off with `BOARD_SH
 `usage: {show_account: false}` in `fleet.yaml`.
 
 Every other tile, meter and pill in the header explains itself the same way (hover, focus or tap;
-Escape or a tap elsewhere closes it): **Needs you** lists what waits, longest first, with a link to
-the oldest; **Working**, **Done / idle** and **Offline** list the sessions and how long each has
+Escape or a tap elsewhere closes it): **Needs you** lists what waits, longest first, with links to
+the oldest and to Decisions; **Working**, **Done / idle** and **Offline** list the sessions and how long each has
 been in that state; **System** shows memory, swap, load and disk levels, OOM kills, heavy jobs,
-idle teammates and when it was sampled; the operator pill shows the last heartbeat, whether the
+idle teammates and when it was sampled, with a link to Resources; the operator pill shows the last heartbeat, whether the
 operator watch runs and which board this is; the **Owner away** and notification pills show since
 when and by whom, pending consensus, and each channel's mute or floor.
 

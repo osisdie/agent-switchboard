@@ -750,9 +750,9 @@ Claude Code 會把 `rate_limits.five_hour` 和 `rate_limits.seven_day`（`used_p
 或 `fleet.yaml` 的 `usage: {show_account: false}` 關閉。
 
 頁首其他的方塊、計數和標籤也用同樣的方式說明自己（滑鼠移上、聚焦或點一下；按 Escape 或點別處關閉）：
-**Needs you** 列出在等的事，等最久的在前，並附上前往最久那一項的連結；**Working**、**Done / idle** 和
+**Needs you** 列出在等的事，等最久的在前，並附上前往最久那一項和決策區的連結；**Working**、**Done / idle** 和
 **Offline** 列出各 session 以及在這個狀態多久；**System** 顯示記憶體、swap、負載和磁碟的等級、OOM kill、
-重度工作、閒置 teammate 和取樣時間；operator 標籤顯示最後心跳、operator watch 是否執行，以及這是哪一種看板；
+重度工作、閒置 teammate 和取樣時間，並附上前往資源區的連結；operator 標籤顯示最後心跳、operator watch 是否執行，以及這是哪一種看板；
 **主人不在**和通知標籤顯示從何時開始、由誰設定、待決共識，以及每個管道的靜音或最低等級。
 
 門檻可以設定（`alerting.thresholds`）。每個門檻在每個重設週期只觸發一次。頁面會同時顯示兩個用量計
