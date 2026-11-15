@@ -955,7 +955,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # per question, checked against the decision below; no answer text.
         options = body.get("options")
         if options is not None:
-            if not isinstance(options, list) or not 2 <= len(options) <= 6 or any(
+            if not isinstance(options, list) or not 2 <= len(options) <= 4 or any(
                     isinstance(o, bool) or not isinstance(o, int) or not 1 <= o <= 8 for o in options):
                 raise Refused(400, "bad_options", "options must be one option number (1-8) per question")
             if body.get("answer") is not None or body.get("option") is not None:

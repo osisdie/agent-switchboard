@@ -607,6 +607,7 @@ paneq d-1-pqm tu_qm "$Q2F" true
 eq "form: options for each question 400" "$(post /api/decisions/d-1-pqm/answer '{"options":[1]}')" "400"
 eq "  error bad_options" "$(body .error)" "bad_options"
 eq "form: an option out of range 400" "$(post /api/decisions/d-1-pqm/answer '{"options":[1,2]}')/$(body .error)" "400/bad_options"
+eq "form: more than 4 options 400" "$(post /api/decisions/d-1-pqm/answer '{"options":[1,1,1,1,1]}')/$(body .error)" "400/bad_options"
 eq "form: a boolean is not an option 400" "$(post /api/decisions/d-1-pqm/answer '{"options":[true,1]}')/$(body .error)" "400/bad_options"
 eq "form: options with answer text 400" "$(post /api/decisions/d-1-pqm/answer '{"options":[1,1],"answer":"Red"}')/$(body .error)" "400/bad_options"
 eq "form: free text instead of options 400" "$(post /api/decisions/d-1-pqm/answer '{"answer":"Red"}')/$(body .error)" "400/bad_options"
