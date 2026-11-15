@@ -454,6 +454,10 @@ case "$1" in
   send-keys)
     # FAKE_TMUX_FAIL_ON: a send-keys whose arguments end with this fails.
     if [ -n "${FAKE_TMUX_FAIL_ON:-}" ] && [[ "$*" == *"$FAKE_TMUX_FAIL_ON" ]]; then exit 1; fi
+    # FAKE_TMUX_STALE_ON_SEND: a decision file the collector marks stale while the keys go in.
+    if [ -n "${FAKE_TMUX_STALE_ON_SEND:-}" ]; then
+      jq '.status = "stale"' "$FAKE_TMUX_STALE_ON_SEND" > "$FAKE_TMUX_STALE_ON_SEND.x" && mv "$FAKE_TMUX_STALE_ON_SEND.x" "$FAKE_TMUX_STALE_ON_SEND"
+    fi
     exit 0 ;;
 esac
 EOF
@@ -527,6 +531,11 @@ eq "no keys sent by any exit-3 refusal" "$(sent_keys)" "0"
 read -r tu d <<<"$(perm "kubectl rollout restart deployment/web --namespace staging")"; "$B" answer "$d" allow --by user-1 >/dev/null
 FAKE_TMUX_SCREEN="$(screen $'kubectl rollout restart deployment/web --name\n     space staging')" press CP allow --expect "$tu"
 eq "wrapped command on screen -> press ok" "$?" "0"
+# The keys went in, but the collector marked it stale meanwhile: press still marks it relayed.
+read -r tu d <<<"$(perm "rm -rf build-r")"; "$B" answer "$d" allow --by user-1 >/dev/null
+FAKE_TMUX_STALE_ON_SEND="$BOARD_HOME/decisions/$d.json" FAKE_TMUX_SCREEN="$(screen "rm -rf build-r")" press CP allow --expect "$tu"
+eq "stale during the key press -> relayed (press overrides stale only)" "$?/$(jq -r .status "$BOARD_HOME/decisions/$d.json")" "0/relayed"
+hook "$(jq -cn --arg s "$SID" --arg tu "$tu" '{session_id: $s, hook_event_name: "PostToolUse", tool_name: "Bash", tool_use_id: $tu, tool_input: {}}')"
 
 # Edit prompts show only the file name: the basename may bind, if it has >= 6 characters.
 editperm() {  # editperm TOOL_USE_ID PATH → decision id
@@ -743,6 +752,7 @@ in_session() {
   return $rc
 }
 a1="$(ask_id)"
+a2b="$(ask_id)"
 "$B" resolve "$a1" --from CP >/dev/null 2>&1
 eq "resolve without --in-pane -> exit 2" "$?/$(dj "$a1" .status)" "2/pending"
 "$B" resolve "$a1" --in-pane --from QA >/dev/null 2>&1
@@ -760,6 +770,17 @@ TMUX=/tmp/fake,1,0 TMUX_PANE=%42 FAKE_TMUX_SESSION=CP PATH="$T/bin:$PATH" "$B" r
 eq "a forged TMUX alone (no CP session among its ancestors) -> exit 4, fails closed" "$?/$(dj "$a1" .status)" "4/pending"
 in_session QA "$B" resolve "$a1" --in-pane --from CP >/dev/null 2>&1
 eq "run inside QA's session, claiming CP -> exit 4" "$?/$(dj "$a1" .status)" "4/pending"
+# A registry entry whose procStart is not this process's start time (a reused pid) is skipped: the
+# walk goes on to the parent. Here: a stale CP entry on this shell -> refused; with a valid CP entry
+# on its parent as well -> found there.
+printf '{"pid":%d,"sessionId":"s-old","name":"CP","tmux":"CP:@9.%%99","procStart":"1"}\n' "$$" > "$CLAUDE_SESSIONS_DIR/$$.json"
+"$B" resolve "$a1" --in-pane --from CP >/dev/null 2>&1
+eq "an ancestor entry with a mismatched procStart is skipped -> exit 4" "$?/$(dj "$a1" .status)" "4/pending"
+pst="$(awk '{ s = $0; sub(/.*\) /, "", s); split(s, f, " "); print f[20] }' "/proc/$PPID/stat")"
+printf '{"pid":%d,"sessionId":"s-parent","name":"CP","tmux":"CP:@9.%%98","procStart":"%s"}\n' "$PPID" "$pst" > "$CLAUDE_SESSIONS_DIR/$PPID.json"
+"$B" resolve "$a2b" --in-pane --from CP >/dev/null 2>&1
+eq "...and the walk goes on to a parent whose procStart matches" "$?/$(dj "$a2b" .status)" "0/answered_in_pane"
+rm -f "$CLAUDE_SESSIONS_DIR/$$.json" "$CLAUDE_SESSIONS_DIR/$PPID.json"
 TMUX=/tmp/fake,1,0 TMUX_PANE=%42 FAKE_TMUX_SESSION=CP PATH="$T/bin:$PATH" in_session CP "$B" resolve "$a1" --in-pane --from CP --note-file "$T/note" >/dev/null
 eq "the asking session resolves it -> answered_in_pane" "$?/$(dj "$a1" '.status + "/" + .resolved_by + "/" + .resolved_via')" "0/answered_in_pane/CP/session"
 eq "...the note scrubbed" "$(dj "$a1" '.resolve_note | test("ghp_") | not')/$(dj "$a1" '.resolve_note | startswith("answered in the pane")')" "true/true"
@@ -809,6 +830,9 @@ eq "mark relayed on answered_in_pane -> exit 1, unchanged" "$?/$(dj "$a1" .statu
 eq "mark stale on relayed -> exit 1, unchanged" "$?/$(dj "$a5" .status)" "1/relayed"
 "$B" mark "$a5" relayed >/dev/null
 eq "marking the same final status again is a no-op" "$?/$(dj "$a5" .status)" "0/relayed"
+s5="$(ask_id)"; "$B" mark "$s5" stale >/dev/null
+MARK_OVER_STALE=1 "$B" mark "$s5" relayed >/dev/null 2>&1
+eq "MARK_OVER_STALE from the environment does not let board mark override stale" "$?/$(dj "$s5" .status)" "1/stale"
 # The collector never overwrites a decision that changed under it (no lock): the hint write re-reads.
 a6="$(ask_id)"
 c6="$(dj "$a6" .created_at)"

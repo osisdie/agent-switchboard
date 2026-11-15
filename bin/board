@@ -94,6 +94,8 @@ set -u
 REPO="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 BOARD_HOME="${BOARD_HOME:-$HOME/.agent-switchboard}"
 export BOARD_HOME
+# Set only inline by board press (relayed over stale, see mark_status); never from the environment.
+unset MARK_OVER_STALE
 FLEET="$REPO/lib/fleet.py"
 GUARD="$REPO/lib/guard.py"
 umask 077   # everything under BOARD_HOME is private to this user
@@ -217,7 +219,9 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
         echo "  close a board ask (kind question, not a pane question, not a gate) that was answered in"
         echo "  the session's pane or another session: status answered_in_pane (final). --from: the"
         echo "  asking session itself: must equal the ask's from, and this command must run inside that"
-        echo "  session (its registered Claude process is an ancestor; fails closed);"
+        echo "  session (its registered Claude process is an ancestor; fails closed). This guards against"
+        echo "  honest mistakes, not a security boundary (same-user trust); where it cannot tell (no /proc,"
+        echo "  a sandbox with its own pid namespace) it refuses: use --by;"
         echo "  --by: an approver. Exit 4 for anyone else. The note (one file, <= 500 chars) goes"
         echo "  through the secret guard: scrubbed, and refused (exit 6) when it asks for a secret value." ;;
     press) echo "usage: board press CODE allow|deny --expect TOOL_USE_ID [--allow-truncated]"
@@ -675,13 +679,20 @@ cmd_answer() {
 
 # Final statuses are never re-marked to another one (relayed, stale, timeout, answered_in_pane):
 # a decision closed in the pane must not turn "relayed", nor a relayed one "stale". Marking the
-# status it already has is a no-op. Returns 1 (nothing written) when refused.
+# status it already has is a no-op. Returns 1 (nothing written) when refused. One exception:
+# board press, whose keys went in, marks relayed over stale (MARK_OVER_STALE=1): the collector may
+# have marked it stale between the key press and this mark.
 mark_status() {  # mark_status ID STATUS [reason]
   local id="$1" st="$2" reason="${3:-}" now cur
   cur="$(jq -r '.status // empty' "$(dec_path "$id")" 2>/dev/null)"
   case "$cur" in
     relayed|stale|timeout|answered_in_pane)
       [ "$cur" = "$st" ] && return 0
+      if [ "$cur" = stale ] && [ "$st" = relayed ] && [ "${MARK_OVER_STALE:-0}" = 1 ]; then cur=""; fi
+    ;;
+  esac
+  case "$cur" in
+    relayed|stale|timeout|answered_in_pane)
       echo "board: decision $id is already $cur; not marked $st" >&2
       return 1 ;;
   esac
@@ -693,14 +704,22 @@ mark_status() {  # mark_status ID STATUS [reason]
 }
 
 # caller_session_code — the code of the Claude Code session this command runs in: the first
-# ancestor of $$ (up to 16 levels) that has a registry file <sessions dir>/<pid>.json, by its tmux
-# session name, else its registered name. Empty when there is none (fails closed for --from).
+# ancestor of $$ (up to 16 levels) whose registry file <sessions dir>/<pid>.json describes that very
+# process, by its tmux session name, else its registered name. Empty when there is none (fails
+# closed for --from). Same-user trust against honest mistakes, not a security boundary.
 caller_session_code() {
   local sd="${CLAUDE_SESSIONS_DIR:-$HOME/.claude/sessions}" p=$$ i reg t n pp
   for i in $(seq 1 16); do
     [ -n "$p" ] && [ "$p" -gt 1 ] 2>/dev/null || return 0
     reg="$sd/$p.json"
-    if [ -f "$reg" ]; then
+    # A registry file counts only for the process it describes (lib/actions.py same_process: not a
+    # zombie, and its procStart matches /proc/<pid>/stat); a reused pid is skipped and the walk
+    # goes on to its parent.
+    if [ -f "$reg" ] && python3 -c 'import json, sys
+sys.path.insert(0, sys.argv[1])
+import actions
+with open(sys.argv[2], encoding="utf-8") as fh:
+    sys.exit(0 if actions.same_process(json.load(fh), int(sys.argv[3])) else 1)' "$REPO/lib" "$reg" "$p" 2>/dev/null; then
       t="$(jq -r '.tmux // empty' "$reg" 2>/dev/null)"; n="$(jq -r '.name // empty' "$reg" 2>/dev/null)"
       t="${t%%:*}"
       [ -n "$t" ] && { echo "$t"; return 0; }
@@ -1159,20 +1178,20 @@ cmd_press() {
   if [ "$multi" = 1 ]; then
     press_multi "$pane" "$sf" "$df" "$st_sha" "$lines"
     attempt sent "ok" "$pane"
-    mark_status "$dec_id" relayed >/dev/null 2>&1
+    MARK_OVER_STALE=1 mark_status "$dec_id" relayed >/dev/null 2>&1
     echo "pressed answer ($(jq -r '.answer_options | map(tostring) | join(" ")' "$df"), submitted) in $code pane $pane"
     return 0
   fi
   if [ "$action" = answer ] && [ -n "$q_text" ]; then
     press_free_text "$pane" "$sf" "${keys[0]}" "$q_text" "$st_sha" "$lines" "$ft_label"
     attempt sent "ok" "$pane"
-    mark_status "$dec_id" relayed >/dev/null 2>&1
+    MARK_OVER_STALE=1 mark_status "$dec_id" relayed >/dev/null 2>&1
     echo "pressed answer (${keys[0]}, free text, Enter) in $code pane $pane"
     return 0
   fi
   tmux send-keys -t "$pane" "${keys[@]}" || { attempt failed "send-keys failed" "$pane"; exit 1; }
   attempt sent "ok" "$pane"
-  mark_status "$dec_id" relayed >/dev/null 2>&1
+  MARK_OVER_STALE=1 mark_status "$dec_id" relayed >/dev/null 2>&1
   echo "pressed $action (${keys[*]}) in $code pane $pane"
 }
 

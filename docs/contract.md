@@ -203,8 +203,10 @@ is closed with `board resolve <id> --in-pane --from <CODE>|--by <approver> [--no
 
 - `--from` must be the ask's `from` (or an alias of the same fleet code), inside tmux this tmux
   session, and the command must run inside that session: the first ancestor of the `board` process
-  with a registry file (`~/.claude/sessions/<pid>.json`) must be that session (its tmux session
-  name, else its registered name). No such ancestor fails closed, so a forged `TMUX` / `TMUX_PANE`
+  with a registry file (`~/.claude/sessions/<pid>.json`) that describes that very process (not a
+  zombie, and its `procStart` matches the start time in `/proc/<pid>/stat`: lib/actions.py
+  `same_process`; a reused pid is skipped and the walk goes on) must be that session (its tmux
+  session name, else its registered name). No such ancestor fails closed, so a forged `TMUX` / `TMUX_PANE`
   or a shell outside the session cannot use `--from`; a teammate (its own registered process) cannot
   either: the session itself or an approver closes it. `--by` must be in `approvers`. Anyone else:
   exit 4, audited (`type: "resolve"`, `result: "refused"`). A permission, pane question or gate:
@@ -212,12 +214,19 @@ is closed with `board resolve <id> --in-pane --from <CODE>|--by <approver> [--no
 - Only `pending` or `unauthorized`: an `answered` ask (an approver's board answer waiting for its
   relay) is refused with exit 1, "already answered: it will be relayed", for `--from` and `--by`
   alike. Already final: exit 1.
-- **Trust model.** `--from` proves only that the command runs inside a process tree a registered
-  session started; a session can still act as itself. `--by` is a claim the local CLI cannot verify
+- **Trust model.** `--from` guards against honest mistakes (a session closing another session's
+  ask, a shell outside any session), within same-user trust: it is not a security boundary, since
+  any process of the same user can write a registry file. It proves only that the command runs
+  inside a process tree a registered session started; a session can still act as itself. Where it
+  cannot tell, it refuses: no `/proc` (the start-time check needs it), or a sandbox that unshares
+  the pid namespace (the session's process is not visible); use `--by` there. `--by` is a claim the local CLI cannot verify
   (any local user can type it), like `board answer --by`; on the board the identity comes from
   board-serve (loopback or a verified Access JWT).
 - `board mark` never re-marks a final status (`relayed`, `stale`, `timeout`, `answered_in_pane`) to
-  another one: exit 1, unchanged. Marking the status it already has is a no-op (exit 0).
+  another one: exit 1, unchanged. Marking the status it already has is a no-op (exit 0). The one
+  exception is inside `board press`: its keys went in, so it marks `relayed` over `stale` (the
+  collector may have marked the prompt stale between the key press and the mark); never over any
+  other final status, and never from `board mark` or the environment.
 - The note goes through the guard: refused with exit 6 when it asks for a secret value, otherwise
   scrubbed and clipped to 500 characters.
 - The record gets `status: "answered_in_pane"` (final, like `relayed`), `resolved_by`,
