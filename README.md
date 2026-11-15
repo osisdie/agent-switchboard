@@ -322,6 +322,20 @@ flowchart LR
   empty. If no one is configured, every answer is refused (**fail closed**), and the
   decision stays pending until someone configures a release manager. An answer from anyone outside the
   list is marked `unauthorized`. A peer session saying "it's approved" never counts.
+- **Scheduling (on by default).** Tasks can also carry a repo, branch and base, a size, a `heavy`
+  flag, a priority, dependencies, PR state and a status. The collector feeds them, the sessions'
+  states and the resources level to a deterministic scheduler (`lib/scheduler.py`, zero tokens). It
+  writes `scheduler.json` only when its decision changes: which tasks may start now, a ranked queue,
+  stuck tasks, and advisories. Heavy tasks wait at high memory. At critical, a session is asked to
+  stop a heavy process it started itself; the board never stops one. Advisories are only shown for
+  now (`board schedule`); sending them to sessions comes next.
+  ```bash
+  board task set <task-id> --repo shop --branch feat/export --size M --heavy yes --priority 2
+  board task dep <task-id> --on <other-task> --kind merge
+  board task pr <task-id> --url <pr-url> --state open      # the session reports its PR itself
+  board task pause|resume|done|drop|block|progress <task-id>
+  board schedule                                           # or --json
+  ```
 
 The full workflow (roles, TDD in worktrees, local review before push, pinned merges) is the
 [`delivery-harness`](playbook/delivery-harness/SKILL.md) skill in the playbook.

@@ -27,6 +27,13 @@
 #   board task ls [--json] | board task show ID
 #                                              stages: plan design build test deploy production
 #                                              maintain; artifacts: intent spec plan evals review
+#   board task set ID [--repo R] [--branch B] [--base B] [--size S|M|L] [--heavy yes|no] [--priority 0-3]
+#   board task dep ID --on TASK [--kind merge|deploy|done] | --remove TASK
+#   board task pr ID --url URL --state open|merged|closed [--head SHA] [--method squash|merge|rebase]
+#   board task done|pause|resume|drop|block|progress ID
+#                                              scheduling fields (lib/tasks.py), all optional
+#   board schedule [--json]                    the scheduler's decision (scheduler.json): what may
+#                                              start now, the queue, stuck tasks, advisories
 #   board limit [--json|--clear]               show (or end) the current usage-limit episode
 #   board resources [--json|--mirror] [--refresh]
 #                                              system resources, per-session processes and
@@ -266,17 +273,27 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
         echo "  once, then is checked again. Exit 7 (nothing sent but that key): the state still shows the"
         echo "  prompt waiting but the pane shows no prompt / picker; the decision is pending again, with a"
         echo "  press_note (a prompt about other input on screen is still exit 3, stale)." ;;
-    task) echo "usage: board task new|stage|ls|show ..."
+    task) echo "usage: board task new|stage|ls|show|set|dep|pr|done|pause|resume|drop|block|progress ..."
         echo "  board task new --owner CODE \"title\" [--stage S]"
         echo "  board task stage ID STAGE [--artifact key=ref]..."
         echo "  board task ls [--json]"
         echo "  board task show ID"
+        echo "  board task set ID [--repo R] [--branch B] [--base B] [--size S|M|L] [--heavy yes|no] [--priority 0-3]"
+        echo "  board task dep ID --on TASK [--kind merge|deploy|done] | --remove TASK"
+        echo "  board task pr ID --url URL --state open|merged|closed [--head SHA] [--method squash|merge|rebase]"
+        echo "  board task done|pause|resume|drop|block|progress ID"
         echo "  stages: $STAGES; artifact keys: $ARTIFACT_KEYS" ;;
     "task new") echo "usage: board task new --owner CODE \"title\" [--stage S]   (prints the task id)" ;;
     "task stage") echo "usage: board task stage ID STAGE [--artifact key=ref]..."
         echo "  stages: $STAGES; artifact keys: $ARTIFACT_KEYS" ;;
     "task ls") echo "usage: board task ls [--json]" ;;
     "task show") echo "usage: board task show ID" ;;
+    "task set"|"task dep"|"task pr"|"task done"|"task pause"|"task resume"|"task drop"|"task block"|"task progress")
+        python3 "$REPO/lib/tasks.py" --help | sed -n 's/^  tasks.py /usage: board task /p; s/^   *\(\[\|[a-z]\)/    \1/p' ;;
+    schedule) echo "usage: board schedule [--json]"
+        echo "  the scheduler's last decision (\$BOARD_HOME/scheduler.json, written by the collector when it"
+        echo "  changes): mode, resources level, heavy slots, the tasks that may start now, the ranked queue"
+        echo "  (run ready queued deferred blocked paused), stuck tasks and advisories. Read-only." ;;
     limit) echo "usage: board limit [--json|--clear]"
         echo "  show (or end) the current usage-limit episode (\$BOARD_HOME/limit.json)" ;;
     resources) echo "usage: board resources [--json|--mirror] [--refresh]"
@@ -951,6 +968,7 @@ cmd_task() {
     ls) task_ls "$@" ;;
     show) [ -n "${1:-}" ] || { sub_usage task show >&2; exit 2; }
           local tf; tf="$(task_path "$1")"; [ -f "$tf" ] || die "no such task: $1"; jq . "$tf" ;;
+    set|dep|pr|done|pause|resume|drop|block|progress) python3 "$REPO/lib/tasks.py" "$sub" "$@" ;;
     *) sub_usage task >&2; exit 2 ;;
   esac
 }
@@ -976,7 +994,7 @@ task_new() {
     --arg stage "$stage" --argjson now "$now" '
     { id: $id, title: $title, owner: $owner, stage: $stage,
       artifacts: { intent: null, spec: null, plan: null, evals: null, review: null },
-      gates: [], created_at: $now, updated_at: $now }')"
+      gates: [], created_at: $now, updated_at: $now, schema_version: 1 }')"
   log_event "$(jq -cn --arg id "$id" --arg owner "$owner" --arg stage "$stage" --argjson now "$now" \
     '{ts: $now, type: "task", id: $id, owner: $owner, stage: $stage, action: "new"}')"
   echo "$id"
@@ -1022,8 +1040,8 @@ task_ls() {
   local all; all="$(jq -s 'sort_by(.updated_at)' "${files[@]}")"
   if [ "$json" = 1 ]; then echo "$all"; return 0; fi
   {
-    printf 'ID\tOWNER\tSTAGE\tGATES\tARTIFACTS\tTITLE\n'
-    jq -r "$JQ_SAFE"'.[] | [ .id, .owner, .stage,
+    printf 'ID\tOWNER\tSTATUS\tSTAGE\tGATES\tARTIFACTS\tTITLE\n'
+    jq -r "$JQ_SAFE"'.[] | [ .id, .owner, (.status // "active"), .stage,
       ((.gates // []) | if length == 0 then "-" else map(.stage + "/" + .gate + ":" + .status) | join(",") end),
       ((.artifacts // {}) | to_entries | map(select(.value != null) | .key) | if length == 0 then "-" else join(",") end),
       (.title | gsub("[\t\n]"; " ") | .[0:50]) ] | map(safe) | @tsv' <<<"$all"
@@ -2275,7 +2293,7 @@ case "$sub" in
   # leading -h/--help asks for help.
   answer)
     case "${1:-}" in -h|--help) sub_usage answer; exit 0 ;; esac ;;
-  ls|snapshot|ask|decisions|mark|resolve|press|limit|notify|doctor|ack|unmute|notify-level|notify-presence|resources|rc|session|pomodoro)
+  ls|snapshot|ask|decisions|mark|resolve|press|limit|notify|doctor|ack|unmute|notify-level|notify-presence|resources|rc|session|pomodoro|schedule)
     if wants_help "$@"; then sub_usage "$sub"; exit 0; fi ;;
   # proposals, notes and the owner's words are free text: only -h/--help right after the
   # subcommand (or instead of it) asks for help.
@@ -2284,7 +2302,8 @@ case "$sub" in
     case "${2:-}" in -h|--help) sub_usage "$sub" "$1"; exit 0 ;; esac ;;
   task)
     if wants_help "$@"; then
-      case "${1:-}" in new|stage|ls|show) sub_usage task "$1" ;; *) sub_usage task ;; esac
+      case "${1:-}" in new|stage|ls|show|set|dep|pr|done|pause|resume|drop|block|progress) sub_usage task "$1" ;;
+        *) sub_usage task ;; esac
       exit 0
     fi ;;
 esac
@@ -2301,6 +2320,7 @@ case "$sub" in
   limit) cmd_limit "$@" ;;
   resources) cmd_resources "$@" ;;
   pomodoro) guarded cmd_pomodoro "$@" ;;
+  schedule) guarded python3 "$REPO/lib/scheduler.py" show "$@" ;;
   notify) cmd_notify "$@" ;;
   ack) [ $# -gt 0 ] || { sub_usage ack >&2; exit 2; }; exec "$REPO/bin/board-notify" ack "$@" ;;
   doctor) cmd_doctor "$@" ;;

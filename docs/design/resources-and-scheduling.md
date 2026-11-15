@@ -295,3 +295,20 @@ PR 1 ships the incident fix even if the rest slips.
 - **"Something is pending"** for J6 means what `board-serve --watch` hands the operator: an
   answered question or gate (not a permission prompt, which board-serve presses) or a message with
   `status: "new"`. A decision still pending waits on the owner.
+
+## Implementation notes (scheduler core)
+The scheduler ships in three steps instead of section 7's PRs 2–4: (1) task model + core,
+(2) operator/worker integration + lessons, (3) UI. Step 1 differs from the text above:
+- **Names.** `lib/scheduler.py` and `$BOARD_HOME/scheduler.json` (not `lib/plan.py` /
+  `schedule.json`); the read-only CLI is `board schedule [--json]` (`plan` is already a lifecycle
+  stage and an artifact). Task changes go through `lib/tasks.py`.
+- **Not yet:** usage modes (`conserve`, `wait-reset`), jams J1–J8 and their alerts,
+  `schedule-state.json`, git facts, `answer_first`, `board plan off|on|ack`, the snapshot
+  `schedule` digest (it would wake the operator before it acts on anything), and delivery. The
+  mode is `normal`, `degraded` (critical) or `off`.
+- **Score.** No recency factor in `p_finish`: the output changes only when an input or an hour
+  boundary of the aging term changes, so `scheduler.json` stays heartbeat-free.
+- **Added:** task `status` verbs `drop` and `block`, `board task progress` (resets the stall clock;
+  there are no git facts yet), cycle and self-dependency refusal at `board task dep`, a per-session
+  "one current task" rule, and heavy-slot fairness (sessions holding fewer heavy processes first).
+- **Stuck** is a queue flag plus a `stuck` list (J4's input), not an advisory.

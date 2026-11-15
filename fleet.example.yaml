@@ -73,6 +73,15 @@ serve:
 # answer or message waits to be relayed.
 # schedule:
 #   operator_stale_minutes: 10
+# The scheduler (lib/scheduler.py, on by default): which tasks may start now and the advisories,
+# in $BOARD_HOME/scheduler.json (`board schedule`). See docs/contract.md, "Scheduler".
+#   enabled: true
+#   max_heavy_concurrent: auto  # heavy tasks at once; auto = 1 under 16 GiB of memory, else 2
+#   one_pr_per_repo: true       # one open PR per repo; other tasks there hold their push
+#   stall_minutes: [45, 90]     # a running task with no progress this long: stuck warn / high
+#   idle_with_work_minutes: 30  # an idle session with a ready task this long: `resume` (info)
+#   stop_own_heavy: true        # at critical memory, ask a session to stop its own heavy process
+#   stop_max: 2                 # ... at most this many sessions at once, largest first
 
 # Session cards on the self-hosted board (lib/cards.py). The last message and prompt are shown to
 # approvers only; show_prompt: false stops the collector from keeping the prompt at all.

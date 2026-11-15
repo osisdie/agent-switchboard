@@ -71,3 +71,5 @@ jobs:
         run: python3 tests/test_rc.py -v
       - name: pomodoro tests
         run: python3 tests/test_pomodoro.py -v
+      - name: scheduler tests
+        run: python3 tests/test_scheduler.py -v

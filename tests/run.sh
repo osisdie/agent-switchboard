@@ -1704,6 +1704,56 @@ eq "session shows task stage" "$(jq -r '.sessions[] | select(.code=="CP") | .sta
 g3="$("$B" ask --from CP --task "$tid" --stage test --gate code-owner "Evals ok now?")"
 "$B" answer "$g3" " LGTM " --by u-owner >/dev/null
 eq "approve words are case-insensitive" "$(jq -r '.gates[2].status' "$tf")" "approved"
+
+# ---- task scheduling fields (lib/tasks.py) and the scheduler (lib/scheduler.py)
+echo "task scheduling:"
+eq "new task has schema_version" "$(jq -r .schema_version "$tf")" "1"
+t2="$("$B" task new --owner OPS "Second")"; tf2="$BOARD_HOME/tasks/$t2.json"
+jq 'del(.schema_version)' "$tf2" > "$tf2.x" && mv "$tf2.x" "$tf2"      # a task file from before the field
+"$B" task set "$t2" --repo shop --branch feat/b --base feat/a --size L --heavy yes --priority 3 >/dev/null
+eq "task set fields" "$(jq -c '[.repo, .branch, .base, .size, .heavy, .priority, .schema_version]' "$tf2")" '["shop","feat/b","feat/a","L",true,3,1]'
+eq "task file mode 0600" "$(stat -c %a "$tf2")" "600"
+before="$(cat "$tf2")"
+"$B" task set "$t2" --size XL >/dev/null 2>&1; eq "bad size rejected" "$?" "1"
+"$B" task set "$t2" --branch 'a b' >/dev/null 2>&1; eq "branch with a space rejected" "$?" "1"
+"$B" task set "$t2" --base '../x' >/dev/null 2>&1; eq "base with .. rejected" "$?" "1"
+"$B" task set "$t2" --heavy maybe >/dev/null 2>&1; eq "bad heavy rejected" "$?" "1"
+"$B" task set "$t2" --colour red >/dev/null 2>&1; eq "unknown option is a usage error" "$?" "2"
+"$B" task set "$t2" >/dev/null 2>&1; eq "set with nothing is a usage error" "$?" "2"
+"$B" task set t-0-nope --size S >/dev/null 2>&1; eq "set on unknown task" "$?" "1"
+eq "rejected changes leave the task alone" "$(cat "$tf2")" "$before"
+"$B" task dep "$t2" --on t-0-nope >/dev/null 2>&1; eq "dep on unknown task rejected" "$?" "1"
+"$B" task dep "$t2" --on "$t2" >/dev/null 2>&1; eq "dep on itself rejected" "$?" "1"
+"$B" task dep "$t2" --on "$tid" --kind merge >/dev/null
+eq "dep stored" "$(jq -c '.depends_on' "$tf2")" "[{\"task\":\"$tid\",\"kind\":\"merge\"}]"
+"$B" task dep "$tid" --on "$t2" >/dev/null 2>&1; eq "dep cycle rejected" "$?" "1"
+"$B" task dep "$t2" --on "$tid" --kind sometime >/dev/null 2>&1; eq "bad dep kind rejected" "$?" "1"
+"$B" task pr "$tid" --url 'not a url' --state open >/dev/null 2>&1; eq "bad pr url rejected" "$?" "1"
+"$B" task pr "$tid" --url https://example.test/pr/7 --state open --head ABC >/dev/null 2>&1; eq "bad head sha rejected" "$?" "1"
+"$B" task pr "$tid" --url https://example.test/pr/7 --state open --head abc1234 >/dev/null
+"$B" task pr "$tid" --url https://example.test/pr/7 --state merged --method squash >/dev/null
+eq "pr merged keeps head, sets merged_at" "$(jq -r '[.pr.state, .pr.head_sha, .pr.method, (.pr.merged_at > 0)] | join(",")' "$tf")" "merged,abc1234,squash,true"
+"$B" task pause "$t2" >/dev/null; eq "pause" "$(jq -r .status "$tf2")" "paused"
+"$B" task resume "$t2" >/dev/null; eq "resume" "$(jq -r .status "$tf2")" "active"
+"$B" task progress "$t2" >/dev/null; eq "progress stamps progress_at" "$(jq -r '.progress_at == .updated_at' "$tf2")" "true"
+"$B" task done "$t2" extra >/dev/null 2>&1; eq "status verb takes only the id" "$?" "2"
+"$B" task ls | grep -q "$t2 .*active" && ok "task ls shows status" || bad "task ls shows status" "$("$B" task ls)"
+eq "task events logged" "$(jq -rs --arg id "$t2" '[.[] | select(.type=="task" and .id==$id) | .action] | join(",")' "$BOARD_HOME/events.jsonl")" "new,set,dep,pause,resume,progress"
+jq '.schema_version = 99' "$tf2" > "$tf2.x" && mv "$tf2.x" "$tf2"
+"$B" task set "$t2" --size S >/dev/null 2>&1; eq "newer schema_version is never modified" "$?" "1"
+"$B" task done "$t2" >/dev/null 2>&1; jq '.schema_version = 1' "$tf2" > "$tf2.x" && mv "$tf2.x" "$tf2"
+"$B" task done "$t2" >/dev/null; eq "done" "$(jq -r '.status + "," + ((.done_at > 0) | tostring)' "$tf2")" "done,true"
+"$REPO/bin/board-collect" --once --no-notify
+sf="$BOARD_HOME/scheduler.json"
+eq "scheduler.json written, mode 0600" "$(stat -c %a "$sf" 2>/dev/null)" "600"
+eq "scheduler queue has the live task only" "$(jq -r '[.queue[].task] | join(",")' "$sf")" "$tid"
+eq "snapshot has no schedule field" "$(jq -r 'has("schedule") or has("scheduler")' "$BOARD_HOME/snapshot.json")" "false"
+gen="$(jq -r .generated_at "$sf")"
+"$REPO/bin/board-collect" --once --no-notify
+eq "scheduler.json not rewritten without a change" "$(jq -r .generated_at "$sf")" "$gen"
+"$B" schedule | grep -q "^mode " && ok "board schedule" || bad "board schedule" "$("$B" schedule)"
+eq "board schedule --json" "$("$B" schedule --json | jq -r .digest)" "$(jq -r .digest "$sf")"
+rm -f "$tf2"
 cp "$T/fleet.base.yaml" "$BOARD_CONFIG_DIR/fleet.yaml"
 
 # ---- help
@@ -1711,7 +1761,8 @@ echo "help:"
 out="$("$B" answer --help)"; rc=$?
 eq "board answer --help exits 0" "$rc" "0"
 grep -q "lgtm" <<<"$out" && ok "answer --help lists approve words" || bad "answer --help lists approve words" "$out"
-for c in ls snapshot ask decisions answer mark press limit notify doctor ack task "task new" "task stage" "task ls" "task show"; do
+for c in ls snapshot ask decisions answer mark press limit notify doctor ack task "task new" "task stage" "task ls" "task show" \
+    "task set" "task dep" "task pr" "task done" schedule; do
   # shellcheck disable=SC2086  # word-split "task new" on purpose
   out="$("$B" $c -h 2>&1)"; rc=$?
   if [ "$rc" = 0 ] && grep -q "^usage: board ${c%% *}" <<<"$out"; then ok "board $c -h"; else bad "board $c -h" "rc=$rc $out"; fi

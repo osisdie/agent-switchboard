@@ -39,6 +39,9 @@ Usage: collect.py [--no-notify] [--baseline] [--verbose] [--apply-rc]
   (the looping board-collect passes it) what is pending for an idle session (a `board rc`
   choice it does not follow yet, a queued compact) runs then: `actions.py apply --pending
   --auto` in the background, under its own lock and retry rules.
+- Scheduling decision: every run feeds the tasks, the session states and resources.json to
+  lib/scheduler.py (a pure function) and writes $BOARD_HOME/scheduler.json only when the decision
+  changed. Nothing is sent from it yet, and it never enters the snapshot.
 - Pomodoro tallies: every run's session states advance each session's pomodoro timer
   (lib/pomodoro.py) in $BOARD_HOME/pomodoro.json, never in the snapshot. --no-notify / --baseline
   also hold its milestone notification (off unless fleet.yaml pomodoro.notify).
@@ -65,6 +68,7 @@ import notify  # noqa: E402
 import rc  # noqa: E402
 import pomodoro  # noqa: E402
 import resources  # noqa: E402
+import scheduler  # noqa: E402
 
 FINAL = ("relayed", "stale", "timeout", "unauthorized", "answered_in_pane")
 MAYBE_ANSWERED = "maybe_answered_in_session"
@@ -742,6 +746,13 @@ def main(argv):
     except Exception as exc:  # noqa: BLE001 - never breaks the collector
         if verbose:
             print("pomodoro: %s: %s" % (type(exc).__name__, exc))
+    try:  # the scheduling decision (lib/scheduler.py): scheduler.json, written only when it changes
+        _, wrote = scheduler.step(cfg, home, sessions, tasks, now)
+        if verbose and wrote:
+            print("scheduler: updated")
+    except Exception as exc:  # noqa: BLE001 - never breaks the collector
+        if verbose:
+            print("scheduler: %s: %s" % (type(exc).__name__, exc))
 
     spath = os.path.join(home, "snapshot.json")
     prev = read_json(spath)

@@ -32,6 +32,8 @@ $BOARD_HOME/
   actions-last.json         # the last attempt per session and action; actions-last.lock
   actions-run.lock          # flock held while a session action types into a pane (one at a time)
   pomodoro.json             # pomodoro timers and 14 days of daily tallies, written by the collector (see "Pomodoro")
+  tasks/<id>.json           # lifecycle tasks (`board task`), with optional scheduling fields (see "Scheduler")
+  scheduler.json            # the scheduler's decision, written by the collector when it changes (see "Scheduler")
 ```
 
 ### state/<session_id>.json
@@ -625,6 +627,7 @@ Contract additions:
   - `board task stage ID <stage> [--artifact key=ref]`
   - `board ask ... --task ID --stage S --gate G --artifact REF`
   - `board task ls`
+  - the scheduling fields and `board task set|dep|pr|done|pause|resume|drop|block|progress`: see "Scheduler".
 - `meta/operator.release_manager_ids[]` (from `fleet.yaml` `release_managers`). A decision with `gate:"production"` is relayed only when `answered_by` is in `release_manager_ids`. Otherwise it is marked `unauthorized`. If the list is empty, fall back to `approver_ids`.
 - The production gate is special. The worker protocol says agents never deploy to production without a `[BOARD decision]` approval on a `gate:"production"` decision.
 
@@ -1291,6 +1294,106 @@ red banner shows at `critical`, and in local mode when `operator.watch` is `fals
 `board resources [--json|--mirror] [--refresh]` prints the last sample (`--refresh`: a fresh one,
 written nowhere, so the collector's dwell state does not move); `board doctor` reports
 the platform, missing metrics, the sample's age and the operator watch.
+
+## Scheduler
+
+The collector feeds every run's tasks, session states and `resources.json` to
+`lib/scheduler.py` `decide()`, a pure function (no I/O; the same inputs give the same output and
+digest). It writes `$BOARD_HOME/scheduler.json` (0600, atomic) only when the decision changes, so
+the file has no heartbeat and `generated_at` is when the decision last changed. It is not in
+`snapshot.json`, and nothing is sent to sessions from it yet. `schedule.enabled: false` writes an
+`enabled: false, mode: "off"` document.
+
+### Task fields
+
+All optional; task files without them stay valid. `lib/tasks.py` writes a task atomically, mode
+0600, with `schema_version: 1` (`board task new` too), and refuses to modify a file with a higher
+`schema_version`. Each change sets `updated_at` and appends `{ts, type: "task", id, action, ...}` to
+`events.jsonl`. Concurrent writers: the last one wins.
+
+| field | values | set by |
+|---|---|---|
+| `status` | `active` (default) `paused` `blocked` `done` `dropped` | `board task resume|pause|block|done|drop ID` (`done` also sets `done_at`) |
+| `repo`, `branch`, `base` | `[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,199}`, no `..` | `board task set ID --repo R --branch B --base B` |
+| `size` | `S` `M` `L` (unset = M for scoring) | `--size` |
+| `heavy` | `true` / `false` (test runs, builds, browsers) | `--heavy yes|no` |
+| `priority` | 0–3 (unset = 1) | `--priority` |
+| `depends_on` | `[{task, kind: "merge"|"deploy"|"done"}]` | `board task dep ID --on T [--kind K]` (default `done`), `--remove T`. The task must exist; self-dependencies and cycles are refused |
+| `pr` | `{url, state: "open"|"merged"|"closed", head_sha?, method?: "squash"|"merge"|"rebase", merged_at?}` | `board task pr ID --url U --state S [--head SHA] [--method M]`, reported by the session itself (no forge polling). The same URL keeps fields not repeated |
+| `progress_at` | epoch ms | `board task progress ID` ("still moving": resets the stall clock) |
+
+A dependency is met when the task it names is `done`, or for `merge` its `pr.state` is `merged`,
+or for `deploy` it reached `maintain` or its `production` gate is approved. A bad value exits 1 and
+leaves the file alone; a usage error exits 2.
+
+### scheduler.json
+
+```json
+{ "schema_version": 1, "enabled": true, "mode": "normal|degraded|off",
+  "level": "ok|warn|high|critical"|null, "resources": "ok|stale|missing|disabled",
+  "max_heavy": 2, "heavy_used": 1, "start": ["t-.."],
+  "queue": [ {"rank": 1, "task": "t-..", "owner": "API", "session": "API"|null,
+              "state": "run|ready|queued|deferred|blocked|paused", "score": 71, "heavy": false,
+              "blocked_by": [{"kind": "manual|redline|human|task|session|resource", "ref": ".."}],
+              "why": ["unblocks 2", "after t-..", "finish-first t-.."], "stuck": "warn|high"?} ],
+  "stuck": [ {"task": "t-..", "session": "API", "severity": "warn|high", "since": 0} ],
+  "advisories": [ {"id": "a-<12 hex>", "to": "API", "kind": "defer|resume|finish-first|rebase-needed|stop-own-heavy",
+                   "task": "t-.."|null, "severity": "info|warn|high", "text": "..",
+                   "pid": 0, "comm": "pytest", "class": "test", "rss_mb": 0} ],
+  "digest": "<sha1 of everything but digest and generated_at>", "generated_at": 0 }
+```
+
+- **Tasks.** `done` and `dropped` tasks are left out. A task's owner is matched to a session by
+  code or alias. `level` is used only when `resources.json` is enabled and under 5 minutes old;
+  otherwise no resource gate applies.
+- **Gates, in order:** `paused`; `blocked` by `manual` (status blocked), `redline` (stage
+  `production`: the scheduler never lets it run or start), `human` (a pending gate) or `task` (an
+  unmet dependency); `deferred` by `session` (the owner is offline or unknown) or `resource`.
+- **One task per session.** A session's current task is the non-paused task it touched last
+  (`max(updated_at, progress_at)`). While the session is `working` or `needs-you` and that task is
+  not blocked, it is `run` and the session's other open tasks are `queued`. Otherwise (the session
+  is `done`/`rest`, or its current task is blocked) its best open task is `ready` (listed in
+  `start`) and the rest are `queued`.
+- **Score** = `60 × stage weight (plan .15, design .25, build .45, test .70, deploy/production/maintain .85)
+  × size weight (S 1, M .8, L .6)` + `15 × min(tasks it unblocks, 3)` + `10 × priority` +
+  `2 × hours since touched` (at most 10) − 15 for a heavy task at `warn` or worse. Ties: the
+  longer wait, then the id.
+- **Heavy slots.** `max_heavy` is `schedule.max_heavy_concurrent` (`auto`: 1 under 16 GiB of
+  memory, else 2). `heavy_used` is the larger of the running heavy tasks and `resources.json`
+  `heavy_running`. At `high` or `critical` there are no free slots. A free session whose best task
+  is heavy asks for a slot; slots go first to sessions holding fewer heavy processes
+  (`resources.json` `heavy_n`), then by score, then the longer wait. Without a slot the heavy task
+  is `deferred{resource}`, the session's best light task becomes `ready`, and the session gets a
+  `defer` advisory.
+- **Stuck.** A `run` task of a `working` session with no progress for `stall_minutes` (45 / 90) is
+  `stuck: warn|high`. Waiting on the owner (`needs-you`) is not stuck.
+- **Advisories.** Ids hash `(kind, to, task, ref)`, so the same condition keeps its id. Texts name
+  only task ids, validated branch names and process names; a text that would contain "approv",
+  "deploy", "decision" or `[BOARD` falls back to a generic one.
+  - `defer` (warn): the heavy task a session would start next has no slot.
+  - `resume` (info): a session has been `done`/`rest` for `idle_with_work_minutes` (30) with a ready task.
+  - `finish-first` (warn, `one_pr_per_repo`): another task in the same `repo` has the open PR (the
+    best-ranked open PR goes first); a `run`/`ready` task holds its push and PR.
+  - `rebase-needed` (warn): a task whose `base` is the `branch` of a squash-merged task gets the
+    `git rebase --onto origin/<base> <head_sha> <branch>` line, force-push only with
+    `--force-with-lease` on its own branch, and the PR base to retarget.
+  - `stop-own-heavy` (high, `stop_own_heavy`): at `critical`, the `stop_max` (2) sessions holding
+    the largest heavy process (`resources.json` children) are asked to stop it if they or their
+    teammate started it, and never one they did not start. The board never stops a process.
+- `board schedule [--json]` prints the last decision (read-only, through the secret guard).
+
+Settings (`fleet.yaml`):
+
+```yaml
+schedule:
+  enabled: true
+  max_heavy_concurrent: auto   # or a number
+  one_pr_per_repo: true
+  stall_minutes: [45, 90]
+  idle_with_work_minutes: 30
+  stop_own_heavy: true
+  stop_max: 2
+```
 
 ## Owner away & consensus
 
