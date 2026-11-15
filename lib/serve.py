@@ -102,6 +102,9 @@ FORWARD_HEADERS = ("Cf-Connecting-Ip", "Cf-Ray", "X-Forwarded-For", "Forwarded",
                    "Cf-Access-Authenticated-User-Email", "Cf-Access-Jwt-Assertion")
 SESSION_KEYS = ("code", "aliases", "state", "status", "tmux", "remote_url", "pending", "updated_at",
                 "title", "repo", "branch", "last_event", "notification_type", "recent")
+# Card extras from cards.json (lib/cards.py). CARD_PRIVATE ones reach approvers only (state_for).
+CARD_KEYS = ("teammates", "meter", "done", "doing", "prompt", "branch", "state_since")
+CARD_PRIVATE = ("doing", "prompt")
 DECISION_KEYS = ("id", "kind", "from", "question", "options", "context", "tool_use_id", "tool_name",
                  "summary", "status", "answer", "answered_by", "answered_at", "relayed_at",
                  "created_at", "updated_at", "task_id", "stage", "gate", "artifact_ref",
@@ -378,6 +381,7 @@ class StateBuilder:
                                     "limit.json", "operator.json",
                                     "ledger.json", "events.jsonl", "owner-away", prefs.PREFS_FILE)]
         paths.append(self.p("resources.json"))  # rewritten on a bucketed change, else every 60 s
+        paths.append(self.p("cards.json"))      # card extras (lib/cards.py), rewritten when changed
         for sub in ("decisions", "tasks", "consensus"):
             paths.append(self.p(sub))
             paths.extend(glob.glob(self.p(sub, "*.json")))
@@ -433,12 +437,16 @@ class StateBuilder:
         tasks.sort(key=lambda t: as_int(t.get("updated_at")), reverse=True)
         titles = {t["id"]: t.get("title") for t in tasks}
 
+        cards = read_json(self.p("cards.json"))
+        cards = cards.get("sessions") if isinstance(cards, dict) and isinstance(cards.get("sessions"), dict) else {}
         sessions = []
         for s in snap.get("sessions") or []:
             if not isinstance(s, dict) or not s.get("code"):
                 continue
             row = {k: s.get(k) for k in SESSION_KEYS}
             row["task"] = titles.get(s.get("task_id")) or ""
+            card = cards.get(s["code"])
+            row["card"] = {k: card.get(k) for k in CARD_KEYS if k in card} if isinstance(card, dict) else None
             sessions.append(row)
         by_sid = {s.get("session_id"): s.get("code") for s in snap.get("sessions") or []
                   if isinstance(s, dict) and s.get("session_id")}
@@ -511,6 +519,21 @@ class StateBuilder:
                 "notify": notify_state(self.home),
                 "resources": resources.board_view(read_json(self.p("resources.json"))),
                 "generated_at": snap.get("generated_at")})
+
+
+def cards_for(sessions, approver):
+    """The session rows for one viewer: the private card extras (the last assistant text and the
+    last prompt) only for an approver; everyone else gets `private: "hidden"` in their place. New
+    row and card dicts: the hub's shared state is never changed."""
+    out = []
+    for s in sessions or []:
+        card = s.get("card") if isinstance(s, dict) else None
+        if isinstance(card, dict) and not approver:
+            card = {k: v for k, v in card.items() if k not in CARD_PRIVATE}
+            card["private"] = "hidden"
+            s = dict(s, card=card)
+        out.append(s)
+    return out
 
 
 def notify_state(home):
@@ -791,6 +814,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         state.update({"mode": "local", "me": ident, "writable": True,
                       "can_message": match_id(ident, sorted(deciders(cfg))) is not None,
                       "account": self.account_for(ident, cfg), "page_version": page_version()})
+        state["sessions"] = cards_for(state.get("sessions"), match_id(ident, fleet.id_list(cfg, "approvers")) is not None)
         return state
 
     def account_for(self, ident, cfg):
