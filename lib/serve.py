@@ -96,7 +96,9 @@ SESSION_KEYS = ("code", "aliases", "state", "status", "tmux", "remote_url", "pen
 DECISION_KEYS = ("id", "kind", "from", "question", "options", "context", "tool_use_id", "tool_name",
                  "summary", "status", "answer", "answered_by", "answered_at", "relayed_at",
                  "created_at", "updated_at", "task_id", "stage", "gate", "artifact_ref",
-                 "escalation_level", "notified_via", "summary_truncated")
+                 "escalation_level", "notified_via", "summary_truncated",
+                 # pane questions (an AskUserQuestion picker): source "pane"
+                 "source", "questions", "questions_clipped", "pressable", "answer_index", "relay")
 OPERATOR_KEYS = ("heartbeat_at", "version", "operator_session", "account_hint")
 
 
@@ -843,6 +845,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not isinstance(answer, str) or not answer.strip() or len(answer) > MAX_ANSWER:
             raise Refused(400, "bad_answer", "answer must be a non-empty string (max %d chars)" % MAX_ANSWER)
         answer = answer.strip()
+        # A pane question's option button also sends its number; board answer checks it against the label.
+        option = body.get("option")
+        if option is not None and (isinstance(option, bool) or not isinstance(option, int) or not 1 <= option <= 10):
+            raise Refused(400, "bad_option", "option must be an option number")
         home = self.server.home
         with self.server.write_lock:
             dec = read_json(os.path.join(home, "decisions", did + ".json"))
@@ -868,12 +874,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.audit(ident, via, "answer", id=did, result="refused", reason="summary truncated")
                 raise Refused(409, "review_in_session",
                               "the request is only partly shown here: review and allow it in the session")
+            pane_q = kind == "question" and dec.get("source") == "pane"
+            # A pane question with several questions, multi-select or clipped text is read-only here.
+            if pane_q and not dec.get("pressable"):
+                self.audit(ident, via, "answer", id=did, result="refused", reason="not pressable")
+                raise Refused(409, "answer_in_session",
+                              "this question can only be answered in the session (multi-question form)")
             code = dec.get("from")
-            if kind == "permission" and not code:
+            if (kind == "permission" or pane_q) and not code:
                 snap = read_json(os.path.join(home, "snapshot.json")) or {}
                 code = next((s.get("code") for s in snap.get("sessions") or []
                              if isinstance(s, dict) and s.get("session_id") == dec.get("session_id")), None)
-            rc, out, err = self.board("answer", did, answer, "--by", by)
+            if option is not None and not pane_q:
+                raise Refused(400, "bad_option", "option is only for a question shown in a session")
+            rc, out, err = self.board("answer", did, answer, "--by", by,
+                                      *(("--option", str(option)) if option is not None else ()))
+            if rc == 2 and option is not None:
+                self.audit(ident, via, "answer", id=did, result="refused", reason="option does not match")
+                raise Refused(400, "bad_option", "that option does not match the question; reload and try again")
             if rc == 4:
                 log("board answer %s refused: %s" % (did, err))
                 self.audit(ident, via, "answer", id=did, result="unauthorized")
@@ -885,7 +903,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 log("board answer %s failed (rc %d): %s %s" % (did, rc, err, out))
                 self.audit(ident, via, "answer", id=did, result="error", rc=rc)
                 raise Refused(500, "answer_failed", "the answer could not be recorded")
-            if kind != "permission":
+            # Answers the picker cannot take as keys (relay "operator") go out as a message.
+            if kind != "permission" and not (pane_q and rec.get("relay") == "press"):
                 self.hub_kick()
                 self.audit(ident, via, "answer", id=did, result="answered")
                 return self.send_json(200, {"id": did, "status": "answered"})
@@ -893,7 +912,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.board("mark", did, "stale")
                 self.audit(ident, via, "press", id=did, result="stale", reason="no session or tool_use_id")
                 raise Refused(409, "stale", "the session for this prompt is unknown")
-            rc, out, err = self.board("press", str(code), answer, "--expect", str(dec["tool_use_id"]))
+            rc, out, err = self.board("press", str(code), "answer" if pane_q else answer,
+                                      "--expect", str(dec["tool_use_id"]))
             self.hub_kick()
             if rc == 0:
                 self.audit(ident, via, "press", id=did, code=code, key=answer, result="sent")
@@ -902,7 +922,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if rc == 3:
                 self.audit(ident, via, "press", id=did, code=code, key=answer, result="stale")
                 raise Refused(409, "stale", "the prompt is no longer showing; answer it in the session")
-            if rc == 4:  # board press: no matching approver answer, or a truncated summary
+            if rc == 5:  # free text typed into the picker, Enter not pressed
+                self.audit(ident, via, "press", id=did, code=code, key=answer, result="partial")
+                raise Refused(409, "partial", "keys were sent but Enter was not pressed; finish in the session")
+            if rc == 4:  # board press: no matching approver answer, a truncated summary, not pressable
                 self.audit(ident, via, "press", id=did, code=code, key=answer, result="refused")
                 raise Refused(403, "press_refused", "the key press was refused; answer it in the session")
             self.audit(ident, via, "press", id=did, code=code, key=answer, result="error", rc=rc)
@@ -1124,7 +1147,9 @@ def actionable(home):
                     ("c", c["id"], c["status"])))
     for path in glob.glob(os.path.join(home, "decisions", "*.json")):
         d = read_json(path)
-        if isinstance(d, dict) and d.get("status") == "answered" and d.get("kind") != "permission":
+        # board-serve presses permission prompts and pane questions itself (relay "press").
+        if isinstance(d, dict) and d.get("status") == "answered" and d.get("kind") != "permission" \
+                and not (d.get("source") == "pane" and d.get("relay") != "operator"):
             out.append((as_int(d.get("answered_at")), "decision %s answered" % d.get("id"),
                         ("d", d.get("id"), d.get("answered_at"))))
     for path in glob.glob(os.path.join(home, "messages", "*.json")):

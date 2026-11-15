@@ -3,12 +3,14 @@
 #
 # Reads the hook JSON on stdin and writes $BOARD_HOME/state/<session_id>.json (atomically),
 # appends one line to $BOARD_HOME/events.jsonl, and on a permission prompt creates
-# $BOARD_HOME/decisions/<id>.json (kind=permission, deduplicated by tool_use_id).
+# $BOARD_HOME/decisions/<id>.json (kind=permission, deduplicated by tool_use_id). An AskUserQuestion
+# picker becomes a decision of kind=question (source=pane) built from its questions and options.
 # StopFailure / Notification text that looks like a usage limit records $BOARD_HOME/limit.json;
 # the next PreToolUse or Stop after that ends the episode.
 #
 # Never blocks or changes Claude: prints nothing, always exits 0. Prompt text is never
-# recorded; the only tool input captured is a <=200-char summary of the pending tool's input.
+# recorded; the only tool input captured is a <=200-char summary of the pending tool's input, and
+# for AskUserQuestion its questions and options (redacted, clipped, control characters removed).
 #
 # Env: BOARD_HOME (default ~/.agent-switchboard)
 set -u
@@ -122,6 +124,22 @@ def redact:
   | gsub("(?<b>[A-Za-z0-9+/_-]{40,}={0,2})";
          if (.b | test("[0-9]")) and (.b | test("[a-z]")) and (.b | test("[A-Z]"))
             and ((.b | split("/") | map(length) | max) >= 24) then "[REDACTED]" else .b end);
+# AskUserQuestion: questions and options as the picker shows them, redacted and clipped. `clipped`
+# is true when anything a human answers by (a question, an option label, a count) was cut short.
+def qtext($n): (. // "") | tostring | gsub("[\u0000-\u001f\u007f-\u009f]+"; " ") | redact
+  | if length > $n then {t: (.[0:$n - 1] + "…"), c: true} else {t: ., c: false} end;
+def qinfo:
+  (.tool_input.questions // null) as $qs
+  | if ($qs | type) != "array" then null
+    else [ $qs[0:6][] | select(type == "object")
+           | (.question | qtext(300)) as $q | (.header | qtext(40)) as $h
+           | [ (.options // [])[0:10][]? | (if type == "object" then . else {label: .} end)
+               | {l: (.label | qtext(80) | .t |= gsub("^\\s+|\\s+$"; "")), d: (.description | qtext(160))} ] as $os
+           | { question: $q.t, header: $h.t, multiSelect: (.multiSelect == true),
+               options: [ $os[] | {label: .l.t, description: .d.t} ],
+               c: ($q.c or any($os[]; .l.c) or (((.options // []) | length) > 10)) } ] as $out
+      | { questions: [ $out[] | del(.c) ],
+          clipped: (any($out[]; .c) or ($qs | length) > 6) } end;
 JQ
 
 update() {
@@ -149,7 +167,10 @@ update() {
     | ($in.notification_type // "") as $nt
     | ($in.tool_use_id // "") as $tu
     | ($in.tool_name // "") as $tn
-    | (info($in | fullin; $sha)) as $si
+    | (info($in | fullin; $sha)
+       + (if $tn == "AskUserQuestion" then ($in | qinfo) as $qi
+            | if $qi == null then {} else {questions: $qi.questions, questions_clipped: $qi.clipped} end
+          else {} end)) as $si
     | ($o.recent_pre // []) as $recent
     | ($o.pending // null) as $pend
     # Which PreToolUse does a permission prompt belong to? Never guess: when several in-flight
@@ -164,7 +185,10 @@ update() {
         elif ($recent | length) == 1 then $recent[0]
         elif ($recent | length) > 1 then {tool_use_id: null, tool_name: null, summary: "", ambiguous: true}
         else null end ) as $match
-    | ( if $ev == "PermissionRequest" or ($ev == "Notification" and $nt == "permission_prompt") then
+    # An AskUserQuestion picker is on screen from its PreToolUse on: it is a prompt event too.
+    | ( $ev == "PermissionRequest" or ($ev == "Notification" and $nt == "permission_prompt")
+        or ($ev == "PreToolUse" and $tn == "AskUserQuestion" and $tu != "") ) as $prompt_ev
+    | ( if $prompt_ev then
           ( if $pend != null and ($ev == "Notification" or $match == null
                                    or ($pend.tool_use_id // "") == ($match.tool_use_id // "")) then $pend
             else ($match // null) end ) as $p
@@ -176,7 +200,10 @@ update() {
                                summary_len: ($p.summary_len // null),
                                summary_sha256: ($p.summary_sha256 // null),
                                ambiguous: ($p.ambiguous // false),
-                               decision_id: ($p.decision_id // null) } end) }
+                               decision_id: ($p.decision_id // null) }
+                             + (if $p.questions == null then {}
+                                else {questions: $p.questions, questions_clipped: ($p.questions_clipped // false)} end)
+                        end) }
         elif $ev == "UserPromptSubmit" then {state: "working", pending: null}
         elif $ev == "Stop" or $ev == "StopFailure" then {state: "done", pending: null}
         elif $ev == "Notification" and $nt == "idle_prompt" then {state: "done", pending: $pend}
@@ -215,6 +242,25 @@ update() {
       ( { ts: $now, type: "hook", session_id: $in.session_id, event: $ev,
           notification_type: $nt, tool_name: $tn, tool_use_id: $tu, state: $t.state } | clean ),
       ( if $new_dec == null then null
+        elif $pending.tool_name == "AskUserQuestion" then
+          ($pending.questions // []) as $qs
+          | ($qs | length == 1 and ($qs[0].multiSelect | not) and ($pending.questions_clipped // false | not)
+             and ($qs[0].options | length) >= 1 and ($qs[0].options | length) <= 8
+             # repeated labels (case-insensitive) would make a label answer ambiguous
+             and ([ $qs[0].options[].label | ascii_downcase ] | unique | length) == ($qs[0].options | length)
+            ) as $pressable
+          | { id: $new_dec, kind: "question", source: "pane", from: null,
+              question: (if ($qs | length) > 0 then $qs[0].question else ($pending.summary // "") end),
+              options: (if ($qs | length) == 1 then [ $qs[0].options[].label ] else [] end),
+              questions: $qs, questions_clipped: ($pending.questions_clipped // false),
+              pressable: $pressable, context: null,
+              tool_use_id: $pending.tool_use_id, tool_name: $pending.tool_name,
+              summary: $pending.summary, summary_truncated: $pending.summary_truncated,
+              summary_len: $pending.summary_len, summary_sha256: $pending.summary_sha256,
+              session_id: $in.session_id,
+              tmux_pane: (if $pane != "" then $pane else ($o.tmux_pane // null) end),
+              status: "pending", answer: null, answered_by: null, answered_at: null,
+              relayed_at: null, created_at: $now }
         else { id: $new_dec, kind: "permission", from: null,
                question: ("Allow " + ($pending.tool_name // "tool") + "?"),
                options: ["allow", "deny"], context: null,

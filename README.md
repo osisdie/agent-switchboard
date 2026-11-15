@@ -155,7 +155,7 @@ your `statusLine` and removes the symlinks.
   | `remote_url_prefix` | `https://claude.ai/code/` | prefix for each session's Remote Control link |
   | `serve.enabled`, `serve.port` | `false`, `39410` | self-hosted board: `fleet-up` starts `board-serve`; the local listener (identity `local`) |
   | `serve.tunnel.*` | off | `enabled`, `port` (port + 1), `hostname`, `team_domain`, `aud`: the listener cloudflared points at; identity = the email of a verified Cloudflare Access token |
-  | `press.prompt_regex`, `press.lines`, `press.allow_keys`, `press.deny_keys` | see example | the screen check and keys used by `board press` |
+  | `press.prompt_regex`, `press.question_regex`, `press.free_text_label`, `press.lines`, `press.allow_keys`, `press.deny_keys` | see example | the screen checks and keys used by `board press` (`question_regex`: the AskUserQuestion picker) |
 
 - `.env`: alert channels (Slack, email, LINE, SNS, webhook; all optional, see
   [Alerting & escalation](#alerting--escalation)). Start from `.env.example`.
@@ -383,6 +383,22 @@ only on the self-hosted board; the Artifact board gets the title and `repo · br
   not impossible: a prompt can change between the check and the keystroke, or a future UI can look
   like the old pattern. Keep Allow for actions you would approve without looking at the pane. Turn it
   off if that isn't acceptable for your setup.
+- **Questions in the pane (AskUserQuestion).** When a session asks you with Claude Code's question
+  picker, the card reads "`<CODE>` asks:" with the question, one button per option (label and
+  description) and a **Type something** field, not a meaningless Allow/Deny. The hook keeps the
+  questions and options (redacted, clipped: question 300, label 80, description 160 characters).
+  For one single-select question, a click runs `board answer` (which maps the label to the option
+  number) and `board press <CODE> answer --expect <tool_use_id>`, with the same checks as a
+  permission press: an approver's answer, the same pending `tool_use_id` and hash, and the picker
+  (`press.question_regex`) on screen with the start of the question (or every option label). An
+  option sends its number key, which picks it at once. Free text (one line, ≤200 characters) picks
+  **Type something**, is typed literally (`send-keys -l`), and Enter is pressed only when the text
+  shows on the picker's focused **Type something** row (`press.free_text_label`). If a check fails
+  after a key was sent, Enter is not pressed and the card says to finish in the session (exit 5).
+  A longer answer goes to the session as a `[BOARD decision <id>]` message instead. Option buttons
+  also send the option number, which must match the label; repeated labels make the card read-only.
+  Several questions, multi-select or clipped text make a read-only card: answer it in the session.
+  When the session moves on, the card goes stale.
 
 ### Messages
 
@@ -973,7 +989,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 |---|---|
 | `docs/contract.md` | Binding data contract: local files, db collections, lifecycle stages & gates, relay formats, degraded mode |
 | `hooks/board-hook.sh` | Lifecycle hook: writes `state/<session_id>.json`, appends `events.jsonl`, always exits 0 |
-| `bin/board` | CLI: `ls`, `snapshot`, `ask`, `task new/stage/ls/show`, `decisions`, `answer`, `mark`, `limit`, `resources`, `press`, `notify`, `mute`, `unmute`, `notify-level`, `notify-presence`, `away`, `consensus`, `doctor`. Exit codes: 3 = press refused, 4 = answer / vote refused |
+| `bin/board` | CLI: `ls`, `snapshot`, `ask`, `task new/stage/ls/show`, `decisions`, `answer`, `mark`, `limit`, `resources`, `press`, `notify`, `mute`, `unmute`, `notify-level`, `notify-presence`, `away`, `consensus`, `doctor`. Exit codes: 2 = usage (also `answer --option` mismatch), 3 = press refused, 4 = answer / vote refused, 5 = press partial (keys sent, Enter not pressed) |
 | `bin/board-collect` | Zero-token collector: snapshot, diff, runs `board-notify` each loop; `--baseline` on first install |
 | `bin/board-notify`, `lib/notify.py` | Alerting: `send`, `ack`, `tick`, `test`, `status`, `gate`. Adapters (slack, desktop, email, line, sns, webhook), levels, escalation, ack, quiet hours, dedupe |
 | `lib/prefs.py` | Notification controls: mutes, min levels, presence (`board mute`, `notify-level`, `notify-presence`) and the delivery rule `lib/notify.py` applies |

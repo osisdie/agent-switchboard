@@ -709,12 +709,14 @@ def resolve(key, now=None):
 # Alert builders: one per collector event. Each returns the kwargs for send().
 
 def permission_decision_id(session, decisions):
-    """Id of the pending permission decision behind a session's prompt (same tool_use_id), if any."""
+    """Id of the pending permission (or pane question) decision behind a session's prompt (same
+    tool_use_id), if any."""
     tid = (session.get("pending") or {}).get("tool_use_id")
     if not tid:
         return None
     for d in decisions or []:
-        if (isinstance(d, dict) and d.get("kind") == "permission" and d.get("status") == "pending"
+        if (isinstance(d, dict) and (d.get("kind") == "permission" or d.get("source") == "pane")
+                and d.get("status") == "pending"
                 and d.get("tool_use_id") == tid
                 and (d.get("from") == session.get("code") or d.get("session_id") == session.get("session_id"))):
             return d.get("id")
@@ -724,7 +726,9 @@ def permission_decision_id(session, decisions):
 def needs_you_alert(session, decisions=None):
     code = session.get("code") or "?"
     p = session.get("pending") or {}
-    if p:
+    if p and p.get("tool_name") == "AskUserQuestion":
+        body = "asks: %s" % (p.get("summary") or "")[:200]
+    elif p:
         body = "%s: %s" % (p.get("tool_name") or "tool", (p.get("summary") or "")[:200])
     else:
         body = "waiting for input"
@@ -813,7 +817,7 @@ def _sync_snapshot(data, snap, now):
                 e["acked_by"] = "auto"
     alerts = [needs_you_alert(s, pending.values()) for s in sessions.values() if s.get("state") == "needs-you"]
     for d in pending.values():
-        if d.get("kind") == "permission" and not fleet.is_production(d):
+        if (d.get("kind") == "permission" or d.get("source") == "pane") and not fleet.is_production(d):
             continue  # covered by the session's needs-you alert
         alerts.append(decision_alert(d))
     if lim:
@@ -968,7 +972,8 @@ def _pending_count(snap, h):
     gates (not permission prompts: board-serve presses those itself) and new messages. Decisions
     still pending wait on the owner, not on the operator."""
     n = sum(1 for d in (snap or {}).get("decisions") or []
-            if isinstance(d, dict) and d.get("status") == "answered" and d.get("kind") != "permission")
+            if isinstance(d, dict) and d.get("status") == "answered" and d.get("kind") != "permission"
+            and not (d.get("source") == "pane" and d.get("relay") != "operator"))
     mdir = os.path.join(h, "messages")
     try:
         names = [f for f in os.listdir(mdir) if f.endswith(".json")]

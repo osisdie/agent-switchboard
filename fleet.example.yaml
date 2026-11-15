@@ -64,9 +64,12 @@ serve:
 #   operator_stale_minutes: 10
 
 # `board press` safety settings: a key is only sent when the last `lines` lines of the pane
-# match `prompt_regex`.
+# match `prompt_regex` (permission prompts) or `question_regex` (an AskUserQuestion picker; its
+# option is chosen with its number key, free text through "Type something").
 press:
   prompt_regex: 'Do you want to (proceed|make this edit|create|overwrite|allow)'
+  question_regex: 'Enter to select.*navigate'
+  free_text_label: 'Type something'
   lines: 30
   allow_keys: ["1"]
   deny_keys: ["Escape"]

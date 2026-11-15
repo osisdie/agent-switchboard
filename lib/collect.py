@@ -5,8 +5,8 @@ files and the decision files (see docs/contract.md).
 Usage: collect.py [--no-notify] [--baseline] [--verbose]
 
 - Writes snapshot.json atomically, and only when its content (excluding generated_at) changed.
-- Marks pending decisions `timeout` after decision_timeout_hours, and permission decisions
-  `stale` once the session no longer shows that tool_use_id as pending.
+- Marks pending decisions `timeout` after decision_timeout_hours, and permission decisions and
+  pane questions (source=pane) `stale` once the session no longer shows that tool_use_id as pending.
 - Alerts through lib/notify.py (board-notify): on transitions into needs-you, new pending
   decisions and a new usage-limit episode, then notify.tick() on every run (escalation,
   auto-ack, repeats, usage thresholds). --no-notify skips all of it.
@@ -389,7 +389,8 @@ def process_decisions(cfg, home, sessions, now):
         if not isinstance(d, dict) or not d.get("id"):
             continue
         changed = False
-        if d.get("kind") == "permission":
+        # A pane question (an AskUserQuestion picker) goes stale like a permission prompt.
+        if d.get("kind") == "permission" or d.get("source") == "pane":
             sess = by_sid.get(d.get("session_id"))
             if not d.get("from") and sess:
                 d["from"] = sess["code"]
@@ -457,7 +458,7 @@ def alert(prev, snap, verbose):
     for d in snap["decisions"]:
         if d.get("status") != "pending" or d["id"] in prev_pending:
             continue
-        if d.get("kind") == "permission" and not fleet.is_production(d):
+        if (d.get("kind") == "permission" or d.get("source") == "pane") and not fleet.is_production(d):
             continue  # the session's needs-you alert covers it
         r = notify.on_decision(d)
         if verbose:

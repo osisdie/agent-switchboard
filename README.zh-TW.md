@@ -154,7 +154,7 @@ scripts/setup-dev.sh           # only if you'll commit to this repo: pre-commit 
   | `remote_url_prefix` | `https://claude.ai/code/` | 每個 session 的 Remote Control 連結前綴 |
   | `serve.enabled`、`serve.port` | `false`、`39410` | 自架看板：由 `fleet-up` 啟動 `board-serve`；本機監聽器（身分為 `local`） |
   | `serve.tunnel.*` | 關閉 | `enabled`、`port`（port + 1）、`hostname`、`team_domain`、`aud`：cloudflared 指向的監聽器；身分 = 經過驗證的 Cloudflare Access token 裡的 email |
-  | `press.prompt_regex`、`press.lines`、`press.allow_keys`、`press.deny_keys` | 見範例 | `board press` 用的畫面檢查與按鍵 |
+  | `press.prompt_regex`、`press.question_regex`、`press.free_text_label`、`press.lines`、`press.allow_keys`、`press.deny_keys` | 見範例 | `board press` 用的畫面檢查與按鍵（`question_regex`：AskUserQuestion 選單） |
 
 - `.env`：告警管道（Slack、email、LINE、SNS、webhook，全部選用，見
   [告警與升級](#alerting--escalation)）。從 `.env.example` 開始改。
@@ -363,6 +363,17 @@ toplevel 的名稱和目前的分支，絕不顯示路徑），以及它現在�
   **坦白說風險**：這是畫面自動化。這些防護讓按錯鍵的機率很低，但不是不可能：提示可能在檢查和按鍵之間改變，
   未來的 UI 也可能長得像舊的樣式。Allow 只用在你不看 pane 也會核准的動作上。如果你的環境不能接受這種風險，
   就把它關掉。
+- **pane 裡的問題（AskUserQuestion）**：session 用 Claude Code 的提問選單問你時，卡片會寫「`<CODE>` asks:」
+  加上問題，每個選項一個按鈕（標籤與說明），還有一個 **Type something** 欄位，不再是沒有意義的 Allow/Deny。
+  hook 會保留問題與選項（遮蔽機密、截短：問題 300、標籤 80、說明 160 字元）。只有一題且是單選時，點按鈕會執行
+  `board answer`（把標籤對應到選項編號）和 `board press <CODE> answer --expect <tool_use_id>`，檢查與
+  permission 按鍵相同：approver 的回答、同一個 pending `tool_use_id` 與雜湊、畫面上有選單
+  （`press.question_regex`）而且看得到問題開頭（或每一個選項標籤）。選項會送出它的數字鍵，立即選定。
+  自由文字（一行、≤200 字元）會先選 **Type something**，用 `send-keys -l` 原樣輸入，只有選單上被選取的 **Type something**
+  那一列（`press.free_text_label`）出現這段文字才按 Enter。送出部分按鍵後檢查失敗，就不按 Enter，卡片會請你到 session
+  裡完成（exit 5）。選項按鈕也會送出選項編號，必須和標籤一致；標籤重複的卡片只能看。
+  更長的回答改用 `[BOARD decision <id>]` 訊息送給 session。多題、複選或被截短的卡片只能看，請到 session 裡回答。
+  session 往下走之後，卡片會變成 stale。
 
 ### 訊息
 
@@ -894,7 +905,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 |---|---|
 | `docs/contract.md` | 具約束力的資料契約：本機檔案、資料庫 collection、生命週期階段與關卡、轉發格式、降級模式 |
 | `hooks/board-hook.sh` | 生命週期 hook：寫入 `state/<session_id>.json`、附加到 `events.jsonl`，永遠以 exit 0 結束 |
-| `bin/board` | CLI：`ls`、`snapshot`、`ask`、`task new/stage/ls/show`、`decisions`、`answer`、`mark`、`limit`、`resources`、`press`、`notify`、`mute`、`unmute`、`notify-level`、`notify-presence`、`away`、`consensus`、`doctor`。結束碼：3 = 拒絕按鍵，4 = 拒絕回答／投票 |
+| `bin/board` | CLI：`ls`、`snapshot`、`ask`、`task new/stage/ls/show`、`decisions`、`answer`、`mark`、`limit`、`resources`、`press`、`notify`、`mute`、`unmute`、`notify-level`、`notify-presence`、`away`、`consensus`、`doctor`。結束碼：2 = 用法錯誤（也包括 `answer --option` 不一致），3 = 拒絕按鍵，4 = 拒絕回答／投票，5 = 按鍵做到一半（已送出按鍵、沒有按 Enter） |
 | `bin/board-collect` | 不耗 token 的收集器：snapshot、diff，每一輪執行 `board-notify`；首次安裝時用 `--baseline` |
 | `bin/board-notify`、`lib/notify.py` | 告警：`send`、`ack`、`tick`、`test`、`status`、`gate`。轉接器（slack、desktop、email、line、sns、webhook）、等級、升級、確認、勿擾時段、去除重複 |
 | `lib/prefs.py` | 通知控制：靜音、最低等級、在場（`board mute`、`notify-level`、`notify-presence`），以及 `lib/notify.py` 套用的送出規則 |

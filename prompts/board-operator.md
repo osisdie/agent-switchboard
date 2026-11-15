@@ -104,7 +104,8 @@ Waiting costs no tokens. When it fires:
    - **Never mirror `recent`** (the tool calls in flight). Its summaries can hold command text, so
      it stays on the self-hosted board; the Artifact card says so.
    - `decisions/{id}`: new local decisions (`kind` `question` or `permission`), created with
-     `status: "pending"`.
+     `status: "pending"`. For a pane question (`source: "pane"`) copy `source`, `questions`,
+     `pressable` and `tool_use_id` too, so the page can draw its option buttons.
    - `meta/operator.heartbeat_at`.
    - `meta/operator.usage`: exactly
      `{five_hour: {pct, resets_at}, seven_day: {pct, resets_at}, updated_at}`. `pct` is a number
@@ -206,6 +207,25 @@ db.
     tells the human to handle it in the session. Do not retry.
   - any other exit → leave it open and note the error in `context`. Retry next tick, and after 3
     failures mark it `stale`.
+- **`kind: "question"` with `source: "pane"`** (an AskUserQuestion picker in that session):
+  `board answer` (above) records `relay`. When the local file says `relay: "press"`, run
+  ```bash
+  board press <CODE> answer --expect <tool_use_id>
+  ```
+  and handle the exits like a permission press (0 → `relayed`; 3 → `stale`, no retry; other → note
+  it in `context`).
+  - **exit 5** (partial: text was typed into the picker, Enter was not pressed) → `status: "stale"`
+    in the db with `context: "keys sent, Enter not pressed — finish in the session"`. `board press`
+    has already marked the local file. Never retry, never send a message for it.
+  - **Message fallback**, only when the local file is `answered`, its `answered_by` is an approver
+    (`board answer` above exited 0 for this very answer) and it says `relay: "operator"` (also
+    after an exit 4 from `board press`, once you have re-read the file and it says so): relay it
+    like any question with `SendMessage` (`[BOARD decision <id>] <answer> (by owner on board)`);
+    the picker stays for the human. If you were about to send that message but the file is not
+    `answered`, its `answered_by` is not an approver, or it says `relay: "press"` (after an exit 4),
+    set `status: "unauthorized"` in the db and send nothing. Exits 0, 3 and 5 never lead here.
+  - Never type into the pane yourself. A pane question with `pressable: false` is answered in the
+    session; the page does not offer answers for it.
 - If the target session is offline or missing from `ListAgents`, leave the decision `answered`. It is
   relayed when the session returns.
 
@@ -394,7 +414,10 @@ of your Artifact-mode jobs disappear:
   refused answer never reaches the file at all. Never run `board answer` again for it.
 - **Permission prompts are already pressed.** `board-serve` runs
   `board press <CODE> allow|deny --expect <tool_use_id>` itself and marks the decision `relayed` or
-  `stale`. Ignore `kind: "permission"` decisions.
+  `stale`. Ignore `kind: "permission"` decisions. The same goes for pane questions
+  (`source: "pane"`) with `relay: "press"`: `board-serve` runs `board press <CODE> answer`.
+  `--watch` hands you a pane question only when its `relay` is `"operator"`; relay that one as a
+  `[BOARD decision <id>]` message.
 
 ### Startup
 
