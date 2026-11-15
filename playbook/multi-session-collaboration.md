@@ -98,7 +98,7 @@ decision.
 
 - On every tick, check that each teammate's pane is alive and whether it has sent new messages.
 - On every tick, also **recycle** (section 8): stop teammates that delivered a final report, stopped,
-  or finished their role, and kill this session's leftover panes. A forgotten teammate keeps a whole
+  or finished their role, and kill leftover teammate panes this session spawned. A forgotten teammate keeps a whole
   agent process alive (typically 250–400 MB). Mention the count only when something was recycled.
 - When all teammates have finished, recycle one last time, then `CronDelete` the check.
 
