@@ -648,6 +648,18 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 .lvl.critical { background: var(--deny-soft); color: var(--deny); }
 .oom { font-family: var(--f-mono); font-size: 11px; padding: 0 6px; border-radius: 9px; background: var(--off-soft); color: var(--muted); }
 .oom.hot { background: var(--deny); color: #fff; }
+/* a since-boot OOM count is history, not an alarm: neutral unless one was recent */
+.oom:not(.hot) { background: none; box-shadow: inset 0 0 0 1px var(--rule); color: var(--muted); }
+/* the System tile names what drives its level: that row in the level's colour, and one line why */
+.sys .u-title { flex-wrap: wrap; }
+.sys .s-badges { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
+.sys.lv-warn { --lvc: var(--lamp); }
+.sys.lv-high { --lvc: var(--heat); }
+.sys.lv-critical { --lvc: var(--deny); }
+.sys .u-row.drive .u-k { color: var(--lvc); font-weight: 700; }
+.sys .s-line .drive, .sys .s-line .drive b { color: var(--lvc); font-weight: 700; }
+.sys .s-why { font-size: 12px; font-weight: 600; color: var(--lvc); overflow-wrap: anywhere; }
+.sys .s-why[hidden] { display: none; }
 .res-meta { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--muted); font-size: 13px; }
 .res-meta b { color: var(--ink); font-weight: 600; }
 .res-note { margin: 0; font-size: 13px; color: var(--muted); }
@@ -849,10 +861,11 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
         <div class="u-row none" id="u-7d"><span class="u-k">7d</span><span class="u-bar" role="meter" aria-label="Weekly usage" data-i18n-attr="aria-label" aria-valuemin="0" aria-valuemax="100"><span style="width:0%"></span></span><span class="u-p">—</span><span class="u-r">not reported</span></div>
       </div>
       <a class="sys" id="sys" href="#resources" aria-label="System resources" data-i18n-attr="aria-label" hidden>
-        <span class="u-title"><span data-i18n>System</span><span><span class="lvl" id="sys-lvl">—</span> <span class="oom" id="sys-oom" title="OOM kills since boot" data-i18n-attr="title">OOM 0</span></span></span>
+        <span class="u-title"><span data-i18n>System</span><span class="s-badges"><span class="lvl" id="sys-lvl">—</span><span class="oom" id="sys-oom">OOM 0</span></span></span>
         <span class="u-row none" id="sys-mem"><span class="u-k" data-i18n>Mem</span><span class="u-bar" role="meter" aria-label="Memory used" data-i18n-attr="aria-label" aria-valuemin="0" aria-valuemax="100"><span style="width:0%"></span></span><span class="u-p">—</span><span class="u-r"></span></span>
         <span class="u-row none" id="sys-swap"><span class="u-k" data-i18n>Swap</span><span class="u-bar" role="meter" aria-label="Swap used" data-i18n-attr="aria-label" aria-valuemin="0" aria-valuemax="100"><span style="width:0%"></span></span><span class="u-p">—</span></span>
         <span class="s-line" id="sys-line"></span>
+        <span class="s-why" id="sys-why" hidden></span>
       </a>
     </div>
   </header>
@@ -1324,8 +1337,11 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       if (e.pointerType === 'mouse') return;
       P.touch = true; P.tapped = true;
       if (pop.hidden) show(); else P.hide();
-      setTimeout(() => { P.touch = false; P.tapped = false; }, 400);
+      setTimeout(() => { P.touch = false; }, 400);
     });
+    // The click of this tap follows its pointerup at once: clear the flag just after, however long
+    // the finger stayed down.
+    box.addEventListener('pointerup', (e) => { if (e.pointerType !== 'mouse') setTimeout(() => { P.tapped = false; }, 50); });
     box.addEventListener('pointercancel', () => { P.tapped = false; });
     box.addEventListener('click', (e) => { if (P.tapped) { P.tapped = false; e.preventDefault(); } });
     return P;
@@ -1560,7 +1576,8 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     if (!r) { pop.append(h('p', { text: tr('No resource data yet.') })); return; }
     const levels = r.levels && typeof r.levels === 'object' ? r.levels : {};
     const lv = (k) => (resLvl(levels[k]) ? ' · ' + trKnown(resLvl(levels[k]), RES_LEVELS) : '');
-    const lvl = resLvl(r.level) || 'ok';
+    const lvl = resLvl(r.level) || 'ok', why = resWhy(r);
+    pop.append(popLine(tr('Why: '), why ? why.text + (why.critical && why.metric !== 'oom' ? tr('; high for 2 samples in a row') : '') : tr('all within limits')));
     pop.append(popLine(tr('Level: '), trKnown(lvl, RES_LEVELS) + (r.worst ? ' · ' + tr('worst: {what}', { what: metricName(r.worst, r) }) : '')));
     const m = r.mem || {}, sw = r.swap || {}, c = r.cpu || {};
     pop.append(popLine(tr('Memory: '), m.available_pct == null ? tr('not available here')
@@ -1574,6 +1591,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     const idle = idleGroups(r), nIdle = idle.reduce((n, g) => n + g.idle.length, 0);
     pop.append(popLine(tr('Idle teammates: '), nIdle ? String(nIdle) + ' · ' + idle.map((g) => (g.code || tr('no session')) + ' ' + g.idle.length).join(', ') : '0'));
     pop.append(popLine(tr('Sampled: '), ts(r.at) ? rel(ts(r.at)) + ' (' + hhmm(ts(r.at)) + ')' : tr('unknown')));
+    pop.append(h('p', { class: 'k', text: tr('Levels: warn and high at each threshold; critical = high for 2 samples in a row, or an OOM kill in the last 10 minutes.') }));
   }
   function opPop(pop) {
     pop.textContent = '';
@@ -2432,7 +2450,44 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   const BAR_LVL = { ok: 'ok', warn: 'amber', high: 'orange', critical: 'red' };
   function fmtMb(v) { const n = Number(v); if (!isFinite(n)) return '?'; return n >= 1024 ? (n / 1024).toFixed(1) + ' GB' : Math.round(n) + ' MB'; }
   function fmtAge(s) { const n = Number(s); if (!isFinite(n) || s == null) return '—'; return n < 60 ? Math.round(n) + 's' : dur(n * 1000); }
-  const METRIC_NAMES = { mem: 'memory', swap: 'swap', load: 'load', oom: 'OOM kill' };
+  const METRIC_NAMES = { mem: 'memory', swap: 'swap', load: 'CPU load', oom: 'OOM kill' };
+  // The collector's thresholds ([warn, high]; critical = high for 2 samples in a row, or an OOM kill
+  // in the last 10 minutes): r.thresholds when the board reports them, else these defaults.
+  const RES_THR = { mem_available_pct: [15, 8], mem_available_mb: [2048, 1024], swap_used_pct: [50, 80], psi_mem_some_avg60: [10, 25],
+    load_per_cpu: [1.5, 3.0], disk_free_pct: [10, 3], disk_free_mb: [5120, 1024] };
+  const fmtThr = (v) => (Number.isInteger(Number(v)) ? Number(v).toFixed(1) : String(v));
+  // Why the System level is what it is, in words: { metric, text, critical } or null when ok.
+  function resWhy(r) {
+    const lvl = resLvl(r.level) || 'ok', w = str(r.worst);
+    if (lvl === 'ok' || !w) return null;
+    const thr = Object.assign({}, RES_THR, r.thresholds && typeof r.thresholds === 'object' ? r.thresholds : {});
+    const step = lvl === 'warn' ? 0 : 1, L = trKnown(lvl === 'warn' ? 'warn' : 'high', RES_LEVELS);
+    const at = (k) => (Array.isArray(thr[k]) && thr[k][step] != null ? Number(thr[k][step]) : null);
+    const num = (v) => (v == null || !isFinite(Number(v)) ? null : Number(v));
+    let text = '';
+    if (w === 'oom') text = tr('an OOM kill in the last 10 minutes');
+    else if (w === 'load') {
+      const c = r.cpu || {}, load = Array.isArray(c.load) ? num(c.load[0]) : null, n = num(c.ncpu);
+      const per = num(c.load_per_cpu) != null ? num(c.load_per_cpu) : load != null && n ? load / n : null;
+      text = per == null ? tr('CPU load') : tr('Load {load} / {n} cpu = {per} per cpu ({lvl} ≥ {t})',
+        { load: load == null ? '?' : load.toFixed(1), n: n || '?', per: per.toFixed(2), lvl: L, t: fmtThr(at('load_per_cpu')) });
+    } else if (w === 'mem') {
+      const m = r.mem || {}, pct = num(m.available_pct), mb = num(m.available_mb), psi = num(m.psi_some_avg60);
+      if (mb != null && at('mem_available_mb') != null && mb <= at('mem_available_mb') && !(pct != null && at('mem_available_pct') != null && pct <= at('mem_available_pct')))
+        text = tr('Memory {mb} available ({lvl} ≤ {t})', { mb: fmtMb(mb), lvl: L, t: fmtMb(at('mem_available_mb')) });
+      else if (psi != null && at('psi_mem_some_avg60') != null && psi >= at('psi_mem_some_avg60') && !(pct != null && pct <= at('mem_available_pct')))
+        text = tr('Memory pressure {psi} ({lvl} ≥ {t})', { psi: psi.toFixed(1), lvl: L, t: fmtThr(at('psi_mem_some_avg60')) });
+      else text = tr('Memory {pct}% available ({lvl} ≤ {t}%)', { pct: pct == null ? '?' : Math.round(pct), lvl: L, t: at('mem_available_pct') });
+    } else if (w === 'swap') {
+      text = tr('Swap {pct}% used ({lvl} ≥ {t}%)', { pct: num((r.swap || {}).used_pct) == null ? '?' : Math.round(r.swap.used_pct), lvl: L, t: at('swap_used_pct') });
+    } else if (w.startsWith('disk:')) {
+      const d = objs(r.disks).find((x) => str(x.id) === w.slice(5)) || {}, name = metricName(w, r);
+      text = num(d.free_pct) != null && at('disk_free_pct') != null && num(d.free_pct) <= at('disk_free_pct')
+        ? tr('{disk}: {pct}% free ({lvl} ≤ {t}%)', { disk: name, pct: d.free_pct, lvl: L, t: at('disk_free_pct') })
+        : tr('{disk}: {mb} free ({lvl} ≤ {t})', { disk: name, mb: fmtMb(d.free_mb), lvl: L, t: fmtMb(at('disk_free_mb')) });
+    } else text = metricName(w, r);
+    return { metric: w.split(':')[0], worst: w, text, critical: lvl === 'critical' };
+  }
   function metricName(m, r) {
     const k = str(m);
     if (!k.startsWith('disk:')) return k ? trMap(METRIC_NAMES, k) : tr('resources');
@@ -2470,23 +2525,39 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     if (!r) return;
     const levels = r.levels && typeof r.levels === 'object' ? r.levels : {};
     const lvl = resLvl(r.level) || 'ok';
-    const chip = $('#sys-lvl'); chip.className = 'lvl ' + lvl; chip.textContent = trKnown(lvl, RES_LEVELS);
+    const why = resWhy(r), w = str(r.worst);
+    const short = w.startsWith('disk:') ? tr('disk {id}', { id: w.slice(5) }) : w ? metricName(w, r) : '';
+    const chip = $('#sys-lvl'); chip.className = 'lvl ' + lvl;
+    chip.textContent = trKnown(lvl, RES_LEVELS) + (why && short ? ' · ' + short : '');
     chip.title = r.worst ? tr('worst: {what}', { what: metricName(r.worst, r) }) : tr('all within limits');
-    const oom = $('#sys-oom');
+    tile.classList.remove('lv-warn', 'lv-high', 'lv-critical');
+    if (why) tile.classList.add('lv-' + lvl);
+    // A since-boot count is history: neutral and labelled so; only a recent OOM kill alarms.
+    const oom = $('#sys-oom'), n = r.oom_kills == null ? '?' : r.oom_kills;
     oom.hidden = r.oom_kills == null;
-    oom.textContent = 'OOM ' + (r.oom_kills == null ? '?' : r.oom_kills);
+    oom.textContent = r.oom_recent ? 'OOM ' + n : tr('OOM {n} since boot', { n });
+    oom.setAttribute('aria-label', tr(r.oom_recent ? '{n} OOM kills since boot, one in the last 10 minutes' : '{n} OOM kills since boot', { n }));
+    oom.title = oom.getAttribute('aria-label');
     oom.classList.toggle('hot', !!r.oom_recent);
     const m = r.mem || {}, sw = r.swap || {};
     setBar($('#sys-mem'), m.available_pct == null ? null : 100 - Number(m.available_pct), resLvl(levels.mem),
       null, m.available_mb == null ? tr('not available here') : tr('{free} free of {total}', { free: fmtMb(m.available_mb), total: fmtMb(m.total_mb) }) + (m.psi_some_avg60 ? ' · psi ' + Number(m.psi_some_avg60).toFixed(1) : ''));
     setBar($('#sys-swap'), sw.used_pct, resLvl(levels.swap));
+    // The row that drives the level, in the level's colour, and why in one line.
+    $('#sys-mem').classList.toggle('drive', !!why && why.metric === 'mem');
+    $('#sys-swap').classList.toggle('drive', !!why && why.metric === 'swap');
     const line = $('#sys-line'); line.textContent = '';
     const c = r.cpu || {};
-    if (Array.isArray(c.load)) line.append(h('span', null, tr('Load') + ' ', h('b', { text: Number(c.load[0]).toFixed(2) }), c.ncpu ? ' / ' + tr('{n} cpu', { n: c.ncpu }) : ''));
+    if (Array.isArray(c.load)) line.append(h('span', { class: why && why.metric === 'load' ? 'drive' : null, id: 'sys-load' }, tr('Load') + ' ', h('b', { text: Number(c.load[0]).toFixed(2) }), c.ncpu ? ' / ' + tr('{n} cpu', { n: c.ncpu }) : ''));
     if (c.pct != null) line.append(h('span', null, 'CPU ', h('b', { text: c.pct + '%' })));
     const disks = objs(r.disks).filter((d) => d.free_pct != null).sort((a, b) => Number(a.free_pct) - Number(b.free_pct));
-    if (disks.length) line.append(h('span', { title: (disks[0].labels || []).map(str).join(', ') }, tr('Disk') + ' ', h('b', { text: tr('{pct}% free', { pct: disks[0].free_pct }) })));
+    const dk = why && why.metric === 'disk' ? disks.find((d) => 'disk:' + str(d.id) === why.worst) : null;
+    const shown = dk || disks[0];
+    if (shown) line.append(h('span', { class: dk ? 'drive' : null, title: (shown.labels || []).map(str).join(', ') }, tr('Disk') + ' ', h('b', { text: tr('{pct}% free', { pct: shown.free_pct }) })));
     if (r.heavy_running) line.append(h('span', null, h('b', { text: String(r.heavy_running) }), ' ' + tr('heavy')));
+    const whyEl = $('#sys-why');
+    whyEl.hidden = !why;
+    whyEl.textContent = why ? why.text : '';
   }
   function renderResources() {
     const r = resView();
@@ -4827,7 +4898,6 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       "Deck panel": "按鍵面板",
       "Shown": "展開",
       "Collapsed": "收起",
-      "Waiting": "等待中",
       "Waiting: not known yet": "等待中：還不知道",
       "Nothing is waiting": "沒有在等的事",
       "Nothing is waiting.": "沒有在等的事。",
@@ -4955,6 +5025,21 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       "Alerts at: ": "提醒門檻：",
       "plan a switch": "規劃切換",
       "switch accounts": "切換帳號",
+      "CPU load": "CPU 負載",
+      "an OOM kill in the last 10 minutes": "最近 10 分鐘內有 OOM kill",
+      "Load {load} / {n} cpu = {per} per cpu ({lvl} ≥ {t})": "負載 {load} / {n} cpu = 每顆 cpu {per}（{lvl} ≥ {t}）",
+      "Memory {mb} available ({lvl} ≤ {t})": "記憶體可用 {mb}（{lvl} ≤ {t}）",
+      "Memory pressure {psi} ({lvl} ≥ {t})": "記憶體壓力 {psi}（{lvl} ≥ {t}）",
+      "Memory {pct}% available ({lvl} ≤ {t}%)": "記憶體可用 {pct}%（{lvl} ≤ {t}%）",
+      "Swap {pct}% used ({lvl} ≥ {t}%)": "Swap 已用 {pct}%（{lvl} ≥ {t}%）",
+      "{disk}: {pct}% free ({lvl} ≤ {t}%)": "{disk}：剩 {pct}%（{lvl} ≤ {t}%）",
+      "{disk}: {mb} free ({lvl} ≤ {t})": "{disk}：剩 {mb}（{lvl} ≤ {t}）",
+      "OOM {n} since boot": "開機以來 OOM {n}",
+      "{n} OOM kills since boot": "開機以來 {n} 次 OOM kill",
+      "{n} OOM kills since boot, one in the last 10 minutes": "開機以來 {n} 次 OOM kill，最近 10 分鐘內有一次",
+      "Why: ": "原因：",
+      "; high for 2 samples in a row": "；連續 2 次取樣都在 high",
+      "Levels: warn and high at each threshold; critical = high for 2 samples in a row, or an OOM kill in the last 10 minutes.": "等級：每個門檻分 warn 和 high；連續 2 次取樣在 high，或最近 10 分鐘內有 OOM kill，就是 critical。",
     };
   }
 })();

@@ -9,7 +9,9 @@ side scrolling, shows the detail behind the number, and is in 繁體中文 when 
 tile only opens its popover on a tap (its popover links on), and still follows the link on a
 click or Enter. Escape with the focus inside a popover puts it back on the box. No popover shows a
 session card's own text (what it is doing, its prompt). On the Artifact page the operator
-popover says so.
+popover says so. The System tile says why its level is what it is: the cause on the level pill,
+the row that drives it highlighted with a one-line reason, a since-boot OOM count neutral and only
+a recent OOM kill alarming (en / 繁體中文, dark theme, 390 px).
 
 Needs python playwright and a Chromium it can launch; without them it prints "skipped" and
 exits 0, so it never blocks anyone. CI does not run it.
@@ -20,6 +22,7 @@ PLAYWRIGHT_CHROMIUM_EXECUTABLE points at a specific Chromium / headless shell wh
 playwright expects is not installed. Uses the demo adapter (file://) and a stubbed claude.ai
 viewer; never touches ~/.agent-switchboard.
 """
+import json
 import os
 import re
 import sys
@@ -83,6 +86,32 @@ CLAUDE_STUB = """(() => {
     me: async () => ({ id: 'u_x', name: '', avatarUrl: '', color: '#777', email: null, isOwner: true, canEdit: true }) };
   window.claude = { use: (n) => Promise.resolve(n === 'user' ? user : n === 'db' ? { collection: query, doc } : null) };
 })();"""
+
+
+# meta/resources as the operator mirrors it: load critical (6.93 per cpu), memory fine, 2 OOM kills
+# since boot, none recent.
+RES_LOAD = {"enabled": True, "platform": "linux", "level": "critical", "worst": "load",
+            "levels": {"mem": "ok", "swap": "ok", "load": "critical", "disk:disk1": "ok"},
+            "cpu": {"pct": 95, "ncpu": 4, "load": [27.72, 20.1, 15.3], "load_per_cpu": 6.93},
+            "mem": {"available_pct": 35, "available_mb": 5800, "total_mb": 16000},
+            "swap": {"used_pct": 5}, "oom_kills": 2, "oom_recent": False,
+            "disks": [{"id": "disk1", "free_pct": 40, "free_mb": 50000, "labels": ["$BOARD_HOME"]}],
+            "sessions": [], "heavy_running": 0, "operator": {"watch": True},
+            "thresholds": {"load_per_cpu": [1.5, 3.0], "mem_available_pct": [15, 8]}}
+RES_OOM = dict(RES_LOAD, worst="oom", oom_kills=3, oom_recent=True, levels=dict(RES_LOAD["levels"], oom="critical"))
+SYS_JS = """() => { const t = document.getElementById('sys'), o = document.getElementById('sys-oom'), w = document.getElementById('sys-why');
+  const ld = document.getElementById('sys-load'), clear = (c) => c === 'transparent' || /rgba\\(.*,\\s*0\\)$/.test(c);
+  return { pill: document.getElementById('sys-lvl').textContent, why: w.hidden ? null : w.textContent,
+    load: ld ? { drive: ld.classList.contains('drive'), weight: getComputedStyle(ld).fontWeight, color: getComputedStyle(ld).color } : null,
+    memDrive: document.getElementById('sys-mem').classList.contains('drive'), lineColor: getComputedStyle(document.getElementById('sys-line')).color,
+    oom: { text: o.textContent, label: o.getAttribute('aria-label'), hot: o.classList.contains('hot'), filled: !clear(getComputedStyle(o).backgroundColor) },
+    vw: document.documentElement.clientWidth, sw: document.scrollingElement.scrollWidth, right: t.getBoundingClientRect().right }; }"""
+
+
+def res_stub(res):
+    return CLAUDE_STUB.replace("const d = path === 'meta/operator' ? { heartbeat_at: Date.now() - 60000, approver_ids: ['u_x'] } : null;",
+                               "const d = path === 'meta/operator' ? { heartbeat_at: Date.now() - 60000, approver_ids: ['u_x'] }"
+                               " : path === 'meta/resources' ? Object.assign(%s, { at: Date.now() - 5000 }) : null;" % json.dumps(res))
 
 
 def main():
@@ -191,6 +220,13 @@ def main():
         pg.tap("h1")
         check("a tap outside closes it", not st(pg, "sys")["open"])
         check("a tap on a link tile does not follow the link", pg.evaluate("() => location.hash") == "")
+        # A slow tap (finger down 600 ms) opens the popover and still does not follow the link.
+        pg.evaluate("""async () => { const b = document.getElementById('sys'), o = { pointerType: 'touch', bubbles: true, isPrimary: true };
+          b.dispatchEvent(new PointerEvent('pointerdown', o)); await new Promise((r) => setTimeout(r, 600));
+          b.dispatchEvent(new PointerEvent('pointerup', o)); b.click(); }""")
+        check("a slow tap opens the popover and does not follow the link",
+              st(pg, "sys")["open"] and pg.evaluate("() => location.hash") == "", pg.evaluate("() => location.hash"))
+        pg.tap("h1")
         # ...its popover links on: System -> Resources, Needs you -> Decisions.
         for box, link, head in (("sys", "#sys-pop-sec", "h-resources"), ("needs-tile", "#needs-pop-sec", "h-decisions")):
             pg.evaluate("() => scrollTo(0, 0)")
@@ -237,6 +273,51 @@ def main():
         pg.wait_for_timeout(300)
         check("...still links on to Decisions", not st(pg, "needs-tile")["open"] and pg.evaluate("() => document.activeElement.id") == "h-decisions")
         pg.close()
+
+        print("System tile says why:")
+        for scheme, vp, lang in (("light", {"width": 1280, "height": 900}, "en"), ("dark", {"width": 390, "height": 844}, "zh-TW")):
+            for res in (RES_LOAD, RES_OOM):
+                pg = new_page(res_stub(res), viewport=vp, color_scheme=scheme, has_touch=vp["width"] < 400)
+                pg.goto(PAGE)
+                pg.wait_for_selector("#sys:not([hidden])", timeout=5000)
+                if lang == "zh-TW":
+                    pg.click("#acct-btn")
+                    pg.click('label:has(input[name="sb-lang"][value="zh-TW"])')
+                    pg.keyboard.press("Escape")
+                    pg.wait_for_timeout(100)
+                y = pg.evaluate(SYS_JS)
+                tag = "%s, %s, %dpx, %s" % (lang, scheme, vp["width"], "load" if res is RES_LOAD else "recent OOM")
+                zh = lang == "zh-TW"
+                if res is RES_LOAD:
+                    check("%s: the level pill names the cause" % tag, y["pill"] == ("危急 · CPU 負載" if zh else "critical · CPU load"), y["pill"])
+                    check("%s: the Load row drives it (highlighted), memory does not" % tag,
+                          y["load"]["drive"] and int(y["load"]["weight"]) >= 700 and y["load"]["color"] != y["lineColor"] and not y["memDrive"], y)
+                    check("%s: one line why, per cpu against the threshold" % tag, y["why"] == (
+                        "負載 27.7 / 4 cpu = 每顆 cpu 6.93（高 ≥ 3.0）" if zh else "Load 27.7 / 4 cpu = 6.93 per cpu (high ≥ 3.0)"), y["why"])
+                    check("%s: a since-boot OOM count is neutral and says so" % tag, not y["oom"]["hot"] and not y["oom"]["filled"]
+                          and y["oom"]["text"] == ("開機以來 OOM 2" if zh else "OOM 2 since boot")
+                          and y["oom"]["label"] == ("開機以來 2 次 OOM kill" if zh else "2 OOM kills since boot"), y["oom"])
+                else:
+                    check("%s: a recent OOM kill alarms" % tag, y["oom"]["hot"] and y["oom"]["filled"] and y["oom"]["text"] == "OOM 3", y["oom"])
+                    check("%s: ...and is the reason" % tag, y["pill"] == ("危急 · OOM kill" if zh else "critical · OOM kill")
+                          and y["why"] == ("最近 10 分鐘內有 OOM kill" if zh else "an OOM kill in the last 10 minutes") and not y["load"]["drive"], y)
+                check("%s: no side scroll, tile on screen" % tag, y["sw"] <= y["vw"] and y["right"] <= y["vw"], y)
+                if vp["width"] < 400:
+                    pg.tap("#sys")
+                else:
+                    pg.hover("#sys")
+                pg.wait_for_timeout(100)
+                t = st(pg, "sys")
+                first = (t.get("text") or "").split("\n")[0]
+                if res is RES_LOAD:
+                    want = ("原因：負載 27.7 / 4 cpu = 每顆 cpu 6.93（高 ≥ 3.0）；連續 2 次取樣都在 high" if zh
+                            else "Why: Load 27.7 / 4 cpu = 6.93 per cpu (high ≥ 3.0); high for 2 samples in a row")
+                else:
+                    want = "原因：最近 10 分鐘內有 OOM kill" if zh else "Why: an OOM kill in the last 10 minutes"
+                check("%s: the popover starts with why" % tag, first == want, first)
+                check("%s: ...and says what the levels mean" % tag, ("等級：" if zh else "Levels: warn and high") in t["text"]
+                      and t["right"] <= t["vw"] and t["sw"] <= t["vw"], t)
+                pg.close()
 
         check("no page errors", not errors, errors)
         browser.close()

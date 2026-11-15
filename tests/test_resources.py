@@ -665,6 +665,9 @@ class Views(Base):
         self.assertEqual(R.board_view({"enabled": False, "at": 1, "operator": {"watch": True}})["enabled"], False)
         m = R.mirror_view(doc)
         self.assertEqual(m["sessions"][0]["rss_mb"], 400)
+        # The thresholds in use go along, so the board can say why a level is what it is.
+        self.assertEqual(v["thresholds"]["load_per_cpu"], [1.5, 3.0])
+        self.assertEqual(m["thresholds"], v["thresholds"])
         self.assertEqual(m["at"] % 60000, 0)
 
 
