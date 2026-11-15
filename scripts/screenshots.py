@@ -10,7 +10,8 @@ docs/assets/screenshots/ by default, each under MAX_BYTES. Only demo data is sho
 session codes, example.com, no host names, emails or paths from this machine.
 
 Stable output: the page clock is frozen at DEMO_TIME (UTC, en-US), so relative times and dates
-are the same on every run. Google Fonts load when the network allows; offline, the fallback fonts
+are the same on every run. Chromium's rasterization still varies by a few levels on a few pixels,
+so an existing image is kept when the new render matches it within SAME_TOLERANCE (git stays clean). Google Fonts load when the network allows; offline, the fallback fonts
 are used (the images then differ slightly).
 
 PLAYWRIGHT_CHROMIUM_EXECUTABLE points at a specific Chromium / headless shell when the one
@@ -27,6 +28,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 OUT = os.path.join(REPO, "docs", "assets", "screenshots")
 DEMO_TIME = dt.datetime(2026, 1, 15, 10, 30, tzinfo=dt.timezone.utc)
 MAX_BYTES = 200 * 1024
+SAME_TOLERANCE = (24, 0.001)  # (max channel difference, share of pixels that may differ at all)
 DESKTOP = {"width": 1280, "height": 860}
 PHONE = {"width": 390, "height": 844}
 
@@ -56,6 +58,28 @@ WEBP_JS = """async ([b64, q]) => {
   let s = ''; for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
   return btoa(s);
 }"""
+
+
+SAME_JS = """async ([oldB64, newB64, maxDiff, maxShare]) => {
+  const load = async (src) => { const i = new Image(); i.src = src; await i.decode(); return i; };
+  const [a, b] = await Promise.all([load('data:image/webp;base64,' + oldB64), load('data:image/webp;base64,' + newB64)]);
+  if (a.naturalWidth !== b.naturalWidth || a.naturalHeight !== b.naturalHeight) return false;
+  const px = (img) => { const c = document.createElement('canvas'); c.width = img.naturalWidth; c.height = img.naturalHeight;
+    const g = c.getContext('2d'); g.drawImage(img, 0, 0); return g.getImageData(0, 0, c.width, c.height).data; };
+  const x = px(a), y = px(b);
+  let off = 0;
+  for (let i = 0; i < x.length; i += 4) {
+    const d = Math.max(Math.abs(x[i] - y[i]), Math.abs(x[i + 1] - y[i + 1]), Math.abs(x[i + 2] - y[i + 2]));
+    if (d > maxDiff) return false;
+    if (d > 16) off++;
+  }
+  return off <= maxShare * (x.length / 4);
+}"""
+
+
+def same_image(conv, old, new):
+    """Do two WebP images show the same thing (within SAME_TOLERANCE)?"""
+    return bool(conv.evaluate(SAME_JS, [base64.b64encode(old).decode(), base64.b64encode(new).decode()] + list(SAME_TOLERANCE)))
 
 
 def to_webp(conv, png):
@@ -151,9 +175,13 @@ def main(argv):
             page.wait_for_timeout(300)
             data = to_webp(conv, shoot(page, name))
             path = os.path.join(args.out, name + ".webp")
-            with open(path, "wb") as fh:
-                fh.write(data)
-            print("%-16s %4dx%-4d @%dx  %6d bytes" % (name, viewport["width"], viewport["height"], scale, len(data)))
+            old = open(path, "rb").read() if os.path.isfile(path) else None
+            if old and (old == data or same_image(conv, old, data)):
+                print("%-16s %4dx%-4d @%dx  %6d bytes  (unchanged)" % (name, viewport["width"], viewport["height"], scale, len(old)))
+            else:
+                with open(path, "wb") as fh:
+                    fh.write(data)
+                print("%-16s %4dx%-4d @%dx  %6d bytes" % (name, viewport["width"], viewport["height"], scale, len(data)))
             ctx.close()
         browser.close()
     import shutil

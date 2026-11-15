@@ -82,6 +82,17 @@ def main():
                 head = fh.read(12)
             size = os.path.getsize(os.path.join(shots, f))
             check("  %s: WebP, %d KB" % (f, size // 1024), head[:4] == b"RIFF" and head[8:12] == b"WEBP" and size <= MAX_BYTES)
+        # Reruns keep images that only differ by rasterization noise, and replace real changes.
+        before = {f: open(os.path.join(shots, f), "rb").read() for f in got}
+        shutil.copyfile(os.path.join(shots, "profile-menu.webp"), os.path.join(shots, "resources.webp"))
+        r = subprocess.run([sys.executable, os.path.join(REPO, "scripts", "screenshots.py"), "--out", shots,
+                            "--only", "overview-light,overview-dark,resources"], capture_output=True, text=True, timeout=300)
+        check("rerun: unchanged views keep their file byte for byte",
+              r.stdout.count("(unchanged)") == 2 and all(open(os.path.join(shots, f), "rb").read() == before[f]
+                                                       for f in ("overview-light.webp", "overview-dark.webp")), r.stdout)
+        check("rerun: a different image is replaced",
+              open(os.path.join(shots, "resources.webp"), "rb").read() != before["profile-menu.webp"]
+              and "resources" in r.stdout and "resources        1280x860  @1x" in r.stdout and "(unchanged)" not in r.stdout.split("resources ")[-1], r.stdout)
         committed = sorted(os.listdir(os.path.join(REPO, "docs", "assets", "screenshots")))
         check("the committed set matches the script's list", committed == want, committed)
 
