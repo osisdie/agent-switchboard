@@ -118,7 +118,9 @@ def serve(tmp, approvers, live_pid):
 def main():
     tmp = tempfile.mkdtemp(prefix="switchboard-page-rc.")
     srv = None
-    live = subprocess.Popen(["sleep", "300"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # The fixture session's process: without DO_NOT_TRACK, which would make Remote Control unavailable.
+    live = subprocess.Popen(["sleep", "300"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            env={k: v for k, v in os.environ.items() if k != "DO_NOT_TRACK"})
     try:
         with sync_playwright() as p:
             exe = os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE") or None
@@ -142,6 +144,7 @@ def main():
             check("off: chip RC off", c.get("QA") == "off:RC off", c)
             check("a choice waiting for idle: pending chip", c.get("DOCS") == "pending:RC → on", c)
             check("offline: no chip", c.get("MOBILE") is None, c)
+            check("DO_NOT_TRACK: RC unavailable chip", c.get("DATA") == "off:RC unavailable", c)
             check("no horizontal scroll", not page.evaluate(OVERFLOW_JS))
             card = page.locator(".scard", has=page.locator(".code", has_text="DOCS")).first
             card.locator(".scard-toggle").click()
@@ -152,6 +155,24 @@ def main():
             page.wait_for_timeout(200)
             check("toggle back: no longer pending", chips().get("DOCS") == "off:RC off", chips())
             check("  demo toast", any("Demo:" in t for t in page.locator(".toast").all_text_contents()))
+            qa = page.locator(".scard", has=page.locator(".code", has_text="QA")).first
+            qa.locator(".scard-toggle").click()
+            page.wait_for_timeout(200)
+            check("compact: last compacted note", "Last compacted 50m ago" in qa.locator(".compact-ctl").text_content(), qa.locator(".compact-ctl").text_content())
+            qa.locator("[data-compact=ask]").click()
+            page.wait_for_timeout(100)
+            qa = page.locator(".scard", has=page.locator(".code", has_text="QA")).first
+            check("compact asks first", "Compact QA's conversation?" in qa.locator(".compact-ctl").text_content())
+            qa.locator("[data-compact=cancel]").click()
+            page.wait_for_timeout(100)
+            qa = page.locator(".scard", has=page.locator(".code", has_text="QA")).first
+            check("  cancel: back to the button", qa.locator("[data-compact=ask]").count() == 1)
+            qa.locator("[data-compact=ask]").click()
+            page.wait_for_timeout(100)
+            page.locator(".scard", has=page.locator(".code", has_text="QA")).first.locator("[data-compact=confirm]").click()
+            page.wait_for_timeout(200)
+            qa = page.locator(".scard", has=page.locator(".code", has_text="QA")).first
+            check("  confirmed: compacted just now", "Last compacted just now" in qa.locator(".compact-ctl").text_content(), qa.locator(".compact-ctl").text_content())
             page.click("#notif-btn")
             page.wait_for_timeout(200)
             page.click("#nf-rc-all-on")
@@ -192,9 +213,19 @@ def main():
             check("Turn on → board rc on CP --by board:local", pref and pref.get("state") == "on" and pref.get("by") == "board:local", pref)
             page.wait_for_timeout(500)
             check("  the busy session shows the pending chip", chips().get("CP") == "pending:RC → on", chips())
-            ev = wait_for(lambda: [json.loads(x) for x in open(os.path.join(home, "events.jsonl")) if '"action": "apply"' in x])
+            ev = wait_for(lambda: [json.loads(x) for x in open(os.path.join(home, "events.jsonl")) if '"op": "run"' in x])
             check("  applied in the background: deferred while busy, nothing typed",
                   ev and ev[-1].get("result") == "deferred", ev)
+            card = page.locator(".scard", has=page.locator(".code", has_text="CP")).first
+            card.locator("[data-compact=ask]").click()
+            page.wait_for_timeout(100)
+            page.locator(".scard", has=page.locator(".code", has_text="CP")).first.locator("[data-compact=confirm]").click()
+            qd = wait_for(lambda: read(os.path.join(home, "session-actions.json")).get("CP"))
+            check("Compact (confirmed) → queued by board:local", qd and qd.get("action") == "compact" and qd.get("by") == "board:local", qd)
+            page.wait_for_timeout(1500)
+            card = page.locator(".scard", has=page.locator(".code", has_text="CP")).first
+            check("  the busy session shows it queued", "Queued: runs when the session is idle." in card.locator(".compact-ctl").text_content(),
+                  card.locator(".compact-ctl").text_content())
             page.click("#notif-btn")
             page.wait_for_timeout(200)
             page.click("#nf-rc-all-off")
@@ -218,6 +249,7 @@ def main():
             page.wait_for_timeout(200)
             check("non-approver: chip shown", chips().get("CP") == "off:RC off", chips())
             check("  no toggle", card.locator(".rc-ctl button").count() == 0)
+            check("  no compact button", card.locator("[data-compact]").count() == 0)
             page.click("#notif-btn")
             page.wait_for_timeout(200)
             check("  all switch read-only", page.locator("#nf-rc-readonly").count() == 1 and page.locator("#nf-rc-all-on").count() == 0)

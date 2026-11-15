@@ -333,8 +333,8 @@ dialog.notif { width: min(720px, calc(100vw - 24px)); }
 .rcchip { flex: none; font-size: 11px; font-weight: 600; padding: 0 6px; border: 1px solid var(--rule); border-radius: 9px; color: var(--muted); white-space: nowrap; }
 .rcchip.on { border-color: var(--cord); color: var(--cord); }
 .rcchip.pending { border-style: dashed; border-color: var(--lamp); color: var(--lamp-ink); }
-.rc-ctl { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
-.rc-ctl .note { flex-basis: 100%; }
+.rc-ctl, .act-ctl { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.rc-ctl .note, .act-ctl .note { flex-basis: 100%; }
 .stitle, .snow { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
 .stitle.none { color: var(--muted); font-style: italic; }
 .swhere { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--f-mono); font-size: 12px; color: var(--muted); }
@@ -1882,7 +1882,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     return 'sd-' + str(code).replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 40) + '-' + hsh.toString(36);
   }
   function cardSig(s) {
-    return JSON.stringify(s) + '|' + JSON.stringify(rcView(s)) + '|' + S.busy.has('rc:' + s.code) + '|' + openCards.has(s.code) + '|' + sessionDecisions(s).map((d) => d.id + (d.question || '')).join(',');
+    return JSON.stringify(s) + '|' + JSON.stringify(rcView(s)) + '|' + S.busy.has('rc:' + s.code) + S.busy.has('compact:' + s.code) + (S.drafts.compactAsk === s.code) + rcEditor() + '|' + openCards.has(s.code) + '|' + sessionDecisions(s).map((d) => d.id + (d.question || '')).join(',');
   }
   // Card extras from board-serve (cards.json, lib/cards.py): teammates, meter, recent tool calls,
   // what it says (approvers only), branch, time in state. Absent in Artifact mode.
@@ -2035,6 +2035,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       if (link) wh.row('Session', link);
       const rv = rcView(s);
       if (rv.running || rv.want) wh.row('Remote Control', rcControl(s, rv));
+      if (rv.running || compactView(s).doneAt) wh.row('Compact', compactControl(s));
       const aliases = (Array.isArray(s.aliases) ? s.aliases : []).map(str).filter((a) => a && lc(a) !== lc(s.code));
       if (aliases.length) wh.row('Also', aliases.join(', '));
       const t = ts(s.updated_at);
@@ -2060,14 +2061,19 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     if (okState(ps[s.code])) { want = ps[s.code]; explicit = true; }
     else if (P && okState(P.all)) { want = P.all; explicit = true; }
     else if (r && okState(r.want)) { want = r.want; explicit = !P && (r.source === 'session' || r.source === 'all'); }
-    const pending = running && on !== null && explicit && (want === 'on') !== on && !str(s.code).includes('/');
+    const blocked = running && !on && !!r && r.blocked === 'do_not_track';
+    const pending = running && on !== null && explicit && (want === 'on') !== on && !str(s.code).includes('/') && !(blocked && want === 'on');
     const last = r && r.last && typeof r.last === 'object' ? r.last : null;
-    return { running, on, want, explicit, pending, last: last && last.want === want ? str(last.result) : '' };
+    return { running, on, want, explicit, pending, blocked, last: last && last.want === want ? str(last.result) : '' };
   }
   function rcEditor() { return S.demo || (awayEditor() && !!adapter && typeof adapter.setRc === 'function'); }
   function rcChip(s) {
     const v = rcView(s);
     if (!v.running) return null;
+    if (v.blocked) {
+      const why = tr('RC unavailable: DO_NOT_TRACK is set');
+      return h('span', { class: 'rcchip off', title: why, 'aria-label': why, text: tr('RC unavailable') });
+    }
     const label = v.pending ? tr(v.want === 'on' ? 'Remote Control turns on when the session is idle' : 'Remote Control turns off when the session is idle')
       : tr(v.on ? 'Remote Control is on' : 'Remote Control is off');
     return h('span', { class: 'rcchip ' + (v.pending ? 'pending' : v.on ? 'on' : 'off'), title: label, 'aria-label': label,
@@ -2084,6 +2090,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   function rcControl(s, v) {
     const busy = S.busy.has('rc:' + s.code) || S.busy.has('rc:all');
     const text = !v.running ? tr(v.want === 'off' ? 'Off at the next start' : 'On at the next start')
+      : v.blocked ? tr('RC unavailable: DO_NOT_TRACK is set')
       : v.pending ? tr(v.want === 'on' ? 'Off now; turns on when the session is idle' : 'On now; turns off when the session is idle')
       : tr(v.on ? 'On' : 'Off');
     const cur = v.pending || !v.running ? (v.want || 'on') : (v.on ? 'on' : 'off');
@@ -2106,11 +2113,60 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     if (S.demo) { demoRc(code, state); renderAll(); toast(tr('Demo: shown on this page only. Nothing was saved or sent.')); return; }
     if (!isLocal() || !adapter.setRc || S.busy.has(key)) return;
     S.busy.add(key); renderBoard(); renderNotif();
-    adapter.setRc(code, state).then((r) => {
+    const call = code === 'all' ? adapter.setRc(code, state) : adapter.sessionAction(code, 'rc_' + state);
+    call.then((r) => {
       if (r && r.rc && typeof r.rc === 'object') S.rc = r.rc;
       toast(code === 'all' ? tr(state === 'on' ? 'Remote Control on for all sessions: idle ones now, busy ones when they are idle.' : 'Remote Control off for all sessions: idle ones now, busy ones when they are idle.')
         : tr(state === 'on' ? 'Remote Control on for {code}: now if it is idle, else when it is.' : 'Remote Control off for {code}: now if it is idle, else when it is.', { code }));
     }).catch((e) => handleWriteError(e)).finally(() => { S.busy.delete(key); renderAll(); });
+  }
+  // Compact: /compact typed into an idle session (board-serve queues it while the session is
+  // busy). Approvers, with a confirm step; the note says when it last ran from the board.
+  const COMPACT_LAST = {
+    nothing: 'Last try: Claude said there was not enough to compact.',
+    started: 'Last try: still compacting when the board stopped watching; it finishes in the session.',
+    unconfirmed: 'Last try: sent, but the compact was not seen starting.',
+    refused: 'Last try: nothing was sent (the screen did not match).',
+    partial: 'Last try stopped part-way: /compact may still be typed in the prompt. Clear it in the session.',
+    failed: 'Last try failed.',
+  };
+  function compactView(s) {
+    const c = s.compact && typeof s.compact === 'object' ? s.compact : {};
+    const q = c.queued && typeof c.queued === 'object' ? c.queued : null;
+    const last = c.last && typeof c.last === 'object' ? str(c.last.result) : '';
+    return { queued: !!q, doneAt: ts(c.done_at), last };
+  }
+  function compactControl(s) {
+    const v = compactView(s), running = str(s.state) !== 'offline';
+    const busy = S.busy.has('compact:' + s.code), ask = S.drafts.compactAsk === s.code;
+    const box = h('span', { class: 'act-ctl compact-ctl' });
+    box.append(h('span', { class: 'compact-state', text: v.queued ? tr('Queued: runs when the session is idle.')
+      : v.doneAt ? tr('Last compacted {when}', { when: rel(v.doneAt) }) : tr('Not compacted from the board yet.') }));
+    if (rcEditor() && running && !v.queued) {
+      if (ask) {
+        box.append(h('span', { class: 'note', text: tr('Compact {code}\'s conversation? Claude summarizes it to free context. It runs now if the session is idle, else when it is.', { code: s.code }) }),
+          h('button', { class: 'btn primary', type: 'button', disabled: busy || null, dataset: { compact: 'confirm' }, onclick: () => { delete S.drafts.compactAsk; compactSession(s.code); }, text: tr('Yes, compact') }),
+          h('button', { class: 'btn', type: 'button', dataset: { compact: 'cancel' }, onclick: () => { delete S.drafts.compactAsk; renderBoard(); }, text: tr('Cancel') }));
+      } else {
+        box.append(h('button', { class: 'btn', type: 'button', disabled: busy || null, dataset: { compact: 'ask' },
+          'aria-label': tr('Compact {code}', { code: s.code }), onclick: () => { S.drafts.compactAsk = s.code; renderBoard(); }, text: tr('Compact') }));
+      }
+    }
+    if (!v.queued && COMPACT_LAST[v.last]) box.append(h('span', { class: 'note', text: tr(COMPACT_LAST[v.last]) }));
+    return box;
+  }
+  function compactSession(code) {
+    const key = 'compact:' + code;
+    if (S.demo) {
+      S.sessions = S.sessions.map((x) => (x.code === code ? Object.assign({}, x, { compact: x.state === 'working' || x.state === 'needs-you'
+        ? { queued: { at: Date.now(), by: 'board:you' }, last: null, done_at: null } : { queued: null, last: { result: 'confirmed', at: Date.now() }, done_at: Date.now() } }) : x));
+      renderAll(); toast(tr('Demo: shown on this page only. Nothing was saved or sent.'));
+      return;
+    }
+    if (!isLocal() || !adapter.sessionAction || S.busy.has(key)) return;
+    S.busy.add(key); renderBoard();
+    adapter.sessionAction(code, 'compact').then(() => toast(tr('Compact for {code}: now if it is idle, else when it is.', { code })))
+      .catch((e) => handleWriteError(e)).finally(() => { S.busy.delete(key); renderAll(); });
   }
   // The "all sessions" switch in the Notifications dialog, with a confirm step.
   function renderRcAll(box) {
@@ -3507,6 +3563,8 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       ackAlerts() { return post('/api/alerts/ack', { scope: 'all' }); },
       // Approvers only; board-serve runs `board rc on|off CODE|all --by board:<identity>`.
       setRc(code, state) { return post('/api/rc', { code, state }); },
+      // Approvers only: an allowlisted session action (compact | rc_on | rc_off), never free text.
+      sessionAction(code, action) { return post('/api/sessions/' + encodeURIComponent(code) + '/action', { action }); },
       presence(visible, interactionAt, leaving) {
         return call('/api/presence', { method: 'POST', keepalive: !!leaving, headers: { 'Content-Type': 'application/json', 'X-Board': '1' },
           // A duration, not a time: board-serve applies it to its own clock.
@@ -3733,8 +3791,8 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       { code: 'CP', aliases: ['CP', 'pipeline'], state: 'needs-you', status: 'idle', task: 'Splitting the deploy pipeline into stages', title: 'Deploy pipeline split', repo: 'ci-config', branch: 'split-deploy', last_event: 'PreToolUse', notification_type: null, recent: [], tmux: 'CP:@1.%6', remote_url: '#demo-session-cp', pending: { tool_name: 'ExitPlanMode', summary: 'build first, then staging, then production', tool_use_id: 'toolu_demo11' }, updated_at: now - 1 * min },
       { code: 'DOCS', aliases: ['DOCS'], state: 'working', status: 'busy', task: 'Writing the upgrade guide for v2', title: 'Upgrade guide for v2', repo: 'docs-site', branch: 'main', last_event: 'PreToolUse', notification_type: null, recent: [{ tool: 'Read', summary: '…/upgrade-v2.md' }, { tool: 'Edit', summary: '…/configuration.md' }], tmux: 'DOCS:@1.%8', remote_url: null, rc: { on: false, want: 'on', source: 'session', pending: true, last: null }, pending: null, card: { state_since: now - 22 * min, doing: 'Two teammates are drafting the configuration and migration chapters; I am merging their notes.', prompt: 'Write the v2 upgrade guide', meter: { ctx_pct: 34, cost_usd: 2.1, model: 'Demo Model', at: now - min }, teammates: [{ name: 'writer', title: 'Draft the configuration chapter', busy: true, idle: false, idle_s: 20, rss_mb: 310 }, { name: 'checker', title: 'Check every code sample builds', busy: false, idle: true, idle_s: 2400, rss_mb: 280 }], done: [{ tool: 'Bash', summary: 'npm run build:docs', ms: 52000, ok: false, at: now - 9 * min }, { tool: 'Read', summary: '…/upgrade-v2.md', ms: 40, ok: true, at: now - 2 * min }], branch: { base: 'origin/main', ahead: 1, behind: 4, subject: 'docs: upgrade guide outline' } }, updated_at: now - 1 * min },
       { code: 'OPS', aliases: ['OPS', 'infra'], state: 'working', status: 'busy', task: 'Rotating staging certificates', title: 'Rotate staging certificates', repo: 'infra', branch: 'cert-rotation', last_event: 'PreToolUse', notification_type: null, recent: [{ tool: 'Bash', summary: 'kubectl -n staging get certificates' }], tmux: 'OPS:@4.%11', remote_url: '#demo-session-ops', pending: null, card: { state_since: now - 3 * min, doing: 'Listing the certificates that expire this month.', meter: { ctx_pct: 18, cost_usd: 0.42, model: 'Demo Model', at: now - min }, teammates: [], done: [], branch: { base: 'origin/main', ahead: 0, behind: 0, subject: 'chore: bump cert-manager' } }, updated_at: now - 3 * min },
-      { code: 'QA', aliases: ['QA'], state: 'done', status: 'idle', task: 'Flaky test triage finished: 3 fixed, 1 quarantined', title: 'Flaky test triage', repo: 'web-app', branch: 'fix/flaky-upload', last_event: 'Stop', notification_type: 'idle_prompt', recent: [], tmux: 'QA:@1.%2', remote_url: null, pending: null, updated_at: now - 26 * min },
-      { code: 'DATA', aliases: ['DATA'], state: 'rest', status: 'idle', task: '', title: null, repo: 'warehouse', branch: 'main', last_event: 'SessionStart', notification_type: null, recent: [], tmux: 'DATA:@1.%14', remote_url: null, pending: null, updated_at: now - 70 * min },
+      { code: 'QA', aliases: ['QA'], state: 'done', status: 'idle', task: 'Flaky test triage finished: 3 fixed, 1 quarantined', title: 'Flaky test triage', repo: 'web-app', branch: 'fix/flaky-upload', last_event: 'Stop', notification_type: 'idle_prompt', recent: [], tmux: 'QA:@1.%2', remote_url: null, compact: { queued: null, last: { result: 'confirmed', at: now - 50 * min }, done_at: now - 50 * min }, pending: null, updated_at: now - 26 * min },
+      { code: 'DATA', aliases: ['DATA'], state: 'rest', status: 'idle', task: '', title: null, repo: 'warehouse', branch: 'main', last_event: 'SessionStart', notification_type: null, recent: [], tmux: 'DATA:@1.%14', remote_url: null, rc: { on: false, want: 'on', source: 'default', blocked: 'do_not_track', pending: false, last: null }, pending: null, updated_at: now - 70 * min },
       { code: 'MOBILE', aliases: ['MOBILE', 'app'], state: 'offline', status: 'idle', task: 'Release notes draft', title: null, repo: null, branch: null, last_event: null, notification_type: null, recent: [], tmux: null, remote_url: null, pending: null, updated_at: now - 5 * 60 * min },
     ];
     S.decisions = [
@@ -4088,6 +4146,21 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       "Shown on the self-hosted board only.": "只在自架看板上顯示。",
       "Nothing running.": "沒有執行中的工具。",
       "Remote Control": "Remote Control",
+      "RC unavailable": "RC 無法使用",
+      "RC unavailable: DO_NOT_TRACK is set": "RC 無法使用：設了 DO_NOT_TRACK",
+      "Last try: Claude said there was not enough to compact.": "上次嘗試：Claude 表示內容不足，無法壓縮。",
+      "Last try: still compacting when the board stopped watching; it finishes in the session.": "上次嘗試：看板停止觀察時仍在壓縮，會在 session 中完成。",
+      "Last try: sent, but the compact was not seen starting.": "上次嘗試：已送出，但沒有看到壓縮開始。",
+      "Last try: nothing was sent (the screen did not match).": "上次嘗試：沒有送出任何按鍵（畫面不符）。",
+      "Last try stopped part-way: /compact may still be typed in the prompt. Clear it in the session.": "上次嘗試中途停止：輸入框裡可能還留著 /compact，請到 session 中清掉。",
+      "Queued: runs when the session is idle.": "已排入：session 閒置時執行。",
+      "Last compacted {when}": "上次壓縮：{when}",
+      "Not compacted from the board yet.": "尚未從看板壓縮過。",
+      "Compact {code}'s conversation? Claude summarizes it to free context. It runs now if the session is idle, else when it is.": "要壓縮 {code} 的對話嗎？Claude 會把它摘要以釋放 context。session 閒置就立即執行，否則等它閒置。",
+      "Yes, compact": "是，壓縮",
+      "Compact {code}": "壓縮 {code}",
+      "Compact": "壓縮",
+      "Compact for {code}: now if it is idle, else when it is.": "{code} 的壓縮：閒置就立即執行，否則等它閒置。",
       "Remote Control turns on when the session is idle": "Remote Control 會在 session 閒置時開啟",
       "Remote Control turns off when the session is idle": "Remote Control 會在 session 閒置時關閉",
       "Remote Control is on": "Remote Control 已開啟",
