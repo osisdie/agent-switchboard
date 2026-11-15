@@ -57,6 +57,15 @@ def dictionary():
     return json.loads(re.sub(r",\s*}$", "}", body.strip()))
 
 
+def demo_strings():
+    """Every string literal in enterDemo(): demo data, never translated (a header "Plan" there is
+    data, not the stage name)."""
+    src = open(PAGE_FILE, encoding="utf-8").read()
+    body = src[src.index("function enterDemo() {"):]
+    body = body[:body.index("\n  }\n")]
+    return {m.replace("\\'", "'") for m in re.findall(r"'((?:[^'\\]|\\.)*)'", body)}
+
+
 def template_re(s):
     """A dictionary string as a full-match regex: {name} matches any text."""
     parts = re.split(r"\{\w+\}", s.strip())
@@ -165,7 +174,8 @@ def main():
         check("kept after a reload", pg.evaluate("() => document.documentElement.lang") == "zh-TW")
         open_everything(pg)
         texts = collect(pg)
-        left = sorted({t for t in texts for k, rx in en_res if rx.match(t)})
+        demo = demo_strings()
+        left = sorted({t for t in texts if t not in demo for k, rx in en_res if rx.match(t)})
         check("no English UI string left in 繁體中文", not left, left[:30])
         check("headings and the header in Chinese", pg.inner_text("#h-decisions") == "決策" and pg.inner_text("#h-board") == "看板"
               and pg.inner_text("#needs-tile .t") == "待你處理", [pg.inner_text("#h-decisions"), pg.inner_text("#h-board")])
