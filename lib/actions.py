@@ -304,6 +304,13 @@ def _settle():
     _sleep("BOARD_PRESS_SETTLE", "0.4")
 
 
+def _screen_all(pane):
+    """The whole visible pane (trailing blank lines dropped), or None. What fresh_above_box counts
+    over: the trimmed last-N-lines window moves when lines below the box (the command's
+    suggestions) disappear after Enter, and would then reach an old line that was there before."""
+    return _screen(pane, 0)
+
+
 def _screen(pane, nlines):
     rc, out = _tmux("capture-pane", "-p", "-t", pane)
     if rc != 0:
@@ -311,7 +318,7 @@ def _screen(pane, nlines):
     lines = out.split("\n")
     while lines and not lines[-1].strip():
         lines.pop()
-    return lines[-nlines:]
+    return lines[-nlines:] if nlines else lines
 
 
 def _rx(c, key):
@@ -503,7 +510,8 @@ def run_action(home, cfg, row, action):
     if not _send(pane, cmd, literal=True):
         return "failed", "send-keys failed (typing the command)"
     _settle()
-    typed = _screen(pane, nlines) or []
+    typed_all = _screen_all(pane) or []
+    typed = typed_all[-nlines:]
     i, text = prompt_box(typed, c)
     if i is None or text != cmd:
         return "partial", "the prompt box does not show %s after typing; Enter not pressed (clear the prompt in the session)" % cmd
@@ -515,8 +523,8 @@ def run_action(home, cfg, row, action):
     if action == "compact":
         return _confirm_compact(row, pane, c, nlines)
     if rc_on:
-        return _confirm_rc_on(row, pane, c, nlines, typed)
-    return _disconnect(row, pane, c, nlines, typed)
+        return _confirm_rc_on(row, pane, c, nlines, typed_all)
+    return _disconnect(row, pane, c, nlines, typed_all)
 
 
 def box_visible(lines, c):
@@ -566,11 +574,11 @@ def rc_dialog(lines, c):
 
 
 def fresh_above_box(lines, before, c, key, window=4):
-    """Did the command just print KEY? Only when KEY shows on more lines of the screen than it
-    did right before Enter. A line already there (scrollback, even right above the box, or moved
-    up by the redraw) never counts; when an old one scrolls off as a new one appears, the counts
-    tie and the answer is no: the caller then reports unconfirmed, the safe side. (window: kept
-    for callers; unused.)"""
+    """Did the command just print KEY? Only when KEY shows on more lines of the whole visible
+    pane (_screen_all, for both captures) than it did right before Enter. A line already there
+    (scrollback, even right above the box, or moved up by the redraw) never counts; when an old
+    one scrolls off as a new one appears, the counts tie and the answer is no: the caller then
+    reports unconfirmed, the safe side. (window: kept for callers; unused.)"""
     rx = _rx(c, key)
 
     def count(ls):
@@ -589,8 +597,9 @@ def _confirm_rc_on(row, pane, c, nlines, before):
             return "failed", "the session ended"
         if _bridge(reg):
             return "confirmed", "Remote Control is on"
-        lines = _screen(pane, nlines) or []
-        if fresh_above_box(lines, before, c, "rc_unavailable_regex"):
+        whole = _screen_all(pane) or []
+        lines = whole[-nlines:]
+        if fresh_above_box(whole, before, c, "rc_unavailable_regex"):
             return "unavailable", "Claude does not offer /remote-control in this session (DO_NOT_TRACK set, not signed in to claude.ai, or turned off by policy)"
         kind = rc_dialog(lines, c)
         if kind == "consent":
@@ -611,14 +620,15 @@ def _disconnect(row, pane, c, nlines, before):
     label = _rx(c, "rc_disconnect_label")
     deadline = time.time() + min(secs, 6)
     while True:
-        lines = _screen(pane, nlines) or []
+        whole = _screen_all(pane) or []
+        lines = whole[-nlines:]
         kind = rc_dialog(lines, c)
         if kind == "disconnect":
             break
         if kind == "consent":
             _send(pane, "Escape")
             return "consent", "Claude asked its one-time Remote Control confirmation (Remote Control was off although the registry said on); dismissed with Escape"
-        if fresh_above_box(lines, before, c, "rc_unavailable_regex"):
+        if fresh_above_box(whole, before, c, "rc_unavailable_regex"):
             return "unavailable", "Claude does not offer /remote-control in this session"
         if time.time() >= deadline:
             return "unconfirmed", "the Remote Control dialog did not open; nothing else sent"

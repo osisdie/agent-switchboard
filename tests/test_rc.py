@@ -874,6 +874,27 @@ class Round3Test(unittest.TestCase):
         after3 = screen(above=[self.U, "a", "b", "c", "d", "❯ /remote-control"])
         self.assertFalse(actions.fresh_above_box(L(after3), L(before3), self.c, "rc_unavailable_regex"))
 
+    def test_fresh_counts_over_the_whole_pane(self):
+        # A small window: before Enter, lines below the box push an old "Unknown command" just out
+        # of the last-8-lines window; after Enter they are gone and the window reaches it. Counted
+        # over the whole visible pane, it was there before: not fresh, not "unavailable".
+        U = self.U
+        before = HEAD + [U, "  a"] + [TOP, "❯ /remote-control", RULE] + ["  s%d" % i for i in range(1, 6)]
+        after = HEAD + [U, "  a", "❯ /remote-control"] + [TOP, "❯" + NB, RULE] + ["  ⏵⏵ auto mode on"]
+        self.assertTrue(actions.fresh_above_box(after[-8:], before[-8:], self.c, "rc_unavailable_regex"))  # the old way
+        self.assertFalse(actions.fresh_above_box(after, before, self.c, "rc_unavailable_regex"))
+        with open(os.path.join(CFG, "fleet.yaml")) as fh:
+            body = fh.read().replace("session_actions:\n", "session_actions:\n  lines: 8\n")
+        with open(os.path.join(CFG, "fleet.yaml"), "w") as fh:
+            fh.write(body)
+        Live()
+        idle = "\n".join(HEAD + [U, "  a"] + [TOP, "❯" + NB, RULE] + ["  ⏵⏵ auto mode on"])
+        script([idle, "\n".join(before), "\n".join(after)])
+        rc_, out, _ = board("rc", "on", "CP")
+        self.assertEqual((rc_, sent()), (6, ["-l|--|/remote-control", "Enter"]), out)
+        self.assertIn("unconfirmed", out)
+        self.assertNotIn("unavailable", out)
+
     def test_late_dialog_is_left_alone(self):
         # A dialog that opens after rc_confirm_seconds: unconfirmed, nothing more sent; a second
         # attempt finds no prompt box and sends nothing.
