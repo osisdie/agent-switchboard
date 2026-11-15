@@ -319,10 +319,16 @@ multiSelect, options: [{label, description}]}]}` on `PreToolUse` (with `tool_use
   unchanged (same `tool_use_id` and `summary_sha256`), before it sends `Enter`. Text visible
   anywhere else (a description, scrollback) does not count: Enter outside the picker would send
   the text to the session as a prompt.
+- **Claude Code in the pane.** Before any key, the pane's `#{pane_current_command}` must match
+  `press.tui_command_regex` (default `^(claude|node)`: `claude`, `claude.exe`, `node`; empty = not
+  checked), else exit 3 (`stale`, `status_reason: "screen"`): a TUI that crashed back to a shell
+  would read the keys, the scroll key included, as readline input.
 - **A scrolled pane (exit 7).** When the last lines match neither `press.prompt_regex` /
-  `press.question_regex` but the last 4 match `press.scrolled_regex` (default
-  `[0-9]+ new messages?|ctrl\+End|↓[[:space:]]*$`: the TUI's "4 new messages (ctrl+End) ↓"), press
-  sends `press.scroll_key` (default `C-End`, scroll to the bottom; it never submits) once, logs
+  `press.question_regex` but one of the last 2 non-blank lines matches `press.scrolled_regex`
+  (default `^[[:space:]]*[0-9]+ new messages? .*ctrl\+End.*$`, a whole line: the TUI's "4 new messages (ctrl+End) ↓"; a line the session writes,
+  such as "3 new messages for you" or "see below ↓", does not match), press sends
+  `press.scroll_key` (default `C-End`, scroll to the bottom; it never submits in Claude Code's TUI)
+  once, logs
   `result: "scroll"`, waits `BOARD_PRESS_SETTLE` and captures again; every later check uses the new
   capture. If the prompt / picker is still not visible while the state still shows the same
   `tool_use_id` and `summary_sha256` waiting, it exits 7: nothing sent but the scroll key, attempt
@@ -338,8 +344,10 @@ multiSelect, options: [{label, description}]}]}` on `PreToolUse` (with `tool_use
 - **Not delivered.** A decision whose answer was recorded but never reached the session carries
   `status_reason`, a fixed code (never free text): `screen` (press refused, exit 3), `partial`
   (exit 5), `moved_on` (the collector marked it stale: the session moved on), `timeout`,
-  `not_approver` (unauthorized), `unknown_session`, `operator` (`board mark ID stale --reason
-  operator`). Relayed clears it; exit 7 removes it (pending again). board-serve passes it to the
+  `not_approver` (unauthorized), `unknown_session` (no snapshot, row, pane or hook state for the
+  session), `config` (press settings incomplete), `operator` (`board mark ID stale --reason
+  operator`). `screen` is only for what the pane shows; a hook state past the prompt is `moved_on`.
+  `board answer` clears `status_reason` and `press_note` when it records an approver's answer. Relayed clears it; exit 7 removes it (pending again). board-serve passes it to the
   page and, for a record from before the code, derives `screen` / `partial` / `not_approver` from
   the last `mark` / `unauthorized` event's reason prefix (never its text). The page's Recent
   decisions log shows such a decision (an answer, status `stale` / `timeout` / `unauthorized`) with a

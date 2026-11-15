@@ -410,9 +410,12 @@ to the Artifact or put in an alert. Turn the prompt off with `cards: {show_promp
   card at all. Every press attempt is logged to `events.jsonl`.
 
   **A scrolled pane.** When new messages arrive above an open prompt, Claude Code's TUI can stay
-  scrolled up, and its last lines show "4 new messages (ctrl+End) ↓" instead of the prompt. If those
-  lines match `press.scrolled_regex`, `board press` sends `press.scroll_key` (`C-End`, which only
-  scrolls to the bottom and never submits) once, then runs every check on a fresh capture. If no
+  scrolled up, and its last line shows "4 new messages (ctrl+End) ↓" instead of the prompt. If one
+  of the last 2 non-blank lines is that line as a whole (`press.scrolled_regex`, default
+  `^[[:space:]]*[0-9]+ new messages? .*ctrl\+End.*$`; text the session itself writes, such as "3 new messages for you" or "see below ↓", never
+  matches), and the pane runs Claude Code (`press.tui_command_regex`, default `^(claude|node)`),
+  `board press` sends `press.scroll_key` (`C-End`, which only scrolls to the bottom and never
+  submits in Claude Code's TUI) once, then runs every check on a fresh capture. If no
   prompt is visible even then, while the hook state still shows the same prompt waiting, it exits 7:
   only that key was sent, and the decision goes back to **pending** with a note, so you can answer it
   again from the board. It becomes stale only once the session has moved on. A session card whose
