@@ -52,6 +52,15 @@ def config_dir():
     return os.path.join(os.path.expanduser("~"), ".config", "agent-switchboard")
 
 
+def account_enabled(cfg):
+    """May the board show the account the sessions run on? Off with BOARD_SHOW_ACCOUNT=0 or
+    usage.show_account: false in fleet.yaml (the collector and board-serve both ask)."""
+    if os.environ.get("BOARD_SHOW_ACCOUNT", "").strip().lower() in ("0", "false", "no", "off"):
+        return False
+    usage = cfg.get("usage") if isinstance(cfg.get("usage"), dict) else {}
+    return usage.get("show_account") is not False
+
+
 def id_list(cfg, key):
     val = cfg.get(key) or []
     if not isinstance(val, list):

@@ -621,7 +621,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 <div class="wrap">
   <header class="mast" id="top">
     <div class="acct" id="acct">
-      <button class="acct-btn" id="acct-btn" type="button" aria-expanded="false" aria-controls="acct-panel" aria-label="Account, theme and API keys" data-i18n-attr="aria-label">
+      <button class="acct-btn" id="acct-btn" type="button" aria-expanded="false" aria-controls="acct-panel" aria-label="Account, theme, language and API keys" data-i18n-attr="aria-label">
         <span class="avatar" id="acct-avatar" aria-hidden="true">?</span>
       </button>
       <div class="acct-panel" id="acct-panel" role="region" aria-labelledby="acct-name" tabindex="-1" hidden>
@@ -938,6 +938,12 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     return vars ? out.replace(/\{(\w+)\}/g, (m, k) => (vars[k] == null ? '' : String(vars[k]))) : out;
   }
   const locale = () => (LANG === 'zh-TW' ? 'zh-TW' : 'en-US');
+  // Data values (a status, a level, a channel) go through the dictionary only when they are one of
+  // the values the page knows; anything else is shown as it is, never "translated" by accident.
+  function trMap(map, v) { v = str(v); return Object.prototype.hasOwnProperty.call(map, v) ? tr(map[v]) : v; }
+  function trKnown(v, known) { v = str(v); return known.includes(v) ? tr(v) : v; }
+  const LEVELS = ['info', 'warn', 'high', 'urgent'];
+  const RES_LEVELS = ['ok', 'warn', 'high', 'critical'];
   // Static markup: [data-i18n] holds its English text, [data-i18n-attr] names attributes; the
   // English is recorded on first use, so switching back and forth always starts from the key.
   function applyStatic() {
@@ -1100,6 +1106,8 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       setTimeout(() => { touch = false; }, 400);
     });
     document.addEventListener('pointerdown', (e) => { if (!pop.hidden && !(e.target instanceof Element && e.target.closest('#usage'))) hide(); });
+    // Escape closes it wherever the focus is (it may have opened on hover).
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !pop.hidden) hide(); });
   })();
 
   function switchAdvice() {
@@ -1159,7 +1167,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   function gatePill(stage, g, state) {
     const st = g ? (str(g.status) || 'pending') : state === 'skipped' ? 'skipped' : state === 'done' ? 'norecord' : 'none';
     const pill = h('span', { class: 'gate ' + st, title: (g && g.gate ? tr('Gate "{g}"', { g: str(g.gate) }) + ' · ' : '') + tr(stage.role) },
-      icon('lock', 11), h('span', { text: tr(stage.role) }), h('b', { text: '· ' + tr(GATE_LABEL[st] || st) }));
+      icon('lock', 11), h('span', { text: tr(stage.role) }), h('b', { text: '· ' + trMap(GATE_LABEL, st) }));
     if (g && st === 'pending' && g.decision_id && S.decisions.some((d) => d.id === g.decision_id && (d.status === 'pending' || d.status === 'unauthorized'))) {
       pill.append(' ', h('a', { href: '#dec-' + g.decision_id, text: tr('answer ↑') }));
     }
@@ -1493,9 +1501,9 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   function escChip(d) {
     const lvl = lc(d.escalation_level);
     if (!['warn', 'high', 'urgent'].includes(lvl)) return null;
-    const via = (Array.isArray(d.notified_via) ? d.notified_via : []).map((c) => tr(CHANNEL[lc(c)] || str(c))).filter(Boolean);
-    return h('span', { class: 'esc ' + lvl, title: tr('Escalation level: {lvl}', { lvl: tr(lvl) }) + (via.length ? tr(' · notified via {via}', { via: via.join(', ') }) : '') },
-      tr(lvl), h('span', { class: 'via', text: via.length ? tr(' · escalated → {via}', { via: via.join(', ') }) : tr(' · escalated') }));
+    const via = (Array.isArray(d.notified_via) ? d.notified_via : []).map((c) => (CHANNEL[lc(c)] ? tr(CHANNEL[lc(c)]) : str(c))).filter(Boolean);
+    return h('span', { class: 'esc ' + lvl, title: tr('Escalation level: {lvl}', { lvl: trKnown(lvl, LEVELS) }) + (via.length ? tr(' · notified via {via}', { via: via.join(', ') }) : '') },
+      trKnown(lvl, LEVELS), h('span', { class: 'via', text: via.length ? tr(' · escalated → {via}', { via: via.join(', ') }) : tr(' · escalated') }));
   }
   function askConfirm(id, choice) {
     S.confirm = { id, choice, at: Date.now() };
@@ -1570,7 +1578,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
         icon('lock', 18),
         h('strong', { text: tr('Production gate — agent stops here') }),
         h('span', { class: 'who', text: tr('release manager authorizes') }),
-        h('span', { class: 'gate ' + pgStatus }, h('b', { text: tr(pgState === 'done' && pgStatus === 'none' ? 'passed' : GATE_LABEL[pgStatus] || pgStatus) }),
+        h('span', { class: 'gate ' + pgStatus }, h('b', { text: pgState === 'done' && pgStatus === 'none' ? tr('passed') : trMap(GATE_LABEL, pgStatus) }),
           pg && pgStatus === 'pending' && pg.decision_id && S.decisions.some((d) => d.id === pg.decision_id && isOpen(d)) ? h('a', { href: '#dec-' + pg.decision_id, text: tr(' answer ↑') }) : null)),
       stageBlock(6, 'div', 'wide'));
   }
@@ -1760,7 +1768,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   const METRIC_NAMES = { mem: 'memory', swap: 'swap', load: 'load', oom: 'OOM kill' };
   function metricName(m, r) {
     const k = str(m);
-    if (!k.startsWith('disk:')) return tr(METRIC_NAMES[k] || k || 'resources');
+    if (!k.startsWith('disk:')) return k ? trMap(METRIC_NAMES, k) : tr('resources');
     const d = r && objs(r.disks).find((x) => str(x.id) === k.slice(5));
     const used = d && Array.isArray(d.labels) ? d.labels.map(str).filter(Boolean).join(', ') : '';
     return tr('disk {id}', { id: k.slice(5) }) + (used ? ' (' + used + ')' : '');
@@ -1795,7 +1803,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     if (!r) return;
     const levels = r.levels && typeof r.levels === 'object' ? r.levels : {};
     const lvl = resLvl(r.level) || 'ok';
-    const chip = $('#sys-lvl'); chip.className = 'lvl ' + lvl; chip.textContent = tr(lvl);
+    const chip = $('#sys-lvl'); chip.className = 'lvl ' + lvl; chip.textContent = trKnown(lvl, RES_LEVELS);
     chip.title = r.worst ? tr('worst: {what}', { what: metricName(r.worst, r) }) : tr('all within limits');
     const oom = $('#sys-oom');
     oom.hidden = r.oom_kills == null;
@@ -1834,7 +1842,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     }
     const meta = $('#res-meta'); meta.textContent = '';
     const lvl = resLvl(r.level) || 'ok';
-    meta.append(h('span', null, h('span', { class: 'lvl ' + lvl, text: tr(lvl) }), r.worst ? ' ' + tr('worst: {what}', { what: metricName(r.worst, r) }) : ''));
+    meta.append(h('span', null, h('span', { class: 'lvl ' + lvl, text: trKnown(lvl, RES_LEVELS) }), r.worst ? ' ' + tr('worst: {what}', { what: metricName(r.worst, r) }) : ''));
     if (ts(r.at)) meta.append(h('span', null, tr('sampled') + ' ', timeEl(r.at)));
     if (r.platform) meta.append(h('span', null, tr('on') + ' ', h('b', { text: str(r.platform) })));
     meta.append(h('span', null, h('b', { text: String(r.heavy_running || 0) }), ' ' + tr('heavy job(s) running')));
@@ -1877,7 +1885,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       const stuck = d.unresponsive === true;
       dbody.append(h('tr', null, h('td', { class: 'mono', text: str(d.id) || '?' }),
         h('td', { text: stuck ? tr('not responding') : (d.free_pct != null ? d.free_pct + '% · ' : '') + fmtMb(d.free_mb) }), h('td', { text: stuck ? '—' : fmtMb(d.total_mb) }),
-        h('td', { text: (Array.isArray(d.labels) ? d.labels.map(str).join(', ') : '') || '—' }), h('td', null, stuck ? h('span', { class: 'lvl', text: tr('skipped') }) : h('span', { class: 'lvl ' + dl, text: tr(dl) }))));
+        h('td', { text: (Array.isArray(d.labels) ? d.labels.map(str).join(', ') : '') || '—' }), h('td', null, stuck ? h('span', { class: 'lvl', text: tr('skipped') }) : h('span', { class: 'lvl ' + dl, text: trKnown(dl, RES_LEVELS) }))));
     }
     $('#disk-wrap').hidden = !dbody.children.length;
     const note = $('#res-idle-note');
@@ -1947,9 +1955,9 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     const parts = Array.isArray(c.participants) ? c.participants.map(str) : [];
     const agreed = parts.filter((p) => last.has(p) && str(last.get(p).vote) === 'agree').length;
     const st = str(c.status), ref = str(c.ref), refUrl = safeUrl(ref);
-    return h('article', { id: 'cons-' + str(c.id), class: 'ccard', 'aria-label': tr('Consensus {id}', { id: str(c.id) }) + ', ' + tr(CONS_LABEL[st] || st) },
+    return h('article', { id: 'cons-' + str(c.id), class: 'ccard', 'aria-label': tr('Consensus {id}', { id: str(c.id) }) + ', ' + trMap(CONS_LABEL, st) },
       h('div', { class: 'top' },
-        h('span', { class: 'cst ' + st.replace(/[^a-z_]/g, ''), text: tr(CONS_LABEL[st] || st || 'unknown') }),
+        h('span', { class: 'cst ' + st.replace(/[^a-z_]/g, ''), text: st ? trMap(CONS_LABEL, st) : tr('unknown') }),
         h('span', { class: 'muted' }, tr('from') + ' ', h('span', { class: 'code-chip', text: str(c.from) || '?' })),
         h('span', { class: 'muted', text: tr('{n}/{of} agreed', { n: agreed, of: parts.length }) }),
         timeEl(c.decided_at || c.created_at),
@@ -2078,7 +2086,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     const eff = N.effective_min_level || {}, floors = N.min_level || {}, chans = N.channels || {};
     const floorOpts = (t) => {
       const f = floors[t] || {};
-      const def = f.source === 'config' ? tr('default ({level}, fleet.yaml)', { level: tr(str(f.level)) }) : tr('default ({level})', { level: tr(f.source === 'prefs' ? 'remove' : 'info') });
+      const def = f.source === 'config' ? tr('default ({level}, fleet.yaml)', { level: trKnown(f.level, LEVELS) }) : tr('default ({level})', { level: tr(f.source === 'prefs' ? 'remove' : 'info') });
       return [['default', def]].concat(NLEVELS.map((l) => [l, tr(l === 'urgent' ? '{level} only' : '{level} and up', { level: tr(l) })]));
     };
     const floorVal = (t) => ((floors[t] || {}).source === 'prefs' ? str(floors[t].level) : 'default');
@@ -2089,7 +2097,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       const urgentToo = !!((m && m.include_urgent) || (all && all.include_urgent));
       const state = off ? tr('not configured') : all && !m ? tr('muted by "all"') + tr(urgentToo ? ', urgent too' : ' · urgent gets through')
         : m ? tr('muted {until}', { until: untilText(m.until) }) + tr(urgentToo ? ', urgent too' : ' · urgent gets through')
-        : tr('on · {floor}', { floor: tr((eff[c] || 'info') === 'urgent' ? '{level} only' : '{level} and up', { level: tr(eff[c] || 'info') }) });
+        : tr('on · {floor}', { floor: tr((eff[c] || 'info') === 'urgent' ? '{level} only' : '{level} and up', { level: trKnown(eff[c] || 'info', LEVELS) }) });
       rows.append(h('li', { class: 'nf-row', id: 'nf-' + c },
         h('span', { class: 'nf-name', text: tr(name) }),
         h('span', { class: 'nf-state' + (off ? ' off' : m || all ? ' muted' : ''), text: state }),
@@ -2113,7 +2121,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       h('div', { class: 'nf-line' }, h('label', { class: 'chk grow' }, red, tr('Reduce push while I\'m watching the board')),
         levelSelect('nf-pres-level', str(P.min_level) || 'high', [['warn', tr('push warn and up')], ['high', tr('push high and up')], ['urgent', tr('push urgent only')]],
           (v) => setNotify({ op: 'presence', reduce: true, level: v }), dis || P.reduce === false, tr('While watching: push from'))),
-      h('p', { class: 'note', id: 'notif-watching', text: watching ? tr('You are watching now: push below {level} is held while this page stays open, visible and in use ({min} min idle ends it). Escalation timers keep running.', { level: tr(str(P.min_level || 'high')), min: Math.round((P.idle_seconds || 900) / 60) })
+      h('p', { class: 'note', id: 'notif-watching', text: watching ? tr('You are watching now: push below {level} is held while this page stays open, visible and in use ({min} min idle ends it). Escalation timers keep running.', { level: trKnown(P.min_level || 'high', LEVELS), min: Math.round((P.idle_seconds || 900) / 60) })
         : tr('Counts only while a board page is open, visible and in use. Escalation timers keep running, so anything still open escalates normally once you stop watching.') })));
     box.append(h('p', { class: 'bt', text: tr('Urgent alerts (a production gate, a usage limit hit, anything left unanswered long enough to escalate to urgent) break through mutes and presence unless a mute includes urgent. The board itself always shows everything. Held pushes are logged; nothing is replayed when a mute ends, and an alert still open goes out at its next escalation step.') }));
   }
@@ -2143,7 +2151,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     adapter.setNotify(body).then((r) => {
       if (r && r.notify && typeof r.notify === 'object') S.notify = r.notify;
       toast(body.op === 'mute' ? tr('{ch} muted.', { ch: chanName(body.channel) }) : body.op === 'unmute' ? (body.channel === 'all' ? tr('All push unmuted.') : tr('{ch} unmuted.', { ch: chanName(body.channel) }))
-        : body.op === 'level' ? tr('Saved: {ch} delivers {what}', { ch: chanName(body.channel), what: body.level === 'default' ? tr('its default levels.') : tr(body.level === 'urgent' ? '{level} only.' : '{level} and up.', { level: tr(body.level) }) })
+        : body.op === 'level' ? tr('Saved: {ch} delivers {what}', { ch: chanName(body.channel), what: body.level === 'default' ? tr('its default levels.') : tr(body.level === 'urgent' ? '{level} only.' : '{level} and up.', { level: trKnown(body.level, LEVELS) }) })
         : tr(body.reduce ? 'Push is reduced while you watch the board.' : 'Push is no longer reduced while you watch.'));
     }).catch((e) => handleWriteError(e)).finally(() => { S.busy.delete('notify'); renderAll(); });
   }
@@ -2304,7 +2312,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
         let sent = false;
         if (sendP) { try { await sendP; sent = true; } catch (e) { sent = false; } }
         // board-serve presses permission prompts itself: report what happened.
-        if (isLocal() && res && res.status === 'relayed') toast(tr('Pressed {key} in {who}.', { key: tr(answer), who: str(d.from) || tr('the session') }));
+        if (isLocal() && res && res.status === 'relayed') toast(tr('Pressed {key} in {who}.', { key: trKnown(answer, ['allow', 'deny']), who: str(d.from) || tr('the session') }));
         else toast(tr('Answer saved') + ' · ' + (appr === false ? tr('not relayed: you are not an approver.') : offline ? tr('queued until the operator returns.') : sent ? tr('Sent to operator.') : queuedText()));
       }
       renderDecisions();
@@ -2818,7 +2826,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     $('#acct-via').textContent = info.via;
     const roles = $('#acct-roles');
     roles.textContent = '';
-    for (const r of info.roles || []) roles.append(h('li', { class: r, text: tr(ROLE_LABEL[r] || r) }));
+    for (const r of info.roles || []) roles.append(h('li', { class: r, text: trMap(ROLE_LABEL, r) }));
     if (!info.roles) roles.append(h('li', { text: tr('Roles not known yet') }));
     renderKeys(info.keys);
     $('#acct-out').hidden = !info.access;
@@ -3558,7 +3566,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       "My API keys": "我的 API 金鑰",
       "API keys are not enabled on this board.": "這個看板沒有啟用 API 金鑰。",
       "Sign out of Cloudflare Access": "登出 Cloudflare Access",
-      "Account, theme and API keys": "帳號、主題和 API 金鑰",
+      "Account, theme, language and API keys": "帳號、主題、語言和 API 金鑰",
       "Your roles on this board": "你在這個看板的角色",
       "Sections": "區段",
       "Decisions": "決策",

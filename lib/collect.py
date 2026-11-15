@@ -266,13 +266,6 @@ def card_details(rows, home, now, titles=None, hosts=None):
         r["branch"] = (g or {}).get("branch")
 
 
-def account_enabled(cfg):
-    if os.environ.get("BOARD_SHOW_ACCOUNT", "").strip().lower() in ("0", "false", "no", "off"):
-        return False
-    usage = cfg.get("usage") if isinstance(cfg.get("usage"), dict) else {}
-    return usage.get("show_account") is not False
-
-
 def claude_json_path():
     return os.environ.get("CLAUDE_JSON") or os.path.join(os.path.expanduser("~"), ".claude.json")
 
@@ -282,7 +275,7 @@ def account_info(cfg, home):
     ~/.claude.json oauthAccount.emailAddress / organizationName, nothing else. Re-read only when the
     source changed. Disabled: the file is removed. Returns the record or None."""
     path = os.path.join(home, "account.json")
-    if not account_enabled(cfg):
+    if not fleet.account_enabled(cfg):
         try:
             os.unlink(path)
         except OSError:

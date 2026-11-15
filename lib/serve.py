@@ -731,7 +731,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def account_for(self, ident, cfg):
         """The Claude account the sessions run on: {email, org} for approvers, {hidden: true} for
         everyone else, None when it is not known or switched off (collector, account.json)."""
-        if os.environ.get("BOARD_SHOW_ACCOUNT", "").strip().lower() in ("0", "false", "no", "off"):
+        if not fleet.account_enabled(cfg):  # also when a stale account.json is still there
             return None
         rec = read_json(os.path.join(self.server.home, "account.json"))
         if not isinstance(rec, dict) or not rec.get("email"):

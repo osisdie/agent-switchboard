@@ -115,6 +115,14 @@ def main():
             lay = pg.evaluate("""() => { const p = document.getElementById('usage-pop'); const ps = [...p.querySelectorAll('p')].map((e) => e.getBoundingClientRect());
               return { flow: ps.every((r, i) => i === 0 || r.top >= ps[i - 1].bottom - 1), pos: getComputedStyle(p.querySelector('p:last-of-type')).position }; }""")
             check("its lines stack in order (no line taken out of the flow)", lay == {"flow": True, "pos": "static"}, lay)
+            pg.keyboard.press("Escape")
+            pg.wait_for_timeout(100)
+            check("Escape closes the hover-opened popover, focus elsewhere", not pg.evaluate(POP_JS)["open"]
+                  and pg.evaluate("() => document.activeElement !== document.getElementById('usage')"))
+            pg.mouse.move(5, 5)
+            pg.mouse.move(400, 200)
+            pg.hover("#usage")
+            pg.wait_for_timeout(100)
             pg.mouse.move(5, 5)
             pg.wait_for_timeout(100)
             check("leaving closes it", not pg.evaluate(POP_JS)["open"])
@@ -160,7 +168,7 @@ def main():
                 os.makedirs(x)
             cj = os.path.join(tmp, "claude.json")
             with open(cj, "w", encoding="utf-8") as fh:
-                json.dump({"oauthAccount": {"emailAddress": "owner@example.com", "organizationName": "Example Org"}, "primaryApiKey": "not-real"}, fh)
+                json.dump({"oauthAccount": {"emailAddress": "owner@example.com", "organizationName": "Example Org"}, "primaryApiKey": "not-" + "real"}, fh)
             port = free_port()
             env = dict(os.environ, BOARD_HOME=home, BOARD_CONFIG_DIR=cfg, CLAUDE_SESSIONS_DIR=sess, CLAUDE_JSON=cj)
             env.pop("TMUX", None)

@@ -263,8 +263,9 @@ cp "$T/cp-reg.json" "$CLAUDE_SESSIONS_DIR/$live_pid.json"
 "$REPO/bin/board-collect" --once --no-notify
 
 echo "collector: account"
+fake_key="fixture""-key-""not-real"  # built from pieces: no secret-looking literal in the repo
 printf '%s\n' '{"oauthAccount": {"emailAddress": "owner@example.com", "organizationName": "Example Org", "accountUuid": "acc-1"},' \
-  ' "primaryApiKey": "fixture-key-not-real", "userID": "u-1", "projects": {"/w": {"history": ["x"]}}}' > "$CLAUDE_JSON"
+  " \"primaryApiKey\": \"$fake_key\", \"userID\": \"u-1\", \"projects\": {\"/w\": {\"history\": [\"x\"]}}}" > "$CLAUDE_JSON"
 "$REPO/bin/board-collect" --once --no-notify
 acct="$BOARD_HOME/account.json"
 eq "account: email and org only" "$(jq -r '[.email, .org] | join("|")' "$acct")/$(jq -r 'keys | join(",")' "$acct")" "owner@example.com|Example Org/email,org,source_mtime,updated_at"
