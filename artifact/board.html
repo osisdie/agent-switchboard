@@ -280,6 +280,8 @@ dialog.notif { width: min(720px, calc(100vw - 24px)); }
 /* Pane questions: an AskUserQuestion picker waiting in a session (source "pane"). */
 .panecard .pq-asks { color: var(--muted); font-weight: 600; margin-right: 4px; }
 .panecard .pq-short { color: var(--muted); font-weight: 500; font-size: 13px; }
+.panecard .pq-opt.picked { border-color: var(--cord); background: var(--cord); color: var(--cord-ink); }
+.panecard .pq-opt.picked small { color: inherit; opacity: .85; }
 .panecard .pq-q { margin: 0 0 8px; }
 .panecard .pq-head { font-family: var(--f-mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
 .panecard .pq-opts { display: grid; gap: 6px; margin: 4px 0 8px; padding: 0; list-style: none; }
@@ -1522,6 +1524,11 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   function buildPaneQuestion(d) {
     const qs = (Array.isArray(d.questions) ? d.questions : []).filter((q) => q && typeof q === 'object');
     const pressable = d.pressable === true && qs.length === 1 && !qs[0].multiSelect;
+    // A form of several single-select questions: one option per question, sent together. Pressed by
+    // board-serve question by question; the Artifact board has no such relay, so it stays read-only.
+    const formOk = d.pressable === true && qs.length > 1 && qs.every((q) => !q.multiSelect);
+    const multi = formOk && (isLocal() || S.demo);
+    const picks = Array.isArray(S.drafts[d.id + ':picks']) ? S.drafts[d.id + ':picks'] : qs.map(() => null);
     const busy = S.busy.has(d.id), offline = operatorOffline(), appr = approverState();
     const who = str(d.from) || tr('A session');
     const card = h('article', { id: 'dec-' + d.id, class: 'dcard question panecard' + (offline ? ' queued' : ''), 'aria-label': tr('Question from {who}', { who }) });
@@ -1533,6 +1540,9 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       escChip(d),
       timeEl(d.created_at)));
     const live = pressable && !busy && canAnswer();
+    const liveMulti = multi && !busy && canAnswer();
+    let sendMulti = null;
+    const pickedAll = () => picks.length === qs.length && picks.every((x) => Number.isInteger(x));
     const list = qs.length ? qs : [{ question: str(d.question) || tr('Question'), options: [] }];
     // The hook clips a long question (the picker in the session shows it whole); say so.
     // Only the question text itself: a clipped header alone is not marked.
@@ -1545,7 +1555,26 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       const box = h('section', { class: 'pq-q', 'aria-label': tr('Question {n}', { n: qi + 1 }) });
       if (q.header) box.append(h('div', { class: 'pq-head', text: str(q.header) + (q.multiSelect ? ' · ' + tr('choose any') : '') }));
       if (list.length > 1) box.append(h('p', { class: 'ctx' }, str(q.question), shortNote(q)));
-      if (live) {
+      if (liveMulti) {
+        // Toggle buttons, one pick per question; kept in the draft so a re-render keeps them.
+        const group = h('div', { class: 'pq-opts', role: 'group', 'aria-label': tr('Options for question {n}', { n: qi + 1 }) });
+        opts.forEach((o, i) => {
+          const b = h('button', { class: 'btn option pq-opt' + (picks[qi] === i + 1 ? ' picked' : ''), type: 'button',
+            'aria-pressed': picks[qi] === i + 1 ? 'true' : 'false', dataset: { q: String(qi + 1), option: String(i + 1) },
+            onclick: () => {
+              picks[qi] = i + 1;
+              S.drafts[d.id + ':picks'] = picks.slice();
+              for (const x of group.querySelectorAll('.pq-opt')) {
+                const on = x === b;
+                x.classList.toggle('picked', on); x.setAttribute('aria-pressed', on ? 'true' : 'false');
+              }
+              if (sendMulti) sendMulti.disabled = !pickedAll();
+            } },
+            h('span', { text: (i + 1) + '. ' + str(o.label) }), o.description ? h('small', { text: str(o.description) }) : null);
+          group.append(b);
+        });
+        box.append(group);
+      } else if (live) {
         box.append(h('div', { class: 'pq-opts', role: 'group', 'aria-label': tr('Options') },
           opts.map((o, i) => h('button', { class: 'btn option pq-opt', type: 'button', dataset: { option: String(i + 1) },
             onclick: () => answerDecision(d, str(o.label), i + 1) },
@@ -1559,8 +1588,21 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     if (d.status === 'unauthorized') {
       card.append(h('p', { class: 'note unauth', text: tr('Answered by someone who is not an approver, so it was not sent. An approver can still answer.') }));
     }
-    if (!pressable) {
-      const why = tr(qs.length > 1 ? 'multi-question form' : qs.some((q) => q.multiSelect) ? 'multi-select' : 'shown only in part here');
+    if (liveMulti) {
+      if (appr === false) card.append(h('p', { class: 'note noappr', text: tr('You are not an approver — your answer won\'t be sent.') }));
+      sendMulti = h('button', { class: 'btn primary', type: 'button', disabled: !pickedAll(), dataset: { focus: 'send-form' },
+        onclick: () => {
+          if (!pickedAll()) return;
+          const text = qs.map((q, i) => (str(q.header).trim() || 'Q' + (i + 1)) + ': ' + str((q.options || [])[picks[i] - 1] && q.options[picks[i] - 1].label)).join(' · ');
+          answerDecision(d, text, null, picks.slice());
+        }, text: tr('Send answers') });
+      card.append(h('div', { class: 'free' }, h('span', { class: 'help', text: tr('Pick one option for each question, then send them together.') }), sendMulti));
+    } else if (multi && busy) {
+      card.append(h('p', { class: 'saving', text: tr('Sending your answer…') }));
+    } else if (formOk && !multi) {
+      card.append(h('p', { class: 'note queue', text: tr('Answer on the self-hosted board or in the session (multi-question form).') }));
+    } else if (!pressable && !formOk) {
+      const why = tr(qs.length > 1 ? (qs.some((q) => q.multiSelect) ? 'multi-select' : 'multi-question form') : qs.some((q) => q.multiSelect) ? 'multi-select' : 'shown only in part here');
       card.append(h('p', { class: 'note queue', text: tr('Answer in the session ({why}).', { why }) }));
     } else if (busy) {
       card.append(h('p', { class: 'saving', text: tr('Sending your answer…') }));
@@ -1575,10 +1617,11 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       card.append(h('div', { class: 'free' }, input, h('button', { class: 'btn primary', type: 'button', onclick: submit, text: tr('Send') })));
     }
     const sess = findSession(d.from);
-    const link = sessionLink(d.from, tr(pressable ? 'Open session' : 'Answer in session'));
+    const link = sessionLink(d.from, tr(pressable || multi ? 'Open session' : 'Answer in session'));
     const tmux = !link && sess && sess.tmux ? h('span', { class: 'mono', text: 'tmux ' + str(sess.tmux) }) : null;
     card.append(h('div', { class: 'dfoot' },
-      h('span', { text: tr(pressable ? (isLocal() ? 'Your choice is picked in {who}\'s question right away.' : 'Your choice is picked in {who}\'s question by the operator.') : 'This question waits in {who}\'s session.', { who }) }),
+      h('span', { text: tr(multi ? 'Your choices are picked in {who}\'s form one question at a time, then submitted.'
+        : pressable ? (isLocal() ? 'Your choice is picked in {who}\'s question right away.' : 'Your choice is picked in {who}\'s question by the operator.') : 'This question waits in {who}\'s session.', { who }) }),
       link || tmux));
     return card;
   }
@@ -2962,18 +3005,18 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 
   // Called synchronously from a click / key press. Nothing is awaited before
   // room.sendToClaudeSession so the viewer's gesture still counts.
-  function answerDecision(d, answer, option) {
+  function answerDecision(d, answer, option, options) {
     if (!canAnswer()) return;
     if (S.demo) {
       const i = S.decisions.findIndex((x) => x.id === d.id);
       if (i >= 0) S.decisions[i] = Object.assign({}, d, { status: 'answered', answer, answered_by: S.me, answered_at: Date.now() });
-      S.confirm = null; delete S.drafts[d.id];
+      S.confirm = null; delete S.drafts[d.id]; delete S.drafts[d.id + ':picks'];
       renderAll(); toast(tr('Demo: answer shown on this page only.') + ' ' + relayNote(true));
       return;
     }
     const offline = operatorOffline(), appr = approverState();
     let writeP;
-    try { writeP = adapter.answer(d, answer, option); } catch (e) { writeP = Promise.reject(e); }
+    try { writeP = adapter.answer(d, answer, option, options); } catch (e) { writeP = Promise.reject(e); }
     // Nothing to ping when the operator is down or the answer will not be relayed.
     const sendP = offline || appr === false ? null : adapter.fastPath('decision', d.id);
     S.busy.add(d.id); S.confirm = null;
@@ -2984,11 +3027,12 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       try { res = await writeP; } catch (e) { ok = false; handleWriteError(e, !S.decisions.some((x) => x.id === d.id && isOpen(x))); }
       S.busy.delete(d.id);
       if (ok) {
-        delete S.drafts[d.id];
+        delete S.drafts[d.id]; delete S.drafts[d.id + ':picks'];
         let sent = false;
         if (sendP) { try { await sendP; sent = true; } catch (e) { sent = false; } }
         // board-serve presses permission prompts itself: report what happened.
-        if (isLocal() && res && res.status === 'relayed') toast(tr('Pressed {key} in {who}.', { key: trKnown(answer, ['allow', 'deny']), who: str(d.from) || tr('the session') }));
+        if (isLocal() && res && res.status === 'relayed' && options) toast(tr('Answers picked and submitted in {who}.', { who: str(d.from) || tr('the session') }));
+        else if (isLocal() && res && res.status === 'relayed') toast(tr('Pressed {key} in {who}.', { key: trKnown(answer, ['allow', 'deny']), who: str(d.from) || tr('the session') }));
         else toast(tr('Answer saved') + ' · ' + (appr === false ? tr('not relayed: you are not an approver.') : offline ? tr('queued until the operator returns.') : sent ? tr('Sent to operator.') : queuedText()));
       }
       renderDecisions();
@@ -3342,7 +3386,10 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
           else if (S.mode === 'live' && !S.feedError) { S.feedError = tr('Reconnecting to the board server…'); renderBanners(); }
         };
       },
-      answer(d, answer, option) { return post('/api/decisions/' + encodeURIComponent(d.id) + '/answer', option ? { answer, option } : { answer }); },
+      // A form of several questions sends only its option numbers: board-serve composes the answer.
+      answer(d, answer, option, options) {
+        return post('/api/decisions/' + encodeURIComponent(d.id) + '/answer', options ? { options } : option ? { answer, option } : { answer });
+      },
       sendMessage(ids, targets, body) { return Promise.all(targets.map((to) => post('/api/messages', { to, body }))); },
       // Approvers only, after the second (confirm) click: a message the secret guard held.
       releaseMessage(id) { return post('/api/messages/' + encodeURIComponent(id) + '/release', { confirm: 'release' }); },
@@ -4429,6 +4476,12 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       "Waiting: plan approval": "等待中：計畫核可",
       "+{n} more": "還有 {n} 個",
       "no sessions": "沒有 session",
+      "Options for question {n}": "問題 {n} 的選項",
+      "Send answers": "送出回答",
+      "Pick one option for each question, then send them together.": "每一題選一個選項，再一起送出。",
+      "Answer on the self-hosted board or in the session (multi-question form).": "請在自架看板或 session 中回答（多題表單）。",
+      "Your choices are picked in {who}'s form one question at a time, then submitted.": "你的選擇會在 {who} 的表單中逐題選取，然後送出。",
+      "Answers picked and submitted in {who}.": "已在 {who} 選取並送出回答。",
     };
   }
 })();
