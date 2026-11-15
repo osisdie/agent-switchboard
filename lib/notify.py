@@ -870,6 +870,156 @@ def _sync_usage(data, usage, cfg, now):
     return new
 
 
+# ------------------------------------------------------------------ resources and operator (J6)
+# resources.json (lib/resources.py) and operator.json -> res:* and operator:stale alerts, opened
+# and auto-resolved here on every tick (the way limit: is). docs/contract.md, "Resources".
+
+def _res_lib():
+    import resources  # noqa: WPS433 (lazy: only the tick needs it)
+    return resources
+
+
+def _fmt_mb(v):
+    if v is None:
+        return "?"
+    return "%.1f GB" % (v / 1024.0) if v >= 1024 else "%d MB" % v
+
+
+def _reclaim_hint(idle):
+    """One sentence naming idle teammates by session, or "" when there are none."""
+    if not idle:
+        return ""
+    parts = []
+    for code, tms in idle:
+        parts.append("%s %d idle (%s)" % (code or "orphaned", len(tms), _fmt_mb(sum(t.get("rss_mb") or 0 for t in tms))))
+    return "Reclaim idle teammates first: %s." % ", ".join(parts)
+
+
+def _largest(res, n=3):
+    rows = []
+    for s in res.get("sessions") or []:
+        for c in s.get("children") or []:
+            if c.get("heavy"):
+                rows.append((c.get("rss_mb") or 0, "%s %s %s" % (s.get("code"), c.get("comm"), _fmt_mb(c.get("rss_mb")))))
+    rows.sort(key=lambda r: -r[0])
+    return ("Largest: %s." % ", ".join(r[1] for r in rows[:n])) if rows else ""
+
+
+def resource_alerts(res, rcfg=None):
+    """Alert dicts for a resources.json document (empty when disabled or missing)."""
+    out = []
+    if not isinstance(res, dict) or res.get("enabled") is False:
+        return out
+    R = _res_lib()
+    levels = res.get("levels") if isinstance(res.get("levels"), dict) else {}
+    idle = R.idle_teammates(res)
+    mem_rank = max(R.LEVELS.index(levels.get(k)) if levels.get(k) in R.LEVELS else 0 for k in ("mem", "swap", "oom"))
+    hint = _reclaim_hint(idle)
+    m, sw = res.get("mem") or {}, res.get("swap") or {}
+    for metric in sorted(levels):
+        lvl = levels[metric]
+        base = metric.split(":", 1)[0]
+        if base not in ("mem", "swap", "disk") or lvl not in ("warn", "high", "critical"):
+            continue
+        if base == "mem":
+            title = "Memory %s: %s%% available (%s of %s)" % (lvl, m.get("available_pct"), _fmt_mb(m.get("available_mb")),
+                                                             _fmt_mb(m.get("total_mb")))
+            if m.get("psi_some_avg60"):
+                title += ", pressure %.0f" % m["psi_some_avg60"]
+        elif base == "swap":
+            title = "Swap %s: %s%% used of %s" % (lvl, sw.get("used_pct"), _fmt_mb(sw.get("total_mb")))
+        else:
+            d = next((x for x in res.get("disks") or [] if "disk:%s" % x.get("mount") == metric), {})
+            title = "Disk %s %s: %s%% free (%s)" % (metric[5:], lvl, d.get("free_pct"), _fmt_mb(d.get("free_mb")))
+        body = " ".join(x for x in ((hint if base != "disk" else ""), _largest(res) if base != "disk" else "") if x)
+        out.append({"level": "warn" if lvl == "warn" else "high", "key": "res:%s" % metric, "kind": "resources",
+                    "escalate": False, "repeat": True, "title": title, "body": body})
+    if res.get("oom_recent") and isinstance(res.get("oom_kills"), int):
+        out.append({"level": "high", "key": "res:oom:%d" % res["oom_kills"], "kind": "resources", "escalate": False,
+                    "repeat": False, "title": "OOM kill: the kernel killed a process (%d so far)" % res["oom_kills"],
+                    "body": " ".join(x for x in ("A test run or browser may have died; check the sessions.", hint,
+                                                 _largest(res)) if x)})
+    mins = int(float(res.get("teammate_idle_minutes") or (rcfg or {}).get("teammate_idle_minutes") or 30))
+    for code, tms in idle:
+        rss = _fmt_mb(sum(t.get("rss_mb") or 0 for t in tms))
+        names = ", ".join("%s (%s)" % (t.get("name"), _fmt_mb(t.get("rss_mb"))) for t in tms[:6])
+        if code:
+            key, title = "res:idle-teammates:%s" % code, "%s has %d teammate(s) idle > %d min (%s)" % (code, len(tms), mins, rss)
+            body = "%s. The board never stops processes: ask %s to stop the teammates it no longer needs." % (names, code)
+        else:
+            key, title = "res:orphan-teammates", "%d orphaned teammate(s) idle > %d min (%s)" % (len(tms), mins, rss)
+            body = "%s. Their parent session is gone; close them from their tmux pane if they are done." % names
+        out.append({"level": "warn" if mem_rank >= 1 else "info", "key": key, "kind": "resources", "escalate": False,
+                    "repeat": False, "title": title, "body": body})
+    return out
+
+
+def operator_alert(health):
+    return {"level": "high", "key": "operator:stale", "kind": "operator", "escalate": True, "repeat": True,
+            "title": "Board operator is not running — %d item(s) waiting" % health.get("pending", 0),
+            "body": "%s. Restart the operator session (prompts/board-operator.md); answers queue until it is back."
+                    % "; ".join(health.get("reasons") or ["no heartbeat"])}
+
+
+def _pending_count(snap, h):
+    """Decisions waiting or answered-but-not-relayed, plus new messages: what the operator relays."""
+    n = sum(1 for d in (snap or {}).get("decisions") or []
+            if isinstance(d, dict) and d.get("status") in ("pending", "answered"))
+    mdir = os.path.join(h, "messages")
+    try:
+        names = [f for f in os.listdir(mdir) if f.endswith(".json")]
+    except OSError:
+        names = []
+    for f in names:
+        m = read_json(os.path.join(mdir, f))
+        if isinstance(m, dict) and m.get("status") == "new":
+            n += 1
+    return n
+
+
+def _sync_resources(data, snap, now, fcfg=None):
+    """Open, raise and resolve res:* and operator:stale. Returns new keys. A failure here never
+    stops the rest of the tick."""
+    try:
+        return _sync_resources_now(data, snap, now, fcfg)
+    except Exception as exc:  # noqa: BLE001
+        log_event({"ts": now, "type": "alert", "key": "res:*", "channel": None, "level": None, "ok": False,
+                   "error": "resources sync: %s: %s" % (type(exc).__name__, exc)})
+        return []
+
+
+def _sync_resources_now(data, snap, now, fcfg=None):
+    R = _res_lib()
+    h = home()
+    fcfg = fcfg if fcfg is not None else fleet.load_fleet()
+    rcfg = R.settings(fcfg)
+    res = read_json(os.path.join(h, "resources.json"))
+    fresh = isinstance(res, dict) and now - int(res.get("at") or 0) <= max(120, 4 * rcfg["interval"]) * 1000
+    alerts = resource_alerts(res, rcfg) if fresh else []
+    health = R.operator_health(read_json(os.path.join(h, "operator.json")), res, rcfg, _pending_count(snap, h), now)
+    if health["stale"]:
+        alerts.append(operator_alert(health))
+    want = {a["key"]: a for a in alerts}
+    for key, e in data.items():
+        if e.get("resolved") or key in want:
+            continue
+        if key == "operator:stale" or (key.startswith("res:") and fresh):
+            e["resolved"] = True
+            if not e.get("acked_at"):
+                e["acked_at"] = now
+                e["acked_by"] = "auto"
+    new = []
+    for a in alerts:
+        e = data.get(a["key"])
+        if e is None or e.get("resolved") or (e.get("acked_at") and rank(a["level"]) > rank(e.get("level"))):
+            # A repeating alert keeps its send times across episodes (no flapping re-sends).
+            data[a["key"]] = _open_episode(e if a.get("repeat") and e else None, a, now)
+            new.append(a["key"])
+        elif rank(a["level"]) > rank(e.get("level")):
+            e.update({"level": a["level"], "title": a["title"], "body": a["body"], "last_at": now})
+    return new
+
+
 def baseline(now=None, cfg=None):
     """Treat every condition open right now as already known: open alerts for them (as tick()
     would) and ack them with acked_by="baseline", without delivering anything. Only conditions
@@ -886,6 +1036,7 @@ def baseline(now=None, cfg=None):
             if isinstance(snap, dict):
                 _sync_snapshot(st.data, snap, now)
             _sync_usage(st.data, usage, cfg, now)
+            _sync_resources(st.data, snap, now)
             for key, e in st.data.items():
                 if not e.get("acked_at") and not e.get("resolved"):
                     e["acked_at"] = now
@@ -920,6 +1071,7 @@ def tick(now=None, env=None, cfg=None):
             if isinstance(snap, dict):
                 _sync_snapshot(st.data, snap, now)
             _sync_usage(st.data, usage, cfg, now)
+            _sync_resources(st.data, snap, now)
             for key, e in st.data.items():
                 if e.get("acked_at") or e.get("resolved"):
                     continue
