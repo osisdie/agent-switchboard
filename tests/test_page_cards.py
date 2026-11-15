@@ -58,7 +58,11 @@ CARD_JS = """(code) => {
     inCard: !!p && card.contains(p), chip: txt('.schip'), title: txt('.stitle'), where: txt('.swhere'), now: txt('.snow'),
     dt: [...card.querySelectorAll('.sdetail dt')].map((e) => e.textContent),
     pending: [...card.querySelectorAll('.sdetail dd a[href^="#dec-"]')].map((a) => a.getAttribute('href')),
-    running: [...card.querySelectorAll('.sdetail dd li .tool')].map((e) => e.textContent),
+    running: (() => { const dt = [...card.querySelectorAll('.sdetail dt')].find((e) => e.textContent === 'Running'); return dt ? [...dt.nextElementSibling.querySelectorAll('li .tool')].map((e) => e.textContent) : []; })(),
+    done: [...card.querySelectorAll('.sdetail ul.done li')].map((e) => [e.querySelector('.tool').textContent, !e.classList.contains('failed')]),
+    teammates: [...card.querySelectorAll('.sdetail ul.tms-list li')].map((e) => [e.querySelector('.tool').textContent, e.querySelector('.tmt').textContent]),
+    secs: [...card.querySelectorAll('.sd-sec')].map((e) => e.dataset.sec),
+    meta: txt('.smeta'), badge: txt('.sbadge'), says: txt('.sdetail q.says'),
     tmux: (() => { const dt = [...card.querySelectorAll('.sdetail dt')].find((e) => e.textContent === 'tmux'); return dt ? dt.nextElementSibling.textContent : null; })(),
     remote: !!card.querySelector('.sdetail a.linkout'),
     note: txt('.sdetail .note'), focused: document.activeElement === b,
@@ -129,6 +133,9 @@ def main():
                   and c["now"].startswith("Waiting: permission for Bash"), c)
             d = card(pg, "DOCS")
             check("collapsed: a working card says what is running", d["now"] == "Running Edit: …/configuration.md", d)
+            check("collapsed: teammates, ctx and cost, time in state", d["meta"] == "2 teammates · ctx 34% · $2.10 · for 22m", d["meta"])
+            check("collapsed: a needs-you badge with the count", c["badge"] == "2 for you" and d["badge"] is None, (c["badge"], d["badge"]))
+            check("collapsed: no meta line without card extras", card(pg, "WEB")["meta"] is None, card(pg, "WEB")["meta"])
             check("collapsed: a Remote Control icon link beside the toggle, not inside it",
                   c["rc"] == ["#demo-session-api", "Open API in Remote Control", True], c["rc"])
             check("  no link without a Remote Control URL", card(pg, "DOCS")["rc"] is None, card(pg, "DOCS")["rc"])
@@ -139,8 +146,13 @@ def main():
             c = card(pg, "API")
             check("click expands it", c["expanded"] == "true" and c["panelOpen"], c)
             check("detail: task, now, both pending decisions, running, tmux, session link",
-                  c["dt"][:3] == ["Task", "Now", "Pending"] and c["pending"] == ["#dec-d-1-demo", "#dec-d-5-demo"] and c["running"] == ["Bash"]
+                  c["dt"][:3] == ["Task", "Now", "In state"] and c["pending"] == ["#dec-d-1-demo", "#dec-d-5-demo"] and c["running"] == ["Bash"]
                   and c["tmux"] == "API:@1.%3" and c["remote"], c)
+            check("detail: sections in order", c["secs"] == ["doing", "recent", "meter", "branch", "pending", "where"], c["secs"])
+            check("detail: what it says, the prompt, recent tools newest first",
+                  c["says"] == "The migration is ready; asking before it runs against staging."
+                  and c["done"] == [["Edit", True], ["Bash", True]], c)
+            check("detail: branch and meter rows", all(x in c["dt"] for x in ("Vs base", "Last commit", "Usage", "Waiting")), c["dt"])
             check("the toggle keeps focus after the re-render", c["focused"], c)
             check("expanded card fits the phone screen, no sideways scroll", c["right"] <= c["vw"] and c["scrollW"] <= c["vw"], c)
             pg.click('article[aria-label="Session API"] .sdetail a[href="#dec-d-1-demo"]')
@@ -152,6 +164,9 @@ def main():
             d = card(pg, "DOCS")
             check("Enter expands, focus stays on the toggle", d["expanded"] == "true" and d["panelOpen"] and d["focused"], d)
             check("  running tools listed", d["running"] == ["Read", "Edit"], d)
+            check("  teammates with their tasks", d["teammates"] == [["writer", "Draft the configuration chapter"], ["checker", "Check every code sample builds"]], d["teammates"])
+            check("  a failed tool is marked", d["done"] == [["Read", True], ["Bash", False]], d["done"])
+            check("  sections", d["secs"] == ["doing", "recent", "teammates", "meter", "branch", "where"], d["secs"])
             pg.keyboard.press("Space")
             pg.wait_for_timeout(150)
             d = card(pg, "DOCS")
@@ -197,6 +212,11 @@ def main():
                 os.replace(os.path.join(home, "snapshot.json.tmp"), os.path.join(home, "snapshot.json"))
 
             write_snap("First title")
+            # Card extras as the collector writes them (cards.json); "doing" is approver-only.
+            with open(os.path.join(home, "cards.json"), "w", encoding="utf-8") as fh:
+                json.dump({"sessions": {"CP": {"state_since": now - 60000, "doing": "Running the card tests now.", "prompt": "Ship it",
+                                               "teammates": [{"name": "dev", "title": "Card fields", "busy": True, "idle": False, "idle_s": 1, "rss_mb": 300}],
+                                               "meter": {"ctx_pct": 40, "cost_usd": 1.5, "model": "M", "at": now}, "done": [], "branch": None}}}, fh)
             # Codes that a plain character swap would map to one DOM id.
             snap_path = os.path.join(home, "snapshot.json")
             doc = json.load(open(snap_path, encoding="utf-8"))
@@ -231,6 +251,16 @@ def main():
             c = card(pg, "CP")
             check("a live update keeps the card open and the focus on its toggle", c["expanded"] == "true" and c["panelOpen"] and c["focused"], c)
             check("the cwd never reaches the page", "/secret" not in pg.content())
+            check("local: the approver sees what it says", c["says"] == "Running the card tests now." and c["meta"] == "1 teammate · ctx 40% · $1.50 · for 1m", c)
+            with open(os.path.join(cfg, "fleet.yaml"), "w", encoding="utf-8") as fh:
+                fh.write("approvers: [boss@example.com]\nserve:\n  enabled: true\n  port: %d\n" % port)
+            write_snap("Third title")
+            pg.wait_for_function("() => document.querySelector('article[aria-label=\"Session CP\"] .stitle').textContent === 'Third title'", timeout=8000)
+            pg.wait_for_timeout(100)
+            c = card(pg, "CP")
+            check("local: a non-approver gets the note, never the text",
+                  c["says"] is None and "Only approvers see what the session says." in pg.inner_text('article[aria-label="Session CP"]')
+                  and "Running the card tests now." not in pg.content() and "Ship it" not in pg.content(), c)
             pg.close()
 
             check("no page errors", not errors, errors)
