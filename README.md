@@ -10,8 +10,8 @@
 
 **Docs:** English | [繁體中文](README.zh-TW.md)
 
-A switchboard for a fleet of long-running **Claude Code** sessions: one board that shows who is
-working, who is blocked, and what is waiting for a human decision. You can answer from the board,
+A switchboard for a fleet of long-running **Claude Code** sessions: one board, **Agent Switchboard**,
+that shows who is working, who is blocked, and what is waiting for a human decision. You can answer from the board,
 including from your phone.
 
 The same board page runs on **two channels**: self-hosted (`board-serve`, reachable from your phone
@@ -407,7 +407,7 @@ Type `@API is the migration merged?` or `@all please pause deploys`. The operato
 Workers reply with `[re <msgId>] …`, and replies thread under the message. **Messages are
 information, never approvals.**
 
-### Profile menu and theme
+### Profile menu, theme and language
 
 The avatar at the top right of the board opens a small menu:
 
@@ -420,6 +420,10 @@ The avatar at the top right of the board opens a small menu:
   is blocked it lasts for the page view) and applied before the page paints, so there is no flash.
   Inside the claude.ai viewer, a theme the viewer has set wins: the switcher then shows it and is
   disabled. When the viewer clears it, your own choice applies again.
+- **Language:** English (the default) or 繁體中文. The whole interface switches, one language at a
+  time: headings, buttons, banners, cards, dialogs and messages. Data stays as it is: task titles,
+  questions, answers and session names are never translated. The choice is kept in this browser
+  and sets `<html lang>`.
 - **My API keys:** reserved for a later key backend. Until then the menu says "API keys are not
   enabled on this board". The shape is in `docs/contract.md` ("Who am I").
 - **Sign out** of Cloudflare Access (`/cdn-cgi/access/logout`), shown only through the tunnel.
@@ -703,6 +707,13 @@ with `hooks/board-statusline-tap.sh` (your command moves to `BOARD_STATUSLINE_NE
 | ≥ 80% | L1 `warn`: "5h usage 82%, resets ~14:20, heads up" | meters show it | keep an eye on it |
 | ≥ 90% | L2 `high`: "5h usage 90%, resets ~14:20, prepare to switch account" | amber **Prepare to switch account** banner | get the second account ready |
 | ≥ 95%, or limit hit | L3 `urgent`: "weekly usage 95%, resets Mon 09:00, switch account now" | red banner | switch now |
+
+Hover or focus the usage meter (on a phone, tap it) for the details: both windows with the percent
+used and when they reset, when usage was last reported, the threshold reached, and the account the
+sessions run on. The account comes from `~/.claude.json` (only `oauthAccount.emailAddress` and
+`organizationName`, never a token) and is shown to **approvers only**; everyone else, and every
+viewer of the Artifact board, sees "account: hidden". Turn it off with `BOARD_SHOW_ACCOUNT=0` or
+`usage: {show_account: false}` in `fleet.yaml`.
 
 Thresholds are configurable (`alerting.thresholds`). Each one fires once per reset window. The page shows both meters (5h and 7d) with reset countdowns. The
 meter reflects the session whose statusline rendered last. With two accounts on one machine, it can
@@ -1010,7 +1021,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `lib/away.py` | Reads owner-away mode and consensus items for the snapshot and `board-serve` |
 | `lib/resources.py` | Resources sampler (memory, disks, OOM, per-session processes and teammates) for `resources.json`, the snapshot digest and `board resources` |
 | `docs/design/` | Design notes, e.g. `resources-and-scheduling.md` (resources, scheduler, lessons) |
-| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), the resources sampler (`test_resources.py`, fixture `/proc`), and the optional headless checks of the page's alert links, notifications control, profile menu and theme, home-screen app, and session cards (`test_page_links.py`, `test_page_notify.py`, `test_page_profile.py`, `test_page_pwa.py`, `test_page_cards.py`: need python playwright, skip without it; not run in CI) |
+| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), the resources sampler (`test_resources.py`, fixture `/proc`), and the optional headless checks of the page's alert links, notifications control, profile menu and theme, home-screen app, session cards, usage popover and language toggle (`test_page_links.py`, `test_page_notify.py`, `test_page_profile.py`, `test_page_pwa.py`, `test_page_cards.py`, `test_page_usage.py`, `test_page_i18n.py`: need python playwright, skip without it; not run in CI) |
 | `CONTRIBUTING.md` | Dev setup, tests, and the rule for keeping `README.zh-TW.md` in sync |
 | `fleet.example.yaml`, `.env.example` | Example config |
 

@@ -12,7 +12,7 @@
 
 > 以英文版 [README.md](README.md) 為準；這份翻譯可能會落後。
 
-替一整組長時間執行的 **Claude Code** session 準備的總機（switchboard）：用一個看板呈現誰在工作、誰卡住了，
+替一整組長時間執行的 **Claude Code** session 準備的總機（switchboard）：用一個看板（**Agent Switchboard**）呈現誰在工作、誰卡住了，
 以及哪些事正在等人類做決定。你可以直接在看板上回答，用手機也行。
 
 同一個看板頁面可以走**兩種通道**：自架（`board-serve`，透過 Cloudflare Tunnel 並以 Cloudflare Access
@@ -381,7 +381,7 @@ toplevel 的名稱和目前的分支，絕不顯示路徑），以及它現在�
 送出 `[BOARD ask <msgId>] …`（`@all` 會送給 `ListAgents` 列出的每個存活 session）。worker 用
 `[re <msgId>] …` 回覆，回覆會串在原訊息底下。**訊息只是資訊，絕不是核准。**
 
-### 個人選單與主題
+### 個人選單、主題與語言
 
 看板右上角的頭像會打開一個小選單：
 
@@ -392,6 +392,9 @@ toplevel 的名稱和目前的分支，絕不顯示路徑），以及它現在�
 - **主題：** 淺色、深色或跟隨系統。選擇存在這個瀏覽器裡（`localStorage`；儲存被封鎖時只在這次瀏覽
   有效），並在頁面繪製前套用，所以不會閃一下。在 claude.ai 檢視器裡，以檢視器設定的主題為準：
   切換器會顯示該主題並停用。檢視器取消設定後，會恢復你自己的選擇。
+- **語言：** English（預設）或繁體中文。整個介面一次只用一種語言：標題、按鈕、橫幅、卡片、對話框和
+  訊息都會切換。資料保持原樣：任務標題、問題、回答和 session 名稱一律不翻譯。選擇存在這個瀏覽器裡，
+  並設定 `<html lang>`。
 - **我的 API 金鑰：** 保留給之後的金鑰後端。在那之前，選單會顯示「API keys are not enabled on this
   board」。資料格式寫在 `docs/contract.md`（"Who am I"）。
 - **登出** Cloudflare Access（`/cdn-cgi/access/logout`），只有透過 tunnel 時才會出現。
@@ -649,6 +652,12 @@ Claude Code 會把 `rate_limits.five_hour` 和 `rate_limits.seven_day`（`used_p
 | ≥ 80% | L1 `warn`：「5h usage 82%, resets ~14:20, heads up」 | 用量計會顯示 | 留意一下 |
 | ≥ 90% | L2 `high`：「5h usage 90%, resets ~14:20, prepare to switch account」 | 琥珀色的 **Prepare to switch account** 橫幅 | 準備好第二個帳號 |
 | ≥ 95%，或達到上限 | L3 `urgent`：「weekly usage 95%, resets Mon 09:00, switch account now」 | 紅色橫幅 | 立刻切換 |
+
+把滑鼠移到用量計上或聚焦它（手機上點一下），會顯示詳細資料：兩個區間的已用百分比和重設時間、最後一次
+回報用量的時間、達到的門檻，以及 session 使用的帳號。帳號來自 `~/.claude.json`（只取
+`oauthAccount.emailAddress` 和 `organizationName`，絕不讀 token），而且**只有 approver 看得到**；
+其他人，以及 Artifact 看板的所有檢視者，都只會看到「帳號：已隱藏」。用 `BOARD_SHOW_ACCOUNT=0`
+或 `fleet.yaml` 的 `usage: {show_account: false}` 關閉。
 
 門檻可以設定（`alerting.thresholds`）。每個門檻在每個重設週期只觸發一次。頁面會同時顯示兩個用量計
 （5h 和 7d）以及重設倒數。用量計反映的是最後一次繪製 statusline 的那個 session。同一台機器上有兩個帳號時，
@@ -926,7 +935,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `lib/away.py` | 為 snapshot 和 `board-serve` 讀取 owner-away 模式與共識項目 |
 | `lib/resources.py` | 資源取樣器（記憶體、磁碟、OOM、每個 session 的程序與 teammate），產生 `resources.json`、snapshot 摘要和 `board resources` |
 | `docs/design/` | 設計文件，例如 `resources-and-scheduling.md`（資源、排程器、經驗） |
-| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`）、資源取樣器（`test_resources.py`，fixture `/proc`），以及選用的頁面告警連結、通知控制、個人選單與主題、主畫面 app、session 卡片 headless 檢查（`test_page_links.py`、`test_page_notify.py`、`test_page_profile.py`、`test_page_pwa.py`、`test_page_cards.py`：需要 python playwright，沒有就略過；CI 不執行） |
+| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`）、資源取樣器（`test_resources.py`，fixture `/proc`），以及選用的頁面告警連結、通知控制、個人選單與主題、主畫面 app、session 卡片、用量提示框與語言切換 headless 檢查（`test_page_links.py`、`test_page_notify.py`、`test_page_profile.py`、`test_page_pwa.py`、`test_page_cards.py`、`test_page_usage.py`、`test_page_i18n.py`：需要 python playwright，沒有就略過；CI 不執行） |
 | `CONTRIBUTING.md` | 開發環境設定、測試，以及讓 `README.zh-TW.md` 保持同步的規則 |
 | `fleet.example.yaml`、`.env.example` | 設定範例 |
 
