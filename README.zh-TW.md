@@ -21,6 +21,18 @@
 
 > 狀態：早期階段。資料契約在 [`docs/contract.md`](docs/contract.md)，其餘一切都以它為依據。
 
+## 畫面截圖
+
+全部來自內建的 demo 資料（`scripts/screenshots.py`）。也可以在瀏覽器裡試試[線上 demo](https://osisdie.github.io/agent-switchboard/demo.html)：只有範例資料，不會送出任何東西。
+
+| | |
+|---|---|
+| <a href="docs/assets/screenshots/overview-light.webp"><img src="docs/assets/screenshots/overview-light.webp" width="420" alt="淺色模式的看板：待決策、用量表、主人不在的橫幅"></a><br>總覽（淺色） | <a href="docs/assets/screenshots/overview-dark.webp"><img src="docs/assets/screenshots/overview-dark.webp" width="420" alt="深色模式的看板"></a><br>總覽（深色） |
+| <a href="docs/assets/screenshots/session-card.webp"><img src="docs/assets/screenshots/session-card.webp" width="420" alt="依狀態分欄的 session 卡片，其中一張展開，顯示標題、待決策、執行中的工具和 tmux 目標"></a><br>Session 卡片，其中一張展開 | <a href="docs/assets/screenshots/decisions.webp"><img src="docs/assets/screenshots/decisions.webp" width="420" alt="決策卡片：有 Allow / Deny 的權限提示，以及附選項的問題"></a><br>決策：權限提示、問題、關卡 |
+| <a href="docs/assets/screenshots/notifications.webp"><img src="docs/assets/screenshots/notifications.webp" width="420" alt="通知對話框：靜音、分級門檻和在線狀態"></a><br>通知：靜音與分級 | <a href="docs/assets/screenshots/resources.webp"><img src="docs/assets/screenshots/resources.webp" width="420" alt="資源區塊：記憶體、swap、磁碟和各 session 的程序"></a><br>資源：記憶體、磁碟、程序 |
+| <a href="docs/assets/screenshots/profile-menu.webp"><img src="docs/assets/screenshots/profile-menu.webp" width="420" alt="個人選單：身分、角色、主題切換和 API 金鑰"></a><br>個人選單與主題 | <a href="docs/assets/screenshots/phone-dark.webp"><img src="docs/assets/screenshots/phone-dark.webp" width="420" alt="手機上的看板，深色模式"></a><br>手機，深色模式 |
+| <a href="docs/assets/screenshots/pwa-standalone.webp"><img src="docs/assets/screenshots/pwa-standalone.webp" width="420" alt="iPhone 主畫面 app 的看板，避開狀態列"></a><br>iPhone 主畫面 app |  |
+
 ## 問題
 
 你在 tmux 裡常駐好幾個 Claude Code session，一個 repo 或一個領域一個（例如 `API`、`WEB`、`INFRA`、
@@ -960,16 +972,18 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `prompts/board-operator.md` | `BOARD` operator session 的常駐指示 |
 | `snippets/worker-protocol.md` | 貼進每個 worker session `CLAUDE.md` 的區塊 |
 | `playbook/` | 執行多個 Claude Code session 的經驗：SDLC delivery harness、協作、發布、repo 衛生、CLAUDE.md 範本 |
-| `scripts/` | `install.sh`、`setup-dev.sh`（git hook + gitleaks）、`expose-cloudflare.sh`（tunnel + Access 步驟）、`check-readme-sync.py`（README 翻譯結構與粗體檢查，在 CI 執行）、`render-icons.py`（從 SVG 產生 PNG 圖示） |
+| `scripts/` | `install.sh`、`setup-dev.sh`（git hook + gitleaks）、`expose-cloudflare.sh`（tunnel + Access 步驟）、`check-readme-sync.py`（README 翻譯結構與粗體檢查，在 CI 執行）、`render-icons.py`（從 SVG 產生 PNG 圖示）、`screenshots.py`（用 demo 資料產生 README / Pages 截圖）、`build-site.py`（靜態 Pages 網站：首頁 + demo） |
 | `.githooks/pre-commit` | 拒絕 `tmp*/` 路徑；對暫存變更執行 gitleaks + banned terms 檢查 |
 | `.githooks/commit-msg` | 檢查 commit 訊息裡的機密樣式與 banned terms |
 | `.github/workflows/ci.yml` | CI：gitleaks、shellcheck、測試、readme-sync |
+| `.github/workflows/pages.yml` | 建置靜態 demo 網站並部署到 GitHub Pages（push 到 main 時） |
+| `docs/assets/screenshots/` | README 和 Pages 網站用的截圖（`scripts/screenshots.py`） |
 | `.gitleaks.toml` | gitleaks 預設規則，加上針對測試 fixture 的小範圍允許清單 |
 | `lib/away.py` | 為 snapshot 和 `board-serve` 讀取 owner-away 模式與共識項目 |
 | `lib/guard.py`、`lib/messages.py` | 機密防護：對外的去除機密與對內的要機密篩檢；看板訊息與回覆都經過它們（攔下、放行、回覆） |
 | `lib/resources.py` | 資源取樣器（記憶體、磁碟、OOM、每個 session 的程序與 teammate），產生 `resources.json`、snapshot 摘要和 `board resources` |
 | `docs/design/` | 設計文件，例如 `resources-and-scheduling.md`（資源、排程器、經驗） |
-| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`）、資源取樣器（`test_resources.py`，fixture `/proc`）、機密防護（`test_guard.py`），以及選用的頁面告警連結、通知控制、個人選單與主題、主畫面 app、session 卡片、用量提示框與語言切換 headless 檢查（`test_page_links.py`、`test_page_notify.py`、`test_page_profile.py`、`test_page_pwa.py`、`test_page_cards.py`、`test_page_guard.py`（被攔下的訊息卡片）、`test_page_usage.py`、`test_page_i18n.py`：需要 python playwright，沒有就略過；CI 不執行） |
+| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`）、資源取樣器（`test_resources.py`，fixture `/proc`）、機密防護（`test_guard.py`），以及選用的頁面告警連結、通知控制、個人選單與主題、主畫面 app、session 卡片、用量提示框與語言切換 headless 檢查（`test_page_links.py`、`test_page_notify.py`、`test_page_profile.py`、`test_page_pwa.py`、`test_page_cards.py`、`test_page_guard.py`（被攔下的訊息卡片）、`test_page_usage.py`、`test_page_i18n.py`，以及截圖和 Pages 網站的 `test_site.py`：需要 python playwright，沒有就略過；CI 不執行） |
 | `CONTRIBUTING.md` | 開發環境設定、測試，以及讓 `README.zh-TW.md` 保持同步的規則 |
 | `fleet.example.yaml`、`.env.example` | 設定範例 |
 
