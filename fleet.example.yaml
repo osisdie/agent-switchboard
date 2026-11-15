@@ -30,6 +30,13 @@ serve:
   #   aud: "<Application Audience (AUD) Tag>"   # needs python3 cryptography to verify tokens
   #   allowed_emails: [viewer@example.com]     # who may open it at all (default: approvers ∪ release_managers)
 
+# Public URL of the board (the self-hosted board behind Cloudflare Access). When set, alerts carry a
+# link that opens the board on the item: <board_url>/?d=<decision id> (?c= consensus, ?m= message),
+# or the board root for usage, limit and operator alerts. https only (http only for 127.0.0.1 or
+# localhost), no user name, query or fragment. Env BOARD_PUBLIC_URL (process or .env) overrides it.
+# Unset: alerts carry no board link. `board doctor` says whether it is accepted.
+# board_url: https://board.example.com
+
 # `board press` safety settings: a key is only sent when the last `lines` lines of the pane
 # match `prompt_regex`.
 press:

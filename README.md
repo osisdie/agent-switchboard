@@ -188,6 +188,11 @@ scripts/expose-cloudflare.sh --hostname board.example.com --tunnel board        
    writes a cloudflared config of its own and routes DNS. Then
    `cloudflared tunnel --config ~/.cloudflared/agent-switchboard-board.yml run board`.
 4. Open `https://board.example.com` on your phone and sign in with the emailed code.
+5. Optional: set `board_url: https://board.example.com` in `fleet.yaml` (or `BOARD_PUBLIC_URL` in
+   `.env`). Every alert then carries a link such as `https://board.example.com/?d=<decision id>`:
+   tapping it on the phone goes through the Access sign-in and opens the board with that decision
+   in view, ready to answer. Usage and limit alerts link to the board itself. `board doctor` checks
+   the URL (https only, no query or fragment); without it alerts carry no board link.
 
 **Recommended: run the operator in a fresh, small-context session.** The operator wakes up every
 few minutes, and **every tick re-reads its whole context**, so a long-lived conversation makes each
@@ -433,6 +438,9 @@ while the operator session is rate-limited.
   anywhere), the session leaves needs-you, or the limit episode ends. To ack by hand, run
   `board ack 'session:API:*'` (or `board-notify ack …`). Globs are allowed. Keys look like
   `decision:<id>`, `session:<code>:needs-you`, `limit:<hit_at>`, `usage:<window>:<threshold>`.
+- **Board link:** with `board_url` (or `BOARD_PUBLIC_URL`) set, each alert links to its item on the
+  board (`<board_url>/?d=<decision id>`, `?c=`, `?m=`, or the board root). See "Expose the board on
+  your phone" and the contract's "Board links in alerts".
 - **Dedupe:** at most one send per key per level. An alert that is still open is re-sent at the same
   level only after `repeat_minutes` (default 60). Usage alerts fire once per threshold per reset
   window.

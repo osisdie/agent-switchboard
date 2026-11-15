@@ -156,7 +156,7 @@ $BOARD_HOME/
 
 | endpoint | does |
 |---|---|
-| `GET /` | the board page (nonce CSP, `no-store`) |
+| `GET /` | the board page (nonce CSP, `no-store`). Any query is ignored by the server and never reflected: `/?d=<id>` (alert links, see "Board links in alerts") serves the same page, which reads the query itself. |
 | `GET /api/state` | the state below, built from `$BOARD_HOME` |
 | `GET /api/events` | `text/event-stream`: `event: state` with the full state at once and after every change (1 s mtime poll; only when the state differs), `: keepalive` every 25 s |
 | `POST /api/decisions/<id>/answer` `{answer}` | `<id>` must match `^d-[0-9]+-[a-z0-9]+$`. With empty `approvers` → 403 `no_approvers` (fails closed). The identity is then checked **before anything is written**, with the rule of `board answer` (`approvers`; for a production decision, gate or stage, `release_managers`, falling back to `approvers`): not allowed → 403 `not_approver`, audited, file untouched (so it can never cancel an approver's answer that waits for the relay). Otherwise `board answer <id> <answer> --by <identity>` (argv, no shell; an answer such as `--help` is recorded literally) → 200 `{status: "answered"}`. For `kind: "permission"` (`answer` = `allow`\|`deny`; `allow` with `summary_truncated` → 409 `review_in_session`), it then runs `board press <from> <answer> --expect <tool_use_id>` → 200 `{status: "relayed"}`; exit 3 → 409 `stale`; exit 4 → 403 `press_refused`. A decision already `relayed`/`stale`/`timeout` → 409 `gone`. |
@@ -295,6 +295,36 @@ Levels and the default routing (overridable in fleet.yaml under `alerting.routes
 - **State:** kept in `$BOARD_HOME/alerts.json` as `{key: {level, first_at, last_at, acked_at}}`. The key is `decision:<id>`, `session:<code>:needs-you` or `usage:<window>:<threshold>`.
 - **Quiet hours:** `alerting.quiet_hours: "23:00-08:00"`. Only `urgent` passes during them.
 - **Dedupe:** at most one send per key per level. A re-alert at the same level happens only after `alerting.repeat_minutes` (default 60).
+
+### Board links in alerts
+
+An optional public board URL makes every alert carry a link that opens the board on the item.
+
+- **Config:** env `BOARD_PUBLIC_URL` (process environment, then `$BOARD_CONFIG_DIR/.env`), else
+  `board_url` in fleet.yaml. It must be `https` (`http` only for `127.0.0.1` or `localhost`), with no
+  user name or password, no query and no fragment; a trailing `/` is dropped. Unset or rejected →
+  no link, and every message is exactly what it would be without this feature. `board doctor` and
+  `lib/fleet.py board-url-check` say why a value is rejected.
+- **Link:** `<base>/?d=<decision id>`, `?c=<consensus id>`, `?m=<message id>`; anything else (usage,
+  limit, operator and ad-hoc alerts) links to `<base>/`. Each id must match its strict pattern
+  (`^d-[0-9]+-[a-z0-9]+$`, `^c-…`, `^m-…`); an id that does not links to the root instead. A query,
+  not a `#fragment`, because the Cloudflare Access login redirect and some mail clients drop
+  fragments.
+- **Which item:** an alert's optional `board` id (`board-notify send --board ID`), else the id in a
+  `decision:`, `consensus:` or `message:` key. A `session:<code>:needs-you` alert for a permission
+  prompt links to that prompt's pending permission decision (same `tool_use_id`) and follows the
+  session to its next prompt.
+- **Delivery:** the link is worked out when an alert is delivered, so escalations and repeats carry
+  it. It is the message's `url` (Slack `<link>`, a plain line in email, LINE, SNS and the desktop
+  toast, `url` in the webhook JSON). The caller's own url (an artifact or session link) is kept and
+  sent as `ref` (a `ref: …` line; `ref` in the webhook JSON).
+- `board notify --link ID|root "text"` appends the link to a plain notify; the consensus notifies
+  (`agreed`, `objected`, `owner_back`) link to their item.
+- **Page:** `board.html` reads `d`/`m`/`c` from `location.search` (or a `#<id>` / `#dec-<id>` hash),
+  validates the id with the same pattern, and once that feed has loaded scrolls the card into view,
+  highlights it briefly (no animation with `prefers-reduced-motion`) and focuses its first answer
+  control. An unknown or already answered id shows a small notice. In the claude.ai Artifact the
+  query may not reach the page; then nothing happens.
 
 ## Usage meter (approaching 5h / weekly limits)
 
