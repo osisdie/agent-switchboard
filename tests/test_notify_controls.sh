@@ -456,7 +456,29 @@ at $((R0 + 71 * MIN)); rs '{"mem":"warn"}' true; "$N" tick >/dev/null
 eq "  memory pressure -> warn" "$(alert res:idle-teammates:CP .level)" "warn"
 has "  warn passes the floor" "$(cat "$T"/curl/*.cfg 2>/dev/null)" "teammate(s) idle"
 "$B" notify-level all default >/dev/null
-rm -f "$BOARD_HOME/snapshot.json" "$BOARD_HOME/resources.json"
+# Presence: an approver watching the board holds pushes below high; urgent still goes out.
+rm -f "$BOARD_HOME/alerts.json"; reset_calls
+fleet $'serve:\n  enabled: true'
+PR0=$((R0 + 200 * MIN))
+at "$PR0"; present local
+jq -n --argjson hb $((PR0 - 15 * MIN)) '{heartbeat_at: $hb}' >"$BOARD_HOME/operator.json"
+"$B" mute all --for 4h >/dev/null   # only to keep the opening (high) round out of the counts
+rs '{"mem":"ok"}' true; "$N" tick >/dev/null
+"$B" unmute all >/dev/null
+eq "presence: idle teammates at info" "$(alert res:idle-teammates:CP .level)" "info"
+reset_calls
+at $((PR0 + 31 * MIN)); present local; rs '{"mem":"ok"}' true; "$N" tick >/dev/null
+eq "presence: operator:stale urgent" "$(alert operator:stale .level)" "urgent"
+expect "presence: urgent operator:stale is delivered" "1/1/1/1/1/1"
+has "  and it is operator:stale" "$(cat "$T"/curl/*.cfg)" "Board operator is not running"
+rm -f "$BOARD_HOME/alerts.json"; reset_calls
+at $((PR0 + 40 * MIN)); present local
+jq -n --argjson hb "$BOARD_NOW_MS" '{heartbeat_at: $hb}' >"$BOARD_HOME/operator.json"
+rs '{"mem":"ok"}' true; "$N" tick >/dev/null
+eq "presence: a new idle-teammates alert at info" "$(alert res:idle-teammates:CP .level)" "info"
+expect "presence: info is held while the owner watches" "0/0/0/0/0/0"
+has "  logged as owner_present" "$(held res:idle-teammates:CP)" "slack:owner_present"
+rm -f "$BOARD_HOME/snapshot.json" "$BOARD_HOME/resources.json" "$BOARD_HOME/operator.json" "$BOARD_HOME/presence.json"
 
 echo
 echo "passed: $pass  failed: $fail"

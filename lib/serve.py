@@ -343,7 +343,7 @@ class StateBuilder:
         h = hashlib.sha1()
         paths = [self.p(n) for n in ("snapshot.json", "usage.json", "limit.json", "operator.json",
                                     "ledger.json", "events.jsonl", "owner-away", prefs.PREFS_FILE)]
-        paths.append(self.p("resources.json"))  # rewritten only when a rounded value changed
+        paths.append(self.p("resources.json"))  # rewritten on a bucketed change, else every 60 s
         for sub in ("decisions", "tasks", "consensus"):
             paths.append(self.p(sub))
             paths.extend(glob.glob(self.p(sub, "*.json")))
