@@ -450,6 +450,8 @@ eq "away cross-origin refused" "$(req POST /api/away -H 'Content-Type: applicati
 eq "away text/plain refused" "$(req POST /api/away -H 'Content-Type: text/plain' -H 'X-Board: 1' -H "$ORIGIN" --data-binary '{"state":"on"}')" "415"
 big_away="$(python3 -c 'import json; print(json.dumps({"state":"on","said":"x"*20000}))')"
 eq "away over the body cap refused" "$(post /api/away "$big_away")" "413"
+eq "  the refused body is drained and the connection closed" "$(curl -s --path-as-is -o /dev/null -D - -X POST -H 'Content-Type: application/json' -H 'X-Board: 1' -H "$ORIGIN" --data-binary "$big_away" "$B/api/away" | tr -d '\r' | grep -ci '^connection: close$')" "1"
+eq "  a refused CSRF body too" "$(curl -s --path-as-is -o /dev/null -D - -X POST -H 'Content-Type: application/json' -H 'X-Board: 1' -H 'Origin: https://evil.example' --data-binary '{"state":"on"}' "$B/api/away" | tr -d '\r' | grep -ci '^connection: close$')" "1"
 [ -e "$AWF" ] && bad "refused POSTs write nothing" || ok "refused POSTs write nothing"
 eq "approver turns away on" "$(post /api/away '{"state":"on","said":"back tomorrow; agree among yourselves"}')" "200"
 eq "  reply" "$(body '"\(.away)/\(.status)"')" "true/on"

@@ -1200,6 +1200,16 @@ class ServeTest(unittest.TestCase):
                 status, resp = self.post(body, hdrs, raw)
                 self.assertEqual(status, want, (name, resp))
                 self.assertNotIn("Traceback", json.dumps(resp))
+        # Over the cap but within the drain: the 413 arrives every time, never a connection reset.
+        for _ in range(20):
+            status, resp = self.post({"code": "CP", "state": "off", "pad": "x" * 30000})
+            self.assertEqual((status, resp.get("error")), (413, "too_large"))
+        # Far over it: answered when the client still listens, else closed; the server carries on.
+        try:
+            status, _ = self.post({"code": "CP", "state": "off", "pad": "x" * 600000})
+            self.assertEqual(status, 413)
+        except (ConnectionResetError, BrokenPipeError, urllib.error.URLError):
+            pass
         self.assertFalse(os.path.exists(os.path.join(HOME, "rc-prefs.json")))
         status, resp = self.post(ok)
         self.assertEqual(status, 200, resp)

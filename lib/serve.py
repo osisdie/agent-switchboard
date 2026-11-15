@@ -105,6 +105,10 @@ STATIC_CACHE = "private, max-age=86400"  # private: behind Access, never cached 
 
 DEFAULT_PORT = 39410
 MAX_BODY = 16 * 1024
+# A refused POST whose body was not read: read (and drop) up to this much, for at most this long,
+# before the reply, so closing the socket does not reset it and the client gets the refusal.
+DRAIN_MAX = 64 * 1024
+DRAIN_TIMEOUT_S = 2.0
 MAX_ANSWER = 500
 MAX_FREE_TEXT = 200     # typed into "Type something" (bin/board FREE_TEXT_MAX)
 # What a typed answer loses before it is checked and typed: control and escape characters, line
@@ -791,6 +795,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.common_headers()
         for k, v in (extra or {}).items():
             self.send_header(k, v)
+        if self.close_connection:
+            self.send_header("Connection", "close")
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(data)
@@ -802,7 +808,31 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("X-Frame-Options", "DENY")
 
     def refuse(self, exc):
+        if self.command == "POST" and not getattr(self, "body_read", False):
+            self.drain_body()
         self.send_json(exc.status, {"error": exc.error, "detail": exc.detail})
+
+    def drain_body(self):
+        """A POST refused before its body was read (too large, wrong type, CSRF ...): drop up to
+        DRAIN_MAX bytes of it, waiting at most DRAIN_TIMEOUT_S, and close the connection after the
+        reply. Unread data at close makes the kernel send a reset, and the client would see that
+        instead of the refusal; on a kept-alive connection it would be parsed as the next request."""
+        self.close_connection = True
+        try:
+            left = min(int(self.headers.get("Content-Length") or 0), DRAIN_MAX)
+        except ValueError:
+            left = 0
+        if left <= 0:
+            return
+        try:
+            self.connection.settimeout(DRAIN_TIMEOUT_S)
+            while left > 0:
+                chunk = self.rfile.read1(min(left, 16384))
+                if not chunk:
+                    break
+                left -= len(chunk)
+        except OSError:      # timeouts included: the reply still goes out
+            pass
 
     # -- who is asking
     def check_host(self):
@@ -871,8 +901,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             raise Refused(411, "length_required", "Content-Length required")
         if n > MAX_BODY:
             raise Refused(413, "too_large", "body over %d bytes" % MAX_BODY)
+        raw = self.rfile.read(n)
+        self.body_read = True
         try:
-            body = json.loads(self.rfile.read(n).decode("utf-8"))
+            body = json.loads(raw.decode("utf-8"))
         except (ValueError, UnicodeDecodeError) as exc:
             raise Refused(400, "bad_json", "body is not JSON") from exc
         if not isinstance(body, dict):
@@ -1014,6 +1046,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     # -- POST
     def do_POST(self):
+        self.body_read = False      # per request: one handler serves a whole kept-alive connection
         try:
             origins = self.check_host()
             ident, via = self.identity()

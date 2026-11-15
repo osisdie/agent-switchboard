@@ -526,7 +526,9 @@ logged to stderr only. Identities are matched against `approvers` / `release_man
 `allowed_emails` case-insensitively, and `--by` gets the configured spelling. POST: `X-Board: 1` and an `Origin`
 from the listener's allowlist (`http://127.0.0.1:<port>`, `http://localhost:<port>` /
 `https://<hostname>`; missing or `null` → 403 `csrf`), `Content-Type: application/json` (else
-415), at most 16 KiB (else 413). `OPTIONS` and every other method → 405, and no
+415), at most 16 KiB (else 413). A POST refused before its body is read (413, 415, 403, ...) has
+up to 64 KiB of the body read and dropped (2 s at most) and is answered with `Connection: close`,
+so the client gets the refusal rather than a connection reset. `OPTIONS` and every other method → 405, and no
 `Access-Control-*` header is ever sent. Every write appends `{type: "serve", action:
 "answer"|"press"|"message"|"message-release"|"away"|"notify-prefs"|"presence"|"alerts-ack"|"rc"|"session-action", by, via: "loopback"|"cf-jwt", id, result}` to
 `events.jsonl` (`presence` only when visibility changes).
