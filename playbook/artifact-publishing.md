@@ -55,13 +55,17 @@ you control:
 
 - Path: `<docs-repo>/artifacts/<source-repo>/<YYYY-MM-DD>-<slug>.html`. Updates overwrite the same
   file.
-- At the top, an HTML comment with the original URL, the publish date, and a note that the original
-  may be private or inaccessible, so this copy is the reference.
+- At the top, an HTML comment with the original URL, the publish date, the **publishing account**,
+  and a note that the original may be private or inaccessible, so this copy is the reference.
+  Only the publishing account can later update or delete the page, so record the account the CLI
+  was *actually* logged into at publish time (`~/.claude.json` → `oauthAccount.emailAddress`). Don't
+  rely on the email in the session context: it isn't refreshed after you switch accounts with
+  `/login`, so it can name an account that no longer owns anything.
 - Right after the comment, `<meta charset="utf-8">`. The published page gets a charset from the
   platform, but a local file opened directly is decoded with the browser's default, which garbles
   non-ASCII text.
-- Add or update one line in `<docs-repo>/artifacts/README.md`: date, title, source repo, URL, a
-  one-sentence description.
+- Add or update one line in `<docs-repo>/artifacts/README.md`: date, title, source repo, URL,
+  publishing account, a one-sentence description.
 - Write the files only. Don't commit or push unless asked.
 
 ## 5. Table of contents
@@ -89,7 +93,10 @@ approach follows [archify](https://github.com/tt-a1i/archify), but don't install
 
 If only certain accounts may publish (for example only your work domain, not a personal account),
 enforce it with a `PreToolUse` hook rather than a rule that depends on memory. Read-only actions
-always pass. Write actions fail closed when the account can't be determined.
+always pass. Write actions fail closed when the account can't be determined. The hook reads the
+account the CLI is actually logged into (`oauthAccount.emailAddress`), not the email in the session
+context, which goes stale after a `/login` account switch. A rule-only setup should check the same
+file, and refuse when it disagrees with the session context.
 
 `~/.claude/hooks/artifact-publish-guard.sh`:
 

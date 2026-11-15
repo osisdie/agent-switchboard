@@ -176,9 +176,11 @@ gets integrated on a base nobody tested.
   runs one background poll per MR and sends failures back.
 
 ## Artifacts
-- **Account guard:** publish Artifacts or write Claude Docs only when the session account is in
-  `<ALLOWED_DOMAIN>`. Otherwise, or if you can't tell, don't publish, update, pin, `write_db` or
-  `upload_asset`. Instead, write the page to a local file, give its full path, and say why. Reading is
+- **Account guard:** publish Artifacts or write Claude Docs only when the account the CLI is actually
+  logged into (`~/.claude.json` → `oauthAccount.emailAddress`) is in `<ALLOWED_DOMAIN>`. The session
+  context's email isn't refreshed after a `/login` switch, so use it only as a cross-check. If the
+  two disagree, the account isn't allowed, or you can't tell, don't publish, update, pin, `write_db`
+  or `upload_asset`. Instead, write the page to a local file, give its full path, and say why. Reading is
   always allowed. (Enforce this with a `PreToolUse` hook as well.)
 - **Review before publish:** an independent reviewer checks the page against the code and facts.
   Revise until LGTM/APPROVED. Show the review rounds and verdict on the page.
@@ -192,9 +194,11 @@ gets integrated on a base nobody tested.
   with one line: this version's cost and the running total, plus the reason if it is high. Write the
   file only, don't commit it.
 - **Backup:** after every publish, save a copy to `<DOCS_REPO>/artifacts/<source-repo>/<YYYY-MM-DD>-<slug>.html`
-  (updates overwrite it). Start the file with an HTML comment giving the URL, the date, and "the
-  original may be private; this copy is the reference", followed by `<meta charset="utf-8">`. Add a
-  line to the index in `<DOCS_REPO>/artifacts/README.md`. Write only, don't commit.
+  (updates overwrite it). Start the file with an HTML comment giving the URL, the date, the
+  publishing account (the `oauthAccount.emailAddress` at publish time: only that account can later
+  update or delete the page), and "the original may be private; this copy is the reference",
+  followed by `<meta charset="utf-8">`. Add a line to the index in `<DOCS_REPO>/artifacts/README.md`
+  that includes the publishing account. Write only, don't commit.
 - **TOC:** sectioned pages get anchor links (`#id`), a sticky or side TOC on wide screens, a
   collapsible list on phones, and current-section highlighting. No overlap and no horizontal scroll.
 - **Diagrams:** pick the type first (architecture, workflow, sequence, data flow, lifecycle, ERD).
