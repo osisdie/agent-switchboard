@@ -446,9 +446,12 @@ to the Artifact or put in an alert. Turn the prompt off with `cards: {show_promp
   A longer answer goes to the session as a `[BOARD decision <id>]` message instead. Option buttons
   also send the option number, which must match the label; repeated labels make the card read-only.
   A form of several questions (up to 4, single-select) shows option buttons per question on the
-  self-hosted board: pick one in each, then **Send answers**. `board press` picks them question by
-  question, checking each one on screen, then checks the review screen and picks **Submit answers**
-  (never Enter). Multi-select or a clipped option label make a read-only card: answer it in the session.
+  self-hosted board, and a text box under each: pick an option or type an answer for each, then
+  **Send answers**. `board press` goes question by question, checking each one on screen: an option
+  is its digit; typed text picks that question's "Type something" row, types the text, and presses
+  Enter only once the row shows it (else it stops there, exit 5). Then it checks the review screen
+  and picks **Submit answers** (never Enter there). Typed text becomes one line (line breaks and
+  control characters turn into spaces), at most 200 characters, and goes through the secret guard. Multi-select or a clipped option label make a read-only card: answer it in the session.
   When the session moves on, the card goes stale.
 
 ### Messages
