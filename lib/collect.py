@@ -560,10 +560,11 @@ def attach_tasks(sessions, tasks):
         s["stage"] = cur.get("stage") if cur else None
 
 
-def resources_digest(cfg, home, sessions, verbose=False):
-    """Sample resources when due; never breaks the collector."""
+def resources_digest(cfg, home, sessions, verbose=False, now=None):
+    """Sample resources when due; never breaks the collector. `now` is the run's clock, so
+    resources.json `at` is never later than what the scheduler compares it with."""
     try:
-        return resources.step(cfg, home, sessions)
+        return resources.step(cfg, home, sessions, now)
     except Exception as exc:  # noqa: BLE001
         if verbose:
             print("resources: sample failed: %s: %s" % (type(exc).__name__, exc))
@@ -733,7 +734,7 @@ def main(argv):
     snap = {"generated_at": now, "sessions": sessions, "decisions": decisions, "tasks": tasks,
             "limit": limit.active(), "owner_away": away.away_record(home),
             "consensus": away.consensus_items(home, now),
-            "resources": resources_digest(cfg, home, sessions, verbose)}
+            "resources": resources_digest(cfg, home, sessions, verbose, now)}
     cdoc = None
     try:  # card extras (lib/cards.py): cards.json, read by board-serve only, never in the snapshot
         cdoc = cards.step(cfg, home, sessions, now, panes, clean_text, clean_title, hosts)

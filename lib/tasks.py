@@ -15,6 +15,8 @@ Usage (through `board task ...`):
   tasks.py progress ID                    say "still moving" (resets the stall clock)
 Prints "ID <what changed>". Exit 1 on a bad value or an unknown task, 2 on a usage error.
 """
+import contextlib
+import fcntl
 import json
 import os
 import re
@@ -62,6 +64,8 @@ def load(home, tid):
         raise Bad("task %s unreadable: %s" % (tid, type(exc).__name__)) from None
     if not isinstance(t, dict):
         raise Bad("task %s is not an object" % tid)
+    if t.get("id") != tid:
+        raise Bad("task file %s.json holds another id; fix or remove it" % tid)
     v = t.get("schema_version", 1)
     if not isinstance(v, int) or v > SCHEMA_VERSION:
         raise Bad("task %s has schema_version %s; this board writes %d (upgrade it)" % (tid, v, SCHEMA_VERSION))
@@ -78,6 +82,25 @@ def save(home, t):
         fh.write("\n")
     os.chmod(tmp, 0o600)
     os.replace(tmp, path)
+
+
+@contextlib.contextmanager
+def locked(home, tid, timeout_s=10.0):
+    """tasks/<id>.json.lock, shared with bin/board's task writers (`task_write`)."""
+    fd = os.open(path_of(home, tid) + ".lock", os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        end = time.monotonic() + timeout_s
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= end:
+                    raise Bad("task %s is locked; try again" % tid) from None
+                time.sleep(0.05)
+        yield
+    finally:
+        os.close(fd)
 
 
 def log_event(home, ev):
@@ -156,6 +179,8 @@ def cmd_dep(home, t, o):
     if "remove" in o:
         if set(o) != {"remove"}:
             raise SystemExit(_usage("dep: --remove goes alone"))
+        if not ID_RE.fullmatch(o["remove"]):
+            raise Bad("--remove: invalid task id")
         deps = [d for d in deps if d["task"] != o["remove"]]
         t["depends_on"] = deps
         return {"removed": o["remove"]}
@@ -217,33 +242,46 @@ def main(argv):
         return _usage("%s: task id first" % verb)
     home = fleet.ensure_home()
     try:
-        t = load(home, rest[0])
-        now = now_ms()
-        if verb == "set":
-            ch = cmd_set(home, t, _opts(rest[1:], ("repo", "branch", "base", "size", "heavy", "priority")))
-        elif verb == "dep":
-            ch = cmd_dep(home, t, _opts(rest[1:], ("on", "kind", "remove")))
-        elif verb == "pr":
-            ch = cmd_pr(home, t, _opts(rest[1:], ("url", "state", "head", "method")))
-        else:
-            if len(rest) > 1:
-                return _usage("%s takes only the task id" % verb)
-            if verb == "progress":
-                t["progress_at"] = now
-                ch = {"progress_at": now}
-            else:
-                t["status"] = VERBS[verb]
-                if verb == "done":
-                    t["done_at"] = now
-                ch = {"status": VERBS[verb]}
-        t["updated_at"] = now
-        save(home, t)
+        if not os.path.isfile(path_of(home, rest[0])):
+            raise Bad("no such task: %s" % rest[0])
+        with locked(home, rest[0]):
+            t, ch, now = apply(home, verb, rest)
+            if t is None:
+                return ch
+            save(home, t)
     except Bad as exc:
         sys.stderr.write("board: task %s: %s\n" % (verb, exc))
         return 1
     log_event(home, dict({"ts": now, "type": "task", "id": t["id"], "action": verb}, **ch))
     print("%s %s" % (t["id"], " ".join("%s=%s" % (k, v) for k, v in sorted(ch.items()))))
     return 0
+
+
+def apply(home, verb, rest):
+    """Load the task, apply VERB; returns (task, changes, now), or (None, exit code, None)."""
+    t = load(home, rest[0])
+    now = now_ms()
+    if verb == "set":
+        ch = cmd_set(home, t, _opts(rest[1:], ("repo", "branch", "base", "size", "heavy", "priority")))
+    elif verb == "dep":
+        ch = cmd_dep(home, t, _opts(rest[1:], ("on", "kind", "remove")))
+    elif verb == "pr":
+        ch = cmd_pr(home, t, _opts(rest[1:], ("url", "state", "head", "method")))
+    else:
+        if len(rest) > 1:
+            return None, _usage("%s takes only the task id" % verb), None
+        if verb == "progress":
+            t["progress_at"] = now
+            ch = {"progress_at": now}
+        else:
+            t["status"] = VERBS[verb]
+            if verb == "done":
+                t["done_at"] = now
+            else:
+                t.pop("done_at", None)
+            ch = {"status": VERBS[verb]}
+    t["updated_at"] = now
+    return t, ch, now
 
 
 if __name__ == "__main__":

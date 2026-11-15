@@ -437,6 +437,23 @@ task_path() {
   echo "$BOARD_HOME/tasks/$1.json"
 }
 
+# task_write PATH JQ-ARGS... — read-modify-write a task file under tasks/<id>.json.lock (the lock
+# lib/tasks.py takes too), so a gate added by `board ask` and a field set by `board task` never
+# overwrite each other.
+task_write() {
+  local tf="$1" out rc=1
+  shift
+  command -v flock >/dev/null 2>&1 || die "flock is required (util-linux)"
+  exec 7>>"$tf.lock" || die "cannot open $tf.lock"
+  if flock -w 10 7; then
+    out="$(jq "$@" "$tf")" && write_atomic "$tf" "$out" && rc=0
+  else
+    echo "board: task $(basename "$tf" .json) is locked; try again" >&2
+  fi
+  flock -u 7 2>/dev/null; exec 7>&-
+  return "$rc"
+}
+
 new_id() {  # new_id PREFIX NOW_MS
   printf '%s-%s-%04x%04x\n' "$1" "$(( $2 / 1000 ))" "$RANDOM" "$RANDOM"
 }
@@ -496,10 +513,10 @@ cmd_ask() {
          { task_id: ($task | nz), stage: ($stage | nz), gate: ($gate | nz), artifact_ref: ($art | nz) }
        else {} end)' | { python3 "$GUARD" scrub-json || [ $? = 3 ]; })"
   if [ -n "$tf" ]; then
-    write_atomic "$tf" "$(jq --arg id "$id" --arg stage "$stage" --arg gate "$gate" --argjson now "$now" '
+    task_write "$tf" --arg id "$id" --arg stage "$stage" --arg gate "$gate" --argjson now "$now" '
       .gates = ((.gates // []) + [{ stage: $stage, gate: $gate, status: "pending", decision_id: $id,
                                     approved_by: null, approved_at: null }])
-      | .updated_at = $now' "$tf")"
+      | .updated_at = $now' || echo "board: ask: could not record the gate on task $task" >&2
   fi
   log_event "$(jq -cn --arg id "$id" --arg from "$from" --arg task "$task" --arg gate "$gate" --argjson now "$now" \
     '{ts: $now, type: "ask", id: $id, from: $from} + (if $task == "" then {} else {task_id: $task} end)
@@ -779,14 +796,14 @@ cmd_answer() {
     if [ -n "$task_id" ]; then
       local tf; tf="$(task_path "$task_id")"
       if [ -f "$tf" ]; then
-        write_atomic "$tf" "$(jq --arg id "$id" --arg result "$result" --arg by "$by" --argjson now "$now" '
+        task_write "$tf" --arg id "$id" --arg result "$result" --arg by "$by" --argjson now "$now" '
           .gates = [ (.gates // [])[] | if .decision_id == $id then
                        .status = $result
                        | .approved_by = (if $result == "approved" then $by else null end)
                        | .approved_at = (if $result == "approved" then $now else null end)
                        | .answered_by = $by
                      else . end ]
-          | .updated_at = $now' "$tf")"
+          | .updated_at = $now' || echo "board: answer: could not update task $task_id" >&2
       fi
     fi
     echo "$id answered ($gate gate $result)"
@@ -1022,8 +1039,8 @@ task_stage() {
     arts_json="$(jq -c --arg k "$key" --arg v "${a#*=}" '.[$k] = $v' <<<"$arts_json")"
   done
   local now; now="$(now_ms)"
-  write_atomic "$tf" "$(jq --arg stage "$stage" --argjson arts "$arts_json" --argjson now "$now" \
-    '.stage = $stage | .artifacts = ((.artifacts // {}) + $arts) | .updated_at = $now' "$tf")"
+  task_write "$tf" --arg stage "$stage" --argjson arts "$arts_json" --argjson now "$now" \
+    '.stage = $stage | .artifacts = ((.artifacts // {}) + $arts) | .updated_at = $now' || die "task stage: could not update $id"
   log_event "$(jq -cn --arg id "$id" --arg stage "$stage" --argjson arts "$arts_json" --argjson now "$now" \
     '{ts: $now, type: "task", id: $id, stage: $stage, artifacts: $arts, action: "stage"}')"
   echo "$id $stage"
@@ -1040,11 +1057,11 @@ task_ls() {
   local all; all="$(jq -s 'sort_by(.updated_at)' "${files[@]}")"
   if [ "$json" = 1 ]; then echo "$all"; return 0; fi
   {
-    printf 'ID\tOWNER\tSTATUS\tSTAGE\tGATES\tARTIFACTS\tTITLE\n'
-    jq -r "$JQ_SAFE"'.[] | [ .id, .owner, (.status // "active"), .stage,
+    printf 'ID\tOWNER\tSTAGE\tGATES\tARTIFACTS\tTITLE\tSTATUS\n'
+    jq -r "$JQ_SAFE"'.[] | [ .id, .owner, .stage,
       ((.gates // []) | if length == 0 then "-" else map(.stage + "/" + .gate + ":" + .status) | join(",") end),
       ((.artifacts // {}) | to_entries | map(select(.value != null) | .key) | if length == 0 then "-" else join(",") end),
-      (.title | gsub("[\t\n]"; " ") | .[0:50]) ] | map(safe) | @tsv' <<<"$all"
+      (.title | gsub("[\t\n]"; " ") | .[0:50]), ((.status // "active") | tostring) ] | map(safe) | @tsv' <<<"$all"
   } | column -t -s $'\t'
 }
 

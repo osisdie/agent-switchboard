@@ -13,6 +13,7 @@ Usage:
 """
 import hashlib
 import json
+import math
 import os
 import re
 import sys
@@ -39,6 +40,8 @@ FREE = ("done", "rest")
 STATE_ORDER = ("run", "ready", "queued", "deferred", "blocked", "paused")
 SEVERITY_ORDER = ("high", "warn", "info")
 RES_STALE_MS = 5 * 60 * 1000         # resources.json older than this: no resource gates
+RES_SKEW_MS = 30 * 1000              # ... or ahead of the caller's clock by more than this
+RSS_BUCKET_MB = 256                  # process sizes in advisories, so small growth is not a change
 HOUR_MS = 3600 * 1000
 # Advisory text never reads like an approval, a deploy order or a board decision.
 BANNED_RE = re.compile(r"approv|deploy|\[BOARD|decision", re.I)
@@ -46,7 +49,7 @@ SAFE_NAME_RE = re.compile(r"[A-Za-z0-9._-]{1,40}")
 
 
 def _int(v, default, lo, hi):
-    if isinstance(v, bool) or not isinstance(v, (int, float)):
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
         return default
     return int(max(lo, min(hi, v)))
 
@@ -69,7 +72,58 @@ def settings(cfg):
 
 
 def _num(v, default=0):
-    return v if isinstance(v, (int, float)) and not isinstance(v, bool) else default
+    """A finite number, else DEFAULT (NaN and Infinity parse from JSON in Python)."""
+    return v if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) else default
+
+
+def _s(v):
+    return v if isinstance(v, str) else None
+
+
+def _dicts(v):
+    return [x for x in v if isinstance(x, dict)] if isinstance(v, list) else []
+
+
+# Inputs are files anyone (or a bug) may have written: normalise them at the boundary, so the
+# decision below only ever sees the types it expects.
+def clean_task(t):
+    if not isinstance(t, dict) or not isinstance(t.get("id"), str) or not taskstore.ID_RE.fullmatch(t["id"]):
+        return None
+    pr = t.get("pr") if isinstance(t.get("pr"), dict) else {}
+    out = {k: _s(t.get(k)) for k in ("owner", "stage", "size", "repo", "branch", "base")}
+    out.update({
+        "id": t["id"], "status": taskstore.status_of(t) if isinstance(t.get("status"), (str, type(None))) else "active",
+        "heavy": t.get("heavy") is True, "priority": _int(t.get("priority"), 1, 0, 3),
+        "gates": [{k: _s(g.get(k)) for k in ("gate", "status", "decision_id")} for g in _dicts(t.get("gates"))],
+        "depends_on": [{"task": d["task"], "kind": _s(d.get("kind")) or "done"}
+                       for d in _dicts(t.get("depends_on")) if isinstance(d.get("task"), str)],
+        "pr": {k: _s(pr.get(k)) for k in ("state", "method", "head_sha")},
+    })
+    out.update({k: int(_num(t.get(k))) for k in ("updated_at", "progress_at", "created_at")})
+    return out
+
+
+def clean_sessions(sessions):
+    return [{"code": s["code"], "aliases": [a for a in s.get("aliases") or [] if isinstance(a, str)]
+             if isinstance(s.get("aliases"), list) else [], "state": _s(s.get("state")) or "offline",
+             "updated_at": int(_num(s.get("updated_at")))}
+            for s in _dicts(sessions) if isinstance(s.get("code"), str)]
+
+
+def clean_res(res):
+    if not isinstance(res, dict):
+        return None
+    mem = res.get("mem") if isinstance(res.get("mem"), dict) else {}
+    return {
+        "enabled": res.get("enabled") is not False, "at": _num(res.get("at"), None),
+        "level": res.get("level") if _s(res.get("level")) in LEVELS else None,
+        "total_mb": _num(mem.get("total_mb")), "heavy_running": int(_num(res.get("heavy_running"))),
+        "sessions": [{"code": r["code"], "heavy_n": int(_num(r.get("heavy_n"))), "children": [
+            {"class": _s(c.get("class")), "comm": _s(c.get("comm")), "via": _s(c.get("via")),
+             "pid": int(_num(c.get("pid"))), "rss_mb": int(_num(c.get("rss_mb"))), "heavy": c.get("heavy") is True}
+            for c in _dicts(r.get("children"))]}
+            for r in _dicts(res.get("sessions")) if isinstance(r.get("code"), str)],
+    }
 
 
 def touched(t):
@@ -96,13 +150,13 @@ def dep_met(dep, by_id):
 
 def _resources(res, now):
     """(level or None, state of resources.json): resource gates apply only to a fresh sample."""
-    if not isinstance(res, dict):
+    if res is None:
         return None, "missing"
-    if res.get("enabled") is False:
+    if not res["enabled"]:
         return None, "disabled"
-    if not 0 <= now - int(_num(res.get("at"))) <= RES_STALE_MS:
+    if res["at"] is None or not -RES_SKEW_MS <= now - res["at"] <= RES_STALE_MS:
         return None, "stale"
-    return (res.get("level") if res.get("level") in LEVELS else None), "ok"
+    return res["level"], "ok"
 
 
 def _adv(kind, to, task, ref, severity, text, fallback, **extra):
@@ -124,22 +178,22 @@ def _ref(v, fallback):
 
 
 def decide(tasks, sessions, res, st, now):
-    """The scheduling decision. Pure: reads only its arguments."""
+    """The scheduling decision. Pure: reads only its arguments, which may hold anything."""
+    tasks = [t for t in (clean_task(x) for x in (tasks if isinstance(tasks, list) else [])) if t]
+    sessions, res = clean_sessions(sessions), clean_res(res)
     level, res_state = _resources(res, now)
     lvl = LEVELS.index(level) if level else 0
     code_of, sstate, since = {}, {}, {}
-    for s in sessions or []:
-        if isinstance(s, dict) and isinstance(s.get("code"), str):
-            for a in [s["code"]] + list(s.get("aliases") or []):
-                code_of.setdefault(a, s["code"])
-            sstate[s["code"]] = s.get("state") or "offline"
-            since[s["code"]] = int(_num(s.get("updated_at")))
-    rsess = {r.get("code"): r for r in (res or {}).get("sessions") or [] if isinstance(r, dict)} if res_state == "ok" else {}
-    mem_mb = _num(((res or {}).get("mem") or {}).get("total_mb"), 0)
+    for s in sessions:
+        for a in [s["code"]] + s["aliases"]:
+            code_of.setdefault(a, s["code"])
+        sstate[s["code"]] = s["state"]
+        since[s["code"]] = s["updated_at"]
+    rsess = {r["code"]: r for r in res["sessions"]} if res_state == "ok" else {}
+    mem_mb = res["total_mb"] if res else 0
     max_heavy = st["max_heavy"] if st["max_heavy"] != "auto" else (1 if 0 < mem_mb < 16384 else 2)
 
-    by_id = {t["id"]: t for t in tasks or [] if isinstance(t, dict) and isinstance(t.get("id"), str)
-             and taskstore.ID_RE.fullmatch(t["id"])}
+    by_id = {t["id"]: t for t in tasks}
     live = {i: t for i, t in by_id.items() if taskstore.status_of(t) not in ("done", "dropped")}
     unblocks = {}
     for t in live.values():
@@ -204,9 +258,9 @@ def decide(tasks, sessions, res, st, now):
     # Heavy slots: none at high or worse; else max_heavy less what already runs. Fairness: a
     # session that holds fewer heavy processes gets a slot first, then score, then the longest wait.
     running_heavy = sum(1 for r in rows.values() if r["state"] == "run" and r["heavy"])
-    used = max(running_heavy, int(_num((res or {}).get("heavy_running"))) if res_state == "ok" else 0)
+    used = max(running_heavy, res["heavy_running"] if res_state == "ok" else 0)
     free_slots = 0 if lvl >= 2 else max(0, max_heavy - used)
-    held = {c: int(_num((rsess.get(c) or {}).get("heavy_n"))) for c in free_owners}
+    held = {c: (rsess.get(c) or {}).get("heavy_n", 0) for c in free_owners}
     asks = sorted((picks[c][0] for c in free_owners if picks[c] and picks[c][0]["heavy"]),
                   key=lambda r: (held[r["session"]],) + rank_key(r))
     granted = {r["task"] for r in asks[:free_slots]}
@@ -223,7 +277,7 @@ def decide(tasks, sessions, res, st, now):
                 advisories.append(_adv(
                     "defer", code, r["task"], r["blocked_by"][0]["ref"], "warn",
                     "Task %s is heavy and %s: hold its test runs, builds and browsers; take lighter work first." % (r["task"], reason),
-                    "Task %s is heavy: hold its heavy runs for now; take lighter work first." % r["task"]))
+                    "A heavy task of yours has to wait: hold its heavy runs for now; take lighter work first."))
         ready = [r for r in picks[code] if r["state"] is None]
         for n, r in enumerate(ready):
             r["state"] = "ready" if n == 0 else "queued"
@@ -262,34 +316,37 @@ def decide(tasks, sessions, res, st, now):
             r = rows[j]
             if j == i or y.get("base") != x["branch"] or not r["session"] or (y.get("repo") and x.get("repo") and y["repo"] != x["repo"]):
                 continue
-            onto = _ref(x.get("base"), "main")
+            onto = _ref(x.get("base"), "<base>")
             advisories.append(_adv(
                 "rebase-needed", r["session"], j, i, "warn",
                 "Task %s was squash-merged. Rebase your branch: git rebase --onto origin/%s %s %s; force-push only your own "
                 "feature branch with --force-with-lease, and point the PR base at %s." % (
                     i, onto, pr.get("head_sha") if taskstore.SHA_RE.fullmatch(str(pr.get("head_sha"))) else "<its old tip>",
                     _ref(y.get("branch"), "<your branch>"), onto),
-                "Task %s was squash-merged: rebase your stacked branch with git rebase --onto, force-push only your own "
-                "branch with --force-with-lease, and point the PR base at the merged branch's base." % i))
+                "A task your branch is stacked on was squash-merged: rebase with git rebase --onto, force-push only "
+                "your own branch with --force-with-lease, and point the PR base at the merged branch's base."))
 
     # Critical: ask the sessions holding the largest heavy processes to stop their own.
     if lvl == 3 and st["stop_own_heavy"]:
         biggest = []
-        for code, r in sorted(rsess.items(), key=lambda kv: str(kv[0])):
-            hv = [c for c in r.get("children") or [] if isinstance(c, dict) and c.get("heavy") is True]
-            if hv and isinstance(code, str):
-                biggest.append((code, max(hv, key=lambda c: (_num(c.get("rss_mb")), -_num(c.get("pid"))))))
-        biggest.sort(key=lambda b: (-_num(b[1].get("rss_mb")), b[0]))
+        def size(c):                     # bucketed, so a growing process does not change the decision
+            return c["rss_mb"] // RSS_BUCKET_MB * RSS_BUCKET_MB
+        for code, r in sorted(rsess.items()):
+            hv = [c for c in r["children"] if c["heavy"]]
+            if hv:
+                biggest.append((code, max(hv, key=lambda c: (size(c), -c["pid"]))))
+        biggest.sort(key=lambda b: (-size(b[1]), b[0]))
         for code, c in biggest[:st["stop_max"]]:
-            cls = _safe(c.get("class"), "heavy")
-            who = "you or your teammate %s" % _safe(c.get("via"), "") if c.get("via") else "you"
+            cls = _safe(c["class"], "heavy")
+            via = _safe(c["via"], "")
+            who = "you or your teammate %s" % via if via else "you"
+            mb = ("about %d MB" % size(c)) if size(c) else ("under %d MB" % RSS_BUCKET_MB)
             advisories.append(_adv(
-                "stop-own-heavy", code, None, c.get("pid"), "high",
-                "Memory is critical: if %s started the %s process %s (pid %s, %s MB), stop it now and re-run it later. "
-                "Never stop a process you did not start." % (who, cls, _safe(c.get("comm"), cls), int(_num(c.get("pid"))),
-                                                             int(_num(c.get("rss_mb")))),
+                "stop-own-heavy", code, None, c["pid"], "high",
+                "Memory is critical: if %s started the %s process %s (pid %d, %s), stop it now and re-run it later. "
+                "Never stop a process you did not start." % (who, cls, _safe(c["comm"], cls), c["pid"], mb),
                 "Memory is critical: stop the largest heavy process you started yourself, and re-run it later.",
-                pid=int(_num(c.get("pid"))), comm=_safe(c.get("comm"), cls), rss_mb=int(_num(c.get("rss_mb"))), **{"class": cls}))
+                pid=c["pid"], comm=_safe(c["comm"], cls), rss_mb=size(c), **{"class": cls}))
 
     queue = sorted(rows.values(), key=lambda r: (STATE_ORDER.index(r["state"]),) + rank_key(r))
     for n, r in enumerate(queue, 1):
@@ -304,9 +361,14 @@ def decide(tasks, sessions, res, st, now):
     return body
 
 
-def off_doc():
-    body = {"schema_version": SCHEMA_VERSION, "enabled": False, "mode": "off", "level": None, "resources": None,
-            "max_heavy": None, "heavy_used": None, "start": [], "queue": [], "stuck": [], "advisories": []}
+def off_doc(error=None):
+    """schedule.enabled: false (mode off), or a decision that failed (mode error): no advice at all,
+    rather than old advice that no longer holds."""
+    body = {"schema_version": SCHEMA_VERSION, "enabled": error is not None, "mode": "error" if error else "off",
+            "level": None, "resources": None, "max_heavy": None, "heavy_used": None, "start": [], "queue": [],
+            "stuck": [], "advisories": []}
+    if error:
+        body["error"] = error
     body["digest"] = digest(body)
     return body
 
@@ -339,7 +401,10 @@ def step(cfg, home, sessions, tasks, now):
     """The collector's step: decide, and write scheduler.json when the decision changed.
     Returns (doc, written)."""
     st = settings(cfg)
-    doc = decide(tasks, sessions, read_json(os.path.join(home, "resources.json")), st, now) if st["enabled"] else off_doc()
+    try:
+        doc = decide(tasks, sessions, read_json(os.path.join(home, "resources.json")), st, now) if st["enabled"] else off_doc()
+    except Exception as exc:  # noqa: BLE001 - a bug must not leave stale advice in place
+        doc = off_doc(type(exc).__name__)
     old = read_json(os.path.join(home, FILE))
     if isinstance(old, dict) and old.get("digest") == doc["digest"] and digest(old) == doc["digest"]:
         return old, False

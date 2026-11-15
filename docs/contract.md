@@ -1309,11 +1309,13 @@ the file has no heartbeat and `generated_at` is when the decision last changed. 
 All optional; task files without them stay valid. `lib/tasks.py` writes a task atomically, mode
 0600, with `schema_version: 1` (`board task new` too), and refuses to modify a file with a higher
 `schema_version`. Each change sets `updated_at` and appends `{ts, type: "task", id, action, ...}` to
-`events.jsonl`. Concurrent writers: the last one wins.
+`events.jsonl`. Every read-modify-write of a task (`board task`, the gate entries `board ask --task`
+and `board answer` add) holds `tasks/<id>.json.lock` (flock, 10 s), so no update is lost. A file
+whose `id` is not its name is never modified.
 
 | field | values | set by |
 |---|---|---|
-| `status` | `active` (default) `paused` `blocked` `done` `dropped` | `board task resume|pause|block|done|drop ID` (`done` also sets `done_at`) |
+| `status` | `active` (default) `paused` `blocked` `done` `dropped` | `board task resume|pause|block|done|drop ID` (`done` sets `done_at`, the others clear it) |
 | `repo`, `branch`, `base` | `[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,199}`, no `..` | `board task set ID --repo R --branch B --base B` |
 | `size` | `S` `M` `L` (unset = M for scoring) | `--size` |
 | `heavy` | `true` / `false` (test runs, builds, browsers) | `--heavy yes|no` |
@@ -1329,7 +1331,7 @@ leaves the file alone; a usage error exits 2.
 ### scheduler.json
 
 ```json
-{ "schema_version": 1, "enabled": true, "mode": "normal|degraded|off",
+{ "schema_version": 1, "enabled": true, "mode": "normal|degraded|off|error", "error": "ValueError"?,
   "level": "ok|warn|high|critical"|null, "resources": "ok|stale|missing|disabled",
   "max_heavy": 2, "heavy_used": 1, "start": ["t-.."],
   "queue": [ {"rank": 1, "task": "t-..", "owner": "API", "session": "API"|null,
@@ -1339,13 +1341,17 @@ leaves the file alone; a usage error exits 2.
   "stuck": [ {"task": "t-..", "session": "API", "severity": "warn|high", "since": 0} ],
   "advisories": [ {"id": "a-<12 hex>", "to": "API", "kind": "defer|resume|finish-first|rebase-needed|stop-own-heavy",
                    "task": "t-.."|null, "severity": "info|warn|high", "text": "..",
-                   "pid": 0, "comm": "pytest", "class": "test", "rss_mb": 0} ],
+                   "pid": 0, "comm": "pytest", "class": "test", "rss_mb": 1024} ],
   "digest": "<sha1 of everything but digest and generated_at>", "generated_at": 0 }
 ```
 
 - **Tasks.** `done` and `dropped` tasks are left out. A task's owner is matched to a session by
-  code or alias. `level` is used only when `resources.json` is enabled and under 5 minutes old;
-  otherwise no resource gate applies.
+  code or alias. `level` is used only when `resources.json` is enabled and under 5 minutes old (or
+  at most 30 s ahead of the clock); otherwise no resource gate applies.
+- **Inputs are untrusted.** Tasks, sessions and `resources.json` are normalised first: a task
+  without a valid id is skipped, a field of the wrong type is unset, a list that is not a list is
+  empty, and only finite numbers count. If the decision still fails, the file becomes
+  `mode: "error"` with no queue and no advisories, rather than keeping old advice.
 - **Gates, in order:** `paused`; `blocked` by `manual` (status blocked), `redline` (stage
   `production`: the scheduler never lets it run or start), `human` (a pending gate) or `task` (an
   unmet dependency); `deferred` by `session` (the owner is offline or unknown) or `resource`.
@@ -1369,18 +1375,23 @@ leaves the file alone; a usage error exits 2.
   `stuck: warn|high`. Waiting on the owner (`needs-you`) is not stuck.
 - **Advisories.** Ids hash `(kind, to, task, ref)`, so the same condition keeps its id. Texts name
   only task ids, validated branch names and process names; a text that would contain "approv",
-  "deploy", "decision" or `[BOARD` falls back to a generic one.
+  "deploy", "decision" or `[BOARD` falls back to a generic one that names nothing.
   - `defer` (warn): the heavy task a session would start next has no slot.
   - `resume` (info): a session has been `done`/`rest` for `idle_with_work_minutes` (30) with a ready task.
   - `finish-first` (warn, `one_pr_per_repo`): another task in the same `repo` has the open PR (the
     best-ranked open PR goes first); a `run`/`ready` task holds its push and PR.
   - `rebase-needed` (warn): a task whose `base` is the `branch` of a squash-merged task gets the
-    `git rebase --onto origin/<base> <head_sha> <branch>` line, force-push only with
+    `git rebase --onto origin/<base> <head_sha> <branch>` line (`<base>` stays a placeholder when
+    the merged task has none), force-push only with
     `--force-with-lease` on its own branch, and the PR base to retarget.
   - `stop-own-heavy` (high, `stop_own_heavy`): at `critical`, the `stop_max` (2) sessions holding
     the largest heavy process (`resources.json` children) are asked to stop it if they or their
     teammate started it, and never one they did not start. The board never stops a process.
+    `rss_mb` is floored to 256 MB, so a growing process does not change the decision.
 - `board schedule [--json]` prints the last decision (read-only, through the secret guard).
+- TODO (with delivery, PR 2/3): settle `deploy` dependency semantics (today: `maintain`, or the
+  production gate approved), escape PR URLs where they are rendered, and validate an advisory's
+  `to` against live session codes before anything is sent.
 
 Settings (`fleet.yaml`):
 

@@ -1743,6 +1743,18 @@ jq '.schema_version = 99' "$tf2" > "$tf2.x" && mv "$tf2.x" "$tf2"
 "$B" task set "$t2" --size S >/dev/null 2>&1; eq "newer schema_version is never modified" "$?" "1"
 "$B" task done "$t2" >/dev/null 2>&1; jq '.schema_version = 1' "$tf2" > "$tf2.x" && mv "$tf2.x" "$tf2"
 "$B" task done "$t2" >/dev/null; eq "done" "$(jq -r '.status + "," + ((.done_at > 0) | tostring)' "$tf2")" "done,true"
+"$B" task resume "$t2" >/dev/null; eq "resume clears done_at" "$(jq -r '.status + "," + (.done_at | tostring)' "$tf2")" "active,null"
+"$B" task done "$t2" >/dev/null
+"$B" task dep "$t2" --remove 'a b' >/dev/null 2>&1; eq "dep --remove checks the id" "$?" "1"
+printf '{"id":"t-other","owner":"CP","title":"x","stage":"plan"}\n' > "$BOARD_HOME/tasks/t-9-mismatch.json"
+"$B" task set t-9-mismatch --size S >/dev/null 2>&1; eq "file holding another id refused" "$?" "1"
+eq "no file written for the other id" "$(ls "$BOARD_HOME/tasks" | grep -c '^t-other')" "0"
+rm -f "$BOARD_HOME/tasks/t-9-mismatch.json"*
+(flock "$tf.lock" sleep 1) & lockpid=$!; sleep 0.2
+"$B" task progress "$tid" >/dev/null; r1=$?
+"$B" task stage "$tid" build >/dev/null; r2=$?
+wait "$lockpid"
+eq "task writers wait for the task lock" "$r1,$r2" "0,0"
 "$REPO/bin/board-collect" --once --no-notify
 sf="$BOARD_HOME/scheduler.json"
 eq "scheduler.json written, mode 0600" "$(stat -c %a "$sf" 2>/dev/null)" "600"

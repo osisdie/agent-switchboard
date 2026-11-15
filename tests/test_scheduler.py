@@ -115,6 +115,21 @@ class Levels(unittest.TestCase):
             self.assertEqual((d["resources"], d["level"], d["mode"]), (state, None, "normal"))
             self.assertIn("t-h", d["start"])
 
+    def test_small_clock_skew_is_fresh(self):
+        for at, state in ((NOW + 1, "ok"), (NOW + 30 * 1000, "ok"), (NOW + 31 * 1000, "stale")):
+            d = scheduler.decide(self.tasks, self.sessions, res("high", at=at), ST, NOW)
+            self.assertEqual(d["resources"], state)
+
+    def test_process_growth_does_not_change_the_decision(self):
+        def procs(rss):
+            return [{"code": "API", "heavy_n": 1, "children": [
+                {"class": "test", "comm": "pytest", "pid": 11, "rss_mb": rss, "heavy": True, "via": None}]}]
+        a = self.run_at("critical", sessions=procs(1030))
+        b = self.run_at("critical", sessions=procs(1270))
+        self.assertEqual(a["digest"], b["digest"])
+        self.assertIn("about 1024 MB", kinds(a, "stop-own-heavy")[0]["text"])
+        self.assertNotEqual(a["digest"], self.run_at("critical", sessions=procs(1290))["digest"])
+
     def test_max_heavy_auto_follows_memory(self):
         self.assertEqual(self.run_at("ok", total_mb=8000)["max_heavy"], 1)
         self.assertEqual(self.run_at("ok")["max_heavy"], 2)
@@ -251,6 +266,9 @@ class Repo(unittest.TestCase):
         [a] = kinds(d, "rebase-needed")
         self.assertIn("git rebase --onto origin/main abc1234 feat/b", a["text"])
         self.assertIn("--force-with-lease", a["text"])
+        x.pop("base")
+        d = scheduler.decide([x, y], [sess("API", "working")], res(), ST, NOW)
+        self.assertIn("--onto origin/<base> abc1234 feat/b", kinds(d, "rebase-needed")[0]["text"])
         x["pr"]["method"] = "merge"
         self.assertEqual(kinds(scheduler.decide([x, y], [sess("API")], res(), ST, NOW), "rebase-needed"), [])
 
@@ -289,6 +307,41 @@ class Invariants(unittest.TestCase):
                     self.assertNotEqual(t["stage"], "production")
             self.assertEqual(len({a["id"] for a in d["advisories"]}), len(d["advisories"]))
 
+    def test_fallback_text_is_generic(self):
+        ts = [task("approved-deploy", stage="test", heavy=True)]
+        d = scheduler.decide(ts, [sess("API")], res("high"), ST, NOW)
+        [a] = kinds(d, "defer")
+        self.assertEqual(a["task"], "approved-deploy")
+        self.assertNotIn("approved-deploy", a["text"])
+
+    def test_hostile_json_never_raises(self):
+        inf, nan = float("inf"), float("nan")
+        bad_tasks = [
+            {"id": "t-1", "owner": ["API"], "stage": {"x": 1}, "size": [1], "status": ["done"], "priority": nan,
+             "depends_on": [{"task": ["t-2"]}, 5, {"task": "t-2", "kind": [1]}], "gates": 7, "pr": ["open"],
+             "updated_at": inf, "progress_at": nan, "created_at": "yesterday", "heavy": "yes"},
+            {"id": "t-2", "owner": "API", "depends_on": 3, "gates": [1, None, {"status": ["pending"]}],
+             "pr": {"state": {"a": 1}}, "updated_at": -inf, "repo": ["r"], "branch": 5, "base": {}},
+            {"id": ["t-3"]}, {"id": "../x"}, "t-4", None, 5, [],
+        ]
+        bad_sessions = [{"code": ["API"]}, {"code": "API", "aliases": "API", "state": ["working"], "updated_at": nan},
+                        {"code": "WEB", "aliases": [["x"], "web"], "updated_at": inf}, 7, None]
+        bad_res = [
+            [], "x", 5, {"at": inf}, {"at": nan, "level": ["high"]},
+            {"at": NOW, "level": "critical", "mem": "lots", "heavy_running": inf, "sessions": 5},
+            {"at": NOW, "level": "critical", "mem": {"total_mb": nan}, "sessions": [
+                5, {"code": ["API"]}, {"code": "API", "heavy_n": nan, "children": 3},
+                {"code": "WEB", "children": [5, {"heavy": True, "pid": inf, "rss_mb": nan, "comm": ["x"], "class": {}}]}]},
+        ]
+        for tasks in (bad_tasks, {"t": 1}, None, "x"):
+            for sessions in (bad_sessions, {"a": 1}, None):
+                for r in bad_res:
+                    d = scheduler.decide(tasks, sessions, r, ST, NOW)
+                    json.dumps(d, allow_nan=False)               # finite numbers only
+                    self.assertEqual(d["digest"], scheduler.digest(d))
+        d = scheduler.decide(bad_tasks, bad_sessions, bad_res[-1], ST, NOW)
+        self.assertEqual(sorted(r["task"] for r in d["queue"]), ["t-1", "t-2"])
+
     def test_deterministic_and_order_independent(self):
         for seed in range(50):
             ts, sessions, r = self.scenario(seed)
@@ -320,6 +373,17 @@ class Step(unittest.TestCase):
             self.assertEqual(json.load(fh)["generated_at"], NOW)
         ss[0]["state"] = "working"
         self.assertTrue(scheduler.step({}, self.home, ss, ts, NOW + 4 * MIN)[1])
+
+    def test_a_failing_decision_replaces_old_advice(self):
+        scheduler.step({}, self.home, [sess("API")], [task("t-a")], NOW)
+        real = scheduler.decide
+        scheduler.decide = lambda *a: 1 / 0
+        try:
+            doc, wrote = scheduler.step({}, self.home, [sess("API")], [task("t-a")], NOW + 1000)
+        finally:
+            scheduler.decide = real
+        self.assertTrue(wrote)
+        self.assertEqual((doc["mode"], doc["error"], doc["start"], doc["advisories"]), ("error", "ZeroDivisionError", [], []))
 
     def test_disabled_writes_an_off_doc(self):
         doc, _ = scheduler.step({"schedule": {"enabled": False}}, self.home, [sess("API")], [task("t-a")], NOW)
