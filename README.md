@@ -397,7 +397,8 @@ never counts, and the dangerous things still wait for you.
   ```
 
   Votes are **self-attested**: `--from` is not verified, so each session must vote only as
-  itself (inside tmux, a `--from` other than the tmux session is refused).
+  itself (inside tmux, a `--from` other than the tmux session is refused; a human running it
+  from a personal tmux session uses `TMUX= board consensus …` or a shell outside tmux).
   A vote may change agree → object, never object → agree. When you come back (`board away off`),
   anything still pending becomes `owner_back` and waits for you. `agreed`, `objected` and
   `owner_back` send an info notify.
