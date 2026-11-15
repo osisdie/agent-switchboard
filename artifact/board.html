@@ -158,6 +158,30 @@ time { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .banner.warn { border-color: color-mix(in srgb, var(--deny) 40%, var(--rule)); }
 .banners { display: grid; gap: 10px; }
 .banners:empty { display: none; }
+/* owner away: sessions decide by explicit consensus */
+.banner.away { background: var(--cord-soft); border-color: color-mix(in srgb, var(--cord) 45%, var(--rule)); }
+.banner.away strong { color: var(--cord); }
+.banner.away p { color: var(--ink); }
+.banner.away .said { flex-basis: 100%; color: var(--muted); font-style: italic; overflow-wrap: anywhere; }
+.away-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.away-form label { color: var(--muted); font-size: 14px; }
+.away-form input { flex: 1 1 220px; min-width: 0; min-height: 36px; font: inherit; font-size: 14px; padding: 6px 10px; border: 1px solid var(--rule); border-radius: 5px; background: var(--panel); color: var(--ink); }
+.clist { display: grid; gap: 10px; }
+.ccard { display: grid; gap: 8px; min-width: 0; padding: 12px 14px; border: 1px solid var(--rule); border-radius: var(--r); background: var(--panel); box-shadow: var(--shadow); }
+.ccard .top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; font-size: 13px; }
+.ccard .prop { margin: 0; overflow-wrap: anywhere; }
+.ccard details { font-size: 13px; color: var(--muted); }
+.ccard details ol { margin: 6px 0 0; padding-left: 20px; display: grid; gap: 2px; overflow-wrap: anywhere; }
+.cst { font-family: var(--f-mono); font-size: 12px; padding: 1px 8px; border-radius: 9px; background: var(--off-soft); color: var(--muted); }
+.cst.pending { background: var(--lamp-soft); color: var(--lamp-ink); }
+.cst.agreed { background: var(--ok-soft); color: var(--ok); }
+.cst.objected { background: var(--deny-soft); color: var(--deny); }
+.cst.owner_back { background: var(--cord-soft); color: var(--cord); }
+.votes { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.votes li { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; max-width: 100%; padding: 2px 8px; font-size: 13px; border: 1px solid var(--rule); border-radius: 4px; }
+.votes li.agree { border-color: color-mix(in srgb, var(--ok) 50%, var(--rule)); color: var(--ok); }
+.votes li.object { border-color: color-mix(in srgb, var(--deny) 50%, var(--rule)); color: var(--deny); }
+.votes li.silent { border-style: dashed; color: var(--muted); }
 
 /* ---------- sections ---------- */
 .sec { display: grid; gap: 14px; }
@@ -457,6 +481,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       <button class="icon-btn nav-toggle" id="nav-toggle" type="button" aria-expanded="false" aria-controls="nav-list">Sections ▾</button>
       <ul id="nav-list">
         <li><a href="#decisions" data-spy="decisions">Decisions <span class="zh">決策</span> <span class="badge" id="nav-dec">0</span></a></li>
+        <li><a href="#consensus" data-spy="consensus">Consensus <span class="zh">共識</span> <span class="badge" id="nav-cons">0</span></a></li>
         <li><a href="#lifecycle" data-spy="lifecycle">Lifecycle <span class="zh">流程</span> <span class="badge" id="nav-life">0</span></a></li>
         <li><a href="#board" data-spy="board">Board <span class="zh">看板</span> <span class="badge" id="nav-board">0</span></a></li>
         <li><a href="#messages" data-spy="messages">Messages <span class="zh">訊息</span> <span class="badge" id="nav-msg">0</span></a></li>
@@ -479,6 +504,20 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       <summary id="dec-history-sum">Recent decisions</summary>
       <ul id="dec-history-list"></ul>
     </details>
+  </section>
+
+  <section class="sec" id="consensus" aria-labelledby="h-consensus">
+    <div class="sec-head">
+      <h2 id="h-consensus">Consensus</h2>
+      <span class="hint">While the owner is away, sessions settle cross-session questions only when every participant agrees explicitly. Silence is not agreement; one objection parks it for the owner. Red lines and board asks always wait for the owner. 主人不在時的跨 session 共識（唯讀）。</span>
+    </div>
+    <form class="away-form" id="away-form" hidden>
+      <label for="away-said">Going offline?</label>
+      <input id="away-said" maxlength="500" autocomplete="off" placeholder="Your words for the sessions, e.g. back Monday; agree among yourselves">
+      <button class="btn" type="submit" id="away-on">I'm away</button>
+    </form>
+    <div class="empty" id="cons-empty"><strong>No consensus items.</strong>While the owner is away, a session proposes with <span class="mono">board consensus propose</span> and every participant votes.</div>
+    <div class="clist" id="cons-list"></div>
   </section>
 
   <section class="sec" id="lifecycle" aria-labelledby="h-lifecycle">
@@ -595,6 +634,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     demo: false,
     sessions: [], decisions: [], messages: [], tasks: [], approvals: [],
     operator: null, ledger: null,
+    away: null, consensus: [],   // owner-away record ({since, by, said}) | null; consensus items
     replies: new Map(),
     got: { sessions: false, decisions: false, messages: false, tasks: false, approvals: false, operator: false },
     slow: false, feedError: null, offlineDetail: null,
@@ -653,6 +693,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     return null;
   }
   const rand = () => Math.random().toString(36).slice(2, 8);
+  const objs = (v) => (Array.isArray(v) ? v.filter((x) => x && typeof x === 'object') : []);
   const lc = (s) => str(s).toLowerCase();
   function findSession(name) {
     const n = lc(name);
@@ -684,6 +725,12 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     const ids = S.operator && S.operator.approver_ids;
     if (!Array.isArray(ids)) return null;
     return !!S.me && ids.includes(S.me);
+  }
+  // Local mode: may this viewer turn owner-away mode on or off (board-serve checks it again)?
+  function awayEditor() {
+    if (S.demo) return true;
+    const ids = S.operator && S.operator.approver_ids;
+    return isLocal() && S.mode === 'live' && !!S.me && Array.isArray(ids) && ids.some((i) => lc(i) === lc(S.me));
   }
   function limitText() {
     const L = S.operator && S.operator.limit;
@@ -890,6 +937,14 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   function renderBanners() {
     const box = $('#banners'); box.textContent = '';
     const lim = limitText();
+    if (S.away) {
+      const a = S.away, since = ts(a.since);
+      box.append(h('div', { class: 'banner away', role: 'status' }, h('span', { class: 'lamp working', 'aria-hidden': 'true' }),
+        h('strong', { text: 'Owner away' + (since ? ' since ' + hhmm(since) : '') + (a.by ? ' (by ' + str(a.by) + ')' : '') }),
+        h('p', { text: 'Sessions decide by explicit consensus; red lines and board asks wait for the owner.' }),
+        awayEditor() ? h('button', { class: 'btn primary', type: 'button', disabled: S.busy.has('away'), onclick: () => setAway('off'), text: 'I\'m back' }) : null,
+        a.said ? h('span', { class: 'said', text: '“' + str(a.said) + '”' + (a.legacy ? ' (free-text record)' : '') }) : null));
+    }
     if (operatorOffline()) {
       const hb = ts(S.operator && S.operator.heartbeat_at);
       box.append(h('div', { class: 'banner down', role: 'alert' }, h('span', { class: 'lamp', 'aria-hidden': 'true' }),
@@ -1245,7 +1300,75 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       : 'You can read the threads. Only editors of this board can send messages.';
   }
 
-  function renderAll() { renderHeader(); renderBanners(); renderDecisions(); renderTasks(); renderBoard(); renderMessages(); renderApprovals(); if ($('#info').open) renderLedger(); }
+  /* ----------------------------------------------------------- consensus */
+  const CONS_LABEL = { pending: 'pending', agreed: 'agreed', objected: 'objected · parked for the owner', owner_back: 'back to the owner' };
+  function buildConsensus(c) {
+    const votes = objs(c.votes), last = new Map();
+    for (const v of votes) last.set(str(v.by), v);
+    const parts = Array.isArray(c.participants) ? c.participants.map(str) : [];
+    const agreed = parts.filter((p) => last.has(p) && str(last.get(p).vote) === 'agree').length;
+    const st = str(c.status), ref = str(c.ref), refUrl = safeUrl(ref);
+    return h('article', { class: 'ccard', 'aria-label': 'Consensus ' + str(c.id) + ', ' + (CONS_LABEL[st] || st) },
+      h('div', { class: 'top' },
+        h('span', { class: 'cst ' + st.replace(/[^a-z_]/g, ''), text: CONS_LABEL[st] || st || 'unknown' }),
+        h('span', { class: 'muted' }, 'from ', h('span', { class: 'code-chip', text: str(c.from) || '?' })),
+        h('span', { class: 'muted', text: agreed + '/' + parts.length + ' agreed' }),
+        timeEl(c.decided_at || c.created_at),
+        h('span', { class: 'mono muted', text: str(c.id) })),
+      h('p', { class: 'prop', text: str(c.proposal) }),
+      ref ? (refUrl ? h('a', { class: 'chip', href: refUrl, target: '_blank', rel: 'noopener noreferrer', text: ref }) : h('span', { class: 'chip', text: ref })) : null,
+      h('ul', { class: 'votes', 'aria-label': 'Latest vote of each participant' }, parts.map((p) => {
+        const v = last.get(p), vote = v ? str(v.vote) : '';
+        return h('li', { class: vote === 'agree' || vote === 'object' ? vote : 'silent' },
+          h('span', { class: 'code-chip', text: p }),
+          h('span', { text: vote === 'agree' ? '✓ agree' : vote === 'object' ? '✗ object' : '… no vote yet' }),
+          v && v.at ? timeEl(v.at) : null);
+      })),
+      votes.length ? h('details', null, h('summary', { text: 'Vote record (' + votes.length + ')' }),
+        h('ol', null, votes.map((v) => h('li', null, h('span', { class: 'mono', text: str(v.by) }), ' ', str(v.vote), ' · ', timeEl(v.at),
+          v.note ? ' · ' + str(v.note) : '')))) : null);
+  }
+  function renderConsensus() {
+    const rank = (c) => (c.status === 'pending' ? 0 : 1);
+    const items = S.consensus.slice().sort((a, b) => rank(a) - rank(b) || ts(b.created_at) - ts(a.created_at));
+    $('#nav-cons').textContent = items.length;
+    const e = $('#cons-empty');
+    e.hidden = items.length > 0;
+    if (!items.length) {
+      e.textContent = '';
+      if (S.mode === 'connecting') e.append(h('strong', { text: 'Loading…' }));
+      else if (S.mode === 'offline') e.append(h('strong', { text: 'No board data.' }), 'Consensus items appear here once the page can reach the board.');
+      else e.append(h('strong', { text: 'No consensus items.' }), S.away
+        ? 'A session proposes with board consensus propose; every participant must vote agree.'
+        : 'The owner is here, so sessions ask the owner. Consensus only applies while the owner is away.');
+    }
+    const form = $('#away-form');
+    form.hidden = !!S.away || !awayEditor();
+    $('#away-on').disabled = S.busy.has('away');
+    reconcile($('#cons-list'), items, (c) => str(c.id), (c) => JSON.stringify(c), buildConsensus);
+  }
+  function setAway(state, said) {
+    if (S.demo) {
+      const now = Date.now();
+      if (state === 'on') S.away = { since: now, by: 'board:you', said: said || 'away (set on the board)' };
+      else {
+        S.away = null;
+        S.consensus = S.consensus.map((c) => (c.status === 'pending' ? Object.assign({}, c, { status: 'owner_back', decided_at: now }) : c));
+      }
+      renderAll(); toast('Demo: shown on this page only. Nothing was saved or sent.');
+      return;
+    }
+    if (!isLocal() || !adapter.setAway || S.busy.has('away')) return;
+    S.busy.add('away'); renderBanners(); renderConsensus();
+    adapter.setAway(state, said || '').then((r) => {
+      const same = r && r.status === 'unchanged';
+      if (state === 'off') toast(same ? 'The owner was not marked away.' : 'Welcome back: away mode is off, and pending consensus items are back with you.');
+      else { toast(same ? 'Already marked away; the earlier record is kept.' : 'Marked away: sessions may decide by explicit consensus. Red lines and board asks wait for you.'); $('#away-said').value = ''; }
+    }).catch((e) => handleWriteError(e)).finally(() => { S.busy.delete('away'); renderAll(); });
+  }
+  $('#away-form').addEventListener('submit', (ev) => { ev.preventDefault(); setAway('on', $('#away-said').value.trim()); });
+
+  function renderAll() { renderHeader(); renderBanners(); renderDecisions(); renderConsensus(); renderTasks(); renderBoard(); renderMessages(); renderApprovals(); if ($('#info').open) renderLedger(); }
 
   /* ------------------------------------------------------- writes + relay */
   function fastPath(kind, id, extra) {
@@ -1268,6 +1391,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     if (code === 'not_approver') { toast('Not recorded: you are not an approver for this.', true); return; }
     if (code === 'review_in_session') { toast('Only part of this request is shown here, so it can only be allowed in the session.', true); return; }
     if (code === 'no_approvers') { toast('Nobody is listed as an approver on this board, so no answer is accepted.', true); return; }
+    if (code === 'away_failed') { toast('The board server could not change owner-away mode.', true); return; }
     if (code === 'stale') { toast('That prompt is no longer showing, so nothing was pressed. Handle it in the session.', true); return; }
     if (code === 'remote_refused' || code === 'unauthenticated' || code === 'csrf' || code === 'bad_host' || code === 'not_allowed' || code === 'press_refused') {
       toast('The board server refused this request' + (e.message ? ': ' + e.message : '.'), true); return;
@@ -1487,7 +1611,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   function spy() {
     const line = nav.getBoundingClientRect().bottom + 24;
     let current = 'decisions';
-    for (const id of ['decisions', 'lifecycle', 'board', 'messages', 'approvals']) { const el = document.getElementById(id); if (el && el.getBoundingClientRect().top <= line) current = id; }
+    for (const id of ['decisions', 'consensus', 'lifecycle', 'board', 'messages', 'approvals']) { const el = document.getElementById(id); if (el && el.getBoundingClientRect().top <= line) current = id; }
     if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4) current = 'approvals';
     for (const a of spyLinks) a.setAttribute('aria-current', a.dataset.spy === current ? 'true' : 'false');
   }
@@ -1533,6 +1657,14 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
         S.approvals = docs(snap); S.got.approvals = true; renderHeader(); renderApprovals();
       }, feedFailed('approvals'));
       db.doc('meta/ledger').onSnapshot((snap) => { S.ledger = snap.exists ? snap.data() : null; if ($('#info').open) renderLedger(); }, () => {});
+      // Owner away + consensus: mirrored by the operator; the page never writes them.
+      db.doc('meta/away').onSnapshot((snap) => {
+        const d = snap.exists ? snap.data() : null;
+        S.away = d && d.active === true ? d : null; renderBanners(); renderConsensus();
+      }, () => {});
+      db.collection('consensus').orderBy('created_at', 'desc').limit(50).onSnapshot((snap) => {
+        S.consensus = docs(snap); renderConsensus();
+      }, () => {});
     } catch (e) {
       feedFailed('the board')(e);
     }
@@ -1608,6 +1740,8 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       S.decisions = arr(st.decisions); S.messages = arr(st.messages); S.tasks = arr(st.tasks); S.approvals = arr(st.approvals);
       S.operator = st.operator && typeof st.operator === 'object' ? st.operator : null;
       S.ledger = st.ledger && typeof st.ledger === 'object' ? st.ledger : null;
+      S.away = st.owner_away && typeof st.owner_away === 'object' ? st.owner_away : null;
+      S.consensus = arr(st.consensus);
       S.replies = new Map(Object.entries(st.replies && typeof st.replies === 'object' ? st.replies : {}).map(([k, v]) => [k, arr(v)]));
       S.me = str(st.me) || null; S.writable = st.writable !== false; S.userReady = true;
       S.canMessageLocal = st.can_message === true;
@@ -1648,6 +1782,8 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       },
       answer(d, answer) { return post('/api/decisions/' + encodeURIComponent(d.id) + '/answer', { answer }); },
       sendMessage(ids, targets, body) { return Promise.all(targets.map((to) => post('/api/messages', { to, body }))); },
+      // Approvers only; board-serve runs `board away on|off --by board:<identity>`.
+      setAway(state, said) { return post('/api/away', { state, said }); },
       fastPath() { return null; },
     };
   }
@@ -1706,6 +1842,13 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       { id: 'm-demo-1', to: 'DOCS', body: 'Add a section on the new config flags to the upgrade guide.', by: 'u_demo_editor', created_at: now - 40 * min, status: 'replied', relayed_to: ['DOCS'], relayed_at: now - 39 * min },
     ];
     S.replies = new Map([['m-demo-1', [{ id: 'r1', from: 'DOCS', body: 'Added under "Configuration changes", with a table of old and new flag names.', created_at: now - 31 * min }]]]);
+    S.away = { since: now - 95 * min, by: 'OPS', said: 'Offline until tomorrow 09:00. Agree among yourselves; anything risky waits for me.' };
+    S.consensus = [
+      { id: 'c-demo-2', from: 'API', participants: ['API', 'WEB', 'QA'], ref: '#decisions', proposal: 'Bump the shared test fixture to v2 in both repos before the nightly run.', status: 'pending', created_at: now - 20 * min,
+        votes: [{ by: 'API', vote: 'agree', note: 'proposer', at: now - 20 * min }, { by: 'WEB', vote: 'agree', note: 'Fixture diff reviewed.', at: now - 14 * min }] },
+      { id: 'c-demo-1', from: 'DATA', participants: ['DATA', 'OPS'], ref: null, proposal: 'Rename the staging queue to match the new naming scheme.', status: 'objected', created_at: now - 70 * min, decided_at: now - 61 * min,
+        votes: [{ by: 'DATA', vote: 'agree', note: 'proposer', at: now - 70 * min }, { by: 'OPS', vote: 'object', note: 'A consumer still reads the old name.', at: now - 61 * min }] },
+    ];
     S.ledger = { rows: [
       { version: 'v1', date: '2026-01-05', what: 'Demo row: first version', review: '2 rounds · LGTM', lead: { input: 1200, cache_read: 480000, cache_write: 52000, output: 21000, total: 554200 }, teammate: 310000, note: 'demo' },
     ] };

@@ -25,13 +25,23 @@
 #                                              approver's matching `board answer`, then checks
 #   board notify "text"                        send a Slack message (SLACK_WEBHOOK_URL)
 #   board ack KEY [KEY...]                     acknowledge alerts (board-notify ack; glob ok)
+#   board away on --by WHO --said "owner's words" [--replace]
+#   board away off --by WHO [--said "..."]     owner-away mode ($BOARD_HOME/owner-away)
+#   board away status [--quiet|--json]         exit 0 when the owner is away, 1 when not
+#   board consensus propose --from CODE --to A,B[,..] [--ref REF] "proposal"
+#   board consensus vote ID agree|object --from CODE [--note T]
+#   board consensus ls [--all] | show ID [--markdown]
+#                                              decide among sessions while the owner is away
+#                                              (never for red lines, never for board asks)
 #   board doctor                               check dependencies and installation
 #
 # Env: BOARD_HOME (default ~/.agent-switchboard), BOARD_CONFIG_DIR (default <repo>/tmp-local
 #      if it exists, else ~/.config/agent-switchboard), CLAUDE_SESSIONS_DIR, CLAUDE_SETTINGS.
 #
-# Exit codes: 0 ok, 1 error, 2 usage, 3 press refused: screen/state mismatch (no keys sent),
-#             4 refused: not authorized (answer: not an approver; press: no approver's answer).
+# Exit codes: 0 ok, 1 error (`away status`: the owner is not away), 2 usage (also an unknown
+#             option to `away status`), 3 press refused: screen/state mismatch (no keys sent),
+#             4 refused: not authorized (answer: not an approver; press: no approver's answer;
+#             consensus: not a participant, or --from is not this tmux session).
 set -u
 
 REPO="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
@@ -125,6 +135,34 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
         echo "  post to SLACK_WEBHOOK_URL (env or <config dir>/.env); silent no-op when unset" ;;
     doctor) echo "usage: board doctor"
         echo "  check dependencies, config, hook installation and the collector" ;;
+    away) echo "usage: board away on --by WHO --said \"owner's words\" [--replace]"
+        echo "       board away off --by WHO [--said \"...\"]"
+        echo "       board away status [--quiet|--json]"
+        echo "  owner-away mode. The owner is away while \$BOARD_HOME/owner-away exists, whatever its"
+        echo "  content. Only a session that got the owner's own instruction turns it on or off."
+        echo "  on: records {since, by, said}; when already away it shows the record and keeps it"
+        echo "  (unless --replace). off: removes it; pending consensus items go back to the owner."
+        echo "  status: exit 0 when away, 1 when not (--quiet prints nothing, --json the record);"
+        echo "  2 for a usage error, so a typo never reads as \"not away\"." ;;
+    "away on") echo "usage: board away on --by WHO --said \"owner's words\" [--replace]" ;;
+    "away off") echo "usage: board away off --by WHO [--said \"...\"]" ;;
+    "away status") echo "usage: board away status [--quiet|--json]   (exit 0 = away, 1 = not away, 2 = usage)" ;;
+    consensus) echo "usage: board consensus propose --from CODE --to A,B[,..] [--ref REF] \"proposal\""
+        echo "       board consensus vote ID agree|object --from CODE [--note T]"
+        echo "       board consensus ls [--all]"
+        echo "       board consensus show ID [--markdown]"
+        echo "  while the owner is away, sessions decide cross-session questions by explicit consensus:"
+        echo "  every participant must vote agree (the proposer counts as agreeing); silence is not"
+        echo "  agreement; one objection parks the item for the owner. When the owner comes back"
+        echo "  (board away off) pending items become owner_back. A vote may change agree -> object,"
+        echo "  never object -> agree. Consensus never answers a board ask."
+        echo "  Votes are self-attested: --from is declared by the caller, not verified. Each session"
+        echo "  votes only as itself. Inside tmux, a --from that is not this tmux session is refused (exit 4)."
+        red_lines_text | sed 's/^/  /' ;;
+    "consensus propose") echo "usage: board consensus propose --from CODE --to A,B[,..] [--ref REF] \"proposal\"   (prints the id)" ;;
+    "consensus vote") echo "usage: board consensus vote ID agree|object --from CODE [--note T]" ;;
+    "consensus ls") echo "usage: board consensus ls [--all]   (default: pending, plus anything decided in the last 24 h)" ;;
+    "consensus show") echo "usage: board consensus show ID [--markdown]   (--markdown: a block to paste into the PR/ticket)" ;;
     *) usage ;;
   esac
 }
@@ -670,7 +708,9 @@ cmd_notify() {
   [ -n "$url" ] || return 0
   command -v curl >/dev/null 2>&1 || return 0
   local payload
-  payload="$(jq -cn --arg t "$text" '{text: $t}')"
+  # Slack control sequences (<!channel>, <url|label>, <@U...>) come from & < >: escape them, as
+  # lib/notify.py slack_escape does, so text from sessions or the owner can't ping or link.
+  payload="$(jq -cn --arg t "$text" '{text: ($t | gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;"))}')"
   # The webhook URL is a secret: give it to curl in a config on stdin, never on argv.
   cfgq() { local v="${1//\\/\\\\}"; printf '"%s"' "${v//\"/\\\"}"; }
   local code
@@ -680,6 +720,501 @@ cmd_notify() {
   log_event "$(jq -cn --argjson now "$(now_ms)" --arg c "${code:-000}" '{ts: $now, type: "notify", http: $c}')"
   [ "${code:-000}" = 200 ] || echo "board notify: webhook returned ${code:-000}" >&2
   return 0
+}
+
+# Best effort: a notify problem (no channel configured, webhook down) never fails the caller.
+notify_quiet() { ( cmd_notify "$1" ) || true; }
+
+# ---------------------------------------------------------------- owner away & consensus
+# The owner is away while $BOARD_HOME/owner-away exists, whatever its content: a legacy
+# free-text file counts as away too. `board away on` writes {since, by, said}.
+AWAY_FILE="$BOARD_HOME/owner-away"
+# Never decided by consensus, whatever every session says: these wait for the owner.
+RED_LINES=("production deploys"
+           "deleting real data"
+           "irreversible operations"
+           "touching shared production or third-party data"
+           "publishing externally"
+           "loosening permissions or security settings")
+red_lines_text() {
+  local r
+  echo "red lines (never by consensus; they wait for the owner):"
+  for r in "${RED_LINES[@]}"; do echo "  - $r"; done
+}
+red_lines_inline() { local IFS=';'; printf '%s' "${RED_LINES[*]}" | sed 's/;/; /g'; }
+
+# Writers of owner-away and consensus/ hold one lock, so `away off` and a vote never interleave.
+LOCKED=0
+lock_board() {
+  [ "$LOCKED" = 1 ] && return 0
+  command -v flock >/dev/null 2>&1 || die "flock is required for board away / board consensus (util-linux)"
+  exec 8>>"$BOARD_HOME/consensus.lock" || die "cannot open $BOARD_HOME/consensus.lock"
+  flock -w 10 8 || die "another away/consensus change holds the lock; try again"
+  LOCKED=1
+}
+unlock_board() {
+  [ "$LOCKED" = 1 ] || return 0
+  flock -u 8 2>/dev/null; exec 8>&-
+  LOCKED=0
+}
+
+no_ctl() {  # no_ctl NAME VALUE MAX — one line of printable text, at most MAX characters
+  [[ $2 =~ [[:cntrl:]] ]] && die "$1 must be one line without control characters"
+  [ "${#2}" -le "$3" ] || die "$1 is longer than $3 characters"
+  return 0
+}
+cap() {  # cap NAME VALUE MAX — free text (newlines allowed), at most MAX characters
+  [ "${#2}" -le "$3" ] || die "$1 is longer than $3 characters"
+  return 0
+}
+valid_code() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$ ]]; }
+
+# Free text that BOARD may quote to every session must never look like a relay ("[BOARD decision
+# ...]", "[BOARD ask ...]"): "[BOARD" becomes "(BOARD", case-insensitively (lib/away.py does the same).
+JQ_DEFANG='def defang: gsub("\\[(?<b>board)"; "(\(.b)"; "i");'
+defang() { jq -rn --arg t "$1" "$JQ_DEFANG"'$t | defang'; }
+
+# code_of NAME → the fleet code NAME stands for (a code or one of its aliases), else NAME.
+code_of() {
+  local c
+  c="$(python3 "$FLEET" sessions 2>/dev/null | jq -r --arg n "$1" \
+        'select(.code == $n or ((.aliases // []) | index($n) != null)) | .code' 2>/dev/null | head -n 1)"
+  echo "${c:-$1}"
+}
+
+# Votes are self-attested (--from is declared by the caller). Inside tmux, at least refuse a
+# --from that is not this tmux session (or an alias of the same fleet code): exit 4, logged.
+self_check() {  # self_check CODE ACTION [ID]
+  [ -n "${TMUX:-}" ] || return 0
+  command -v tmux >/dev/null 2>&1 || return 0
+  local me
+  if [ -n "${TMUX_PANE:-}" ]; then
+    me="$(tmux display-message -p -t "$TMUX_PANE" '#S' 2>/dev/null)" || return 0
+  else
+    me="$(tmux display-message -p '#S' 2>/dev/null)" || return 0
+  fi
+  [ -n "$me" ] || return 0
+  [ "$me" = "$1" ] && return 0
+  [ "$(code_of "$me")" = "$(code_of "$1")" ] && return 0
+  log_event "$(jq -cn --argjson now "$(now_ms)" --arg a "$2" --arg id "${3:-}" --arg by "$1" --arg me "$me" \
+    '{ts: $now, type: "consensus", action: $a, by: $by, tmux_session: $me, result: "refused",
+      reason: "--from is not this tmux session"} + (if $id == "" then {} else {id: $id} end)')"
+  echo "board consensus: refused — --from $1, but this is tmux session '$me'; a session votes and proposes only as itself" >&2
+  exit 4
+}
+
+# away_record → prints the record as compact JSON {since, by, said[, legacy]}; 1 when not away.
+away_record() {
+  [ -e "$AWAY_FILE" ] || [ -L "$AWAY_FILE" ] || return 1
+  local rec mt
+  # Exactly one JSON object (within the first 16 KiB, as lib/away.py reads it) is a record;
+  # anything else (free text, several objects, a non-object) is a legacy file: still away.
+  if rec="$( { head -c 16384 "$AWAY_FILE" 2>/dev/null || true; } | jq -sce "$JQ_DEFANG"'
+               if length == 1 and (.[0] | type) == "object"
+               then .[0] | {since: (.since // null), by: (.by // null), said: (.said // null)}
+                 | (.by, .said) |= (if type == "string" then defang else . end)
+               else empty end' 2>/dev/null)"; then
+    echo "$rec"
+    return 0
+  fi
+  mt="$(stat -c %Y "$AWAY_FILE" 2>/dev/null || stat -f %m "$AWAY_FILE" 2>/dev/null || echo 0)"
+  case "$mt" in ''|*[!0-9]*) mt=0 ;; esac
+  { head -c 2000 "$AWAY_FILE" 2>/dev/null || true; } \
+    | jq -Rsc --argjson mt "$(( mt * 1000 ))" "$JQ_DEFANG"'{since: $mt, by: null, said: (sub("\\s+$"; "") | defang), legacy: true}'
+}
+
+JQ_TS='def ts: if type == "number" and . > 0 then (. / 1000 | floor | todate) else "-" end;'
+JQ_LINE='def line: tostring | gsub("[\r\n\t]+"; " ") | gsub("[\u0000-\u001f\u007f-\u009f]"; "?");'
+
+away_line() {  # away_line RECORD_JSON
+  jq -r "$JQ_TS$JQ_LINE"'"owner away since " + (.since | ts) + " (by " + ((.by // "?") | line) + ")"
+    + (if .legacy then " [free-text record]" else "" end)
+    + (if (.said // "") != "" then ": \"" + (.said | line | .[0:300]) + "\"" else "" end)' <<<"$1"
+}
+
+cmd_away() {
+  need_jq
+  local sub="${1:-}"
+  [ $# -gt 0 ] && shift
+  case "$sub" in
+    on|off) away_set "$sub" "$@" ;;
+    status) away_status "$@" ;;
+    *) sub_usage away >&2; exit 2 ;;
+  esac
+}
+
+away_status() {
+  local quiet=0 json=0 rec
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --quiet|-q) quiet=1 ;;
+      --json) json=1 ;;
+      *) echo "board: away status: unknown option $1" >&2; sub_usage away status >&2; exit 2 ;;
+    esac
+    shift
+  done
+  if ! rec="$(away_record)"; then
+    if [ "$json" = 1 ]; then echo null; elif [ "$quiet" = 0 ]; then echo "owner is not away"; fi
+    return 1
+  fi
+  if [ "$json" = 1 ]; then
+    echo "$rec"
+  elif [ "$quiet" = 0 ]; then
+    away_line "$rec"
+    echo "  sessions may decide cross-session questions by explicit consensus (board consensus);"
+    echo "  red lines and board asks wait for the owner."
+  fi
+  return 0
+}
+
+away_set() {
+  local action="$1"; shift
+  local by="" said="" replace=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --by) shift; by="${1:-}" ;;
+      --said) shift; said="${1:-}" ;;
+      --replace) [ "$action" = on ] || die "away off: unknown option --replace"; replace=1 ;;
+      *) die "away $action: unknown option $1" ;;
+    esac
+    shift
+  done
+  if [ -z "$by" ] || { [ "$action" = on ] && [ -z "${said//[[:space:]]/}" ]; }; then
+    sub_usage away "$action" >&2; exit 2
+  fi
+  # --by is quoted to every session: a session code or board:<identity> (an email or "local"),
+  # never free text.
+  [[ $by =~ ^(board:)?[A-Za-z0-9][A-Za-z0-9@._+:-]{0,199}$ ]] \
+    || die "away $action: --by must be a session code or board:<identity> (letters, digits, @ . _ + : -)"
+  cap "--said" "$said" 2000
+  said="$(defang "$said")"
+
+  lock_board
+  local now cur="" rec
+  now="$(now_ms)"
+  cur="$(away_record)" || cur=""
+  if [ "$action" = on ]; then
+    if [ -n "$cur" ] && [ "$replace" = 0 ]; then
+      unlock_board
+      away_line "$cur"
+      echo "board away: already away; the record above is kept (--replace overwrites it)" >&2
+      return 0
+    fi
+    # A new away episode starts: anything still pending from an earlier one (file removed by
+    # hand, or a record replaced) goes back to the owner first; it was never agreed under this one.
+    local stale
+    stale="$(consensus_owner_back "$now" "$(if [ -n "$cur" ]; then echo "away record replaced"; else echo "owner-away file removed"; fi)")"
+    rec="$(jq -n --argjson now "$now" --arg by "$by" --arg said "$said" '{since: $now, by: $by, said: $said}')"
+    rm -f "$AWAY_FILE"   # a legacy file may be a symlink or have looser modes: start fresh
+    write_atomic "$AWAY_FILE" "$rec" || die "cannot write $AWAY_FILE"
+    chmod 600 "$AWAY_FILE" 2>/dev/null
+    log_event "$(jq -cn --argjson now "$now" --arg by "$by" --arg said "$said" --argjson prev "${cur:-null}" \
+      '{ts: $now, type: "away", action: "on", by: $by, said: $said} + (if $prev == null then {} else {replaced: $prev} end)')"
+    unlock_board
+    away_line "$rec"
+    [ -n "$stale" ] && echo "earlier pending consensus returned to the owner: $(paste -sd " " - <<<"$stale")" >&2
+    notify_quiet "$(jq -rn --arg by "$by" --arg said "$said" "$JQ_LINE"'
+      "[board] Owner away (set by \($by | line)): \"\($said | line | .[0:300])\" — sessions may decide by explicit consensus; red lines and board asks wait for the owner."')"
+    return 0
+  fi
+
+  if [ -z "$cur" ]; then
+    unlock_board
+    echo "owner is not away; nothing to do"
+    return 0
+  fi
+  rm -f "$AWAY_FILE" || die "cannot remove $AWAY_FILE"
+  local returned
+  returned="$(consensus_owner_back "$now" "$by")"
+  log_event "$(jq -cn --argjson now "$now" --arg by "$by" --arg said "$said" --argjson prev "$cur" \
+    --arg ret "$returned" '{ts: $now, type: "away", action: "off", by: $by, previous: $prev,
+      returned: ($ret | split("\n") | map(select(. != "")))} + (if $said == "" then {} else {said: $said} end)')"
+  unlock_board
+  local n=0
+  [ -n "$returned" ] && n="$(wc -l <<<"$returned" | tr -d ' ')"
+  echo "owner back (by $by); $n pending consensus item(s) returned to the owner${returned:+: $(paste -sd " " - <<<"$returned")}"
+  notify_quiet "$(jq -rn --arg by "$by" --arg n "$n" --arg ret "$returned" "$JQ_LINE"'
+    "[board] Owner back (by \($by | line)); away mode off."
+    + (if $n == "0" then "" else " \($n) pending consensus item(s) returned to the owner: \($ret | split("\n") | map(select(. != "")) | join(", "))" end)')"
+}
+
+cons_path() {
+  [[ $1 =~ ^c-[0-9]+-[a-z0-9]+$ ]] || die "invalid consensus id: $1"
+  echo "$BOARD_HOME/consensus/$1.json"
+}
+
+# consensus_owner_back_one FILE NOW BY — (lock held) a pending item becomes owner_back; prints its id.
+consensus_owner_back_one() {
+  local f="$1" id new
+  [ "$(jq -r '.status // empty' "$f" 2>/dev/null)" = pending ] || return 0
+  new="$(jq --argjson now "$2" --arg by "$3" \
+    '.status = "owner_back" | .decided_at = $now | .updated_at = $now | .returned_by = $by' "$f")" \
+    || { echo "board: cannot update $f; left as it is" >&2; return 0; }
+  write_atomic "$f" "$new" || return 0
+  id="$(jq -r '.id' "$f")"
+  log_event "$(jq -cn --argjson now "$2" --arg id "$id" --arg by "$3" \
+    '{ts: $now, type: "consensus", action: "owner_back", id: $id, by: $by}')"
+  echo "$id"
+}
+
+# consensus_owner_back NOW BY — (lock held) every pending item becomes owner_back; prints the ids.
+consensus_owner_back() {
+  local f
+  for f in "$BOARD_HOME"/consensus/c-*.json; do
+    [ -f "$f" ] || continue
+    consensus_owner_back_one "$f" "$1" "$2"
+  done
+}
+
+# The owner-away file may be removed by hand: pending items then also go back to the owner.
+sweep_if_back() {
+  away_record >/dev/null && return 0
+  compgen -G "$BOARD_HOME/consensus/c-*.json" >/dev/null || return 0
+  [ -n "$(jq -r 'select(.status == "pending") | .id' "$BOARD_HOME"/consensus/c-*.json 2>/dev/null)" ] || return 0
+  local was=$LOCKED returned
+  lock_board
+  away_record >/dev/null && { [ "$was" = 1 ] || unlock_board; return 0; }
+  returned="$(consensus_owner_back "$(now_ms)" "owner-away file removed")"
+  [ "$was" = 1 ] || unlock_board
+  [ -n "$returned" ] && notify_quiet "[board] Owner back (owner-away file removed); pending consensus returned to the owner: $(paste -sd " " - <<<"$returned")"
+  return 0
+}
+
+cmd_consensus() {
+  need_jq
+  local sub="${1:-}"
+  [ $# -gt 0 ] && shift
+  case "$sub" in
+    propose) cons_propose "$@" ;;
+    vote) cons_vote "$@" ;;
+    ls) cons_ls "$@" ;;
+    show) cons_show "$@" ;;
+    *) sub_usage consensus >&2; exit 2 ;;
+  esac
+}
+
+cons_propose() {
+  local from="" to="" ref="" text=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --from) shift; from="${1:-}" ;;
+      --to) shift; to="${to:+$to,}${1:-}" ;;
+      --ref) shift; ref="${1:-}" ;;
+      -*) die "consensus propose: unknown option $1" ;;
+      *) [ -z "$text" ] || die "consensus propose: only one proposal"; text="$1" ;;
+    esac
+    shift
+  done
+  [ -n "$from" ] && [ -n "$to" ] && [ -n "${text//[[:space:]]/}" ] || { sub_usage consensus propose >&2; exit 2; }
+  valid_code "$from" || die "consensus propose: invalid session code: $from"
+  no_ctl "--ref" "$ref" 500
+  ref="$(defang "$ref")"
+  cap "proposal" "$text" 4000
+  local parts=("$from") p q seen
+  local IFS_OLD="$IFS"; IFS=','; read -ra tos <<<"$to"; IFS="$IFS_OLD"
+  for p in "${tos[@]}"; do
+    p="${p//[[:space:]]/}"
+    [ -n "$p" ] || continue
+    valid_code "$p" || die "consensus propose: invalid session code: $p"
+    seen=0
+    for q in "${parts[@]}"; do [ "$q" = "$p" ] && seen=1; done
+    [ "$seen" = 1 ] || parts+=("$p")
+  done
+  [ "${#parts[@]}" -ge 2 ] || die "consensus propose: --to must name at least one other session"
+  self_check "$from" propose
+  text="$(defang "$text")"
+
+  lock_board
+  local away
+  if ! away="$(away_record)"; then
+    unlock_board
+    echo "board consensus: refused — the owner is not away (board away status); ask the owner" >&2
+    exit 1
+  fi
+  local now id parts_json
+  now="$(now_ms)"
+  id="$(new_id c "$now")"
+  parts_json="$(printf '%s\n' "${parts[@]}" | jq -R . | jq -sc .)"
+  mkdir -p "$BOARD_HOME/consensus"
+  local new
+  new="$(jq -n --arg id "$id" --arg from "$from" --arg ref "$ref" \
+    --arg text "$text" --argjson parts "$parts_json" --argjson away "$away" --argjson now "$now" '
+    { id: $id, kind: "consensus", from: $from, participants: $parts,
+      ref: (if $ref == "" then null else $ref end), proposal: $text, status: "pending",
+      votes: [ { by: $from, vote: "agree", note: "proposer", at: $now } ],
+      away: { since: $away.since, by: $away.by },
+      created_at: $now, updated_at: $now, decided_at: null }')" || { unlock_board; die "cannot build consensus $id"; }
+  write_atomic "$(cons_path "$id")" "$new" || { unlock_board; die "cannot write consensus $id"; }
+  log_event "$(jq -cn --argjson now "$now" --arg id "$id" --arg from "$from" --argjson parts "$parts_json" \
+    --arg ref "$ref" '{ts: $now, type: "consensus", action: "propose", id: $id, from: $from, participants: $parts}
+      + (if $ref == "" then {} else {ref: $ref} end)')"
+  unlock_board
+  echo "$id"
+  {
+    echo "consensus $id: waiting for an explicit agree from: ${parts[*]:1}"
+    echo "  send the proposal to each of them; silence is not agreement, one objection parks it for the owner."
+    echo "  each votes with: board consensus vote $id agree|object --from <CODE> [--note ...]"
+    red_lines_text | sed 's/^/  /'
+  } >&2
+}
+
+# The latest vote of each participant decides; status: pending → agreed | objected.
+JQ_TALLY='def tally: (reduce .votes[] as $x ({}; .[$x.by] = $x.vote)) as $last
+  | if any($last[]; . == "object") then "objected"
+    elif all(.participants[]; $last[.] == "agree") then "agreed" else "pending" end;'
+
+cons_vote() {
+  local id="${1:-}" vote="${2:-}" from="" note=""
+  if [ $# -ge 2 ]; then shift 2; else set --; fi
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --from) shift; from="${1:-}" ;;
+      --note) shift; note="${1:-}" ;;
+      *) die "consensus vote: unknown option $1" ;;
+    esac
+    shift
+  done
+  case "$vote" in agree|object) ;; *) id="" ;; esac
+  [ -n "$id" ] && [ -n "$from" ] || { sub_usage consensus vote >&2; exit 2; }
+  cap "--note" "$note" 1000
+  note="$(defang "$note")"
+  local f; f="$(cons_path "$id")"
+  [ -f "$f" ] || die "no such consensus item: $id"
+  self_check "$from" vote "$id"
+
+  lock_board
+  sweep_if_back
+  local now st prev
+  now="$(now_ms)"
+  if [ "$(jq --arg f "$from" '.participants | index($f) != null' "$f")" != true ]; then
+    unlock_board
+    log_event "$(jq -cn --argjson now "$now" --arg id "$id" --arg by "$from" \
+      '{ts: $now, type: "consensus", action: "vote", id: $id, by: $by, result: "refused", reason: "not a participant"}')"
+    echo "board consensus: refused — $from is not a participant of $id" >&2
+    exit 4
+  fi
+  st="$(jq -r '.status' "$f")"
+  if [ "$st" != pending ]; then
+    unlock_board
+    die "consensus $id is already $st$( [ "$st" = owner_back ] && echo ' (the owner is back: ask the owner)')"
+  fi
+  # Only the away episode the item was proposed in counts: if the record changed since (removed and
+  # set again, --replace, an edited legacy file), the item goes back to the owner.
+  local cur_since item_since
+  cur_since="$(away_record | jq -c '.since')"
+  item_since="$(jq -c '.away.since' "$f")"
+  if [ "$cur_since" != "$item_since" ]; then
+    local returned
+    returned="$(consensus_owner_back_one "$f" "$now" "owner-away record changed")"
+    unlock_board
+    [ -n "$returned" ] && notify_quiet "[board] Consensus $id returned to the owner: it was proposed in an earlier away period"
+    die "consensus $id belongs to an earlier away period; it went back to the owner (ask the owner)"
+  fi
+  prev="$(jq -r --arg f "$from" '[.votes[] | select(.by == $f)] | last | .vote // empty' "$f")"
+  if [ "$prev" = "$vote" ]; then
+    unlock_board
+    die "$from already voted $vote on $id"
+  fi
+  if [ "$prev" = object ]; then
+    unlock_board
+    die "$from objected to $id; an objection is never turned into agreement (the owner decides)"
+  fi
+  local new
+  new="$(jq --arg by "$from" --arg v "$vote" --arg note "$note" --argjson now "$now" "$JQ_TALLY"'
+    .votes += [ { by: $by, vote: $v, note: (if $note == "" then null else $note end), at: $now } ]
+    | .status = tally | .updated_at = $now
+    | (if .status != "pending" then .decided_at = $now else . end)' "$f")" || { unlock_board; die "failed to update $id"; }
+  write_atomic "$f" "$new" || { unlock_board; die "failed to write $id"; }
+  st="$(jq -r '.status' "$f")"
+  log_event "$(jq -cn --argjson now "$now" --arg id "$id" --arg by "$from" --arg v "$vote" --arg st "$st" \
+    '{ts: $now, type: "consensus", action: "vote", id: $id, by: $by, vote: $v, status: $st}')"
+  unlock_board
+  local summary
+  summary="$(jq -r '(reduce .votes[] as $x ({}; .[$x.by] = $x.vote)) as $last
+    | "\([.participants[] | select($last[.] == "agree")] | length)/\(.participants | length) agreed"' "$f")"
+  echo "$id: $from voted $vote — $st ($summary)"
+  case "$st" in
+    agreed)
+      echo "  record it in the PR/ticket: board consensus show $id --markdown" >&2
+      notify_quiet "$(jq -rn --arg id "$id" --arg ref "$(jq -r '.ref // ""' "$f")" "$JQ_LINE"'
+        "[board] Consensus \($id) agreed by every participant" + (if $ref == "" then "" else " (\($ref | line))" end)')" ;;
+    objected)
+      echo "  parked for the owner; record it in the PR/ticket: board consensus show $id --markdown" >&2
+      notify_quiet "$(jq -rn --arg id "$id" --arg by "$from" "$JQ_LINE"'
+        "[board] Consensus \($id) objected by \($by | line): parked for the owner"')" ;;
+  esac
+  return 0
+}
+
+cons_ls() {
+  local all=0
+  case "${1:-}" in
+    "") ;;
+    --all) all=1 ;;
+    *) die "consensus ls: unknown option $1" ;;
+  esac
+  sweep_if_back
+  local rec
+  if rec="$(away_record)"; then away_line "$rec"; else echo "owner is not away"; fi
+  local files=("$BOARD_HOME"/consensus/c-*.json)
+  [ -e "${files[0]}" ] || { echo "no consensus items"; return 0; }
+  local rows
+  rows="$(jq -s --argjson all "$all" --argjson now "$(now_ms)" "$JQ_DEFANG"'
+    map(select(type == "object" and .id)
+        | select($all == 1 or .status == "pending" or ($now - (.decided_at // .updated_at // 0)) < 86400000))
+    | sort_by(.created_at) | walk(if type == "string" then defang else . end)' "${files[@]}")"
+  [ "$(jq 'length' <<<"$rows")" -gt 0 ] || { echo "no consensus items (--all shows older ones)"; return 0; }
+  echo
+  {
+    printf 'ID\tSTATUS\tFROM\tVOTES\tREF\tPROPOSAL\n'
+    jq -r "$JQ_SAFE"'.[] | (reduce .votes[] as $x ({}; .[$x.by] = $x.vote)) as $last
+      | [ .id, .status, .from,
+          ([.participants[] | . + ":" + ($last[.] // "-")] | join(",")),
+          (.ref // "-"), (.proposal | gsub("[\t\n]"; " ") | .[0:60]) ] | map(safe) | @tsv' <<<"$rows"
+  } | column -t -s $'\t'
+}
+
+cons_show() {
+  local id="" md=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --markdown|--md) md=1 ;;
+      -*) die "consensus show: unknown option $1" ;;
+      *) id="$1" ;;
+    esac
+    shift
+  done
+  [ -n "$id" ] || { sub_usage consensus show >&2; exit 2; }
+  local f; f="$(cons_path "$id")"
+  [ -f "$f" ] || die "no such consensus item: $id"
+  sweep_if_back
+  # Files may be edited by hand: what is printed never carries "[BOARD" either.
+  if [ "$md" = 0 ]; then jq "$JQ_DEFANG"'walk(if type == "string" then defang else . end)' "$f"; return 0; fi
+  jq -r --arg red "$(red_lines_inline)" "$JQ_TS$JQ_LINE$JQ_DEFANG"'
+    def line: tostring | gsub("[\r\n\t]+"; " ") | gsub("[\u0000-\u001f\u007f-\u009f]"; "?")
+      | gsub("@"; "@\u200b") | defang;   # pasted into a PR/ticket, "@name" must not ping anyone
+    def cell: line | gsub("\\|"; "\\|");
+    (reduce .votes[] as $x ({}; .[$x.by] = $x.vote)) as $last
+    | "#### Owner-away consensus `\(.id)`: \(.status)",
+      "",
+      "- **Proposal:** \(.proposal | line)",
+      "- **Ref:** \((.ref // "-") | line)",
+      "- **Proposed by:** \(.from | line) at \(.created_at | ts) (UTC)",
+      "- **Owner away:** since \(.away.since | ts) (set by \((.away.by // "-") | line))",
+      "- **Participants:** \(.participants | map(line) | join(", "))",
+      "",
+      "| Session | Vote | At (UTC) | Note |",
+      "|---|---|---|---|",
+      (.votes[] | "| \(.by | cell) | \(.vote | cell) | \(.at | ts) | \((.note // "") | cell) |"),
+      (.participants[] as $p | select($last[$p] == null) | "| \($p | cell) | (no vote) | - | silence is not agreement |"),
+      "",
+      "**Outcome:** " + (
+        if .status == "agreed" then "agreed at \(.decided_at | ts): every participant agreed explicitly."
+        elif .status == "objected" then "objected at \(.decided_at | ts): parked for the owner."
+        elif .status == "owner_back" then "returned to the owner at \(.decided_at | ts): the owner came back before every participant agreed."
+        else "pending: waiting for \([.participants[] | select($last[.] != "agree")] | join(", "))." end),
+      "",
+      "_Red lines never pass by consensus: \($red)._"' "$f"
 }
 
 # ---------------------------------------------------------------- doctor
@@ -742,6 +1277,11 @@ case "$sub" in
     case "${1:-}" in -h|--help) sub_usage answer; exit 0 ;; esac ;;
   ls|snapshot|ask|decisions|mark|press|limit|notify|doctor|ack)
     if wants_help "$@"; then sub_usage "$sub"; exit 0; fi ;;
+  # proposals, notes and the owner's words are free text: only -h/--help right after the
+  # subcommand (or instead of it) asks for help.
+  away|consensus)
+    case "${1:-}" in -h|--help) sub_usage "$sub"; exit 0 ;; esac
+    case "${2:-}" in -h|--help) sub_usage "$sub" "$1"; exit 0 ;; esac ;;
   task)
     if wants_help "$@"; then
       case "${1:-}" in new|stage|ls|show) sub_usage task "$1" ;; *) sub_usage task ;; esac
@@ -761,6 +1301,8 @@ case "$sub" in
   notify) cmd_notify "$@" ;;
   ack) [ $# -gt 0 ] || { sub_usage ack >&2; exit 2; }; exec "$REPO/bin/board-notify" ack "$@" ;;
   doctor) cmd_doctor "$@" ;;
+  away) cmd_away "$@" ;;
+  consensus) cmd_consensus "$@" ;;
   -h|--help|help) usage ;;
   "") usage; exit 2 ;;
   *) echo "board: unknown command '$sub'" >&2; usage >&2; exit 2 ;;

@@ -13,6 +13,8 @@ Usage: collect.py [--no-notify] [--baseline] [--verbose]
 - Alert-storm guard: when $BOARD_HOME/alerts.json does not exist yet (first run), every
   condition already open is acked as a baseline instead of alerted. --baseline does only that.
 - Adds the tasks ($BOARD_HOME/tasks/*.json) and the active usage limit to the snapshot.
+- Adds owner-away mode (`owner_away`: null or {since, by, said}) and the consensus items that are
+  pending or were decided in the last 24 h (`consensus`, lib/away.py).
 """
 import glob
 import json
@@ -22,6 +24,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import away  # noqa: E402
 import fleet  # noqa: E402
 import limit  # noqa: E402
 import notify  # noqa: E402
@@ -251,7 +254,8 @@ def main(argv):
     tasks = load_tasks(home)
     attach_tasks(sessions, tasks)
     snap = {"generated_at": now, "sessions": sessions, "decisions": decisions, "tasks": tasks,
-            "limit": limit.active()}
+            "limit": limit.active(), "owner_away": away.away_record(home),
+            "consensus": away.consensus_items(home, now)}
 
     spath = os.path.join(home, "snapshot.json")
     prev = read_json(spath)

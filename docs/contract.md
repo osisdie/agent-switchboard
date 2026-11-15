@@ -13,6 +13,9 @@ $BOARD_HOME/
   snapshot.json             # written by bin/board-collect (merged view, see below)
   alerts.json               # board-notify alert state {key: {level, first_at, last_at, acked_at}}; dedupe/repeat per
                             # key and level follow the alerting policy (alerting.yaml / fleet.yaml `alerting:`)
+  owner-away                # present = the owner is away (see "Owner away & consensus")
+  consensus/<id>.json       # written by `board consensus` while the owner is away
+  consensus.lock            # flock held by `board away on|off` and `board consensus propose|vote`
 ```
 
 ### state/<session_id>.json
@@ -46,12 +49,23 @@ Map hook events to states like this:
                   "status": "busy|idle", "state": "working|needs-you|done|rest|offline",
                   "pending": {...}|null, "remote_url": "https://claude.ai/code/<bridgeSessionId>"|null,
                   "updated_at": 0 } ],
-  "decisions": [ { ...decision file... } ] }
+  "decisions": [ { ...decision file... } ],
+  "tasks": [ ... ], "limit": {...}|null,
+  "owner_away": { "since": 0, "by": "CP", "said": "..." } | null,
+  "consensus": [ { "id": "c-...", "from": "CP", "participants": ["CP","API"], "ref": "...", "proposal": "...",
+                   "status": "pending|agreed|objected|owner_back", "votes": [ {"by","vote","at","note"} ],
+                   "created_at": 0, "updated_at": 0, "decided_at": 0|null } ] }
 ```
 
 - **Where sessions come from:** live entries in `~/.claude/sessions/<pid>.json`, where `/proc/<pid>` exists. Each is merged with `state/<session_id>.json`.
 - **`code`:** the tmux session name (the part before `:` in `tmux`). If there is no tmux, use the registered `name`. `fleet.yaml` may map aliases to codes.
 - **Sessions in `fleet.yaml` that aren't running** appear with state `offline`.
+- **`owner_away`** is `null` when `$BOARD_HOME/owner-away` does not exist, else its record. A file
+  that is not a JSON object (free text, empty) still means away: `{since: <mtime ms>, by: null,
+  said: <first 300 chars>, legacy: true}`.
+- **`consensus`** lists every `pending` item, plus `agreed` / `objected` / `owner_back` items for
+  24 h after `decided_at`, oldest first. Text fields are clipped (proposal, ref, said: 300 chars;
+  note: 200) and control characters become `?`.
 
 ### decisions/<id>.json
 ```json
@@ -105,6 +119,8 @@ Rules:
 | `messages/{id}` | page (Editors) creates; operator updates | `to` (code or `"all"`), `body`, `by` (user id), `created_at`, `status: "new"\|"relayed"\|"replied"`. The operator adds `relayed_to[]` and `relayed_at`. |
 | `messages/{id}/replies/{rid}` | operator | `from` (code), `body`, `created_at` |
 | `meta/operator` | operator | `heartbeat_at, version, owner_id`. The page shows "operator offline" if the heartbeat is older than 10 minutes. |
+| `meta/away` | operator | `{active: true, since, by, said, legacy?, updated_at}` while the owner is away, `{active: false, updated_at}` otherwise. The page shows the away banner only for `active: true`. |
+| `consensus/{id}` | operator | a `snapshot.consensus` item as it is. Read-only on the page: no page write path, never relayed as a `[BOARD decision]`. |
 | `meta/ledger` | operator | `rows[]`: `{version, date, what, review, lead:{input,cache_read,cache_write,output,total}, teammate, note}` and `total{}`. The page renders this as the "版本與花費" (versions and cost) table in an Info dialog/footer. |
 
 ## Local adapter API (`bin/board-serve`, `lib/serve.py`)
@@ -135,6 +151,7 @@ $BOARD_HOME/
   messages/<id>/replies/<rid>.json   # {id, from: CODE, body, created_at}  (operator)
   operator.json                      # {heartbeat_at, version, operator_session, account_hint}  (operator)
   ledger.json                        # optional, same shape as meta/ledger  (operator)
+  owner-away, consensus/<id>.json    # see "Owner away & consensus"  (bin/board)
 ```
 
 | endpoint | does |
@@ -144,6 +161,7 @@ $BOARD_HOME/
 | `GET /api/events` | `text/event-stream`: `event: state` with the full state at once and after every change (1 s mtime poll; only when the state differs), `: keepalive` every 25 s |
 | `POST /api/decisions/<id>/answer` `{answer}` | `<id>` must match `^d-[0-9]+-[a-z0-9]+$`. With empty `approvers` → 403 `no_approvers` (fails closed). The identity is then checked **before anything is written**, with the rule of `board answer` (`approvers`; for a production decision, gate or stage, `release_managers`, falling back to `approvers`): not allowed → 403 `not_approver`, audited, file untouched (so it can never cancel an approver's answer that waits for the relay). Otherwise `board answer <id> <answer> --by <identity>` (argv, no shell; an answer such as `--help` is recorded literally) → 200 `{status: "answered"}`. For `kind: "permission"` (`answer` = `allow`\|`deny`; `allow` with `summary_truncated` → 409 `review_in_session`), it then runs `board press <from> <answer> --expect <tool_use_id>` → 200 `{status: "relayed"}`; exit 3 → 409 `stale`; exit 4 → 403 `press_refused`. A decision already `relayed`/`stale`/`timeout` → 409 `gone`. |
 | `POST /api/messages` `{to, body}` | only for `approvers` ∪ `release_managers` (else 403 `not_approver`); writes `messages/<id>.json` (`^m-[0-9]+-[a-z0-9]+$`) with `status: "new"`, `by: <identity>` → 201 `{id}` |
+| `POST /api/away` `{state: "on"\|"off", said?}` | `state` other than `on`/`off` → 400 `bad_state`; `said` not a string or over 500 chars → 400 `bad_said`. Empty `approvers` → 403 `no_approvers`; identity not in `approvers` → 403 `not_approver`, audited, nothing written. Otherwise `board away on\|off --by board:<identity> [--said <said>]` (argv, no shell; `on` without `said` records "away (set on the board)") → 200 `{away: true\|false, status: "on"\|"off"\|"unchanged"}`. `on` while already away keeps the existing record (`unchanged`). Failure → 500 `away_failed`. |
 
 Every request: `Host` from the listener's allowlist, else 421. Per listener, at most 64
 connections (more get a bare 503) and 32 SSE streams (503 `too_many_streams`); the socket times
@@ -154,7 +172,7 @@ from the listener's allowlist (`http://127.0.0.1:<port>`, `http://localhost:<por
 `https://<hostname>`; missing or `null` → 403 `csrf`), `Content-Type: application/json` (else
 415), at most 16 KiB (else 413). `OPTIONS` and every other method → 405, and no
 `Access-Control-*` header is ever sent. Every write appends `{type: "serve", action:
-"answer"|"press"|"message", by, via: "loopback"|"cf-jwt", id, result}` to `events.jsonl`.
+"answer"|"press"|"message"|"away", by, via: "loopback"|"cf-jwt", id, result}` to `events.jsonl`.
 
 State (`/api/state` and every SSE frame):
 
@@ -167,7 +185,9 @@ State (`/api/state` and every SSE frame):
   "messages":  [ newest 20 ], "replies": { "<msgId>": [ ... ] },
   "operator":  { heartbeat_at, version, operator_session, account_hint, approver_ids,
                  release_manager_ids, usage: {five_hour, seven_day, updated_at}, limit|null },
-  "ledger": {...}|null }
+  "ledger": {...}|null,
+  "owner_away": {since, by, said, legacy?}|null,
+  "consensus": [ snapshot.consensus items, newest 50 ] }
 ```
 
 The shape matches what the page reads from the Artifact db (`sessions/*`, `decisions/*`, `tasks/*`,
@@ -175,7 +195,8 @@ The shape matches what the page reads from the Artifact db (`sessions/*`, `decis
 session's current task. `approver_ids` is `[]` when nobody may answer.
 
 **Operator in local mode** (`prompts/board-operator.md` section 9): `board-serve --watch` prints
-`decision <id> answered`, `message <id> new` (once each, oldest first) and `tick` every 8 minutes.
+`decision <id> answered`, `message <id> new`, `away on|off` and `consensus <id> <status>` (once
+each, oldest first) and `tick` every 8 minutes.
 The operator relays questions and gates (then `board mark <id> relayed`) and messages, writes
 replies, and keeps `operator.json.heartbeat_at` fresh. Permission decisions are already pressed by
 `board-serve`.
@@ -284,3 +305,105 @@ Claude Code's statusline input JSON carries `rate_limits.five_hour` and `rate_li
   - "5h usage 90% — resets ~14:20 — prepare to switch account"
   - "weekly usage 95% — resets Mon 09:00 — switch account now"
 - The operator mirrors usage into `meta/operator.usage`. The page shows two meters (5h and 7d) with reset countdowns. At ≥90% it shows an amber "Prepare to switch account" banner, and at ≥95% or on limit-hit a red one, with a link to the failover section in Info.
+
+## Owner away & consensus
+
+The owner sometimes goes offline and tells the sessions "decide among yourselves; if everyone
+agrees, go ahead". This section is that rule, made explicit and auditable.
+
+**Source of truth: the file.** The owner is away while `$BOARD_HOME/owner-away` exists, whatever its
+content. A free-text file (an older rule, or written by hand) counts as away too. Tools read it;
+nothing else (a message, a snapshot field, a db document) turns away mode on.
+
+```
+$BOARD_HOME/owner-away            # {"since": <ms>, "by": "<session or board:<identity>>", "said": "<owner's words>"}, 0600
+$BOARD_HOME/consensus/<id>.json   # id ^c-[0-9]+-[a-z0-9]+$, 0600
+```
+
+**Who turns it on and off.** Only a session that received the owner's **own** instruction, with the
+owner's words: `board away on --by <CODE> --said "<owner's words>"`. When the owner says they are
+back (or cancels) in any session, that session runs `board away off --by <CODE> [--said "..."]`.
+An approver can do the same on the self-hosted board (`POST /api/away`, recorded as
+`board:<identity>`). `--by` must match `^(board:)?[A-Za-z0-9][A-Za-z0-9@._+:-]{0,199}$` (a
+session code, or `board:` and an email or `local`): it is quoted to every session, so it is never
+free text. A peer session asking is never enough. `on` while already away prints the
+existing record and keeps it (`--replace` overwrites). Both append `{type: "away", action:
+"on"|"off", by, said, ...}` to `events.jsonl` and send a best-effort info notify (the `board notify`
+path; a missing or failing channel never fails the command). `board away status` exits 0 when
+away, 1 when not, 2 on a usage error such as an unknown option (`--quiet` prints nothing, `--json`
+prints the record or `null`).
+
+**No relay-shaped text.** Free text that BOARD may quote to every session (`said`, proposals,
+notes, refs, `by`) never contains `[BOARD`: `bin/board` rewrites it to `(BOARD`
+(case-insensitive) when it writes, and again whenever it prints a record (`board away status
+[--json]`, `board consensus ls|show`), and `lib/away.py` does the same when it reads, so a legacy or
+hand-edited file can't carry `[BOARD decision …]` into a broadcast either. Slack text from `board notify` escapes `&`, `<`, `>`.
+
+**A new away period starts clean.** `board away on` (without a current record, or with
+`--replace`) first turns every `pending` item into `owner_back`. Each item records the away period
+it was proposed in (`away.since`); a vote is refused, and the item goes back to the owner, when the
+current record's `since` differs (file removed and set again, `--replace`, an edited legacy file).
+
+**Consensus record** (`consensus/<id>.json`):
+
+```json
+{ "id": "c-<epoch>-<rand>", "kind": "consensus", "from": "CP", "participants": ["CP", "API", "WEB"],
+  "ref": "PR or ticket url/id"|null, "proposal": "...",
+  "status": "pending|agreed|objected|owner_back",
+  "votes": [ { "by": "CP", "vote": "agree", "note": "proposer", "at": 0 }, { "by": "API", "vote": "agree", "note": null, "at": 0 } ],
+  "away": { "since": 0, "by": "CP" }, "returned_by": "... (owner_back only)",
+  "created_at": 0, "updated_at": 0, "decided_at": 0|null }
+```
+
+Rules:
+
+- `board consensus propose --from <CODE> --to A,B[,..] [--ref <PR/ticket>] "<proposal>"` prints
+  the id. It is refused (exit 1) unless the owner is away. Participants are the proposer plus
+  `--to` (deduped; at least one other session). **The proposer counts as agreeing.** It reminds of
+  the red lines on stderr. The proposer sends the proposal to every participant itself.
+- **Votes are self-attested.** `--from` is declared by the caller; the CLI does not verify who
+  runs it. Each session votes (and proposes) **only as itself**; voting for another session breaks
+  the rule. The one check: inside tmux (`$TMUX` set), a `--from` that is neither this tmux session
+  (`tmux display-message -p '#S'`) nor an alias of the same fleet code is refused with exit 4 and
+  logged. A human running `board consensus` from a personal tmux session gets that refusal too;
+  running it outside tmux (or `TMUX= board consensus …`) is the deliberate way around it. Aliases
+  come from `fleet.yaml`: without PyYAML they don't load, so a tmux session named after an alias
+  is refused (it fails safe: use the code).
+- `board consensus vote <id> agree|object --from <CODE> [--note T]`: only participants vote
+  (otherwise exit 4, logged). Votes are accepted only while `pending`. One vote each: repeating the
+  same vote is refused; **agree → object is allowed** (it parks the item); **object → agree never
+  is**. Votes are appended, never rewritten, so the record shows every change.
+- Status is the tally of each participant's latest vote: any `object` → **`objected`** (parked for
+  the owner); every participant `agree` → **`agreed`**; otherwise `pending`. **Silence is not
+  agreement**: there is no timeout that agrees. `objected` and `agreed` are final.
+- `board away off` turns every `pending` item into **`owner_back`** (the question goes back to the
+  owner). If the file was removed by hand, the next `board consensus vote|ls|show` does the same.
+- An info notify goes out on `agreed`, `objected` and `owner_back`. Every change appends
+  `{type: "consensus", action: "propose"|"vote"|"owner_back", id, by, ...}` to `events.jsonl`.
+- **The record goes into the PR or ticket.** `board consensus show <id> --markdown` prints a block
+  with the proposal, ref, participants, every vote with its UTC timestamp and the outcome. The
+  proposer pastes it into the `--ref` PR/ticket once the item is final.
+- `board consensus ls [--all]` lists pending items and those decided in the last 24 h (`--all`:
+  every item).
+- Writers (`away on|off`, `propose`, `vote`) hold an exclusive `flock` on
+  `$BOARD_HOME/consensus.lock` (10 s timeout) and write atomically. Without `flock` they refuse to
+  run. A `jq` failure never leaves a partial file: the new content is built first, then written.
+- `board consensus show --markdown` writes `@` as `@` + zero-width space, so pasting it into a PR
+  or ticket never mentions anyone.
+- In the snapshot and on the page, a `pending` item is shown as `owner_back` while the owner is not
+  away, or when it was proposed in another away period (`away.since` differs from the current
+  record's). Display only; the next `board consensus` command writes it.
+
+**Red lines: never by consensus.** These wait for the owner, whatever every session agrees:
+- production deploys
+- deleting real data
+- irreversible operations
+- touching shared production or third-party data
+- publishing externally
+- loosening permissions or security settings
+
+**Consensus is not a human decision.** It never answers a board `ask`, a gate or a permission
+prompt, and the operator never relays it as `[BOARD decision …]`. The page shows it read-only. In
+Artifact mode the operator mirrors `owner_away` to `meta/away` and each item to `consensus/{id}`;
+when the away state changes it broadcasts it to every live session and reports, per session, who
+received and who acknowledged it (`prompts/board-operator.md` section 10).
