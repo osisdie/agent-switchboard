@@ -45,6 +45,23 @@ DEFAULTS = {
         "focus_regex": r"(❯|>|›)",
         "submit_label": r"Submit answers",
     },
+    # Remote Control on running sessions (lib/rc.py): what the pane must show before and after
+    # `/remote-control` is typed (Claude Code's own screens; adjust when they change).
+    "rc": {
+        "auto_apply": True,
+        "command": "/remote-control",
+        "lines": 30,
+        "prompt_regex": r"^\u276f[ \u00a0]*$",
+        "rule_regex": r"^\u2500{8,}",
+        "busy_regex": r"esc to interrupt",
+        "dialog_regex": r"Enter to select",
+        "disconnect_label": r"Disconnect this session",
+        "consent_regex": r"Never mind",
+        "unavailable_regex": r"Unknown command: /remote-control",
+        "confirm_seconds": 10,
+        "retry_minutes": 10,
+        "max_tries": 3,
+    },
 }
 
 
@@ -247,6 +264,8 @@ def load_fleet():
             "resume": s.get("resume", True) is not False,
             "initial_prompt": str(s.get("initial_prompt") or ""),
             "aliases": [str(a) for a in (s.get("aliases") or [])],
+            # true/false: start it with or without --remote-control; None: the fleet default.
+            "remote_control": s["remote_control"] if isinstance(s.get("remote_control"), bool) else None,
         })
     # Top-level `aliases: {CODE: [alias, ...]}` is also accepted.
     top = data.get("aliases") or {}
@@ -257,7 +276,8 @@ def load_fleet():
                 match[0]["aliases"] = sorted(set(match[0]["aliases"]) | {str(a) for a in al or []})
             else:
                 sessions.append({"code": str(code), "cwd": None, "autostart": False, "resume_name": None,
-                                 "extra_args": "", "resume": True, "initial_prompt": "", "aliases": [str(a) for a in al or []], "listed": False})
+                                 "extra_args": "", "resume": True, "initial_prompt": "", "aliases": [str(a) for a in al or []],
+                                 "remote_control": None, "listed": False})
     cfg["sessions"] = sessions
     return cfg
 

@@ -50,6 +50,13 @@
 #   board consensus ls [--all] | show ID [--markdown]
 #                                              decide among sessions while the owner is away
 #                                              (never for red lines, never for board asks)
+#   board rc on|off CODE|all [--by NAME] [--no-apply]
+#                                              Remote Control: store the choice (fleet-up uses it
+#                                              at start) and apply it to running sessions that
+#                                              are idle (typed /remote-control, checked on screen)
+#   board rc clear CODE|all [--by NAME]        forget the choice (back to fleet.yaml, else on)
+#   board rc status [--json]                   wanted / actual / pending per session
+#   board rc apply [CODE...|--pending]         apply the stored choice now
 #   board message send --to CODE|all [--by WHO] "text"|-
 #                                              create a board message (screened by the secret
 #                                              guard: a secret request is held, not relayed)
@@ -69,7 +76,8 @@
 #             4 refused: not authorized (answer: not an approver; press: no approver's answer;
 #             consensus: not a participant, or --from is not this tmux session),
 #             5 press stopped part-way (free text: some keys sent, Enter not pressed),
-#             6 refused by the secret guard (`answer`, `away --said`: asks for a secret value).
+#             6 refused by the secret guard (`answer`, `away --said`: asks for a secret value);
+#             `rc`: 3 refused (nothing sent), 5 stopped part-way, 6 sent but not confirmed.
 set -u
 
 REPO="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
@@ -249,6 +257,19 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
     notify-presence) echo "usage: board notify-presence on|off [--level warn|high|urgent] [--by WHO]"
         echo "  while an approver has the board open, visible and in use, hold push below LEVEL"
         echo "  (default high). The board still shows everything; escalation timers keep running." ;;
+    rc) echo "usage: board rc on|off CODE|all [--by NAME] [--no-apply]"
+        echo "       board rc clear CODE|all [--by NAME]"
+        echo "       board rc status [--json]"
+        echo "       board rc apply [CODE...|--pending]"
+        echo "  Remote Control (RC) per session, or for all of them (all replaces every per-session"
+        echo "  choice). Stored in \$BOARD_HOME/rc-prefs.json; fleet-up passes --remote-control only"
+        echo "  to sessions that want it (default on; fleet.yaml remote_control: true|false)."
+        echo "  A running session gets it when it is idle (done or rest) with an empty prompt box:"
+        echo "  /remote-control is typed, Enter pressed after a second check, and the result read"
+        echo "  back from the registry (bridgeSessionId). A working or needs-you session is left"
+        echo "  alone: \"will apply when idle\", and the collector applies it then."
+        echo "  Exit 3: refused (nothing sent); 5: stopped part-way (typed, Enter not pressed);"
+        echo "  6: sent but not confirmed, or Remote Control is not available in that session." ;;
     doctor) echo "usage: board doctor"
         echo "  check dependencies, config, hook installation and the collector" ;;
     away) echo "usage: board away on --by WHO --said \"owner's words\"|--said-file PATH [--replace]"
@@ -1791,6 +1812,10 @@ cmd_doctor() {
   local sd="${CLAUDE_SESSIONS_DIR:-$HOME/.claude/sessions}"
   if [ -d "$sd" ]; then ok "session registry $sd"; else fail "no session registry at $sd"; fi
 
+  if [ -n "${DO_NOT_TRACK:-}" ]; then
+    warn "DO_NOT_TRACK is set: Claude Code ignores --remote-control and has no /remote-control while it is set (board rc cannot turn Remote Control on)"
+  else ok "DO_NOT_TRACK not set (Remote Control is possible)"; fi
+
   echo "runtime:"
   if [ -f "$BOARD_HOME/collect.lock" ] && ! flock -n "$BOARD_HOME/collect.lock" true 2>/dev/null; then
     ok "collector running (pid $(cat "$BOARD_HOME/collect.pid" 2>/dev/null || echo '?'))"
@@ -1806,6 +1831,16 @@ cmd_doctor() {
   return "$bad"
 }
 
+# ---------------------------------------------------------------- rc
+cmd_rc() {
+  case "${1:-}" in
+    on|off) local st="$1"; shift; [ $# -gt 0 ] || { sub_usage rc >&2; exit 2; }
+            exec python3 "$REPO/lib/rc.py" set "$st" "$@" ;;
+    clear|status|apply) exec python3 "$REPO/lib/rc.py" "$@" ;;
+    *) sub_usage rc >&2; exit 2 ;;
+  esac
+}
+
 # ---------------------------------------------------------------- main
 sub="${1:-}"
 [ $# -gt 0 ] && shift
@@ -1814,7 +1849,7 @@ case "$sub" in
   # leading -h/--help asks for help.
   answer)
     case "${1:-}" in -h|--help) sub_usage answer; exit 0 ;; esac ;;
-  ls|snapshot|ask|decisions|mark|press|limit|notify|doctor|ack|unmute|notify-level|notify-presence|resources)
+  ls|snapshot|ask|decisions|mark|press|limit|notify|doctor|ack|unmute|notify-level|notify-presence|resources|rc)
     if wants_help "$@"; then sub_usage "$sub"; exit 0; fi ;;
   # proposals, notes and the owner's words are free text: only -h/--help right after the
   # subcommand (or instead of it) asks for help.
@@ -1847,6 +1882,7 @@ case "$sub" in
   notify-presence) [ $# -gt 0 ] || { sub_usage notify-presence >&2; exit 2; }; exec python3 "$PREFS" presence "$@" ;;
   away) guarded cmd_away "$@" ;;
   consensus) guarded cmd_consensus "$@" ;;
+  rc) cmd_rc "$@" ;;
   message) exec python3 "$REPO/lib/messages.py" "$@" ;;
   guard) [ $# -gt 0 ] || { python3 "$GUARD" --help; exit 2; }; exec python3 "$GUARD" "$@" ;;
   -h|--help|help) usage ;;

@@ -12,6 +12,9 @@
 # resume_fallback_seconds (default 15: "no such session"), never after a real session exits.
 # Without resume_name, or with `resume: false`, it starts fresh:
 #   claude -n CODE --remote-control CODE EXTRA ['INITIAL_PROMPT']
+# `--remote-control CODE` is left out for a session that does not want Remote Control: the
+# owner's choice (`board rc on|off CODE|all`, $BOARD_HOME/rc-prefs.json), else fleet.yaml
+# (the session's `remote_control: true|false`, then a top-level `remote_control`), else on.
 # `initial_prompt` is single-line (newlines become spaces, since the command is typed into the
 # pane) and single-quoted for the shell; it is also used when a resume falls back to fresh.
 # With `collector: true` (default) it also makes sure a tmux session `switchboard` runs
@@ -98,7 +101,14 @@ while IFS= read -r line; do
   fi
 
   q_code="$(printf '%q' "$code")"
-  base="$claude_bin -n $q_code --remote-control $q_code"
+  rc_want="$(python3 "$REPO/lib/rc.py" want "$code" 2>/dev/null)"
+  if [ "$rc_want" = off ]; then
+    base="$claude_bin -n $q_code"
+    log "$code: Remote Control off (board rc / fleet.yaml remote_control)"
+  else
+    base="$claude_bin -n $q_code --remote-control $q_code"
+    [ -n "${DO_NOT_TRACK:-}" ] && log "$code: warning: DO_NOT_TRACK is set, so Claude Code ignores --remote-control"
+  fi
   if [ -n "$extra" ]; then base_extra="$base $extra"; else base_extra="$base"; fi
   fresh="$base_extra"
   [ -n "$prompt" ] && fresh="$fresh $(sq "$prompt")"
