@@ -179,10 +179,27 @@ def main():
             # breaks (an <input> value holds none), the page turns the escape into a space.
             pg.evaluate("""(s) => { const i = document.querySelector(s + ' .pq-text[data-q="2"]');
               i.value = 'teal' + String.fromCharCode(10) + 'green' + String.fromCharCode(27) + '[2J  '; i.dispatchEvent(new Event('input', { bubbles: true })); }""", sel)
+            # Not delivered (409 partial): the typed text and the pick stay, to try again.
+            pg.unroute("**/api/decisions/*/answer")
+
+            def refuse(route):
+                posts.append(route.request.post_data_json)
+                route.fulfill(status=409, content_type="application/json",
+                              body=json.dumps({"error": "partial", "detail": "keys were sent but Enter was not pressed"}))
+            pg.route("**/api/decisions/*/answer", refuse)
             send.click()
             pg.wait_for_timeout(400)
             check("the POST carries {question_index, option | text}, text on one line",
                   posts == [{"answers": [{"question_index": 0, "option": 2}, {"question_index": 1, "text": "tealgreen [2J"}]}], posts)
+            kept = pg.evaluate("""(s) => ({ text: document.querySelector(s + ' .pq-text[data-q="2"]').value,
+              pick: document.querySelector(s + ' .pq-opt[data-q="1"][data-option="2"]').getAttribute('aria-pressed') })""", sel)
+            check("not delivered: the typed text and the pick are kept",
+                  kept["pick"] == "true" and kept["text"].startswith("tealgreen"), kept)
+            pg.unroute("**/api/decisions/*/answer")
+            pg.route("**/api/decisions/*/answer", capture)
+            pg.locator(sel + ' button[data-focus="send-form"]').click()
+            pg.wait_for_timeout(400)
+            check("accepted on the retry: the same answers sent again", len(posts) == 2 and posts[1] == posts[0], posts)
             pg.close()
 
             print("claude adapter (Artifact):")

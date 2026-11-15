@@ -3853,7 +3853,11 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
       let ok = true, res = null;
       try { res = await writeP; } catch (e) { ok = false; handleWriteError(e, !S.decisions.some((x) => x.id === d.id && isOpen(x))); }
       S.busy.delete(d.id);
-      if (ok) {
+      // Drafts (typed text, picks) go only once the answer was accepted; anything not delivered
+      // keeps them, so nothing typed is lost.
+      const accepted = ok && (!isLocal() || !res || res.status === 'relayed' || res.status === 'answered');
+      if (ok && !accepted) toast(tr('Not delivered. Your answers are kept: try again or answer in the session.'), true);
+      if (accepted) {
         delete S.drafts[d.id]; delete S.drafts[d.id + ':picks']; delete S.drafts[d.id + ':texts'];
         let sent = false;
         if (sendP) { try { await sendP; sent = true; } catch (e) { sent = false; } }
@@ -5425,6 +5429,7 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
       "Send answers": "送出回答",
       "Pick an option or type an answer for each question, then send them together.": "每題選一個選項或輸入回答，再一起送出。",
       "Type something for question {n}": "輸入第 {n} 題的回答",
+      "Not delivered. Your answers are kept: try again or answer in the session.": "未送達。你的回答已保留：請再試一次，或到 session 中回答。",
       "Answer on the self-hosted board or in the session (multi-question form).": "請在自架看板或 session 中回答（多題表單）。",
       "Your choices are picked in {who}'s form one question at a time, then submitted.": "你的選擇會在 {who} 的表單中逐題選取，然後送出。",
       "Answers picked and submitted in {who}.": "已在 {who} 選取並送出回答。",

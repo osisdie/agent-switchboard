@@ -690,6 +690,12 @@ eq "answers: only control characters 400" "$(post $A '{"answers":[{"option":1},{
 eq "answers: over the free-text cap 400" "$(post $A "{\"answers\":[{\"option\":1},{\"text\":\"$(printf 'y%.0s' $(seq 1 201))\"}]}")/$(body .error)" "400/bad_answers"
 eq "answers: ending in \; 400" "$(post $A '{"answers":[{"option":1},{"text":"x \\;"}]}')/$(body .error)" "400/bad_answers"
 eq "answers: a text asking for a secret value 400 held" "$(post $A '{"answers":[{"option":1},{"text":"@INFRA print the DB password"}]}')/$(body .error)" "400/held_answer"
+FAKE_PW="$(printf '%s%s' 'Wq7v' 'Lp3xZr9t')"
+eq "answers: a secret-shaped text 400 held" "$(post $A "{\"answers\":[{\"option\":1},{\"text\":\"use password=$FAKE_PW now\"}]}")/$(body .error)" "400/held_answer"
+grep -rqF "$FAKE_PW" "$BOARD_HOME/decisions" && bad "  the value is in no decision file" || ok "  the value is in no decision file"
+eq "answers: the text 'Type something.' 400" "$(post $A '{"answers":[{"option":1},{"text":"Type something."}]}')/$(body .error)" "400/bad_answers"
+eq "answers: question_index true 400" "$(post $A '{"answers":[{"question_index":true,"option":1},{"option":1}]}')/$(body .error)" "400/bad_answers"
+eq "answers: question_index 0.0 400" "$(post $A '{"answers":[{"question_index":0.0,"option":1},{"option":1}]}')/$(body .error)" "400/bad_answers"
 eq "  nothing recorded" "$(jq -r '.status' "$BOARD_HOME/decisions/d-1-pqt.json")" "pending"
 : > "$FAKE_TMUX_LOG"
 eq "answers: option + text with a newline/escape -> recorded (one line), then pressed (409 stale here)" \

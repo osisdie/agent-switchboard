@@ -640,6 +640,14 @@ cmd_answer() {
       || { echo "board answer: $(jq -r '.why' <<<"$parsed") on $id; nothing recorded" >&2; exit 2; }
     opts_json="$(jq -c '.options' <<<"$parsed")"
     texts_json="$(jq -c '.texts' <<<"$parsed")"
+    # A text that reads as the "Type something" row itself could never be told apart from that
+    # row on screen (the echo check): refused.
+    local ftl t_c
+    ftl="$(cfg_get press.free_text_label)"
+    while IFS= read -r t_c; do
+      [ -n "$ftl" ] && grep -Eiq -- "^(${ftl})[.…]*\$" <<<"$t_c" \
+        && { echo "board answer: a text answer may not be the \"Type something\" row itself on $id; nothing recorded" >&2; exit 2; }
+    done < <(jq -r '.[] | select(. != null)' <<<"$texts_json")
     options="$(jq -r '.options | map(tostring) | join(",")' <<<"$parsed")"
     answer="$(jq -r --argjson o "$opts_json" --argjson t "$texts_json" '[ range(0; .questions | length) as $i | .questions[$i]
         | ((.header // "") | tostring | gsub("^\\s+|\\s+$"; "")) as $h
@@ -695,12 +703,17 @@ cmd_answer() {
   # alerted. Checked after the approver check, so nobody else can raise these alerts.
   # (--options: every part is one of the session's own labels, which always passes, as one option
   # of a single question does; the composed text was scrubbed above.)
-  local held="" t_i
+  local held="" t_i t_raw
   if [ "$texts_json" != null ]; then
-    # Each free-text part of a form goes through the guard on its own.
+    # Each free-text part of a form goes through the guard on its own: a request for a secret is
+    # held, and so is a text that holds a secret-shaped value (the scrubber would change it): it
+    # would be typed into the session and kept in the decision file as it is, so it is refused
+    # rather than typed redacted.
     while IFS= read -r t_i; do
       [ -n "$t_i" ] || continue
-      held="$(jq -r '.' <<<"$t_i" | python3 "$GUARD" screen-answer "$f")" || break
+      t_raw="$(jq -r '.' <<<"$t_i")"
+      if [ "$(guard_scrub "$t_raw")" != "$t_raw" ]; then held="a text answer holds a secret-shaped value"; break; fi
+      held="$(printf '%s' "$t_raw" | python3 "$GUARD" screen-answer "$f")" || break
       held=""
     done < <(jq -c '.[] | select(. != null)' <<<"$texts_json")
   fi
@@ -1481,6 +1494,8 @@ press_multi() {
     local row ok=0
     raw="$(form_region)" || { why="the form closed while typing question $(($1 + 1))"; return 1; }
     while IFS= read -r row; do
+      # still the unedited "Type something." row: nothing was typed, whatever the text looks like
+      grep -Eq -- "${key}\.[[:space:]]*(${ftlabel})" <<<"$row" && continue
       [[ "$(nows <<<"$row")" == *"$key.$want"* ]] && { ok=1; break; }
     done < <(grep -E -- "^[[:space:]]*(${focus})[[:space:]]*${key}\." <<<"$raw")
     [ "$ok" = 1 ] || { why="the typed text is not on the focused \"Type something\" row of question $(($1 + 1)); Enter not pressed"; return 1; }
@@ -1499,9 +1514,23 @@ press_multi() {
       [[ $rest == *"$q"* ]] || { why="the review screen does not show question $((t + 1))"; return 1; }
       rest="${rest#*"$q"}"
     done
-    # "→ Redwood" never passes for "Red", and a label the screen wrapped fails safe.
+    # "→ Redwood" never passes for "Red". An answer the screen wrapped continues on the next lines,
+    # indented deeper than the "●" question lines (4+ spaces) and not a "●", "→" or numbered row:
+    # those lines are joined to it, so a long typed text compares whole.
     local -a shown=()
-    while IFS= read -r seg; do shown+=("$(nows <<<"${seg#*→}")"); done < <(grep -E '^[[:space:]]*→' <<<"$raw")
+    local cur="" inans=0
+    while IFS= read -r seg; do
+      if [[ $seg =~ ^[[:space:]]*→ ]]; then
+        [ "$inans" = 1 ] && shown+=("$(nows <<<"$cur")")
+        cur="${seg#*→}"; inans=1
+      elif [ "$inans" = 1 ] && [[ $seg =~ ^[[:space:]]{4,}[^[:space:]] ]] && ! [[ $seg =~ ^[[:space:]]*(●|[1-9]\.) ]]; then
+        cur="$cur$seg"
+      else
+        [ "$inans" = 1 ] && shown+=("$(nows <<<"$cur")")
+        inans=0; cur=""
+      fi
+    done <<<"$raw"
+    [ "$inans" = 1 ] && shown+=("$(nows <<<"$cur")")
     [ "${#shown[@]}" = "$n" ] || { why="the review screen shows ${#shown[@]} answers for $n questions"; return 1; }
     for ((t = 0; t < n; t++)); do
       lbl="$(jq -r --argjson i "$t" 'if (.answer_texts // [])[$i] != null then .answer_texts[$i]

@@ -1319,6 +1319,35 @@ eq "review shows another text -> exit 5, nothing submitted" "$?/$(keys_sent)" \
   "5/send-keys -t %42 2|send-keys -t %42 3|send-keys -t %42 -l -- teal green|send-keys -t %42 Enter|send-keys -t %42 1|"
 qdone tu_t9
 
+# A secret-shaped value in a text is held (exit 6): never typed, never stored. Built from pieces.
+FAKE_PW="$(printf '%s%s' 'Wq7v' 'Lp3xZr9t')"
+d="$(askq tu_ta "$Q3F")"
+formf "[{\"option\":1},{\"text\":\"use password=$FAKE_PW now\"},{\"option\":2}]" "$d"
+eq "--form-file: a secret-shaped text -> exit 6, nothing recorded" "$?/$(dj "$d" .status)" "6/pending"
+grep -rqF "$FAKE_PW" "$BOARD_HOME/decisions" && bad "  the value is in no decision file" || ok "  the value is in no decision file"
+eq "  audited as held" "$(jq -s -r '[.[] | select(.type=="guard" and .id=="'"$d"'")] | last | .reason' "$BOARD_HOME/events.jsonl")" "a text answer holds a secret-shaped value"
+# A text that reads as the "Type something" row itself could not be checked on screen.
+formf '[{"option":1},{"text":"Type something."},{"option":2}]' "$d"
+eq "--form-file: the text 'Type something.' -> exit 2" "$?/$(dj "$d" .status)" "2/pending"
+formf '[{"option":1},{"text":"type SOMETHING"},{"option":2}]' "$d"
+eq "--form-file: the label in another case -> exit 2" "$?/$(dj "$d" .status)" "2/pending"
+qdone tu_ta
+# A short text that the placeholder itself starts with ("Type"): the unedited row never counts
+# as the typed text.
+d="$(askq tu_tb "$Q3F")"
+formf '[{"option":2},{"text":"Type"},{"option":1}]' "$d"
+seqpress tu_tb "$(mq3_q 1)" "$(mq3_q 1)" "$(mq3_q 2)" "$(mq3_q 2 'Type something.')" "$(mq3_q 2 'Type something.')"
+eq "text 'Type' but the row still shows 'Type something.' -> exit 5, no Enter" "$?/$(keys_sent)" "5/send-keys -t %42 2|send-keys -t %42 3|send-keys -t %42 -l -- Type|"
+qdone tu_tb
+# A long text wraps on the review screen: its continuation lines are joined before comparing.
+LONGT="a long answer that the review screen of the form has to wrap onto a second line because it is wide"
+d="$(askq tu_tc "$Q3F")"
+formf "[{\"option\":2},{\"text\":\"$LONGT\"},{\"option\":1}]" "$d"
+mq3_review_w() { mq3_head ☒ ☒ ☒; printf 'Review your answers\n\n ● Which color for the banner?\n   → Blue\n ● Which size for the banner?\n   → a long answer that the review screen of the form has to wrap onto a\n     second line because it is wide\n ● Which shape for the banner?\n   → Round\n\nReady to submit your answers?\n\n❯ 1. Submit answers\n  2. Cancel\n'; }
+seqpress tu_tc "$(mq3_q 1)" "$(mq3_q 1)" "$(mq3_q 2)" "$(mq3_q 2 'Type something.')" "$(mq3_q 2 "${LONGT:0:60}")" "$(mq3_q 3)" "$(mq3_review_w)"
+eq "a wrapped text on the review is joined -> ok, submitted" "$?/$(keys_sent | grep -o 'send-keys -t %42 1|$')" "0/send-keys -t %42 1|"
+qdone tu_tc
+
 # One label cut short -> read-only, even with a short question.
 CLIPL="$(jq -cn --arg l "Option $(printf 'l%.0s' $(seq 1 100))" '[{question: "Which one?", header: "Pick", options: [{label: $l, description: ""}, {label: "No", description: ""}], multiSelect: false}]')"
 d="$(askq tu_q11 "$CLIPL")"

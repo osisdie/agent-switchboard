@@ -104,6 +104,16 @@ FREE_TEXT_STRIP_RE = re.compile("[\x00-\x1f\x7f-\x9f\u2028\u2029\u200b-\u200f\u2
 
 def clean_free_text(text):
     return re.sub(r"\s+", " ", FREE_TEXT_STRIP_RE.sub(" ", text)).strip(" ")
+
+
+def is_free_text_label(text):
+    """Does TEXT read as the picker's own "Type something." row (press.free_text_label)? Such a
+    text could not be told apart from that row on screen, so it is refused."""
+    label = str(fleet.get_key(fleet.load_fleet(), "press.free_text_label") or "")
+    try:
+        return bool(label) and re.fullmatch("(?:%s)[.…]*" % label, text, re.IGNORECASE) is not None
+    except re.error:
+        return True
 MAX_MESSAGE = 4000
 MAX_IDLE_MS = 24 * 3600 * 1000   # presence: idle_ms above a day is refused (400)
 MAX_SSE = 32            # per listener, so the tunnel can't starve the local browser
@@ -1050,7 +1060,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             options, texts = [], []
             for i, a in enumerate(answers):
                 if not isinstance(a, dict) or set(a) - {"question_index", "option", "text"} \
-                        or a.get("question_index", i) != i or isinstance(a.get("question_index"), bool) \
+                        or ("question_index" in a and (type(a["question_index"]) is not int or a["question_index"] != i)) \
                         or ("option" in a) == ("text" in a):
                     raise Refused(400, "bad_answers", "each answer is {question_index, option} or {question_index, text}, in order")
                 if "option" in a:
@@ -1066,6 +1076,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     t = clean_free_text(t)
                     if not t or len(t) > MAX_FREE_TEXT or t.endswith("\\;"):
                         raise Refused(400, "bad_answers", "a text answer must be 1-%d characters of one line" % MAX_FREE_TEXT)
+                    if is_free_text_label(t):
+                        raise Refused(400, "bad_answers", "a text answer may not be the \"Type something\" row itself")
                     options.append(0)  # its "Type something" row, set below from the question
                     texts.append(t)
             body = dict(body, answer="(answers)")
@@ -1126,7 +1138,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # and a form answered by option numbers is nothing but the session's own options.)
             if texts is not None:
                 qs = dec.get("questions") or []
-                reason = next((r for r in (guard.screen_answer(t, [o.get("label") for o in (qs[i].get("options") or [])
+                # A secret-shaped value in a text would be typed into the session and kept in the
+                # decision file as it is: held, like a request for a secret (never typed redacted).
+                reason = next(("a text answer holds a secret-shaped value" for t in texts
+                               if t is not None and guard.scrub(t) != t), None) or next((r for r in (guard.screen_answer(t, [o.get("label") for o in (qs[i].get("options") or [])
                                                                   if isinstance(o, dict)])
                                            for i, t in enumerate(texts) if t is not None) if r), None)
             else:
