@@ -12,7 +12,17 @@ VERBOSE=0; [ "${1:-}" = "-v" ] && VERBOSE=1
 
 T="$(mktemp -d "${TMPDIR:-/tmp}/switchboard-notify-test.XXXXXX")"
 SMTP_PID=""
-cleanup() { [ -n "$SMTP_PID" ] && kill "$SMTP_PID" 2>/dev/null; rm -rf "$T"; }
+cleanup() {
+  [ -n "$SMTP_PID" ] && kill "$SMTP_PID" 2>/dev/null
+  # The statusline tap writes from a detached background subshell, which can outlive this script
+  # and recreate $T/home/statusline after the rm. Wait (bounded) until no process still carries
+  # this BOARD_HOME; grep runs without it so it never finds itself. No /proc: nothing to wait for.
+  for _ in $(seq 1 100); do
+    env -u BOARD_HOME grep -qsxzF "BOARD_HOME=$T/home" /proc/[0-9]*/environ || break
+    sleep 0.1
+  done
+  rm -rf "$T"
+}
 trap cleanup EXIT
 
 export TZ=UTC
@@ -132,7 +142,7 @@ wait_calls "1/1/1/1/1/1"
 eq "urgent -> all six channels" "$(calls)" "1/1/1/1/1/1"
 lcfg="$(cat "$(grep -l 'api.line.me' "$T"/curl/*.cfg)")"
 has "line: push endpoint" "$lcfg" 'url = "https://api.line.me/v2/bot/message/push"'
-has "line: bearer token" "$lcfg" 'header = "Authorization: Bearer line-secret-token-xyz"'
+has "line: bearer token" "$lcfg" "header = \"Authorization: Bearer $line_tok\""
 ltext="$(sed -n 's/^data-binary = //p' <<<"$lcfg" | python3 -c 'import json,sys; print(json.loads(json.loads(sys.stdin.read()))["messages"][0]["text"].__len__())')"
 eq "line: text capped at 5000" "$ltext" "5000"
 has "line: to = LINE_TO" "$lcfg" 'U00000000000000000000000000000000'

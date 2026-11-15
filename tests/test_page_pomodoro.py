@@ -219,7 +219,7 @@ def main():
 
             print("reduced motion")
             pg = new_page(reduced_motion="reduce")
-            open_paused(pg, PAGE + "?demo=1", CARDS_UP)
+            check("reduced motion: the demo renders", open_paused(pg, PAGE + "?demo=1", CARDS_UP))
             pg.clock.run_for(10000)
             check("the count still goes up", pg.evaluate(OPS3))
             check("  no celebration", pg.evaluate("() => window.__bursts") == 0, pg.evaluate("() => window.__bursts"))
@@ -227,7 +227,7 @@ def main():
 
             print("phone width")
             pg = new_page(viewport={"width": 390, "height": 860}, is_mobile=True, has_touch=True)
-            open_paused(pg, PAGE + "?demo=1", CARDS_UP)
+            check("phone: the demo renders", open_paused(pg, PAGE + "?demo=1", CARDS_UP))
             k = pg.evaluate(KEY_JS)
             check("the key and the wide strip share a row on three columns", k and k["sameRow"] and k["wideRight"] and k["leftEdge"], k)
             ov = pg.evaluate("""() => [...document.querySelectorAll('.spomo')].filter((e) => { const r = e.getBoundingClientRect(), c = e.closest('article').getBoundingClientRect();
@@ -244,7 +244,7 @@ def main():
 
             print("zh-TW")
             pg = new_page("try { localStorage.setItem('switchboard.lang', 'zh-TW'); } catch (e) {}")
-            open_paused(pg, PAGE + "?demo=1", CARDS_UP)
+            check("zh-TW: the demo renders", open_paused(pg, PAGE + "?demo=1", CARDS_UP))
             k = pg.evaluate(KEY_JS)
             check("key in Chinese", k and k["text"].startswith("🍅 今日") and "專注 9 小時 28 分" in k["text"] and k["label"].startswith("AI 團隊：19 🍅"), k)
             r = pg.evaluate(ROWS_JS)
@@ -264,7 +264,7 @@ def main():
                       "days": [{"date": "2026-11-%02d" % (2 + i), "done": i, "focus_ms": i * 1500000, "sessions": {}} for i in range(14)], "updated_at": None}
             mirror["days"][-1].update(done=4, focus_ms=7200000)
             pg = new_page(claude_stub(mirror))
-            open_paused(pg, PAGE, CARDS_UP)
+            check("mirror: the cards render", open_paused(pg, PAGE, CARDS_UP))
             r = pg.evaluate(ROWS_JS)
             check("cards show the mirrored count, no clock", r.get("API", {}).get("text") == "🍅×3 today" and not r["API"]["ring"]
                   and r.get("WEB", {}).get("text") == "🍅×1 today", r)
@@ -284,7 +284,7 @@ def main():
                                              "progress_ms": None, "done_at": None}},
                         "days": [{"date": "2026-11-15", "done": 0, "focus_ms": 0, "sessions": {}}]}
                 pg = new_page(claude_stub(view))
-                open_paused(pg, PAGE, CARDS_UP, at=now_ms / 1000.0)
+                check("  %s: the card renders" % label, open_paused(pg, PAGE, CARDS_UP, at=now_ms / 1000.0))
                 a1 = pg.evaluate(ROWS_JS).get("API") or {}
                 pg.clock.run_for(1300)
                 a2 = pg.evaluate(ROWS_JS).get("API") or {}
@@ -296,7 +296,7 @@ def main():
                 pg.close()
 
             pg = new_page(claude_stub(None))
-            open_paused(pg, PAGE, KEY_UP)
+            check("no meta/pomodoro: the key renders", open_paused(pg, PAGE, KEY_UP))
             k = pg.evaluate(KEY_JS)
             check("no meta/pomodoro: the key says so", k and "—" in k["text"] and "no data yet" in k["text"], k)
             pg.click("#deck-grid .dkey.pomo")
