@@ -651,8 +651,8 @@ def main(argv):
     cfg = fleet.load_fleet()
     now = now_ms()
     sessions = build_sessions(cfg, home, str(cfg.get("remote_url_prefix") or ""))
-    panes = pane_list()
-    card_details(sessions, home, now, titles={k: v[0] for k, v in panes.items()})
+    panes, hosts = pane_list(), hostnames()
+    card_details(sessions, home, now, titles={k: v[0] for k, v in panes.items()}, hosts=hosts)
     try:
         account_info(cfg, home)
     except (OSError, ValueError) as exc:  # never breaks the collector
@@ -671,7 +671,7 @@ def main(argv):
             "consensus": away.consensus_items(home, now),
             "resources": resources_digest(cfg, home, sessions, verbose)}
     try:  # card extras (lib/cards.py): cards.json, read by board-serve only, never in the snapshot
-        cards.step(cfg, home, sessions, now, panes, clean_text, clean_title, hostnames())
+        cards.step(cfg, home, sessions, now, panes, clean_text, clean_title, hosts)
     except Exception as exc:  # noqa: BLE001 - never breaks the collector
         if verbose:
             print("cards: %s: %s" % (type(exc).__name__, exc))

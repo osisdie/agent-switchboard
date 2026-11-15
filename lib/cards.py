@@ -408,6 +408,10 @@ def step(cfg, home, rows, now, panes, clean, clean_title, hosts):
             "prompt": tx.get("prompt") if cfg_cards["show_prompt"] else None,
             "branch": g.get("info"),
         })
+    if not cfg_cards["show_prompt"]:  # switched off: no prompt stays in the cache either
+        for v in tcache.values():
+            if isinstance(v, dict):
+                v.pop("prompt", None)
     state = {"transcripts": {k: v for k, v in tcache.items() if k in live_sids},
              "since": new_since, "git": gcache}
     if state != read_json(spath):  # the same document most runs: no write

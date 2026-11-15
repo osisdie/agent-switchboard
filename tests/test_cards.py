@@ -149,6 +149,13 @@ class Transcript(Base):
         self.assertIsNone(c["prompt"])
         self.assertNotIn("a private prompt", read(os.path.join(HOME, "cards-state.json")))
 
+    def test_show_prompt_switched_off_purges_the_cache(self):
+        write(os.path.join(PROJ, "-w", "s-cp.jsonl"), jl(user("an earlier prompt"), assistant("ok")))
+        self.assertEqual(step([row()])["sessions"]["CP"]["prompt"], "an earlier prompt")
+        fleet("cards:\n  show_prompt: false\n")
+        self.assertIsNone(step([row()], now=NOW + 1000)["sessions"]["CP"]["prompt"])
+        self.assertNotIn("an earlier prompt", read(os.path.join(HOME, "cards-state.json")))
+
     def test_tail_only_and_previous_values_kept(self):
         path = os.path.join(PROJ, "-w", "s-cp.jsonl")
         write(path, jl(user("the first prompt"), assistant("first answer")))
