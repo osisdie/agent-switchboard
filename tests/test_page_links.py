@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """tests/test_page_links.py — optional headless check of the board page's alert links
-(?d= / ?m= / ?c=, #<id>, #dec-<id>): openLinked() in artifact/board.html.
+(?d= / ?m= / ?c=, #<id>, #dec-<id>): openLinked() in artifact/board.html, plus the System tile
+and Resources section (demo data and a board-serve resources.json).
 
 Needs python playwright and a Chromium it can launch; without them it prints "skipped" and
 exits 0, so it never blocks anyone. CI does not run it.
@@ -60,6 +61,18 @@ STATE_JS = """() => {
     search: location.search, hash: location.hash,
   };
 }"""
+
+
+RES_JS = """() => ({
+  tile: !document.getElementById('sys').hidden, lvl: document.getElementById('sys-lvl').textContent,
+  mem: document.querySelector('#sys-mem .u-p').textContent, memCls: document.getElementById('sys-mem').className,
+  oom: document.getElementById('sys-oom').textContent,
+  rows: document.querySelectorAll('#res-body tr').length, idle: document.querySelectorAll('#res-body .idle').length,
+  disks: document.querySelectorAll('#disk-body tr').length, nav: document.getElementById('nav-res').textContent,
+  note: document.getElementById('res-idle-note').textContent,
+  wide: document.documentElement.scrollWidth > window.innerWidth,
+  banners: [...document.querySelectorAll('#banners .banner strong')].map((x) => x.textContent),
+})"""
 
 
 # A stand-in for the Google Fonts stylesheet: one face whose file (on fonts.gstatic.com) the test
@@ -188,6 +201,21 @@ def main():
             check("no data source (hosted page without data): nothing happens",
                   s["linked"] is None and not s["toasts"], s)
 
+            print("resources (demo):")
+            go(PAGE + "?demo=1")
+            r = page.evaluate(RES_JS)
+            check("System tile shown", r["tile"], r)
+            check("level chip", r["lvl"] == "warn", r)
+            check("memory bar: used % in the warn color", r["mem"] == "88%" and "lvl-amber" in r["memCls"], r)
+            check("OOM counter", r["oom"] == "OOM 1", r)
+            check("a row per session plus orphaned teammates", r["rows"] == 4, r)
+            check("idle teammates flagged", r["idle"] == 2, r)
+            check("disks table", r["disks"] == 2, r)
+            check("nav badge counts idle teammates", r["nav"] == "2", r)
+            check("idle note says the board stops nothing", "never stops a process" in r["note"], r)
+            check("no critical banner at warn", not any("critical" in b for b in r["banners"]), r)
+            check("no horizontal scroll at phone width", not r["wide"], r)
+
             print("local adapter (board-serve):")
             home, cfg, sess = (os.path.join(tmp, x) for x in ("home", "config", "sessions"))
             for d in (os.path.join(home, "decisions"), cfg, sess):
@@ -200,7 +228,9 @@ def main():
                 with open(os.path.join(home, "decisions", did + ".json"), "w", encoding="utf-8") as fh:
                     json.dump({"id": did, "kind": "question", "from": "API", "question": "Ship?",
                                "options": ["yes", "no"], "status": st, "created_at": now, "updated_at": now}, fh)
-            env = dict(os.environ, BOARD_HOME=home, BOARD_CONFIG_DIR=cfg, CLAUDE_SESSIONS_DIR=sess)
+            proc = os.path.join(tmp, "proc")  # a calm fixture /proc: never the live machine's numbers
+            subprocess.run([sys.executable, os.path.join(REPO, "tests", "fake_proc.py"), proc], check=True)
+            env = dict(os.environ, BOARD_HOME=home, BOARD_CONFIG_DIR=cfg, CLAUDE_SESSIONS_DIR=sess, BOARD_PROC_ROOT=proc)
             env.pop("BOARD_PUBLIC_URL", None)
             subprocess.run([os.path.join(REPO, "bin", "board-collect"), "--once", "--no-notify"],
                            env=env, check=True, stdout=subprocess.DEVNULL)
@@ -219,6 +249,21 @@ def main():
             check("local ?d=: parameter dropped", s["search"] == "", s)
             s = go(base + "/?d=d-1794650400-cd34", 1500)
             check("local answered: notice", any("already answered" in t for t in s["toasts"]), s)
+
+            r = page.evaluate(RES_JS)
+            check("local: System tile from resources.json", r["tile"] and r["lvl"] == "ok" and r["mem"] == "50%", r)
+            check("local: no watch process -> banner", "Operator watch is not running" in r["banners"], r)
+            with open(os.path.join(home, "resources.json"), encoding="utf-8") as fh:
+                doc = json.load(fh)
+            doc.update(level="critical", worst="mem", levels={"mem": "critical"}, operator={"watch": True})
+            doc["mem"]["available_pct"] = 4
+            with open(os.path.join(home, "resources.json"), "w", encoding="utf-8") as fh:
+                json.dump(doc, fh)
+            page.wait_for_timeout(2500)  # serve polls the signature every second, then SSE
+            r = page.evaluate(RES_JS)
+            check("local: critical -> red banner", "System resources critical — memory" in r["banners"], r)
+            check("local: watch back -> its banner gone", "Operator watch is not running" not in r["banners"], r)
+            check("local: memory bar red", r["mem"] == "96%" and "lvl-red" in r["memCls"], r)
 
             check("no page errors", not errors, errors)
             browser.close()

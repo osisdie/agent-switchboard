@@ -544,6 +544,32 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   .meter-group { grid-template-columns: repeat(3, 1fr); }
   .meter { padding: 10px 12px; }
 }
+
+/* ---------- system tile + resources ---------- */
+.sys { display: grid; gap: 6px; align-content: center; padding: 10px 14px; border: 1px solid var(--rule); border-radius: var(--r); background: var(--panel); min-width: 230px; color: var(--ink); text-decoration: none; }
+.sys:hover { border-color: var(--cord); }
+.sys .u-title { font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.sys .u-row { grid-template-columns: 34px minmax(60px, 1fr) 42px; }
+.sys .s-line { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; display: flex; flex-wrap: wrap; gap: 2px 10px; }
+.sys .s-line b { font-weight: 600; color: var(--ink); }
+.lvl { font-family: var(--f-mono); font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; padding: 1px 7px; border-radius: 9px; background: var(--off-soft); color: var(--muted); white-space: nowrap; }
+.lvl.ok { background: var(--ok-soft); color: var(--ok); }
+.lvl.warn { background: var(--lamp-soft); color: var(--lamp); }
+.lvl.high { background: var(--heat-soft); color: var(--heat); }
+.lvl.critical { background: var(--deny-soft); color: var(--deny); }
+.oom { font-family: var(--f-mono); font-size: 11px; padding: 0 6px; border-radius: 9px; background: var(--off-soft); color: var(--muted); }
+.oom.hot { background: var(--deny); color: #fff; }
+.res-meta { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--muted); font-size: 13px; }
+.res-meta b { color: var(--ink); font-weight: 600; }
+.res-note { margin: 0; font-size: 13px; color: var(--muted); }
+.res-tbl td { font-variant-numeric: tabular-nums; }
+.res-tbl .procs, .res-tbl .tms { display: grid; gap: 3px; }
+.res-tbl .cls { font-family: var(--f-mono); font-size: 11px; padding: 0 6px; border-radius: 4px; background: var(--off-soft); color: var(--muted); margin-right: 6px; }
+.res-tbl .cls.heavy { background: var(--heat-soft); color: var(--heat); }
+.res-tbl .idle { font-family: var(--f-mono); font-size: 11px; padding: 0 6px; border-radius: 4px; background: var(--lamp-soft); color: var(--lamp); margin-left: 6px; }
+.res-tbl tr.orphan td:first-child { color: var(--muted); font-style: italic; }
+.sys[hidden], .res-meta[hidden], .oom[hidden] { display: none; }
+@media (max-width: 480px) { .sys { width: 100%; } }
 </style>
 
 <div class="wrap">
@@ -602,6 +628,12 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
         <div class="u-row none" id="u-5h"><span class="u-k">5h</span><span class="u-bar" role="meter" aria-label="5-hour usage" aria-valuemin="0" aria-valuemax="100"><span style="width:0%"></span></span><span class="u-p">—</span><span class="u-r">not reported</span></div>
         <div class="u-row none" id="u-7d"><span class="u-k">7d</span><span class="u-bar" role="meter" aria-label="Weekly usage" aria-valuemin="0" aria-valuemax="100"><span style="width:0%"></span></span><span class="u-p">—</span><span class="u-r">not reported</span></div>
       </div>
+      <a class="sys" id="sys" href="#resources" aria-label="System resources" hidden>
+        <span class="u-title"><span>System 系統</span><span><span class="lvl" id="sys-lvl">—</span> <span class="oom" id="sys-oom" title="OOM kills since boot">OOM 0</span></span></span>
+        <span class="u-row none" id="sys-mem"><span class="u-k">Mem</span><span class="u-bar" role="meter" aria-label="Memory used" aria-valuemin="0" aria-valuemax="100"><span style="width:0%"></span></span><span class="u-p">—</span><span class="u-r"></span></span>
+        <span class="u-row none" id="sys-swap"><span class="u-k">Swap</span><span class="u-bar" role="meter" aria-label="Swap used" aria-valuemin="0" aria-valuemax="100"><span style="width:0%"></span></span><span class="u-p">—</span></span>
+        <span class="s-line" id="sys-line"></span>
+      </a>
     </div>
   </header>
 
@@ -613,6 +645,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
         <li><a href="#consensus" data-spy="consensus">Consensus <span class="zh">共識</span> <span class="badge" id="nav-cons">0</span></a></li>
         <li><a href="#lifecycle" data-spy="lifecycle">Lifecycle <span class="zh">流程</span> <span class="badge" id="nav-life">0</span></a></li>
         <li><a href="#board" data-spy="board">Board <span class="zh">看板</span> <span class="badge" id="nav-board">0</span></a></li>
+        <li><a href="#resources" data-spy="resources">Resources <span class="zh">資源</span> <span class="badge" id="nav-res" title="idle teammates">0</span></a></li>
         <li><a href="#messages" data-spy="messages">Messages <span class="zh">訊息</span> <span class="badge" id="nav-msg">0</span></a></li>
         <li><a href="#approvals" data-spy="approvals">Approvals <span class="zh">核准紀錄</span> <span class="badge" id="nav-appr">0</span></a></li>
       </ul>
@@ -666,6 +699,29 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     </div>
     <div class="empty" id="board-empty" hidden><strong>No sessions yet.</strong>The operator adds a card for each running session the next time it syncs.</div>
     <div class="board" id="board-cols"></div>
+  </section>
+
+  <section class="sec" id="resources" aria-labelledby="h-resources">
+    <div class="sec-head">
+      <h2 id="h-resources">Resources</h2>
+      <span class="hint">Memory, disks and what each session runs, teammates included. The board never stops a process. 系統資源與各 session 的程序。</span>
+    </div>
+    <div class="empty" id="res-empty"><strong>No resource data yet.</strong>The collector samples memory, disks and processes every few seconds.</div>
+    <div class="res-meta" id="res-meta" hidden></div>
+    <p class="res-note" id="res-unavail" hidden></p>
+    <div class="tbl-wrap" id="res-wrap" hidden>
+      <table class="log res-tbl">
+        <thead><tr><th>Session</th><th>Claude</th><th>Processes</th><th>Teammates</th></tr></thead>
+        <tbody id="res-body"></tbody>
+      </table>
+    </div>
+    <div class="tbl-wrap" id="disk-wrap" hidden>
+      <table class="log res-tbl">
+        <thead><tr><th>Disk</th><th>Free</th><th>Size</th><th>Used by</th><th>Level</th></tr></thead>
+        <tbody id="disk-body"></tbody>
+      </table>
+    </div>
+    <p class="res-note" id="res-idle-note" hidden></p>
   </section>
 
   <section class="sec" id="messages" aria-labelledby="h-messages">
@@ -776,6 +832,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     operator: null, ledger: null,
     away: null, consensus: [],   // owner-away record ({since, by, said}) | null; consensus items
     notify: null,                // notification controls (board-serve state.notify / meta/notify) | null
+    resources: null,             // resources.json board view (local) | meta/resources (Artifact) | null
     replies: new Map(),
     got: { sessions: false, decisions: false, messages: false, tasks: false, approvals: false, operator: false, consensus: false },
     slow: false, feedError: null, offlineDetail: null,
@@ -1112,6 +1169,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
         h('p', { text: sw ? 'Start the operator on a backup account so the board keeps running. Alerts still go out meanwhile.' : 'Pick a backup account that can edit this board and wrap up long tasks before the limit hits.' }),
         h('button', { class: 'golink', type: 'button', onclick: () => openInfo('failover'), text: 'How to switch accounts →' })));
     }
+    resourceBanners(box);
     if (S.demo) {
       box.append(h('div', { class: 'banner demo' }, h('strong', { text: 'DEMO DATA' }),
         h('p', { text: 'Sample sessions, decisions and messages for preview. None of it is real, and nothing you do here is saved or sent.' })));
@@ -1414,6 +1472,154 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     }
   }
 
+  /* ----------------------------------------------------------- resources */
+  // resources.json through board-serve (board_view: no pids, no paths), or meta/resources mirrored
+  // by the operator (bucketed, written when the level changes). Read-only: nothing here stops a process.
+  const RES_LVLS = ['ok', 'warn', 'high', 'critical'];
+  const CLS_ORDER = ['test', 'build', 'browser', 'container', 'claude', 'teammate'];
+  const clsRank = (k) => { const i = CLS_ORDER.indexOf(k); return i < 0 ? CLS_ORDER.length : i; };
+  const resLvl = (l) => (RES_LVLS.includes(l) ? l : null);
+  const BAR_LVL = { ok: 'ok', warn: 'amber', high: 'orange', critical: 'red' };
+  function fmtMb(v) { const n = Number(v); if (!isFinite(n)) return '?'; return n >= 1024 ? (n / 1024).toFixed(1) + ' GB' : Math.round(n) + ' MB'; }
+  function fmtAge(s) { const n = Number(s); if (!isFinite(n) || s == null) return '—'; return n < 60 ? Math.round(n) + 's' : dur(n * 1000); }
+  const METRIC_NAMES = { mem: 'memory', swap: 'swap', load: 'load', oom: 'OOM kill' };
+  const metricName = (m) => { const k = str(m); return k.startsWith('disk:') ? 'disk ' + k.slice(5) : METRIC_NAMES[k] || k || 'resources'; };
+  function resView() {
+    const r = S.resources;
+    return (S.mode === 'live' || S.mode === 'demo') && r && typeof r === 'object' && r.enabled !== false ? r : null;
+  }
+  function idleGroups(r) {
+    const out = [];
+    for (const s of objs(r.sessions)) { const idle = objs(s.teammates).filter((t) => t.idle); if (idle.length) out.push({ code: str(s.code), idle }); }
+    const orphans = objs(r.orphan_teammates).filter((t) => t.idle);
+    if (orphans.length) out.push({ code: null, idle: orphans });
+    return out;
+  }
+  function setBar(row, pct, lvl, label, sub) {
+    const bar = row.querySelector('.u-bar'), fill = bar.firstElementChild;
+    if (pct == null || !isFinite(Number(pct))) {
+      row.className = 'u-row none'; fill.style.width = '0%'; bar.removeAttribute('aria-valuenow');
+      row.querySelector('.u-p').textContent = '—'; if (row.querySelector('.u-r')) row.querySelector('.u-r').textContent = sub || 'not available';
+      return;
+    }
+    const p = Math.max(0, Math.min(100, Math.round(Number(pct))));
+    row.className = 'u-row lvl-' + (BAR_LVL[lvl] || 'ok');
+    fill.style.width = p + '%'; bar.setAttribute('aria-valuenow', String(p));
+    row.querySelector('.u-p').textContent = label || p + '%';
+    if (row.querySelector('.u-r')) row.querySelector('.u-r').textContent = sub || '';
+  }
+  function renderSystem(r) {
+    const tile = $('#sys');
+    tile.hidden = !r;
+    if (!r) return;
+    const levels = r.levels && typeof r.levels === 'object' ? r.levels : {};
+    const lvl = resLvl(r.level) || 'ok';
+    const chip = $('#sys-lvl'); chip.className = 'lvl ' + lvl; chip.textContent = lvl;
+    chip.title = r.worst ? 'worst: ' + metricName(r.worst) : 'all within limits';
+    const oom = $('#sys-oom');
+    oom.hidden = r.oom_kills == null;
+    oom.textContent = 'OOM ' + (r.oom_kills == null ? '?' : r.oom_kills);
+    oom.classList.toggle('hot', !!r.oom_recent);
+    const m = r.mem || {}, sw = r.swap || {};
+    setBar($('#sys-mem'), m.available_pct == null ? null : 100 - Number(m.available_pct), resLvl(levels.mem),
+      null, m.available_mb == null ? 'not available here' : fmtMb(m.available_mb) + ' free of ' + fmtMb(m.total_mb) + (m.psi_some_avg60 ? ' · psi ' + Number(m.psi_some_avg60).toFixed(1) : ''));
+    setBar($('#sys-swap'), sw.used_pct, resLvl(levels.swap));
+    const line = $('#sys-line'); line.textContent = '';
+    const c = r.cpu || {};
+    if (Array.isArray(c.load)) line.append(h('span', null, 'Load ', h('b', { text: Number(c.load[0]).toFixed(2) }), c.ncpu ? ' / ' + c.ncpu + ' cpu' : ''));
+    if (c.pct != null) line.append(h('span', null, 'CPU ', h('b', { text: c.pct + '%' })));
+    const disks = objs(r.disks).slice().sort((a, b) => Number(a.free_pct) - Number(b.free_pct));
+    if (disks.length) line.append(h('span', null, 'Disk ' + str(disks[0].mount) + ' ', h('b', { text: disks[0].free_pct + '% free' })));
+    if (r.heavy_running) line.append(h('span', null, h('b', { text: String(r.heavy_running) }), ' heavy'));
+  }
+  function renderResources() {
+    const r = resView();
+    renderSystem(r);
+    const groups = r ? idleGroups(r) : [];
+    const nIdle = groups.reduce((n, g) => n + g.idle.length, 0);
+    const nb = $('#nav-res'); nb.textContent = nIdle;
+    nb.classList.toggle('hot', nIdle > 0 || (r && RES_LVLS.indexOf(resLvl(r.level)) >= 2));
+    const empty = $('#res-empty');
+    empty.hidden = !!r;
+    for (const id of ['#res-meta', '#res-wrap', '#disk-wrap']) $(id).hidden = !r;
+    if (!r) {
+      empty.textContent = '';
+      $('#res-unavail').hidden = true; $('#res-idle-note').hidden = true;
+      if (S.resources && S.resources.enabled === false) empty.append(h('strong', { text: 'Resource sampling is off.' }), 'fleet.yaml resources.enabled: false. The operator watch is still checked.');
+      else if (S.mode === 'live' && isLocal()) empty.append(h('strong', { text: 'No resource data yet.' }), 'The collector samples memory, disks and processes every few seconds.');
+      else if (S.mode === 'live') empty.append(h('strong', { text: 'No resource data yet.' }), 'The operator mirrors a summary here when the resource level changes.');
+      else empty.append(h('strong', { text: 'No board data.' }), 'Resources appear here once the page can reach the board.');
+      return;
+    }
+    const meta = $('#res-meta'); meta.textContent = '';
+    const lvl = resLvl(r.level) || 'ok';
+    meta.append(h('span', null, h('span', { class: 'lvl ' + lvl, text: lvl }), r.worst ? ' worst: ' + metricName(r.worst) : ''));
+    if (ts(r.at)) meta.append(h('span', null, 'sampled ', timeEl(r.at)));
+    if (r.platform) meta.append(h('span', null, 'on ', h('b', { text: str(r.platform) })));
+    meta.append(h('span', null, h('b', { text: String(r.heavy_running || 0) }), ' heavy job(s) running'));
+    const w = r.operator && r.operator.watch;
+    if (w === true || w === false) meta.append(h('span', null, 'operator watch ', h('b', { text: w ? 'running' : 'not running' })));
+    const un = Array.isArray(r.unavailable) ? r.unavailable.map(str).filter(Boolean) : [];
+    $('#res-unavail').hidden = !un.length;
+    $('#res-unavail').textContent = un.length ? 'Unavailable on this platform: ' + un.join(', ') + '.' : '';
+
+    const body = $('#res-body'); body.textContent = '';
+    const tmCell = (tms) => {
+      if (!tms.length) return h('td', { class: 'muted', text: '—' });
+      const total = tms.reduce((n, t) => n + (Number(t.rss_mb) || 0), 0);
+      return h('td', null, h('div', { class: 'tms' }, h('span', null, h('b', { text: String(tms.length) }), ' · ' + fmtMb(total)),
+        ...tms.map((t) => h('span', null, h('span', { class: 'mono', text: str(t.name) || '?' }), ' ' + fmtMb(t.rss_mb),
+          t.idle ? h('span', { class: 'idle', text: 'idle ' + fmtAge(t.idle_s) }) : t.idle_s != null && t.idle_s >= 60 ? h('span', { class: 'muted', text: ' · quiet ' + fmtAge(t.idle_s) }) : null))));
+    };
+    for (const s of objs(r.sessions)) {
+      const cls = s.classes && typeof s.classes === 'object' ? s.classes : {};
+      const kids = objs(s.children);
+      const procs = Object.keys(cls).sort((a, b) => clsRank(a) - clsRank(b) || a.localeCompare(b)).map((k) => {
+        const c = cls[k] || {}, top = kids.filter((x) => str(x.class) === k).slice(0, 3);
+        const heavy = top.some((x) => x.heavy);
+        return h('span', null, h('span', { class: 'cls' + (heavy ? ' heavy' : ''), text: k }), (c.n || 0) + ' · ' + fmtMb(c.rss_mb),
+          top.length && k !== 'other' ? h('span', { class: 'muted', text: ' — ' + top.map((x) => str(x.comm) + (x.via ? ' (' + str(x.via) + ')' : '') + ' ' + fmtMb(x.rss_mb) + (x.cpu_pct != null ? ' ' + x.cpu_pct + '%' : '')).join(', ') }) : null);
+      });
+      body.append(h('tr', null,
+        h('td', { class: 'mono', text: str(s.code) }),
+        h('td', null, fmtMb(s.rss_mb), s.cpu_pct != null ? ' · ' + s.cpu_pct + '%' : ''),
+        procs.length ? h('td', null, h('div', { class: 'procs' }, ...procs)) : h('td', { class: 'muted', text: '—' }),
+        tmCell(objs(s.teammates))));
+    }
+    const orphans = objs(r.orphan_teammates);
+    if (orphans.length) body.append(h('tr', { class: 'orphan' }, h('td', { text: 'no live session' }), h('td', { class: 'muted', text: '—' }), h('td', { class: 'muted', text: 'parent session gone' }), tmCell(orphans)));
+    $('#res-wrap').hidden = !body.children.length;
+
+    const dbody = $('#disk-body'); dbody.textContent = '';
+    for (const d of objs(r.disks)) {
+      const dl = resLvl(d.level) || 'ok';
+      dbody.append(h('tr', null, h('td', { class: 'mono', text: str(d.mount) }),
+        h('td', { text: (d.free_pct != null ? d.free_pct + '% · ' : '') + fmtMb(d.free_mb) }), h('td', { text: fmtMb(d.total_mb) }),
+        h('td', { text: (Array.isArray(d.labels) ? d.labels.map(str).join(', ') : '') || '—' }), h('td', null, h('span', { class: 'lvl ' + dl, text: dl }))));
+    }
+    $('#disk-wrap').hidden = !dbody.children.length;
+    const note = $('#res-idle-note');
+    note.hidden = !groups.length;
+    note.textContent = groups.length ? 'Idle over ' + (Number(r.teammate_idle_minutes) || 30) + ' min: ' + groups.map((g) => (g.code || 'orphaned') + ' ' + g.idle.map((t) => str(t.name)).join(', ')).join('; ') +
+      '. The board never stops a process: ask the session to stop teammates it no longer needs.' : '';
+  }
+  function resourceBanners(box) {
+    const r = resView();
+    if (r && resLvl(r.level) === 'critical') {
+      const groups = idleGroups(r);
+      box.append(h('div', { class: 'banner down', role: 'alert' }, h('span', { class: 'lamp', 'aria-hidden': 'true' }),
+        h('strong', { text: 'System resources critical — ' + metricName(r.worst) }),
+        h('p', { text: (groups.length ? 'Reclaim idle teammates first (' + groups.map((g) => (g.code || 'orphaned') + ' ' + g.idle.length).join(', ') + '). ' : '') +
+          'Hold new test runs and browsers until it recovers; sessions stop only processes they started.' }),
+        h('a', { class: 'golink', href: '#resources', text: 'See resources →' })));
+    }
+    if (isLocal() && S.mode === 'live' && S.resources && S.resources.operator && S.resources.operator.watch === false) {
+      box.append(h('div', { class: 'banner down', role: 'alert' }, h('span', { class: 'lamp', 'aria-hidden': 'true' }),
+        h('strong', { text: 'Operator watch is not running' }),
+        h('p', { text: 'No board-serve --watch process: answers and messages are saved but not relayed. Restart the operator session.' })));
+    }
+  }
+
   /* ------------------------------------------------------------ messages */
   function whoLabel(by) {
     if (!by) return 'someone';
@@ -1672,7 +1878,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   document.addEventListener('visibilitychange', () => { beat(); if ($('#notif').open) renderNotif(); });
   addEventListener('pagehide', () => beat(true));
 
-  function renderAll() { renderHeader(); renderBanners(); renderNotif(); renderDecisions(); renderConsensus(); renderTasks(); renderBoard(); renderMessages(); renderApprovals(); if ($('#info').open) renderLedger(); openLinked(); }
+  function renderAll() { renderHeader(); renderBanners(); renderNotif(); renderDecisions(); renderConsensus(); renderTasks(); renderBoard(); renderMessages(); renderApprovals(); renderResources(); if ($('#info').open) renderLedger(); openLinked(); }
 
   /* ----------------------------------------------------------- deep links */
   // Alerts link to <board>/?d=<decision id> (m= message, c= consensus); a #<id> or #dec-<id> hash
@@ -1983,7 +2189,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   function spy() {
     const line = nav.getBoundingClientRect().bottom + 24;
     let current = 'decisions';
-    for (const id of ['decisions', 'consensus', 'lifecycle', 'board', 'messages', 'approvals']) { const el = document.getElementById(id); if (el && el.getBoundingClientRect().top <= line) current = id; }
+    for (const id of ['decisions', 'consensus', 'lifecycle', 'board', 'resources', 'messages', 'approvals']) { const el = document.getElementById(id); if (el && el.getBoundingClientRect().top <= line) current = id; }
     if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4) current = 'approvals';
     for (const a of spyLinks) a.setAttribute('aria-current', a.dataset.spy === current ? 'true' : 'false');
   }
@@ -2042,6 +2248,8 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       db.collection('consensus').orderBy('created_at', 'desc').limit(50).onSnapshot((snap) => {
         S.consensus = docs(snap); S.got.consensus = true; renderConsensus(); openLinked();
       }, () => {});
+      // System resources: mirrored by the operator when the level changes; the page never writes it.
+      db.doc('meta/resources').onSnapshot((snap) => { S.resources = snap.exists ? snap.data() : null; renderBanners(); renderResources(); }, () => {});
     } catch (e) {
       feedFailed('the board')(e);
     }
@@ -2120,6 +2328,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       S.away = st.owner_away && typeof st.owner_away === 'object' ? st.owner_away : null;
       S.consensus = arr(st.consensus);
       S.notify = st.notify && typeof st.notify === 'object' ? st.notify : null;
+      S.resources = st.resources && typeof st.resources === 'object' ? st.resources : null;
       S.replies = new Map(Object.entries(st.replies && typeof st.replies === 'object' ? st.replies : {}).map(([k, v]) => [k, arr(v)]));
       S.me = str(st.me) || null; S.writable = st.writable !== false; S.userReady = true;
       S.canMessageLocal = st.can_message === true;
@@ -2415,6 +2624,24 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       presence: { reduce: true, min_level: 'high', window_seconds: 120, idle_seconds: 900 }, breakthrough: 'urgent',
       channels: { slack: true, desktop: true, email: true, line: true, sns: false, webhook: false } };
     S.away = { since: now - 95 * min, by: 'OPS', said: 'Offline until tomorrow 09:00. Agree among yourselves; anything risky waits for me.' };
+    S.resources = { enabled: true, at: now - 12000, platform: 'linux', level: 'warn', worst: 'mem',
+      levels: { mem: 'warn', swap: 'ok', load: 'ok', 'disk:/': 'ok', 'disk:/data': 'warn' },
+      cpu: { pct: 64, ncpu: 8, load: [5.1, 4.2, 3.9], load_per_cpu: 0.64 },
+      mem: { total_mb: 16384, available_mb: 1980, available_pct: 12, psi_some_avg60: 4.2 }, swap: { total_mb: 4096, used_pct: 31 },
+      oom_kills: 1, oom_recent: false, heavy_running: 2, unavailable: [], teammate_idle_minutes: 30, operator: { watch: true },
+      disks: [{ mount: '/', total_mb: 512000, free_mb: 201000, free_pct: 39, level: 'ok', labels: ['$BOARD_HOME', 'API', 'WEB', 'DOCS'] },
+        { mount: '/data', total_mb: 256000, free_mb: 20480, free_pct: 8, level: 'warn', labels: ['DATA'] }],
+      sessions: [
+        { code: 'API', rss_mb: 420, cpu_pct: 6, tree_rss_mb: 1900, heavy_n: 1, classes: { test: { n: 1, rss_mb: 1250, cpu_pct: 96 }, other: { n: 3, rss_mb: 210, cpu_pct: 1 } },
+          children: [{ class: 'test', comm: 'python3', rss_mb: 1250, cpu_pct: 96, age_s: 240, heavy: true, via: null }, { class: 'other', comm: 'node', rss_mb: 120, cpu_pct: 0, age_s: 7200, heavy: false, via: null }],
+          teammates: [{ name: 'api-tests', rss_mb: 360, cpu_pct: 12, age_s: 3000, idle_s: 0, idle: false }, { name: 'api-docs', rss_mb: 310, cpu_pct: 0, age_s: 9000, idle_s: 2820, idle: true }],
+          teammates_n: 2, teammates_rss_mb: 670, idle_teammates_n: 1 },
+        { code: 'WEB', rss_mb: 390, cpu_pct: 3, tree_rss_mb: 1500, heavy_n: 2, classes: { browser: { n: 6, rss_mb: 980, cpu_pct: 22 } },
+          children: [{ class: 'browser', comm: 'chrome', rss_mb: 420, cpu_pct: 14, age_s: 600, heavy: true, via: null }, { class: 'browser', comm: 'chrome', rss_mb: 260, cpu_pct: 6, age_s: 600, heavy: true, via: null }],
+          teammates: [], teammates_n: 0, teammates_rss_mb: 0, idle_teammates_n: 0 },
+        { code: 'DOCS', rss_mb: 350, cpu_pct: 1, tree_rss_mb: 380, heavy_n: 0, classes: {}, children: [], teammates: [], teammates_n: 0, teammates_rss_mb: 0, idle_teammates_n: 0 },
+      ],
+      orphan_teammates: [{ name: 'old-review', rss_mb: 280, cpu_pct: 0, age_s: 30000, idle_s: 25000, idle: true }] };
     S.consensus = [
       { id: 'c-2-demo', from: 'API', participants: ['API', 'WEB', 'QA'], ref: '#decisions', proposal: 'Bump the shared test fixture to v2 in both repos before the nightly run.', status: 'pending', created_at: now - 20 * min,
         votes: [{ by: 'API', vote: 'agree', note: 'proposer', at: now - 20 * min }, { by: 'WEB', vote: 'agree', note: 'Fixture diff reviewed.', at: now - 14 * min }] },
