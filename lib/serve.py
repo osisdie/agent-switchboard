@@ -572,7 +572,7 @@ def cards_for(sessions, approver):
 
 
 # Why a recorded answer was not delivered (decision status_reason; the page words them).
-REASON_CODES = ("screen", "partial", "moved_on", "timeout", "not_approver", "unknown_session", "operator")
+REASON_CODES = ("screen", "partial", "moved_on", "timeout", "not_approver", "unknown_session", "operator", "config")
 UNDELIVERED = ("stale", "timeout", "unauthorized")
 
 

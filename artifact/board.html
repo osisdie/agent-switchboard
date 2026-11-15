@@ -2051,8 +2051,10 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
     not_approver: 'answered by someone who is not an approver',
     unknown_session: 'the session was not found',
     operator: 'the operator could not deliver it',
+    config: 'the board\'s press settings are incomplete',
   };
-  const reasonText = (d) => trMap(REASONS, d.status_reason) || tr('reason not recorded');
+  // Only the fixed codes are worded; anything else (free text a db record may carry) never reaches the page.
+  const reasonText = (d) => (typeof d.status_reason === 'string' && Object.hasOwn(REASONS, d.status_reason) ? tr(REASONS[d.status_reason]) : tr('reason not recorded'));
   function renderDecisions() {
     const pend = pendingDecisions();
     $('#dec-empty').hidden = pend.length > 0;
@@ -5329,6 +5331,7 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
       "answered by someone who is not an approver": "回答者不是核可者",
       "the session was not found": "找不到這個 session",
       "the operator could not deliver it": "operator 無法送達",
+      "the board's press settings are incomplete": "看板的按鍵設定不完整",
       "reason not recorded": "沒有記錄原因",
       "Answer in the session: the board can no longer press this prompt": "請在 session 中回答：看板已無法替這個提示按鍵",
       "screen was scrolled; try again": "畫面曾捲動，請再試一次",

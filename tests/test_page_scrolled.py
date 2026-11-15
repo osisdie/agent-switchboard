@@ -101,6 +101,9 @@ def main():
             status_reason="partial", **{"from": "QA"})
         dec("d-6-c", "relayed", "tu_6", "s-x", False, answer="Red", answered_by="local", answered_at=now - 3000,
             relayed_at=now - 2900, **{"from": "QA"})
+        # A record whose status_reason is free text (a db written by hand): the page words only codes.
+        dec("d-8-x", "stale", "tu_8", "s-x", False, answer="Green", answered_by="local", answered_at=now - 1000,
+            status_reason="press refused: no picker in pane %10 SECRET-ish text", **{"from": "QA"})
         dec("d-7-api", "stale", "tu_7", "s-api", False, answer="Follow the earlier approach (Recommended)",
             answered_by="local", answered_at=now - 2000)
         with open(os.path.join(home, "events.jsonl"), "w", encoding="utf-8") as fh:
@@ -186,6 +189,9 @@ def main():
             check("partial: its own chip and reason", purple and purple[0] == "partial"
                   and "Not delivered: typed into the question, but Enter was not pressed" in purple[2], purple)
             check("relayed: the relayed chip, no 'not delivered'", red and red[0] == "relayed" and "Not delivered" not in red[2], red)
+            gr = rows.get("Green")
+            check("a free-text status_reason is never shown: 'reason not recorded'",
+                  gr and "Not delivered: reason not recorded" in gr[2] and "SECRET" not in gr[2] and "%10" not in gr[2], gr)
             old = rows.get("Follow the earlier approach (Recommended)")
             check("an old record: the reason comes from the mark event (never its text)",
                   old and old[0] == "not delivered" and "the prompt was not on the session's screen" in old[2]
