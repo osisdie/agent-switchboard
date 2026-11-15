@@ -438,7 +438,7 @@ Workers reply with `[re <msgId>] …`, and replies thread under the message. **M
 information, never approvals.** A message that asks a session for a secret value is held, not
 relayed (see [Secret guardrails](#secret-guardrails)).
 
-### Remote Control on or off
+### Session actions: Remote Control and compact
 
 Remote Control lets you open a session from claude.ai/code or the Claude app. Turn it on or off
 per session, or for all of them:
@@ -465,6 +465,15 @@ it off walks Claude's "Disconnect this session" dialog, and anything unexpected 
 
 **Note.** With `DO_NOT_TRACK` set in the environment that starts the sessions, Claude Code ignores
 `--remote-control` and has no `/remote-control`. `board doctor` warns about it.
+`rc.unset_do_not_track: true` in `fleet.yaml` makes fleet-up start them with `env -u DO_NOT_TRACK`
+(default off). A card whose session has it set shows **RC unavailable**.
+
+Compact works the same way. **Compact** in a card's details (approvers, with a confirm step), or
+`board session API compact`, types `/compact` into the session when it is idle. While the session
+is busy, the compact is queued and runs once it is idle; `board session API cancel` drops it. The
+card then says when the board last compacted the session. The board only ever types fixed
+commands from a short list (`/compact`, `/remote-control`), never free text, and every one is
+audited.
 
 ### Profile menu, theme and language
 
@@ -1134,11 +1143,12 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 |---|---|
 | `docs/contract.md` | Binding data contract: local files, db collections, lifecycle stages & gates, relay formats, degraded mode |
 | `hooks/board-hook.sh` | Lifecycle hook: writes `state/<session_id>.json`, appends `events.jsonl`, always exits 0 |
-| `bin/board` | CLI: `ls`, `snapshot`, `ask`, `task new/stage/ls/show`, `decisions`, `answer`, `mark`, `limit`, `resources`, `press`, `notify`, `mute`, `unmute`, `notify-level`, `notify-presence`, `rc`, `away`, `consensus`, `message`, `guard`, `doctor`. Exit codes: 2 = usage (also `answer --option` mismatch), 3 = press refused, 4 = answer / vote refused, 5 = press partial (keys sent, Enter not pressed) |
+| `bin/board` | CLI: `ls`, `snapshot`, `ask`, `task new/stage/ls/show`, `decisions`, `answer`, `mark`, `limit`, `resources`, `press`, `notify`, `mute`, `unmute`, `notify-level`, `notify-presence`, `rc`, `session`, `away`, `consensus`, `message`, `guard`, `doctor`. Exit codes: 2 = usage (also `answer --option` mismatch), 3 = press refused, 4 = answer / vote refused, 5 = press partial (keys sent, Enter not pressed) |
 | `bin/board-collect` | Zero-token collector: snapshot, diff, runs `board-notify` each loop; `--baseline` on first install |
 | `bin/board-notify`, `lib/notify.py` | Alerting: `send`, `ack`, `tick`, `test`, `status`, `gate`. Adapters (slack, desktop, email, line, sns, webhook), levels, escalation, ack, quiet hours, dedupe |
 | `lib/prefs.py` | Notification controls: mutes, min levels, presence (`board mute`, `notify-level`, `notify-presence`) and the delivery rule `lib/notify.py` applies |
 | `lib/rc.py` | Remote Control on/off: the owner's choice per session or for all (`board rc`), what fleet-up passes at start, and applying it to idle running sessions (typed `/remote-control`, checked on screen) |
+| `lib/actions.py` | Session actions: the allowlisted slash commands (`/compact`, `/remote-control`) typed into idle sessions with press-style checks, the compact queue and the collector's hand-off (`board session`) |
 | `hooks/board-statusline-tap.sh` | Statusline wrapper that records 5h/weekly usage to `usage.json` without changing your statusline |
 | `bin/fleet-up` | Idempotent fleet launcher from `fleet.yaml` (also starts `board-serve` with `serve.enabled`) |
 | `bin/board-serve`, `lib/serve.py` | Self-hosted board: the page in local mode + JSON/SSE API over `$BOARD_HOME`, 127.0.0.1 only; `--watch` feeds the local-mode operator |

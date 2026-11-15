@@ -407,7 +407,7 @@ pane 標題裡的任務、執行中或閒置、記憶體用量）、已用的 co
 `[re <msgId>] …` 回覆，回覆會串在原訊息底下。**訊息只是資訊，絕不是核准。**
 向 session 要機密值的訊息會被攔下，不會轉送（見[機密防護](#secret-guardrails)）。
 
-### 開關 Remote Control
+### Session 動作：Remote Control 與壓縮
 
 Remote Control 讓你從 claude.ai/code 或 Claude app 打開 session。可以逐一 session 開關，也可以
 一次全部開關：
@@ -432,6 +432,14 @@ board rc clear API               # 忘掉設定：回到 fleet.yaml（預設開�
 
 **注意**：啟動 session 的環境如果設了 `DO_NOT_TRACK`，Claude Code 會忽略 `--remote-control`，
 也沒有 `/remote-control`。`board doctor` 會提出警告。
+在 `fleet.yaml` 設 `rc.unset_do_not_track: true`，fleet-up 就會用 `env -u DO_NOT_TRACK` 啟動它們
+（預設關閉）。session 設了它的卡片會顯示 **RC 無法使用**。
+
+壓縮也是同樣的做法。在卡片詳細資料裡按 **壓縮**（approver，需要再確認一次），或執行
+`board session API compact`，會在 session 閒置時輸入 `/compact`。session 忙碌時會先排入，等它閒置
+再執行；`board session API cancel` 可以取消。之後卡片會顯示看板上次壓縮這個 session 的時間。看板
+只會輸入一小份清單裡的固定指令（`/compact`、`/remote-control`），絕不輸入任意文字，而且每一次都有
+稽核紀錄。
 
 ### 個人選單、主題與語言
 
@@ -1028,11 +1036,12 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 |---|---|
 | `docs/contract.md` | 具約束力的資料契約：本機檔案、資料庫 collection、生命週期階段與關卡、轉發格式、降級模式 |
 | `hooks/board-hook.sh` | 生命週期 hook：寫入 `state/<session_id>.json`、附加到 `events.jsonl`，永遠以 exit 0 結束 |
-| `bin/board` | CLI：`ls`、`snapshot`、`ask`、`task new/stage/ls/show`、`decisions`、`answer`、`mark`、`limit`、`resources`、`press`、`notify`、`mute`、`unmute`、`notify-level`、`notify-presence`、`rc`、`away`、`consensus`、`message`、`guard`、`doctor`。結束碼：2 = 用法錯誤（也包括 `answer --option` 不一致），3 = 拒絕按鍵，4 = 拒絕回答／投票，5 = 按鍵做到一半（已送出按鍵、沒有按 Enter） |
+| `bin/board` | CLI：`ls`、`snapshot`、`ask`、`task new/stage/ls/show`、`decisions`、`answer`、`mark`、`limit`、`resources`、`press`、`notify`、`mute`、`unmute`、`notify-level`、`notify-presence`、`rc`、`session`、`away`、`consensus`、`message`、`guard`、`doctor`。結束碼：2 = 用法錯誤（也包括 `answer --option` 不一致），3 = 拒絕按鍵，4 = 拒絕回答／投票，5 = 按鍵做到一半（已送出按鍵、沒有按 Enter） |
 | `bin/board-collect` | 不耗 token 的收集器：snapshot、diff，每一輪執行 `board-notify`；首次安裝時用 `--baseline` |
 | `bin/board-notify`、`lib/notify.py` | 告警：`send`、`ack`、`tick`、`test`、`status`、`gate`。轉接器（slack、desktop、email、line、sns、webhook）、等級、升級、確認、勿擾時段、去除重複 |
 | `lib/prefs.py` | 通知控制：靜音、最低等級、在場（`board mute`、`notify-level`、`notify-presence`），以及 `lib/notify.py` 套用的送出規則 |
 | `lib/rc.py` | Remote Control 開關：主人對單一或所有 session 的設定（`board rc`）、fleet-up 啟動時要不要加旗標，以及套用到閒置中的執行中 session（輸入 `/remote-control` 並在畫面上確認） |
+| `lib/actions.py` | Session 動作：在閒置的 session 輸入白名單內的斜線指令（`/compact`、`/remote-control`），附 press 式檢查、壓縮佇列與收集器的接手（`board session`） |
 | `hooks/board-statusline-tap.sh` | statusline 包裝器，把 5h／每週用量記錄到 `usage.json`，不改變你的 statusline |
 | `bin/fleet-up` | 依 `fleet.yaml` 啟動整組 session 的冪等啟動器（設定 `serve.enabled` 時也會啟動 `board-serve`） |
 | `bin/board-serve`、`lib/serve.py` | 自架看板：local 模式的頁面 + 建立在 `$BOARD_HOME` 上的 JSON／SSE API，只限 127.0.0.1；`--watch` 供 local 模式的 operator 使用 |

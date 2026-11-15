@@ -11,8 +11,12 @@ resume_fallback_seconds: 15   # fleet-up: start fresh only if `claude -r NAME` e
 # (or the board's RC toggle) wins over this; a session's own `remote_control:` over this default.
 # remote_control: true
 # rc:
-#   auto_apply: true            # the collector applies a pending board choice when a session is idle
-#   confirm_seconds: 10         # how long to wait for bridgeSessionId to appear / disappear
+#   unset_do_not_track: false   # true: start with `env -u DO_NOT_TRACK` (Claude ignores RC while it is set)
+# Session actions (/compact, /remote-control typed into idle sessions, docs/contract.md):
+# session_actions:
+#   auto_apply: true            # the collector runs pending actions when a session goes idle
+#   queue_hours: 12             # a queued compact older than this is dropped
+#   compact_seconds: 600        # how long to watch a compact before reporting "started"
 
 # Who may decide: board user ids (the artifact page's user.id()), or with the self-hosted board
 # emails and "local".
