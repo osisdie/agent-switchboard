@@ -360,6 +360,17 @@ All of this is treated as untrusted text: control characters are removed, paths 
 last part, and long text is clipped. The tool call summaries can hold command text, so they appear
 only on the self-hosted board; the Artifact board gets the title and `repo · branch`.
 
+On the self-hosted board a card also shows how long it has been in its state, a badge with the
+number of decisions and questions waiting for you, its teammates (each with the task in its pane
+title, working or idle, and memory), context used and cost so far (from the statusline tap), and
+the branch's ahead/behind count against `origin/<default>` with the last commit subject. The open
+card is split into Doing, Recent (the last 8 completed tool calls, with duration and ok/failed),
+Teammates, Meter, Branch, Pending and Where. Doing quotes the session's last message and the first
+line of its last prompt, read from the tail of its transcript and run through the secret guard.
+Those two are for **approvers only**: anyone else sees a note instead, and they are never mirrored
+to the Artifact or put in an alert. Turn the prompt off with `cards: {show_prompt: false}` in
+`fleet.yaml`.
+
 ### Decisions
 
 - **Gates.** A stage gate is a question decision linked to a task, a stage and an artifact (see
@@ -1114,9 +1125,10 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `.gitleaks.toml` | gitleaks default rules plus a narrow allowlist for test fixtures |
 | `lib/away.py` | Reads owner-away mode and consensus items for the snapshot and `board-serve` |
 | `lib/guard.py`, `lib/messages.py` | Secret guardrails: the outbound scrubber and the inbound secret-request screen; board messages and replies through them (held, release, reply) |
+| `lib/cards.py` | Card extras for board-serve (`cards.json`): teammates and their tasks, the session meter, recent tool calls, the last message and prompt (approvers only), ahead/behind, time in state |
 | `lib/resources.py` | Resources sampler (memory, disks, OOM, per-session processes and teammates) for `resources.json`, the snapshot digest and `board resources` |
 | `docs/design/` | Design notes, e.g. `resources-and-scheduling.md` (resources, scheduler, lessons) |
-| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), the resources sampler (`test_resources.py`, fixture `/proc`), the secret guardrails (`test_guard.py`), and the optional headless checks of the page's alert links, notifications control, profile menu and theme, home-screen app, session cards, usage popover, language toggle and Deck panel (`test_page_links.py`, `test_page_notify.py`, `test_page_profile.py`, `test_page_pwa.py`, `test_page_cards.py`, `test_page_guard.py` (held-message cards), `test_page_usage.py`, `test_page_i18n.py`, `test_page_deck.py`, plus `test_site.py` for the screenshots and the Pages site: need python playwright, skip without it; not run in CI) |
+| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), the resources sampler (`test_resources.py`, fixture `/proc`), the secret guardrails (`test_guard.py`), the card extras (`test_cards.py`), and the optional headless checks of the page's alert links, notifications control, profile menu and theme, home-screen app, session cards, usage popover, language toggle and Deck panel (`test_page_links.py`, `test_page_notify.py`, `test_page_profile.py`, `test_page_pwa.py`, `test_page_cards.py`, `test_page_guard.py` (held-message cards), `test_page_usage.py`, `test_page_i18n.py`, `test_page_deck.py`, plus `test_site.py` for the screenshots and the Pages site: need python playwright, skip without it; not run in CI) |
 | `CONTRIBUTING.md` | Dev setup, tests, and the rule for keeping `README.zh-TW.md` in sync |
 | `fleet.example.yaml`, `.env.example` | Example config |
 

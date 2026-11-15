@@ -24,6 +24,9 @@ $BOARD_HOME/
   resources.json            # system resources, sampled by the collector (see "Resources")
   resources-state.json      # the sampler's memory: previous counters, dwell state, teammate activity
   usage-samples.json        # the collector's 5h usage samples and burn rate (see "Usage meter")
+  statusline/<session_id>.json  # the statusline tap's session meter {ctx_pct, cost_usd, model, at}
+  cards.json                # card extras for board-serve, written by the collector (see "Card extras")
+  cards-state.json          # their cache: transcript tails by mtime, git info, when each state began
 ```
 
 ### state/<session_id>.json
@@ -34,8 +37,17 @@ $BOARD_HOME/
   "pending": { "tool_use_id": "...", "tool_name": "Bash", "summary": "first 200 chars of input (redacted)",
                "summary_truncated": false, "summary_len": 57, "summary_sha256": "<hex of the full input>",
                "ambiguous": false, "decision_id": "d-..." } | null,
+  "recent_pre": [ {"tool_use_id": "...", "tool_name": "Bash", "summary": "...", "at": 0, ...} ],
+  "recent_done": [ {"tool": "Bash", "summary": "npm test (redacted, <= 120 chars)", "ms": 1840,
+                    "ok": true, "at": 1731500000000} ],
   "updated_at": 1731500000000 }
 ```
+
+`recent_pre` holds the tool calls in flight (from `PreToolUse`, dropped at `PostToolUse` /
+`PostToolUseFailure`, emptied at `Stop`). `recent_done` is a ring of the last 8 completed ones,
+built in the same jq call and state file write: the tool name, the in-flight entry's redacted
+summary clipped to 120 chars, the duration since its `PreToolUse` (`null` if unknown), `ok: false`
+for `PostToolUseFailure`, and the end time. It survives `Stop`.
 
 Map hook events to states like this:
 
@@ -103,6 +115,53 @@ Map hook events to states like this:
 - **`consensus`** lists every `pending` item, plus `agreed` / `objected` / `owner_back` items for
   24 h after `decided_at`, oldest first. Text fields are clipped (proposal, ref, said: 300 chars;
   note: 200) and control characters become `?`.
+- **Not in the snapshot:** the card extras (next section). They change with raw numbers (RSS, cost,
+  context %), so they would wake the operator's Monitor; and some are approver-only.
+
+### Card extras: cards.json (collector output, board-serve only)
+
+`lib/cards.py` writes `$BOARD_HOME/cards.json` (0600) on every collector run, rewriting it only
+when it changed. board-serve adds each entry to its session row in `/api/state` as `card`. The
+operator never mirrors it to the Artifact, and no alert carries any of it.
+
+```json
+{ "sessions": { "CP": {
+    "state_since": 1731500000000,
+    "teammates": [ {"name": "dev", "title": "Owner away mode and consensus", "busy": true,
+                    "idle": false, "idle_s": 12, "rss_mb": 310} ],
+    "meter": {"ctx_pct": 34, "cost_usd": 2.1, "model": "<display name>", "at": 0} | null,
+    "done": [ {"tool": "Bash", "summary": "...", "ms": 1840, "ok": true, "at": 0} ],
+    "doing": "the last assistant text, one line, <= 280 chars" | null,
+    "prompt": "the first line of the last prompt, <= 120 chars" | null,
+    "branch": {"base": "origin/main", "ahead": 2, "behind": 0, "subject": "feat: ..."} | null } } }
+```
+
+- **`state_since`**: when the collector first saw the card in its current `state`. Offline cards
+  carry only this.
+- **`teammates`**: the teammate processes `resources.json` maps to the session (its `idle`,
+  `idle_s`, `rss_mb`). `title` is the teammate's tmux pane title, cleaned like a card `title`: the
+  pane is found by walking up to 6 ancestors of the teammate's pid (`<proc>/<pid>/stat`) to a
+  `#{pane_pid}` from the same batched `tmux list-panes -a`. `busy` is `true` for a braille spinner
+  glyph, `false` for `✳`, `null` when unknown.
+- **`meter`**: `$BOARD_HOME/statusline/<session_id>.json` (see "Usage meter"), dropped after 24 h.
+- **`done`**: the hook's `recent_done`, run through the secret guard and clean_text again.
+- **`doing` / `prompt`**: from the session transcript, `<projects>/<cwd, each non-alphanumeric
+  character as ->/<sessionId>.jsonl`, else a glob over `<projects>/*/<sessionId>.jsonl` (retried
+  at most once a minute). `<projects>` is `CLAUDE_PROJECTS_DIR`, else `projects` next to the
+  session registry (`~/.claude/projects`). Only the last 64 KB is read, and only when the file's
+  mtime or size changed; at most 8 tails and 8 globs per run, busiest sessions first. `doing` is
+  the text of the last assistant message with text; `prompt` the first line of the last user
+  prompt (a teammate message's wrapper removed; tool results, meta entries, command output and
+  system reminders skipped). A value not found in the tail keeps the cached one. Both go through
+  `guard.scrub` and clean_text (no paths, no control characters, the hook's redaction).
+  `prompt` is only kept with `fleet.yaml` `cards.show_prompt: true` (the default).
+- **`branch`**: `git rev-list --left-right --count HEAD...<base>` where `<base>` is `origin/HEAD`
+  (else `origin/main`, else `origin/master`) as the local refs know it; never a fetch. `subject`
+  is `git log -1 --format=%s`, scrubbed and clipped to 100. Cached per cwd for 60 s.
+
+**Who sees what.** `doing` and `prompt` are approver-only: `/api/state` (and its SSE stream) drops
+them for anyone not in `approvers`, the rule `account` uses, and puts `card.private: "hidden"`
+instead. Everything in `card` also passes the guard's `scrub_tree` like the rest of the state.
 
 ### decisions/<id>.json
 ```json
@@ -762,6 +821,7 @@ SSE stream). Artifact: read-only from `meta/notify`, which the operator mirrors
 Claude Code's statusline input JSON carries `rate_limits.five_hour` and `rate_limits.seven_day`, each `{used_percentage, resets_at}`.
 
 - `hooks/board-statusline-tap.sh` wraps the user's existing statusline command (`BOARD_STATUSLINE_NEXT`). It writes `$BOARD_HOME/usage.json` as `{five_hour:{pct,resets_at}, seven_day:{pct,resets_at}, updated_at, session_id}` atomically, then execs the original command with the same stdin. It never changes the statusline output.
+- The same tap writes the session meter, `$BOARD_HOME/statusline/<session_id>.json` (0600), with only `{ctx_pct, cost_usd, model, at}`: `context_window.used_percentage` (else computed from `current_usage` and `context_window_size`), `cost.total_cost_usd`, `model.display_name` (≤ 40 chars) and the time. Nothing else from the input is kept, and a session id that is not filename-safe is ignored. One jq call, in the background job the usage record already uses.
 - The collector crosses thresholds 80/90/95 (configurable) per window and raises the levels above. Message examples:
   - "5h usage 90% — resets ~14:20 — prepare to switch account"
   - "weekly usage 95% — resets Mon 09:00 — switch account now"

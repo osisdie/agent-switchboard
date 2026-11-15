@@ -349,6 +349,14 @@ toplevel 的名稱和目前的分支，絕不顯示路徑），以及它現在�
 這些內容一律視為不可信的文字：移除控制字元、路徑只留最後一段、過長的文字會截斷。工具呼叫的摘要
 可能含有指令內容，所以只出現在自架看板上；Artifact 看板只會拿到標題和 `repo · branch`。
 
+在自架看板上，卡片還會顯示：在目前狀態待了多久、等你處理的決策與問題數量徽章、它的 teammate（各自
+pane 標題裡的任務、執行中或閒置、記憶體用量）、已用的 context 與目前花費（來自 statusline tap），
+以及分支相對 `origin/<預設分支>` 的領先／落後數和最新 commit 標題。展開的卡片分成「在做什麼」、
+「最近」（最近 8 個完成的工具呼叫，含耗時與成功／失敗）、Teammate、用量、分支、待處理和位置。
+「在做什麼」會引用 session 最後一則訊息和最後一個指示的第一行，從 transcript 結尾讀取並經過機密
+防護。這兩項**只給核可者**看：其他人只會看到一行說明；它們也絕不會鏡像到 Artifact 或放進告警。
+在 `fleet.yaml` 設 `cards: {show_prompt: false}` 可以關掉指示那一行。
+
 ### 決策
 
 - **關卡**。階段關卡是一個連結到任務、階段和產出物的問題型決策（見上文）。回答就是選項的文字：
@@ -1013,9 +1021,10 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `.gitleaks.toml` | gitleaks 預設規則，加上針對測試 fixture 的小範圍允許清單 |
 | `lib/away.py` | 為 snapshot 和 `board-serve` 讀取 owner-away 模式與共識項目 |
 | `lib/guard.py`、`lib/messages.py` | 機密防護：對外的去除機密與對內的要機密篩檢；看板訊息與回覆都經過它們（攔下、放行、回覆） |
+| `lib/cards.py` | board-serve 用的卡片補充資訊（`cards.json`）：teammate 與其任務、session 用量、最近的工具呼叫、最後一則訊息與指示（僅核可者）、領先／落後、狀態持續時間 |
 | `lib/resources.py` | 資源取樣器（記憶體、磁碟、OOM、每個 session 的程序與 teammate），產生 `resources.json`、snapshot 摘要和 `board resources` |
 | `docs/design/` | 設計文件，例如 `resources-and-scheduling.md`（資源、排程器、經驗） |
-| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`）、資源取樣器（`test_resources.py`，fixture `/proc`）、機密防護（`test_guard.py`），以及選用的頁面告警連結、通知控制、個人選單與主題、主畫面 app、session 卡片、用量提示框、語言切換與按鍵面板 headless 檢查（`test_page_links.py`、`test_page_notify.py`、`test_page_profile.py`、`test_page_pwa.py`、`test_page_cards.py`、`test_page_guard.py`（被攔下的訊息卡片）、`test_page_usage.py`、`test_page_i18n.py`、`test_page_deck.py`，以及截圖和 Pages 網站的 `test_site.py`：需要 python playwright，沒有就略過；CI 不執行） |
+| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`）、資源取樣器（`test_resources.py`，fixture `/proc`）、機密防護（`test_guard.py`）、卡片補充資訊（`test_cards.py`），以及選用的頁面告警連結、通知控制、個人選單與主題、主畫面 app、session 卡片、用量提示框、語言切換與按鍵面板 headless 檢查（`test_page_links.py`、`test_page_notify.py`、`test_page_profile.py`、`test_page_pwa.py`、`test_page_cards.py`、`test_page_guard.py`（被攔下的訊息卡片）、`test_page_usage.py`、`test_page_i18n.py`、`test_page_deck.py`，以及截圖和 Pages 網站的 `test_site.py`：需要 python playwright，沒有就略過；CI 不執行） |
 | `CONTRIBUTING.md` | 開發環境設定、測試，以及讓 `README.zh-TW.md` 保持同步的規則 |
 | `fleet.example.yaml`、`.env.example` | 設定範例 |
 
