@@ -494,7 +494,64 @@ alerting:
   repeat_minutes: 60          # 0 = never repeat
   escalate_minutes: {high: 10, urgent: 30, permission_urgent: 10}
   thresholds: [80, 90, 95]    # usage % -> warn / high / urgent
+  min_level: {}               # triage floors, e.g. {all: warn, email: high}; `board notify-level` overrides
+  presence: {reduce: true, min_level: high, window_seconds: 120, idle_seconds: 900}
 ```
+
+<a id="quieting-the-board-mute-triage-presence"></a>
+
+### 讓看板安靜下來：靜音、分級、在場
+
+像 Slack 一樣控制哪些通知會**推播**給你。看板本身永遠顯示全部內容，告警照常升級，每一則被擋下的推播
+都會記錄在 `events.jsonl`（`type: "alert-suppressed"`，原因是 `muted:<channel>`、`muted:all`、
+`below_min_level` 或 `owner_present`），不會悄悄消失。
+
+**靜音**某個管道（`slack`、`desktop`、`email`、`line`、`sns`、`webhook`）或 `all`，可以設定一段時間，
+或直到你取消為止：
+
+```bash
+board mute slack --for 1h            # 30m, 4h, 2d ... (at most 30 days)
+board mute all --until 08:00         # the next 08:00 local time; an ISO time works too
+board mute email                     # until `board unmute email`
+board mute all --include-urgent      # everything, urgent too: total silence
+board unmute all                     # removes every mute
+board mute status                    # what is muted, floors, presence, who is watching
+```
+
+**分級**：每個管道和「全部」各有一個最低等級。管道採用兩者中較嚴格的那一個；`default` 會移除你的設定
+（改用 fleet.yaml 的 `alerting.min_level`，沒有就是 `info`）：
+
+```bash
+board notify-level slack high        # Slack only high and urgent
+board notify-level email urgent      # email only urgent
+board notify-level all high          # everything only high+
+board notify-level slack default
+```
+
+**你在看的時候**。當某位核准者開著自架看板、頁面可見而且正在使用（最近 2 分鐘內有心跳，最近 15 分鐘內
+有點擊、觸控、捲動或按鍵），低於 `high` 的推播會被擋下，因為你已經看得到了。升級計時器照常跑：你一離開，
+還沒處理的項目會照常升級並通知你。用 `board notify-presence off` 關閉，或用
+`board notify-presence on --level urgent` 改等級。
+
+**突破規則**。
+
+- 預設情況下，`urgent` 會突破所有靜音和在場減量：production 關卡、用量上限、用量 ≥ 95%、權限提示放了
+  10 分鐘、任何項目放了 30 分鐘，或任何 `board-notify send --level urgent`。分級也擋不住它，因為 urgent
+  是最高等級。（operator 沉默告警還沒有；它會隨 resources 變更一起加入，等級為 urgent。）
+- 只有**加上 `--include-urgent`** 的靜音才擋得住 urgent。這是明確的「全部靜音，包括 urgent」開關；
+  請搭配到期時間使用。
+- 勿擾時段（`alerting.quiet_hours`）仍然疊加生效：urgent 以外的項目會先保留，之後再送出。
+- 靜音結束時不會補送任何東西。仍然開著的告警會在下一次升級（或每小時的重送）時，依當下的規則送出。
+- `board notify` 的訊息算是 Slack 上的 `info`，同樣遵守這些規則。`board-notify test` 刻意忽略它們。
+
+**在看板上**。**Notifications** 按鈕打開同一組控制項：全部靜音（1 小時、4 小時、到 08:00、直到我取消，
+可選擇包含 urgent）、每個管道的靜音和最低等級、「全部」的等級，以及「我在看的時候減少推播」。橫幅會顯示
+哪些管道被靜音（例如「Slack muted until 14:00」）以及 urgent 是否仍會突破。在自架看板上只有核准者能修改
+（`POST /api/notify-prefs`，以 `--by board:<you>` 執行上面的指令）；在 Artifact 看板上是唯讀的，由
+operator 鏡像到 `meta/notify`。
+
+設定存在 `$BOARD_HOME/notify-prefs.json`；`board-notify status` 顯示實際生效的狀態，不會印出任何憑證。
+詳見合約的「Notification controls」。
 
 ## 在用量上限下運作
 
@@ -678,6 +735,8 @@ bin/board-serve              # local: http://127.0.0.1:39410
   `release_managers` 裡的 email）。其他人一律得到 403，連讀取都不行。如果想加一位唯讀檢視者，就加在這裡。
 - session 資料只送出允許清單裡的欄位（不含 `cwd`、pid 或 session ID）。
 - 每一次寫入都會以 `type: "serve"` 記錄到 `events.jsonl`，並附上身分和 `via`（`loopback` 或 `cf-jwt`）。
+- 通知設定（`POST /api/notify-prefs`）和頁面的在場心跳（`POST /api/presence`）只限核准者，`approvers`
+  為空時一律拒絕，而且身分取自監聽器，絕不取自請求內容。
 - 頁面以基於 nonce 的 CSP、`frame-ancestors 'none'` 和 `no-store` 提供。
 - 每個監聽器最多接受 64 個連線和 32 條更新串流，所以 tunnel 無法把本機瀏覽器擠掉。閒置或卡住的連線在
   60 秒後會被中斷。
@@ -768,9 +827,10 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 |---|---|
 | `docs/contract.md` | 具約束力的資料契約：本機檔案、資料庫 collection、生命週期階段與關卡、轉發格式、降級模式 |
 | `hooks/board-hook.sh` | 生命週期 hook：寫入 `state/<session_id>.json`、附加到 `events.jsonl`，永遠以 exit 0 結束 |
-| `bin/board` | CLI：`ls`、`snapshot`、`ask`、`task new/stage/ls/show`、`decisions`、`answer`、`mark`、`limit`、`press`、`notify`、`away`、`consensus`、`doctor`。結束碼：3 = 拒絕按鍵，4 = 拒絕回答／投票 |
+| `bin/board` | CLI：`ls`、`snapshot`、`ask`、`task new/stage/ls/show`、`decisions`、`answer`、`mark`、`limit`、`press`、`notify`、`mute`、`unmute`、`notify-level`、`notify-presence`、`away`、`consensus`、`doctor`。結束碼：3 = 拒絕按鍵，4 = 拒絕回答／投票 |
 | `bin/board-collect` | 不耗 token 的收集器：snapshot、diff，每一輪執行 `board-notify`；首次安裝時用 `--baseline` |
-| `bin/board-notify`、`lib/notify.py` | 告警：`send`、`ack`、`tick`、`test`、`status`。轉接器（slack、desktop、email、line、sns、webhook）、等級、升級、確認、勿擾時段、去除重複 |
+| `bin/board-notify`、`lib/notify.py` | 告警：`send`、`ack`、`tick`、`test`、`status`、`gate`。轉接器（slack、desktop、email、line、sns、webhook）、等級、升級、確認、勿擾時段、去除重複 |
+| `lib/prefs.py` | 通知控制：靜音、最低等級、在場（`board mute`、`notify-level`、`notify-presence`），以及 `lib/notify.py` 套用的送出規則 |
 | `hooks/board-statusline-tap.sh` | statusline 包裝器，把 5h／每週用量記錄到 `usage.json`，不改變你的 statusline |
 | `bin/fleet-up` | 依 `fleet.yaml` 啟動整組 session 的冪等啟動器（設定 `serve.enabled` 時也會啟動 `board-serve`） |
 | `bin/board-serve`、`lib/serve.py` | 自架看板：local 模式的頁面 + 建立在 `$BOARD_HOME` 上的 JSON／SSE API，只限 127.0.0.1；`--watch` 供 local 模式的 operator 使用 |
@@ -785,7 +845,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `.github/workflows/ci.yml` | CI：gitleaks、shellcheck、測試、readme-sync |
 | `.gitleaks.toml` | gitleaks 預設規則，加上針對測試 fixture 的小範圍允許清單 |
 | `lib/away.py` | 為 snapshot 和 `board-serve` 讀取 owner-away 模式與共識項目 |
-| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`），以及選用的頁面告警連結 headless 檢查（`test_page_links.py`：需要 python playwright，沒有就略過；CI 不執行） |
+| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`），以及選用的頁面告警連結與通知控制 headless 檢查（`test_page_links.py`、`test_page_notify.py`：需要 python playwright，沒有就略過；CI 不執行） |
 | `CONTRIBUTING.md` | 開發環境設定、測試，以及讓 `README.zh-TW.md` 保持同步的規則 |
 | `fleet.example.yaml`、`.env.example` | 設定範例 |
 
