@@ -771,7 +771,8 @@ cmd_press() {
     refuse_auth "answered_by '$d_by' is not an approver (or no approvers configured)"
   fi
   # 2. A truncated summary means the human did not see the whole input. (A pane question is only
-  #    pressable when nothing it is answered by was clipped: `pressable` below.)
+  #    pressable when no option label was clipped: `pressable` below. A clipped question text is
+  #    checked on screen by its start and all the labels, step 4.)
   if [ "$action" != answer ] && [ "$d_trunc" = true ] && [ "$allow_trunc" = 0 ]; then
     refuse_auth "the summary of $dec_id is truncated; read the full input in the pane, then pass --allow-truncated"
   fi
@@ -874,7 +875,15 @@ cmd_press() {
   local seen=0
   if [ "$action" = answer ]; then
     # The question (start of it, as for a permission summary), or else every option label in order.
-    [ ${#bind} -ge 8 ] && [[ $flat == *"$bind"* ]] && seen=1
+    # A question that was clipped needs both: its start (never the clipped tail) and every label.
+    local q_clip prefix_seen=0
+    q_clip="$(jq -r '.questions_clipped // false' "$df")"
+    [ ${#bind} -ge 8 ] && [[ $flat == *"$bind"* ]] && prefix_seen=1
+    seen=$prefix_seen
+    if [ "$q_clip" = true ]; then
+      [ "$prefix_seen" = 1 ] || refuse "the start of the shortened question ('${bind}') is not visible in pane $pane" "$pane"
+      seen=0
+    fi
     if [ "$seen" = 0 ]; then
       local lab rest="$flat" all=1 nl=0
       while IFS= read -r lab; do

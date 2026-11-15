@@ -753,9 +753,40 @@ eq "question clipped to 300 with an ellipsis" "$(dj "$d" '.question | "\(length)
 eq "label clipped to 80" "$(dj "$d" '.questions[0].options[0].label | length')" "80"
 eq "description clipped to 160" "$(dj "$d" '.questions[0].options[0].description | length')" "160"
 eq "control characters stripped" "$(dj "$d" '.questions[0].options[0].label | test("[\u0000-\u001f\u007f]")')" "false"
-eq "clipped -> questions_clipped, not pressable" "$(dj "$d" '"\(.questions_clipped)/\(.pressable)"')" "true/false"
+eq "clipped label and text -> questions_clipped, labels_clipped, not pressable" "$(dj "$d" '"\(.questions_clipped)/\(.labels_clipped)/\(.pressable)"')" "true/true/false"
 if grep -rqF "$tok" "$BOARD_HOME"; then bad "token never stored"; else ok "token never stored"; fi
 qdone tu_q9
+
+# A long question with short, complete labels stays pressable (only the question text is
+# clipped); the press then needs both the start of the question and every label on screen.
+LONGQ="$(jq -cn --arg q "Which color do you prefer for the test? $(printf 'context %.0s' $(seq 1 60))" \
+  '[{question: $q, header: "Color", options: [{label: "Red", description: "warm"}, {label: "Blue", description: "cool"}, {label: "Green", description: "natural"}], multiSelect: false}]')"
+LSCREEN="$(qscreen | sed 's/Which color do you prefer for the test?/Which color do you prefer for the test? context context context context/')"
+d="$(askq tu_q10 "$LONGQ")"
+eq "long question, short labels -> clipped text, labels whole, pressable" \
+  "$(dj "$d" '"\(.questions_clipped)/\(.labels_clipped)/\(.questions[0].question_clipped)/\(.pressable)"')" "true/false/true/true"
+"$B" answer "$d" "Blue" --by user-1 >/dev/null
+eq "...answer relays by press" "$(dj "$d" .relay)" "press"
+: > "$FAKE_TMUX_LOG"
+FAKE_TMUX_SCREEN="$(qscreen)" press CP answer --expect tu_q10
+eq "...labels visible but not the start of the question -> exit 3, nothing sent" "$?/$(sent_keys)" "3/0"
+qdone tu_q10
+d="$(askq tu_q10b "$LONGQ")"; "$B" answer "$d" "Blue" --by user-1 >/dev/null
+: > "$FAKE_TMUX_LOG"
+FAKE_TMUX_SCREEN="$LSCREEN" press CP answer --expect tu_q10b
+eq "...start of the question and every label visible -> press ok" "$?" "0"
+eq "...sends the option's number key" "$(grep '^send-keys' "$FAKE_TMUX_LOG" | tail -1)" "send-keys -t %42 2"
+qdone tu_q10b
+d="$(askq tu_q10c "$LONGQ")"; "$B" answer "$d" "Blue" --by user-1 >/dev/null
+: > "$FAKE_TMUX_LOG"
+FAKE_TMUX_SCREEN="${LSCREEN/  2. Blue/  2. Teal}" press CP answer --expect tu_q10c
+eq "...a label missing on screen -> exit 3, nothing sent" "$?/$(sent_keys)" "3/0"
+qdone tu_q10c
+# One label cut short -> read-only, even with a short question.
+CLIPL="$(jq -cn --arg l "Option $(printf 'l%.0s' $(seq 1 100))" '[{question: "Which one?", header: "Pick", options: [{label: $l, description: ""}, {label: "No", description: ""}], multiSelect: false}]')"
+d="$(askq tu_q11 "$CLIPL")"
+eq "a clipped label -> labels_clipped, not pressable" "$(dj "$d" '"\(.questions[0].question_clipped)/\(.labels_clipped)/\(.pressable)"')" "false/true/false"
+qdone tu_q11
 
 # The session moves on: the collector marks an open pane question stale.
 d="$(askq tu_q10 "$Q1")"
