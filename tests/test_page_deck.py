@@ -252,6 +252,15 @@ def main():
             check("three columns", ph["cols"] == 3, ph)
             check("no horizontal page scroll", ph["scrollW"] <= ph["vw"], ph)
             check("every key inside the screen, big enough to tap", ph["inside"] and ph["minH"] >= 44, ph)
+            fit = pg.evaluate("""() => { const out = [];
+              for (const k of document.querySelectorAll('#deck-grid .dkey')) { const kr = k.getBoundingClientRect();
+                for (const e of k.querySelectorAll('.k-state, .k-oom')) { const r = e.getBoundingClientRect();
+                  if (r.width && (r.right > kr.right - 4 || r.left < kr.left)) out.push(e.className + ': ' + e.textContent); } }
+              const s = document.querySelector('#deck-grid [data-deck=s1] .k-state .k-sub'), cs = getComputedStyle(s);
+              const oom = document.querySelector('#deck-grid .k-oom');
+              return { out, ellipsis: cs.textOverflow, oom: oom.textContent, oomCut: oom.scrollWidth > oom.clientWidth + 1 }; }""")
+            check("S-key state line and the OOM badge stay inside their keys", not fit["out"], fit)
+            check("  a long state line ends in an ellipsis; the OOM count is whole", fit["ellipsis"] == "ellipsis" and fit["oom"] == "OOM 1" and not fit["oomCut"], fit)
             pg.tap("#deck-grid .dkey.hitl")
             pg.wait_for_timeout(700)
             check("a tap on HITL jumps too", pg.evaluate(ACTIVE_JS)["card"] == "dec-d-7-demo")

@@ -652,7 +652,10 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 .dkey .k-ok { color: var(--dk-ok); }
 .dkey .k-warn { color: var(--dk-amber); }
 .dkey .k-bad { color: var(--dk-perm); }
-.dkey .k-state { display: inline-flex; align-items: center; gap: 5px; }
+.dkey .k-state { display: flex; align-items: center; gap: 5px; min-width: 0; max-width: 100%; overflow: hidden; }
+.dkey .k-state .k-sub { min-width: 0; flex: 1 1 auto; }
+.dkey .k-lab > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.dkey .k-lab > .k-oom { flex: none; overflow: visible; }
 .dkey .k-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dk-off); flex: none; }
 .dkey.st-working .k-dot { background: var(--dk-work); }
 .dkey.st-done .k-dot { background: var(--dk-ok); }

@@ -1031,8 +1031,7 @@ git grep -niE "$(paste -sd'|' tmp-local/banned-terms.txt)"
 
 ## 相關專案
 
-有一個姊妹專案用同一批 Claude Code hook 驅動一台實體按鍵盤
-（5 × 3 格加一個寬按鍵）：在等的 session 會閃爍、HITL 鍵跳到等最久的、全體長條顯示用量與消耗速度。
+一個實體按鍵盤儀表板（5 × 3 個按鍵加一個寬按鍵），用同一批 Claude Code hook 顯示同樣的 HITL 與用量訊號：在等的 session 會閃爍、HITL 鍵跳到等最久的、全體長條顯示用量與消耗速度。
 這裡的按鍵面板借用了它的排列與想法，沒有共用任何素材。
 
 兩者可以並行，彼此互不知道對方。它們的 hook 是 `settings.json` 裡各自獨立的項目，也各自保存狀態：
