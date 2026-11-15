@@ -427,6 +427,7 @@ class StateBuilder:
         paths.append(self.p("cards.json"))      # card extras (lib/cards.py), rewritten when changed
         paths.append(self.p("pomodoro.json"))   # pomodoro tallies (lib/pomodoro.py)
         paths.append(self.p(lessons.FILE))      # lessons (lib/lessons.py), append-only
+        paths.append(self.p("scheduler.json"))  # rewritten only when the decision changes
         for sub in ("decisions", "tasks", "consensus"):
             paths.append(self.p(sub))
             paths.extend(glob.glob(self.p(sub, "*.json")))
@@ -583,7 +584,19 @@ class StateBuilder:
                 "resources": resources.board_view(read_json(self.p("resources.json"))),
                 "pomodoro": pomodoro.board_view(read_json(self.p("pomodoro.json")), now_ms()),
                 "lessons": lessons.board_view(self.home, 100),
+                "scheduler": scheduler_view(read_json(self.p("scheduler.json"))),
                 "generated_at": snap.get("generated_at")})
+
+
+def scheduler_view(doc):
+    """What the board shows of scheduler.json for now: the mode and the lessons in force."""
+    if not isinstance(doc, dict):
+        return None
+    ls = doc.get("lessons") if isinstance(doc.get("lessons"), dict) else {}
+    return {"mode": doc.get("mode") if isinstance(doc.get("mode"), str) else None,
+            "applied": [x for x in ls.get("applied") or [] if isinstance(x, str) and lessons.ID_RE.fullmatch(x)],
+            "hints": [{"lesson": str(x.get("lesson")), "text": str(x.get("text"))[:160]}
+                      for x in ls.get("hints") or [] if isinstance(x, dict)][:20]}
 
 
 def cards_for(sessions, approver):

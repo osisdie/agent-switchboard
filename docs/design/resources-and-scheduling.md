@@ -358,3 +358,18 @@ The scheduler ships in three steps instead of section 7's PRs 2–4: (1) task mo
   fingerprint; capture skips it), retire is "stop applying". J3b lessons are global (no repo in the
   fingerprint). `board lesson note` is for auto lessons only. Uncaptured episodes wait in the state.
 
+## Implementation notes (scheduler 2c: the Lessons section)
+- **Where.** A "Lessons" section on the self-hosted board (after Resources, with a nav badge of
+  active lessons), not a panel off a Schedule tile: the Schedule UI (queue, jams, advisories) is
+  still to come and can link here.
+- **Editing** is for approvers on the self-hosted board only. The demo shows sample lessons
+  read-only; the Artifact board says lessons live on the self-hosted board (no mirror yet).
+- **The rule builder** offers only the fixed vocabulary; the server validates every save and its
+  message is shown as it is. `/api/state` gains `scheduler: {mode, applied, hints}` so the page can
+  name the lessons that shape the schedule now.
+- **Edit keeps `then.reason`** (a "Reason (optional)" field); unticking "With a rule" removes the rule.
+- **TODO (later).** BANNED_RE (hints, advisory text) does not fold Unicode lookalikes (e.g. fullwidth
+  or Cyrillic letters); normalise (NFKC + a confusables map) before matching. `lessons.applied`
+  in scheduler.json follows the metric each pass; reuse the 30-minute hit debounce so a flapping
+  rule does not rewrite scheduler.json.
+

@@ -551,7 +551,9 @@ State (`/api/state` and every SSE frame):
                  idle_seconds}, breakthrough, updated_at, updated_by, channels: {slack: bool, ...} } | null,
   "resources": { see "Resources": resources.json without pids, paths or unknown fields }|null,
   "rc":        { "all": "on"|"off"|null, "sessions": {"<code>": "on"|"off"}, "updated_at" } | null,
-  "pomodoro":  { see "Pomodoro": today's tallies, each session's current pomodoro, 14 days }|null }
+  "pomodoro":  { see "Pomodoro": today's tallies, each session's current pomodoro, 14 days }|null,
+  "lessons":   [ see "Lessons": the newest 100, without signals or fingerprints ],
+  "scheduler": { "mode": "normal|...", "applied": ["l-.."], "hints": [{"lesson", "text"}] }|null }
 ```
 
 `account` is the Claude account the sessions run on, from `$BOARD_HOME/account.json` (the collector
@@ -1572,6 +1574,13 @@ events). **Delete = forget**: the scheduler never learns that pattern (fingerpri
   0600 file, never argv; audited as `{type: "serve", action: "lesson", op, lesson, rc}`. Errors: 400
   `bad_lesson` (with the validator's message in `detail`), 400 `held_text`, 400
   `confirm_required`, 404 `not_found`, 409 `busy`.
+- **Board** (self-hosted page, section "Lessons"): every viewer sees the list (status, occurrences,
+  last seen, minutes lost, the rule as a sentence, cause and resolution), can search it and filter
+  by status, and sees which active lessons shape the schedule now (`scheduler.applied`, `hints`).
+  Approvers also get Add / Edit (a rule builder from the fixed vocabulary; the server's refusal
+  message is shown as it is), Activate / Retire, and Delete behind a confirm step. The Artifact
+  board and the demo are read-only (the Artifact board does not mirror lessons). All text is set
+  with `textContent`.
 
 Settings (`fleet.yaml`): `lessons: {enabled: true, min_lost_minutes: 10, auto_activate_after: 2, ttl_days: 30}`.
 

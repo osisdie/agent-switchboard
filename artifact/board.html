@@ -671,6 +671,37 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 .sys .s-line .drive, .sys .s-line .drive b { color: var(--lvc); font-weight: 700; }
 .sys .s-why { font-size: 12px; font-weight: 600; color: var(--lvc); overflow-wrap: anywhere; }
 .sys .s-why[hidden] { display: none; }
+.lessons { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.lcard { display: grid; gap: 6px; padding: 12px 14px; border: 1px solid var(--rule); border-radius: var(--r); background: var(--panel); min-width: 0; }
+.lcard.st-retired { opacity: .75; }
+.lhead { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; min-width: 0; }
+.ltitle { overflow-wrap: anywhere; min-width: 0; }
+.lst { font-family: var(--f-mono); font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; padding: 1px 7px; border-radius: 9px; background: var(--off-soft); color: var(--muted); white-space: nowrap; }
+.lst.active { background: var(--ok-soft); color: var(--ok); }
+.lst.candidate { background: var(--lamp-soft); color: var(--lamp); }
+.lst.on { background: var(--cord-soft); color: var(--cord); }
+.lrule, .lnote { margin: 0; font-size: 14px; overflow-wrap: anywhere; }
+.lrule.mono { font-size: 13px; }
+.lacts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.lconfirm { flex: 1 1 100%; font-size: 14px; color: var(--deny); }
+.ls-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+.ls-bar input, .ls-bar select, .ls-form input, .ls-form select, .ls-form textarea { font: inherit; font-size: 14px; min-height: 36px; min-width: 0; padding: 6px 10px; border: 1px solid var(--rule); border-radius: 5px; background: var(--paper); color: var(--ink); }
+.ls-bar input { flex: 1 1 200px; }
+.ls-bar select { flex: 0 1 auto; max-width: 100%; }
+.ls-applied { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 14px; color: var(--muted); margin: 0 0 10px; }
+.ls-form { margin-bottom: 12px; }
+.ls-form h3 { margin: 0; font-size: 16px; }
+.ls-form textarea { min-height: 0; resize: vertical; }
+.lf-check { display: flex; gap: 8px; align-items: center; font-weight: 500; }
+.lf-check input { min-height: 0; }
+.lf-rule { display: grid; gap: 8px; border: 1px dashed var(--rule); border-radius: var(--r); padding: 10px; margin: 0; min-width: 0; }
+.lf-rule legend { font-size: 13px; color: var(--muted); padding: 0 4px; }
+.lc-list { display: grid; gap: 6px; }
+.lc-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-width: 0; }
+.lc-row .lc-metric { flex: 1 1 160px; }
+.lc-row .lc-op { flex: 0 0 auto; }
+.lc-row .lc-num, .lc-row .lc-stage { flex: 1 1 90px; }
+.ls-form .help { margin: 0; }
 .res-meta { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--muted); font-size: 13px; }
 .res-meta b { color: var(--ink); font-weight: 600; }
 .res-note { margin: 0; font-size: 13px; color: var(--muted); }
@@ -983,6 +1014,7 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
         <li><a href="#lifecycle" data-spy="lifecycle"><span data-i18n>Lifecycle</span> <span class="badge" id="nav-life">0</span></a></li>
         <li><a href="#board" data-spy="board"><span data-i18n>Board</span> <span class="badge" id="nav-board">0</span></a></li>
         <li><a href="#resources" data-spy="resources"><span data-i18n>Resources</span> <span class="badge" id="nav-res" title="idle teammates" data-i18n-attr="title">0</span></a></li>
+        <li><a href="#lessons" data-spy="lessons"><span data-i18n>Lessons</span> <span class="badge" id="nav-ls" title="active lessons" data-i18n-attr="title">0</span></a></li>
         <li><a href="#messages" data-spy="messages"><span data-i18n>Messages</span> <span class="badge" id="nav-msg">0</span></a></li>
         <li><a href="#approvals" data-spy="approvals"><span data-i18n>Approvals</span> <span class="badge" id="nav-appr">0</span></a></li>
       </ul>
@@ -1059,6 +1091,23 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
       </table>
     </div>
     <p class="res-note" id="res-idle-note" hidden></p>
+  </section>
+
+  <section class="sec" id="lessons" aria-labelledby="h-lessons">
+    <div class="sec-head">
+      <h2 id="h-lessons" data-i18n>Lessons</h2>
+      <span class="hint" data-i18n>What the scheduler learned from jams. An active lesson's rule can only tighten the schedule.</span>
+    </div>
+    <div class="ls-bar" id="ls-bar">
+      <input type="search" id="ls-q" placeholder="Search lessons" aria-label="Search lessons" data-i18n-attr="placeholder aria-label">
+      <select id="ls-filter" aria-label="Show" data-i18n-attr="aria-label"></select>
+      <button class="btn" id="ls-add" type="button" hidden data-i18n>Add a lesson</button>
+    </div>
+    <p class="ls-applied" id="ls-applied" hidden></p>
+    <div id="ls-form-box"></div>
+    <p class="readonly-note" id="ls-readonly" hidden></p>
+    <div class="empty" id="ls-empty"></div>
+    <ol class="lessons" id="ls-list"></ol>
   </section>
 
   <section class="sec" id="messages" aria-labelledby="h-messages">
@@ -1183,6 +1232,8 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
     rc: null,                    // Remote Control choices (board-serve state.rc: {all, sessions}) | null
     resources: null,             // resources.json board view (local) | meta/resources (Artifact) | null
     pomodoro: null,              // pomodoro tallies (board-serve state.pomodoro) | meta/pomodoro (Artifact) | null
+    lessons: [], sched: null,    // board-serve state.lessons and state.scheduler ({mode, applied, hints}); local and demo only
+    lsQ: '', lsFilter: 'current', lsForm: null, lsConfirm: null,
     replies: new Map(),
     got: { sessions: false, decisions: false, messages: false, tasks: false, approvals: false, operator: false, consensus: false },
     slow: false, feedError: null, offlineDetail: null,
@@ -2914,6 +2965,224 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
         h('span', { class: 'from' }, h('span', { text: str(r.from) || '?' }), timeEl(r.created_at)),
         h('p', { text: str(r.body) })))) : null);
   }
+  /* ----------------------------------------------------------------- lessons */
+  // What the scheduler learned (board-serve state.lessons, lib/lessons.py). Approvers on the
+  // self-hosted board add, edit, activate, retire and delete them; everyone else reads. Rules come
+  // from a fixed vocabulary and can only tighten; the server validates and its message is shown
+  // as it is. Text only ever goes through textContent.
+  const LS_METRICS = ['mem_available_pct', 'mem_available_mb', 'swap_used_pct', 'psi_mem', 'load_per_cpu', 'disk_free_pct',
+    'heavy_running', 'five_hour_pct', 'five_hour_min_to_reset', 'weekly_pct', 'open_prs_in_repo', 'stage'];
+  const LS_OPS = { lt: '<', lte: '≤', gt: '>', gte: '≥', eq: '=' };
+  const LS_STAGES = ['plan', 'design', 'build', 'test', 'deploy', 'production', 'maintain'];
+  const LS_ACTIONS = { defer_heavy: 'Hold heavy runs back', max_heavy: 'At most {n} heavy jobs at once', pause_new_starts: 'Pause new starts',
+    serialize_repo: 'One task at a time per repo', raise_severity: 'Raise advisory severity', advise: 'Show a hint' };
+  const LS_STATUS = { active: 'active', candidate: 'candidate', retired: 'retired' };
+  const LS_FILTERS = { current: 'Active and candidates', active: 'Active', candidate: 'Candidates', retired: 'Retired', all: 'All' };
+  const lessonEditor = () => !S.demo && awayEditor();
+  function actionText(a) {
+    a = str(a);
+    if (a.startsWith('max_heavy:')) return tr(LS_ACTIONS.max_heavy, { n: a.slice(10) });
+    if (a.startsWith('advise:')) return tr('Show a hint') + ': ' + a.slice(7);
+    return Object.prototype.hasOwnProperty.call(LS_ACTIONS, a) ? tr(LS_ACTIONS[a]) : a;
+  }
+  function ruleText(rule) {
+    if (!rule || typeof rule !== 'object' || !rule.when || !Array.isArray(rule.when.all) || !rule.then) return null;
+    const conds = rule.when.all.filter((c) => c && typeof c === 'object').map((c) => {
+      const op = Object.keys(c).find((k) => k !== 'metric');
+      return str(c.metric) + ' ' + (LS_OPS[op] || str(op)) + ' ' + str(c[op]);
+    });
+    return tr('When {cond} → {action}', { cond: conds.join(tr(' and ')), action: actionText(rule.then.action) });
+  }
+  function lessonMatches(l, q) {
+    if (!q) return true;
+    return [l.title, l.cause, l.resolution, l.rule_kind, l.source, ruleText(l.rule), JSON.stringify(l.rule || null)].some((x) => lc(x).includes(q));
+  }
+  function renderLessons() {
+    const all = objs(S.lessons);
+    const nb = $('#nav-ls'); nb.textContent = all.filter((l) => l.status === 'active').length;
+    const ed = lessonEditor();
+    $('#ls-add').hidden = !ed || !!S.lsForm;
+    const ro = $('#ls-readonly');
+    ro.hidden = ed || (!isLocal() && !S.demo);
+    ro.textContent = S.demo ? tr('Sample lessons. On the self-hosted board, approvers add, edit and retire them here.')
+      : tr('Read-only: only approvers change lessons.');
+    const empty = $('#ls-empty'), list = $('#ls-list'), bar = $('#ls-bar'), applied = $('#ls-applied');
+    if (!isLocal() && !S.demo) {
+      bar.hidden = true; list.textContent = ''; applied.hidden = true; empty.hidden = false; empty.textContent = '';
+      empty.append(h('strong', { text: tr('Lessons live on the self-hosted board.') }), tr('Use board lesson ls in a terminal, or open the board served by board-serve.'));
+      return;
+    }
+    bar.hidden = false;
+    const on = new Set(S.sched && Array.isArray(S.sched.applied) ? S.sched.applied.map(str) : []);
+    const hints = S.sched && Array.isArray(S.sched.hints) ? objs(S.sched.hints) : [];
+    applied.hidden = !on.size && !hints.length;
+    applied.textContent = '';
+    if (on.size) applied.append(h('strong', { text: tr(on.size === 1 ? '1 active lesson is shaping the schedule now.' : '{n} active lessons are shaping the schedule now.', { n: on.size }) }));
+    for (const x of hints) applied.append(h('span', { class: 'ls-hint', text: tr('Hint: {text}', { text: str(x.text) }) }));
+    const sel = $('#ls-filter');
+    sel.textContent = '';
+    for (const [k, v] of Object.entries(LS_FILTERS)) sel.append(h('option', { value: k, text: tr(v) }));
+    sel.value = S.lsFilter || 'current';
+    const q = lc(S.lsQ).trim(), f = S.lsFilter || 'current';
+    const rows = all.filter((l) => (f === 'all' || (f === 'current' ? l.status !== 'retired' : l.status === f)) && lessonMatches(l, q));
+    empty.hidden = rows.length > 0; empty.textContent = '';
+    if (!all.length) empty.append(h('strong', { text: tr('No lessons yet.') }), tr('A jam that cost time becomes a candidate here; seen twice, it turns active.'));
+    else if (!rows.length) empty.append(tr('Nothing matches "{q}".', { q: S.lsQ || '' }));
+    list.textContent = '';
+    for (const l of rows) list.append(lessonCard(l, on.has(str(l.id)), ed));
+  }
+  function lessonCard(l, applying, ed) {
+    const id = str(l.id), st = LS_STATUS[str(l.status)] ? str(l.status) : 'candidate';
+    const li = h('li', { class: 'lcard st-' + st, dataset: { id } });
+    li.append(h('div', { class: 'lhead' },
+      h('span', { class: 'lst ' + st, text: tr(LS_STATUS[st]) }),
+      applying ? h('span', { class: 'lst on', text: tr('applied now') }) : null,
+      h('strong', { class: 'ltitle', text: str(l.title) || tr('(untitled)') })));
+    const meta = h('div', { class: 'dmeta' },
+      h('span', { class: 'mono', text: str(l.rule_kind) || tr(l.source === 'owner' ? 'by an approver' : 'auto') }),
+      h('span', { text: tr('seen {n}×', { n: Number(l.occurrences) || 0 }) }),
+      h('span', { text: tr('{n} min lost', { n: Number(l.lost_min_total) || 0 }) }));
+    if (ts(l.last_seen)) meta.append(h('span', null, tr('last seen') + ' ', timeEl(l.last_seen)));
+    if (Number(l.hits)) meta.append(h('span', { text: tr('applied {n}×', { n: Number(l.hits) }) }));
+    li.append(meta);
+    const rt = ruleText(l.rule);
+    li.append(h('p', { class: 'lrule' + (rt ? ' mono' : ''), text: rt || tr('No rule: a note only.') }));
+    if (l.cause) li.append(h('p', { class: 'lnote' }, h('b', { text: tr('Cause') + ' ' }), str(l.cause)));
+    if (l.resolution) li.append(h('p', { class: 'lnote' }, h('b', { text: tr('Resolution') + ' ' }), str(l.resolution)));
+    if (st === 'retired' && l.retired_by) li.append(h('p', { class: 'lnote muted', text: tr(l.retired_by === 'ttl' ? 'Retired: not seen for a long time.' : 'Retired by {who}.', { who: str(l.retired_by) }) }));
+    if (!ed) return li;
+    const busy = S.busy.has('ls:' + id);
+    const acts = h('div', { class: 'lacts' });
+    if (S.lsConfirm === id) {
+      acts.append(h('span', { class: 'lconfirm', text: tr('Delete this lesson? The scheduler will not learn this pattern again (retire it to only stop applying it). Its history stays in the log.') }),
+        h('button', { class: 'btn deny solid', type: 'button', disabled: busy, onclick: () => lessonDo(id, { action: 'delete', confirm: 'delete' }, tr('Lesson deleted.')), text: tr('Delete') }),
+        h('button', { class: 'btn', type: 'button', disabled: busy, onclick: () => { S.lsConfirm = null; renderLessons(); }, text: tr('Cancel') }));
+    } else {
+      acts.append(h('button', { class: 'btn', type: 'button', disabled: busy || !!S.lsForm, onclick: () => openLessonForm(l), text: tr('Edit') }),
+        st === 'active'
+          ? h('button', { class: 'btn', type: 'button', disabled: busy, onclick: () => lessonDo(id, { action: 'retire' }, tr('Lesson retired.')), text: tr('Retire') })
+          : h('button', { class: 'btn allow', type: 'button', disabled: busy, onclick: () => lessonDo(id, { action: 'activate' }, tr('Lesson activated.')), text: tr('Activate') }),
+        h('button', { class: 'btn deny', type: 'button', disabled: busy, onclick: () => { S.lsConfirm = id; renderLessons(); }, text: tr('Delete…') }));
+    }
+    li.append(acts);
+    return li;
+  }
+  async function lessonDo(id, body, done) {
+    if (!isLocal() || !adapter.lessonAction || S.busy.has('ls:' + id)) return;
+    S.busy.add('ls:' + id); renderLessons();
+    try {
+      await adapter.lessonAction(id, body);
+      if (body.action === 'delete') S.lsConfirm = null;
+      toast(done);
+    } catch (e) {
+      toast(tr('Not saved: {why}', { why: str(e && e.message) || tr('the board server refused it') }), true);
+    } finally { S.busy.delete('ls:' + id); renderLessons(); }
+  }
+  function condRow(c) {
+    const op0 = c ? Object.keys(c).find((k) => k !== 'metric') : 'lt';
+    const metric = h('select', { class: 'lc-metric', 'aria-label': tr('Metric') }, LS_METRICS.map((m) => h('option', { value: m, text: m })));
+    metric.value = c && LS_METRICS.includes(c.metric) ? c.metric : 'mem_available_pct';
+    const op = h('select', { class: 'lc-op', 'aria-label': tr('Comparison') }, Object.entries(LS_OPS).map(([k, v]) => h('option', { value: k, text: v })));
+    op.value = LS_OPS[op0] ? op0 : 'lt';
+    const num = h('input', { class: 'lc-num', type: 'number', step: 'any', 'aria-label': tr('Value'), value: c && metric.value !== 'stage' ? str(c[op0]) : '' });
+    const stage = h('select', { class: 'lc-stage', 'aria-label': tr('Stage') }, LS_STAGES.map((s) => h('option', { value: s, text: s })));
+    stage.value = c && LS_STAGES.includes(c[op0]) ? c[op0] : 'test';
+    const row = h('div', { class: 'lc-row' }, metric, op, num, stage,
+      h('button', { class: 'btn linkish', type: 'button', onclick: () => { row.remove(); syncLessonForm(); }, text: tr('Remove') }));
+    const sync = () => { const isStage = metric.value === 'stage'; num.hidden = isStage; stage.hidden = !isStage; if (isStage) op.value = 'eq'; op.disabled = isStage; };
+    metric.addEventListener('change', sync); sync();
+    return row;
+  }
+  function syncLessonForm() {
+    const f = $('#ls-form'); if (!f) return;
+    const withRule = f.querySelector('#lf-with-rule').checked;
+    f.querySelector('#lf-rule').hidden = !withRule;
+    f.querySelector('#lf-add-cond').disabled = f.querySelectorAll('.lc-row').length >= 6;
+    const a = f.querySelector('#lf-action').value;
+    f.querySelector('#lf-n').hidden = a !== 'max_heavy';
+    f.querySelector('#lf-advise').hidden = a !== 'advise';
+  }
+  function openLessonForm(l) {
+    S.lsForm = l ? { id: str(l.id) } : { id: null };
+    S.lsConfirm = null;
+    const box = $('#ls-form-box'); box.textContent = '';
+    const rule = l && l.rule && typeof l.rule === 'object' ? l.rule : null;
+    const act = rule && rule.then ? str(rule.then.action) : 'defer_heavy';
+    const actKey = act.startsWith('max_heavy:') ? 'max_heavy' : act.startsWith('advise:') ? 'advise' : act;
+    const err = h('p', { class: 'err', id: 'lf-err', role: 'alert' });
+    const conds = h('div', { class: 'lc-list', id: 'lf-conds' }, (rule && Array.isArray(rule.when && rule.when.all) ? rule.when.all : [null]).map(condRow));
+    const action = h('select', { id: 'lf-action', 'aria-label': tr('Action') }, Object.keys(LS_ACTIONS).map((k) => h('option', { value: k, text: k === 'max_heavy' ? tr('At most N heavy jobs at once') : tr(LS_ACTIONS[k]) })));
+    action.value = LS_ACTIONS[actKey] ? actKey : 'defer_heavy';
+    const form = h('form', { class: 'composer ls-form', id: 'ls-form', autocomplete: 'off', novalidate: true },
+      h('h3', { text: l ? tr('Edit lesson') : tr('New lesson') }),
+      h('label', { for: 'lf-title', text: tr('Title') }),
+      h('input', { id: 'lf-title', maxlength: 120, value: l ? str(l.title) : '' }),
+      h('label', { class: 'lf-check' }, h('input', { type: 'checkbox', id: 'lf-with-rule', checked: !!rule || !l }), tr('With a rule')),
+      h('fieldset', { id: 'lf-rule', class: 'lf-rule' },
+        h('legend', { text: tr('When all of these hold') }), conds,
+        h('button', { class: 'btn linkish', type: 'button', id: 'lf-add-cond', onclick: () => { conds.append(condRow(null)); syncLessonForm(); }, text: tr('Add a condition') }),
+        h('label', { for: 'lf-action', text: tr('Then') }), action,
+        h('input', { id: 'lf-n', type: 'number', min: 0, max: 8, step: 1, 'aria-label': tr('Number of heavy jobs'), value: act.startsWith('max_heavy:') ? act.slice(10) : '1' }),
+        h('input', { id: 'lf-advise', maxlength: 160, 'aria-label': tr('Hint text'), value: act.startsWith('advise:') ? act.slice(7) : '' }),
+        h('label', { for: 'lf-reason', text: tr('Reason (optional)') }),
+        h('input', { id: 'lf-reason', maxlength: 400, value: rule && rule.then ? str(rule.then.reason) : '' }),
+        h('p', { class: 'help', text: tr('Rules can only tighten the schedule. To undo a lesson, retire or delete it. Unticking \"With a rule\" removes the rule from this lesson.') })),
+      h('label', { for: 'lf-cause', text: tr('Cause') }),
+      h('textarea', { id: 'lf-cause', maxlength: 400, rows: 2 }),
+      h('label', { for: 'lf-resolution', text: tr('Resolution') }),
+      h('textarea', { id: 'lf-resolution', maxlength: 400, rows: 2 }),
+      err,
+      h('div', { class: 'row' },
+        h('button', { class: 'btn', type: 'button', onclick: closeLessonForm, text: tr('Cancel') }),
+        h('button', { class: 'btn primary', type: 'submit', id: 'lf-save', text: tr('Save') })));
+    form.querySelector('#lf-cause').value = l ? str(l.cause) : '';
+    form.querySelector('#lf-resolution').value = l ? str(l.resolution) : '';
+    form.querySelector('#lf-with-rule').addEventListener('change', syncLessonForm);
+    action.addEventListener('change', syncLessonForm);
+    form.addEventListener('submit', (e) => { e.preventDefault(); saveLesson(); });
+    box.append(form);
+    syncLessonForm();
+    renderLessons();
+    form.querySelector('#lf-title').focus();
+  }
+  function closeLessonForm() { S.lsForm = null; $('#ls-form-box').textContent = ''; renderLessons(); }
+  function lessonBody() {
+    const f = $('#ls-form');
+    const body = { title: f.querySelector('#lf-title').value, cause: f.querySelector('#lf-cause').value || null,
+      resolution: f.querySelector('#lf-resolution').value || null, rule: null };
+    if (f.querySelector('#lf-with-rule').checked) {
+      const all = [...f.querySelectorAll('.lc-row')].map((r) => {
+        const m = r.querySelector('.lc-metric').value;
+        if (m === 'stage') return { metric: m, eq: r.querySelector('.lc-stage').value };
+        const raw = r.querySelector('.lc-num').value;
+        return { metric: m, [r.querySelector('.lc-op').value]: raw === '' || isNaN(Number(raw)) ? raw : Number(raw) };
+      });
+      let a = f.querySelector('#lf-action').value;
+      if (a === 'max_heavy') a += ':' + f.querySelector('#lf-n').value;
+      if (a === 'advise') a += ':' + f.querySelector('#lf-advise').value;
+      body.rule = { when: { all }, then: { action: a } };
+      const reason = f.querySelector('#lf-reason').value.trim();   // kept on edit; empty = none
+      if (reason) body.rule.then.reason = reason;
+    }
+    return body;
+  }
+  async function saveLesson() {
+    if (!isLocal() || !S.lsForm || S.busy.has('ls-form')) return;
+    const err = $('#lf-err'); err.textContent = '';
+    const body = lessonBody();
+    const id = S.lsForm.id;
+    S.busy.add('ls-form'); $('#lf-save').disabled = true;
+    try {
+      if (id) await adapter.lessonAction(id, Object.assign({ action: 'edit' }, body));
+      else await adapter.addLesson(body);
+      toast(tr(id ? 'Lesson saved.' : 'Lesson added.'));
+      closeLessonForm();
+    } catch (e) {
+      // The server's own message (validated, scrubbed), as it is: e.g. the "only tightening" refusal.
+      err.textContent = str(e && e.message) || tr('The board server refused it.');
+    } finally { S.busy.delete('ls-form'); const b = $('#lf-save'); if (b) b.disabled = false; }
+  }
+
   function renderMessages() {
     const list = S.messages.slice(0, MAX_THREADS);
     const e = $('#msg-empty');
@@ -3913,7 +4182,7 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
   }
 
   wirePops();
-  function renderAll() { renderHeader(); renderBanners(); renderNotif(); renderDecisions(); renderConsensus(); renderTasks(); renderBoard(); renderMessages(); renderApprovals(); renderResources(); if ($('#info').open) renderLedger(); openLinked(); }
+  function renderAll() { renderHeader(); renderBanners(); renderNotif(); renderDecisions(); renderConsensus(); renderTasks(); renderBoard(); renderMessages(); renderApprovals(); renderResources(); renderLessons(); if ($('#info').open) renderLedger(); openLinked(); }
 
   /* ----------------------------------------------------------- deep links */
   // Alerts link to <board>/?d=<decision id> (m= message, c= consensus); a #<id> or #dec-<id> hash
@@ -4157,6 +4426,9 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendMessage(); }
   });
   $('#composer').addEventListener('submit', (e) => { e.preventDefault(); sendMessage(); });
+  $('#ls-q').addEventListener('input', (e) => { S.lsQ = e.target.value; renderLessons(); });
+  $('#ls-filter').addEventListener('change', (e) => { S.lsFilter = e.target.value; renderLessons(); });
+  $('#ls-add').addEventListener('click', () => openLessonForm(null));
 
   // Synchronous from the gesture: writes are kicked off, then the fast path is called.
   function sendMessage() {
@@ -4243,7 +4515,7 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
   function spy() {
     const line = nav.getBoundingClientRect().bottom + 24;
     let current = 'decisions';
-    for (const id of ['decisions', 'consensus', 'lifecycle', 'board', 'resources', 'messages', 'approvals']) { const el = document.getElementById(id); if (el && el.getBoundingClientRect().top <= line) current = id; }
+    for (const id of ['decisions', 'consensus', 'lifecycle', 'board', 'resources', 'lessons', 'messages', 'approvals']) { const el = document.getElementById(id); if (el && el.getBoundingClientRect().top <= line) current = id; }
     if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4) current = 'approvals';
     for (const a of spyLinks) a.setAttribute('aria-current', a.dataset.spy === current ? 'true' : 'false');
   }
@@ -4388,6 +4660,8 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
       S.rc = st.rc && typeof st.rc === 'object' ? st.rc : null;
       S.resources = st.resources && typeof st.resources === 'object' ? st.resources : null;
       S.pomodoro = st.pomodoro && typeof st.pomodoro === 'object' ? st.pomodoro : null;
+      S.lessons = arr(st.lessons);
+      S.sched = st.scheduler && typeof st.scheduler === 'object' ? st.scheduler : null;
       S.replies = new Map(Object.entries(st.replies && typeof st.replies === 'object' ? st.replies : {}).map(([k, v]) => [k, arr(v)]));
       S.me = str(st.me) || null; S.writable = st.writable !== false; S.userReady = true;
       S.canMessageLocal = st.can_message === true;
@@ -4450,6 +4724,9 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
       setRc(code, state) { return post('/api/rc', { code, state }); },
       // Approvers only: an allowlisted session action (compact | rc_on | rc_off), never free text.
       sessionAction(code, action) { return post('/api/sessions/' + encodeURIComponent(code) + '/action', { action }); },
+      // Approvers only; board-serve runs `board lesson add|edit|activate|retire|delete --by board:<identity>`.
+      addLesson(body) { return post('/api/lessons', body); },
+      lessonAction(id, body) { return post('/api/lessons/' + encodeURIComponent(id), body); },
       presence(visible, interactionAt, leaving) {
         return call('/api/presence', { method: 'POST', keepalive: !!leaving, headers: { 'Content-Type': 'application/json', 'X-Board': '1' },
           // A duration, not a time: board-serve applies it to its own clock.
@@ -4749,6 +5026,21 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
       { id: 'c-1-demo', from: 'DATA', participants: ['DATA', 'OPS'], ref: null, proposal: 'Rename the staging queue to match the new naming scheme.', status: 'objected', created_at: now - 70 * min, decided_at: now - 61 * min,
         votes: [{ by: 'DATA', vote: 'agree', note: 'proposer', at: now - 70 * min }, { by: 'OPS', vote: 'object', note: 'A consumer still reads the old name.', at: now - 61 * min }] },
     ];
+    S.lessons = [
+      { id: 'l-1-0000demo', status: 'active', source: 'auto', rule_kind: 'J5', title: 'Memory ran out with heavy jobs running', occurrences: 3,
+        lost_min_total: 95, first_seen: now - 6 * 24 * 60 * min, last_seen: now - 26 * 60 * min, hits: 4, last_hit_at: now - 50 * min,
+        rule: { when: { all: [{ metric: 'mem_available_pct', lt: 30 }] }, then: { action: 'max_heavy:1' } },
+        cause: 'Two browser suites started together on a 16 GiB machine.', resolution: 'Run one suite at a time.' },
+      { id: 'l-2-0000demo', status: 'active', source: 'owner', rule_kind: null, title: 'One open PR per repo', occurrences: 0, lost_min_total: 0,
+        first_seen: now - 3 * 24 * 60 * min, last_seen: now - 3 * 24 * 60 * min, hits: 1,
+        rule: { when: { all: [{ metric: 'open_prs_in_repo', gte: 1 }] }, then: { action: 'serialize_repo' } }, cause: null, resolution: null },
+      { id: 'l-3-0000demo', status: 'candidate', source: 'auto', rule_kind: 'J1', title: 'Every session waited on the owner', occurrences: 1,
+        lost_min_total: 24, first_seen: now - 5 * 60 * min, last_seen: now - 5 * 60 * min, hits: 0, rule: null, cause: null, resolution: null },
+      { id: 'l-4-0000demo', status: 'retired', source: 'auto', rule_kind: 'J8', title: 'A stacked branch was not rebased after a squash merge', occurrences: 2,
+        lost_min_total: 40, first_seen: now - 40 * 24 * 60 * min, last_seen: now - 33 * 24 * 60 * min, hits: 0, rule: null, retired_by: 'ttl',
+        cause: 'The PR base still pointed at the merged branch.', resolution: 'git rebase --onto, then retarget the PR base.' },
+    ];
+    S.sched = { mode: 'normal', applied: ['l-2-0000demo'], hints: [] };
     S.pomodoro = (() => {
       const ymd = (t) => { const d = new Date(t); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
       const d0 = new Date(now); d0.setHours(0, 0, 0, 0);
@@ -5758,6 +6050,80 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
       "{n} with nothing today are hidden.": "另有 {n} 個今天沒有紀錄，已隱藏。",
       "No pomodoro data yet. The collector starts counting when a session works.": "還沒有番茄鐘資料。session 開始工作後，collector 就會開始計算。",
       "The operator has not mirrored the pomodoro tally to this board yet (meta/pomodoro). Use board pomodoro in a terminal.": "operator 還沒有把番茄鐘統計同步到這個看板（meta/pomodoro）。請在終端機用 board pomodoro。",
+      "Lessons": "經驗",
+      "What the scheduler learned from jams. An active lesson's rule can only tighten the schedule.": "排程器從卡關學到的經驗。啟用中的經驗，其規則只能讓排程更保守。",
+      "Search lessons": "搜尋經驗",
+      "Show": "顯示",
+      "Add a lesson": "新增經驗",
+      "active lessons": "啟用中的經驗",
+      "Hold heavy runs back": "暫緩重型工作",
+      "At most {n} heavy jobs at once": "同時最多 {n} 個重型工作",
+      "At most N heavy jobs at once": "同時最多 N 個重型工作",
+      "Pause new starts": "暫停開始新工作",
+      "One task at a time per repo": "每個 repo 一次一件",
+      "Raise advisory severity": "提高建議的嚴重度",
+      "Show a hint": "顯示提示",
+      "candidate": "候選",
+      "retired": "已停用",
+      "Active and candidates": "啟用中與候選",
+      "Active": "啟用中",
+      "Candidates": "候選",
+      "Retired": "已停用",
+      "All": "全部",
+      "When {cond} → {action}": "當 {cond} → {action}",
+      " and ": " 且 ",
+      "Sample lessons. On the self-hosted board, approvers add, edit and retire them here.": "這些是示範經驗。在自架看板上，核可者可以在這裡新增、編輯和停用。",
+      "Read-only: only approvers change lessons.": "唯讀：只有核可者能修改經驗。",
+      "Lessons live on the self-hosted board.": "經驗保存在自架看板上。",
+      "Use board lesson ls in a terminal, or open the board served by board-serve.": "請在終端機用 board lesson ls，或開啟 board-serve 提供的看板。",
+      "1 active lesson is shaping the schedule now.": "目前有 1 個啟用中的經驗正在影響排程。",
+      "{n} active lessons are shaping the schedule now.": "目前有 {n} 個啟用中的經驗正在影響排程。",
+      "Hint: {text}": "提示：{text}",
+      "No lessons yet.": "還沒有經驗。",
+      "A jam that cost time becomes a candidate here; seen twice, it turns active.": "花了時間的卡關會在這裡成為候選；出現兩次就會啟用。",
+      "applied now": "正在套用",
+      "(untitled)": "（未命名）",
+      "by an approver": "由核可者新增",
+      "auto": "自動",
+      "seen {n}×": "出現 {n} 次",
+      "{n} min lost": "損失 {n} 分鐘",
+      "last seen": "最近一次",
+      "applied {n}×": "套用 {n} 次",
+      "No rule: a note only.": "沒有規則：只是一則筆記。",
+      "Cause": "原因",
+      "Resolution": "解法",
+      "Retired: not seen for a long time.": "已停用：很久沒有再出現。",
+      "Retired by {who}.": "由 {who} 停用。",
+      "Delete this lesson? The scheduler will not learn this pattern again (retire it to only stop applying it). Its history stays in the log.": "要刪除這個經驗嗎？排程器不會再學習這個模式（只想停止套用的話請改用停用）。紀錄仍會保留在日誌裡。",
+      "Delete": "刪除",
+      "Edit": "編輯",
+      "Retire": "停用",
+      "Activate": "啟用",
+      "Delete…": "刪除…",
+      "Lesson deleted.": "經驗已刪除。",
+      "Lesson retired.": "經驗已停用。",
+      "Lesson activated.": "經驗已啟用。",
+      "the board server refused it": "看板伺服器拒絕了",
+      "Metric": "指標",
+      "Comparison": "比較方式",
+      "Value": "數值",
+      "Remove": "移除",
+      "Action": "動作",
+      "Edit lesson": "編輯經驗",
+      "New lesson": "新增經驗",
+      "Title": "標題",
+      "With a rule": "加上規則",
+      "When all of these hold": "以下條件都成立時",
+      "Add a condition": "新增條件",
+      "Then": "就",
+      "Number of heavy jobs": "重型工作數量",
+      "Hint text": "提示文字",
+      "Rules can only tighten the schedule. To undo a lesson, retire or delete it. Unticking \"With a rule\" removes the rule from this lesson.": "規則只能讓排程更保守。要取消一個經驗，請停用或刪除它。取消勾選「加上規則」會移除這個經驗的規則。",
+      "Reason (optional)": "理由（選填）",
+      "Save": "儲存",
+      "Lesson saved.": "經驗已儲存。",
+      "Lesson added.": "經驗已新增。",
+      "The board server refused it.": "看板伺服器拒絕了。",
     };
   }
 })();

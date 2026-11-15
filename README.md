@@ -338,7 +338,8 @@ flowchart LR
   A jam that cost time becomes a **lesson** (`board lesson ls`): seen twice, it is active, and its
   rule (a fixed vocabulary that can only tighten: hold heavy runs, fewer at once, one repo at a
   time, ...) shapes the schedule. Approvers add, edit, retire and delete lessons with
-  `board lesson …` or `/api/lessons`.
+  `board lesson …`, `/api/lessons` or the board's **Lessons** section (search, a rule builder,
+  delete with a confirm step; read-only for everyone else).
   ```bash
   board task set <task-id> --repo shop --branch feat/export --size M --heavy yes --priority 2
   board task dep <task-id> --on <other-task> --kind merge
