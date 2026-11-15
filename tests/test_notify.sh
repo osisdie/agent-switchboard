@@ -702,6 +702,23 @@ eq "tap: resets_at seconds -> ms" "$(jq -r .five_hour.resets_at "$BOARD_HOME/usa
 eq "tap: resets_at ms kept" "$(jq -r .seven_day.resets_at "$BOARD_HOME/usage.json")" "1794819600000"
 eq "tap: session_id" "$(jq -r .session_id "$BOARD_HOME/usage.json")" "s1"
 eq "tap: usage.json is 0600" "$(stat -c %a "$BOARD_HOME/usage.json")" "600"
+# The session meter: statusline/<sid>.json with only ctx %, cost, model and time.
+eq "tap: meter model" "$(jq -r .model "$BOARD_HOME/statusline/s1.json" 2>/dev/null)" "M"
+m_in='{"session_id":"s-meter","transcript_path":"/home/someone/.claude/projects/x/s-meter.jsonl","cwd":"/home/someone/private",
+ "workspace":{"current_dir":"/home/someone/private"},"model":{"id":"model-id","display_name":"Model Large"},
+ "cost":{"total_cost_usd":2.1034,"total_duration_ms":5000},"context_window":{"used_percentage":34.25,"context_window_size":200000}}'
+printf '%s' "$m_in" | "$TAP"
+for _ in $(seq 1 40); do [ -s "$BOARD_HOME/statusline/s-meter.json" ] && break; sleep 0.05; done
+eq "tap: meter keys" "$(jq -r 'keys | join(",")' "$BOARD_HOME/statusline/s-meter.json")" "at,cost_usd,ctx_pct,model"
+eq "tap: meter values" "$(jq -r '"\(.ctx_pct) \(.cost_usd) \(.model)"' "$BOARD_HOME/statusline/s-meter.json")" "34.3 2.1034 Model Large"
+eq "tap: meter is 0600" "$(stat -c %a "$BOARD_HOME/statusline/s-meter.json")" "600"
+grep -q "someone" "$BOARD_HOME/statusline/s-meter.json" && bad "tap: meter keeps no path" || ok "tap: meter keeps no path"
+# No used_percentage: computed from current_usage / context_window_size.
+printf '%s' '{"session_id":"s-meter2","context_window":{"context_window_size":200000,"current_usage":{"input_tokens":1000,"cache_creation_input_tokens":3000,"cache_read_input_tokens":46000}}}' | "$TAP"
+for _ in $(seq 1 40); do [ -s "$BOARD_HOME/statusline/s-meter2.json" ] && break; sleep 0.05; done
+eq "tap: meter pct from current_usage" "$(jq -r .ctx_pct "$BOARD_HOME/statusline/s-meter2.json")" "25"
+printf '%s' '{"session_id":"../evil","model":{"display_name":"X"}}' | "$TAP"; sleep 0.3
+if find "$BOARD_HOME" -name '*evil*' | grep -q .; then bad "tap: unsafe session_id ignored"; else ok "tap: unsafe session_id ignored"; fi
 before="$(cat "$BOARD_HOME/usage.json")"
 out="$(printf '{"session_id":"s2"}' | BOARD_STATUSLINE_NEXT='cat' "$TAP")"
 sleep 0.3
