@@ -49,8 +49,9 @@ PHONE = {"width": 390, "height": 844}
 
 # name: (alt text, viewport, color scheme, device scale factor)
 SHOTS = {
-    "overview-light": ("The board in light mode: decisions waiting, usage meters, owner-away banner", DESKTOP, "light", 1),
+    "overview-light": ("The board in light mode: the needs-you count, usage and system meters, and the Deck panel", DESKTOP, "light", 1),
     "overview-dark": ("The board in dark mode", DESKTOP, "dark", 1),
+    "deck": ("The Deck panel: the HITL count, session keys coloured by what they wait for, usage rings, the burn rate and the fleet strip", DESKTOP, "dark", 1),
     "session-card": ("Session cards by state, one expanded with its title, pending decisions, running tool and tmux target", DESKTOP, "light", 1),
     "decisions": ("Decision cards: a permission prompt with Allow / Deny and a question with its options", DESKTOP, "light", 1),
     "notifications": ("The Notifications dialog: mutes, triage floor and presence", {"width": 1280, "height": 1100}, "light", 1),
@@ -139,6 +140,8 @@ def shoot(page, name):
         page.click('article[aria-label="Session API"] .scard-toggle')
         page.wait_for_timeout(150)
         return page.screenshot(full_page=True, clip=union(page, ["#board .sec-head", "#board-cols"]))
+    if name == "deck":
+        return page.locator("#deck").screenshot()
     if name == "decisions":
         return page.screenshot(full_page=True, clip=union(page, ["#decisions .sec-head", "#dec-d-1-demo", "#dec-d-2-demo"]))
     if name == "notifications":

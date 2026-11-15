@@ -76,7 +76,7 @@ def main():
         check("the script runs", r.returncode == 0, r.stderr[-400:])
         want = sorted(n + ".webp" for n in names)
         got = sorted(os.listdir(shots)) if os.path.isdir(shots) else []
-        check("every shot is written (%d)" % len(want), got == want and len(want) == 11, got)
+        check("every shot is written (%d)" % len(want), got == want and len(want) == 12 and "deck.webp" in want, got)
         for f in got:
             with open(os.path.join(shots, f), "rb") as fh:
                 head = fh.read(12)
