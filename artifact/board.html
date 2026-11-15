@@ -742,6 +742,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 .dkey .k-bar.lv-red i { background: var(--dk-perm); }
 .dkey .k-oom { font-family: var(--f-mono); font-size: 10.5px; padding: 0 5px; border-radius: 8px; background: var(--dk-edge); color: var(--dk-muted); }
 .dkey .k-oom.hot { background: var(--dk-perm); color: var(--dk-on-ink); }
+.dkey .k-oom:not(.hot) { background: none; box-shadow: inset 0 0 0 1px var(--dk-edge); }
 .dkey.lvl-warn .k-lvl { color: var(--dk-amber); }
 .dkey.lvl-high .k-lvl { color: var(--dk-plan); }
 .dkey.lvl-critical .k-lvl { color: var(--dk-perm); }
@@ -2457,34 +2458,43 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     load_per_cpu: [1.5, 3.0], disk_free_pct: [10, 3], disk_free_mb: [5120, 1024] };
   const fmtThr = (v) => (Number.isInteger(Number(v)) ? Number(v).toFixed(1) : String(v));
   // Why the System level is what it is, in words: { metric, text, critical } or null when ok.
+  // The collector holds a level for a while (hysteresis, dwell), so the value may already be back
+  // under the shown level's threshold: then it says the level is easing, never "2.80 (high ≥ 3.0)".
+  const thrOk = (v) => Array.isArray(v) && v.length === 2 && v.every((x) => typeof x === 'number' && Number.isFinite(x));
   function resWhy(r) {
     const lvl = resLvl(r.level) || 'ok', w = str(r.worst);
     if (lvl === 'ok' || !w) return null;
-    const thr = Object.assign({}, RES_THR, r.thresholds && typeof r.thresholds === 'object' ? r.thresholds : {});
+    const given = r.thresholds && typeof r.thresholds === 'object' ? r.thresholds : {};
     const step = lvl === 'warn' ? 0 : 1, L = trKnown(lvl === 'warn' ? 'warn' : 'high', RES_LEVELS);
-    const at = (k) => (Array.isArray(thr[k]) && thr[k][step] != null ? Number(thr[k][step]) : null);
+    // A threshold the board sent that is not two finite numbers falls back to the default.
+    const at = (k) => (thrOk(given[k]) ? given[k] : RES_THR[k])[step];
     const num = (v) => (v == null || !isFinite(Number(v)) ? null : Number(v));
+    const meets = (v, k, low) => v != null && (low ? v <= at(k) : v >= at(k));
+    // The bracket: "high ≥ 3.0" when the value is past it, "high from ≥ 3.0, easing" when not.
+    const bound = (v, k, low, shown) => tr(meets(v, k, low) ? (low ? '{lvl} ≤ {t}' : '{lvl} ≥ {t}') : (low ? '{lvl} from ≤ {t}, easing' : '{lvl} from ≥ {t}, easing'),
+      { lvl: L, t: shown });
     let text = '';
     if (w === 'oom') text = tr('an OOM kill in the last 10 minutes');
     else if (w === 'load') {
       const c = r.cpu || {}, load = Array.isArray(c.load) ? num(c.load[0]) : null, n = num(c.ncpu);
       const per = num(c.load_per_cpu) != null ? num(c.load_per_cpu) : load != null && n ? load / n : null;
-      text = per == null ? tr('CPU load') : tr('Load {load} / {n} cpu = {per} per cpu ({lvl} ≥ {t})',
-        { load: load == null ? '?' : load.toFixed(1), n: n || '?', per: per.toFixed(2), lvl: L, t: fmtThr(at('load_per_cpu')) });
+      text = per == null ? tr('CPU load') : tr('Load {load} / {n} cpu = {per} per cpu ({bound})',
+        { load: load == null ? '?' : load.toFixed(1), n: n || '?', per: per.toFixed(2), bound: bound(per, 'load_per_cpu', false, fmtThr(at('load_per_cpu'))) });
     } else if (w === 'mem') {
       const m = r.mem || {}, pct = num(m.available_pct), mb = num(m.available_mb), psi = num(m.psi_some_avg60);
-      if (mb != null && at('mem_available_mb') != null && mb <= at('mem_available_mb') && !(pct != null && at('mem_available_pct') != null && pct <= at('mem_available_pct')))
-        text = tr('Memory {mb} available ({lvl} ≤ {t})', { mb: fmtMb(mb), lvl: L, t: fmtMb(at('mem_available_mb')) });
-      else if (psi != null && at('psi_mem_some_avg60') != null && psi >= at('psi_mem_some_avg60') && !(pct != null && pct <= at('mem_available_pct')))
-        text = tr('Memory pressure {psi} ({lvl} ≥ {t})', { psi: psi.toFixed(1), lvl: L, t: fmtThr(at('psi_mem_some_avg60')) });
-      else text = tr('Memory {pct}% available ({lvl} ≤ {t}%)', { pct: pct == null ? '?' : Math.round(pct), lvl: L, t: at('mem_available_pct') });
+      if (!meets(pct, 'mem_available_pct', true) && meets(mb, 'mem_available_mb', true))
+        text = tr('Memory {mb} available ({bound})', { mb: fmtMb(mb), bound: bound(mb, 'mem_available_mb', true, fmtMb(at('mem_available_mb'))) });
+      else if (!meets(pct, 'mem_available_pct', true) && meets(psi, 'psi_mem_some_avg60', false))
+        text = tr('Memory pressure {psi} ({bound})', { psi: psi.toFixed(1), bound: bound(psi, 'psi_mem_some_avg60', false, fmtThr(at('psi_mem_some_avg60'))) });
+      else text = tr('Memory {pct}% available ({bound})', { pct: pct == null ? '?' : Math.round(pct), bound: bound(pct, 'mem_available_pct', true, at('mem_available_pct') + '%') });
     } else if (w === 'swap') {
-      text = tr('Swap {pct}% used ({lvl} ≥ {t}%)', { pct: num((r.swap || {}).used_pct) == null ? '?' : Math.round(r.swap.used_pct), lvl: L, t: at('swap_used_pct') });
+      const u = num((r.swap || {}).used_pct);
+      text = tr('Swap {pct}% used ({bound})', { pct: u == null ? '?' : Math.round(u), bound: bound(u, 'swap_used_pct', false, at('swap_used_pct') + '%') });
     } else if (w.startsWith('disk:')) {
-      const d = objs(r.disks).find((x) => str(x.id) === w.slice(5)) || {}, name = metricName(w, r);
-      text = num(d.free_pct) != null && at('disk_free_pct') != null && num(d.free_pct) <= at('disk_free_pct')
-        ? tr('{disk}: {pct}% free ({lvl} ≤ {t}%)', { disk: name, pct: d.free_pct, lvl: L, t: at('disk_free_pct') })
-        : tr('{disk}: {mb} free ({lvl} ≤ {t})', { disk: name, mb: fmtMb(d.free_mb), lvl: L, t: fmtMb(at('disk_free_mb')) });
+      const d = objs(r.disks).find((x) => str(x.id) === w.slice(5)) || {}, name = metricName(w, r), fp = num(d.free_pct), fm = num(d.free_mb);
+      text = !meets(fp, 'disk_free_pct', true) && meets(fm, 'disk_free_mb', true)
+        ? tr('{disk}: {mb} free ({bound})', { disk: name, mb: fmtMb(fm), bound: bound(fm, 'disk_free_mb', true, fmtMb(at('disk_free_mb'))) })
+        : tr('{disk}: {pct}% free ({bound})', { disk: name, pct: fp == null ? '?' : fp, bound: bound(fp, 'disk_free_pct', true, at('disk_free_pct') + '%') });
     } else text = metricName(w, r);
     return { metric: w.split(':')[0], worst: w, text, critical: lvl === 'critical' };
   }
@@ -3131,7 +3141,8 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     } else if (m.key === 'sys') {
       const label = m.has ? tr('System: {lvl}', { lvl: trKnown(m.level, RES_LEVELS) }) + (m.mem != null ? ' · ' + tr('memory {pct}%', { pct: m.mem }) : '') : tr('System: no resource data yet');
       key = keyBtn('sys lvl-' + (m.level || 'ok'), label, () => goSection('resources'),
-        h('span', { class: 'k-lab' }, h('span', { text: tr('System') }), m.oom != null ? h('span', { class: 'k-oom' + (m.oomHot ? ' hot' : ''), text: 'OOM ' + m.oom }) : null),
+        h('span', { class: 'k-lab' }, h('span', { text: tr('System') }), m.oom != null ? h('span', { class: 'k-oom' + (m.oomHot ? ' hot' : ''), text: 'OOM ' + m.oom,
+          title: tr(m.oomHot ? '{n} OOM kills since boot, one in the last 10 minutes' : '{n} OOM kills since boot', { n: m.oom }) }) : null),
         h('span', { class: 'k-lvl', text: m.has ? trKnown(m.level, RES_LEVELS) : '—' }),
         h('span', { class: 'k-bars' }, deckBar(tr('Mem'), m.mem, m.memLvl), deckBar(tr('Swap'), m.swap, m.swapLvl)));
     } else if (m.key === 'quiet') {
@@ -5027,19 +5038,23 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       "switch accounts": "切換帳號",
       "CPU load": "CPU 負載",
       "an OOM kill in the last 10 minutes": "最近 10 分鐘內有 OOM kill",
-      "Load {load} / {n} cpu = {per} per cpu ({lvl} ≥ {t})": "負載 {load} / {n} cpu = 每顆 cpu {per}（{lvl} ≥ {t}）",
-      "Memory {mb} available ({lvl} ≤ {t})": "記憶體可用 {mb}（{lvl} ≤ {t}）",
-      "Memory pressure {psi} ({lvl} ≥ {t})": "記憶體壓力 {psi}（{lvl} ≥ {t}）",
-      "Memory {pct}% available ({lvl} ≤ {t}%)": "記憶體可用 {pct}%（{lvl} ≤ {t}%）",
-      "Swap {pct}% used ({lvl} ≥ {t}%)": "Swap 已用 {pct}%（{lvl} ≥ {t}%）",
-      "{disk}: {pct}% free ({lvl} ≤ {t}%)": "{disk}：剩 {pct}%（{lvl} ≤ {t}%）",
-      "{disk}: {mb} free ({lvl} ≤ {t})": "{disk}：剩 {mb}（{lvl} ≤ {t}）",
       "OOM {n} since boot": "開機以來 OOM {n}",
       "{n} OOM kills since boot": "開機以來 {n} 次 OOM kill",
       "{n} OOM kills since boot, one in the last 10 minutes": "開機以來 {n} 次 OOM kill，最近 10 分鐘內有一次",
       "Why: ": "原因：",
       "; high for 2 samples in a row": "；連續 2 次取樣都在 high",
       "Levels: warn and high at each threshold; critical = high for 2 samples in a row, or an OOM kill in the last 10 minutes.": "等級：每個門檻分 warn 和 high；連續 2 次取樣在 high，或最近 10 分鐘內有 OOM kill，就是 critical。",
+      "Load {load} / {n} cpu = {per} per cpu ({bound})": "負載 {load} / {n} cpu = 每顆 cpu {per}（{bound}）",
+      "Memory {mb} available ({bound})": "記憶體可用 {mb}（{bound}）",
+      "Memory pressure {psi} ({bound})": "記憶體壓力 {psi}（{bound}）",
+      "Memory {pct}% available ({bound})": "記憶體可用 {pct}%（{bound}）",
+      "Swap {pct}% used ({bound})": "Swap 已用 {pct}%（{bound}）",
+      "{disk}: {pct}% free ({bound})": "{disk}：剩 {pct}%（{bound}）",
+      "{disk}: {mb} free ({bound})": "{disk}：剩 {mb}（{bound}）",
+      "{lvl} ≤ {t}": "{lvl} ≤ {t}",
+      "{lvl} ≥ {t}": "{lvl} ≥ {t}",
+      "{lvl} from ≤ {t}, easing": "≤ {t} 起算 {lvl}，正在回落",
+      "{lvl} from ≥ {t}, easing": "≥ {t} 起算 {lvl}，正在回落",
     };
   }
 })();

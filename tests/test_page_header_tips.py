@@ -99,6 +99,12 @@ RES_LOAD = {"enabled": True, "platform": "linux", "level": "critical", "worst": 
             "sessions": [], "heavy_running": 0, "operator": {"watch": True},
             "thresholds": {"load_per_cpu": [1.5, 3.0], "mem_available_pct": [15, 8]}}
 RES_OOM = dict(RES_LOAD, worst="oom", oom_kills=3, oom_recent=True, levels=dict(RES_LOAD["levels"], oom="critical"))
+# The level is held while the value is already back under it (hysteresis): easing, not a contradiction.
+RES_EASE = dict(RES_LOAD, cpu=dict(RES_LOAD["cpu"], load=[11.2, 14.0, 15.0], load_per_cpu=2.8))
+RES_MEM_EASE = dict(RES_LOAD, level="high", worst="mem", levels=dict(RES_LOAD["levels"], mem="high", load="ok"),
+                    mem={"available_pct": 10, "available_mb": 1600, "total_mb": 16000})
+# Thresholds that are not two finite numbers: the defaults are used, nothing of them is shown.
+RES_BAD_THR = dict(RES_LOAD, thresholds={"load_per_cpu": ["<b>x</b>", None], "mem_available_pct": "8"})
 SYS_JS = """() => { const t = document.getElementById('sys'), o = document.getElementById('sys-oom'), w = document.getElementById('sys-why');
   const ld = document.getElementById('sys-load'), clear = (c) => c === 'transparent' || /rgba\\(.*,\\s*0\\)$/.test(c);
   return { pill: document.getElementById('sys-lvl').textContent, why: w.hidden ? null : w.textContent,
@@ -318,6 +324,41 @@ def main():
                 check("%s: ...and says what the levels mean" % tag, ("等級：" if zh else "Levels: warn and high") in t["text"]
                       and t["right"] <= t["vw"] and t["sw"] <= t["vw"], t)
                 pg.close()
+
+        print("System reason: easing, bad thresholds:")
+        for res, lang, want in ((RES_EASE, "en", "Load 11.2 / 4 cpu = 2.80 per cpu (high from ≥ 3.0, easing)"),
+                                (RES_EASE, "zh-TW", "負載 11.2 / 4 cpu = 每顆 cpu 2.80（≥ 3.0 起算 高，正在回落）"),
+                                (RES_MEM_EASE, "en", "Memory 10% available (high from ≤ 8%, easing)"),
+                                (RES_LOAD, "en", "Load 27.7 / 4 cpu = 6.93 per cpu (high ≥ 3.0)"),
+                                (RES_BAD_THR, "en", "Load 27.7 / 4 cpu = 6.93 per cpu (high ≥ 3.0)")):
+            pg = new_page(res_stub(res))
+            pg.goto(PAGE)
+            pg.wait_for_selector("#sys:not([hidden])", timeout=5000)
+            if lang == "zh-TW":
+                pg.click("#acct-btn")
+                pg.click('label:has(input[name="sb-lang"][value="zh-TW"])')
+                pg.keyboard.press("Escape")
+                pg.wait_for_timeout(100)
+            y = pg.evaluate(SYS_JS)
+            pg.hover("#sys")
+            pg.wait_for_timeout(100)
+            t = st(pg, "sys")["text"] or ""
+            label = "bad thresholds" if res is RES_BAD_THR else "held level" if res is not RES_LOAD else "past the threshold"
+            check("%s (%s): %s" % (label, lang, want), y["why"] == want and want in t, y["why"])
+            if res is RES_BAD_THR:
+                check("bad thresholds: no NaN, no markup shown", "NaN" not in t + y["why"] and "<b>" not in t + pg.content().split("<script")[0], t)
+            pg.close()
+
+        print("Deck SYSTEM key: a since-boot OOM count is neutral:")
+        for res, hot in ((RES_LOAD, False), (RES_OOM, True)):
+            pg = new_page(res_stub(res))
+            pg.goto(PAGE)
+            pg.wait_for_selector(".dkey .k-oom", timeout=5000)
+            k = pg.evaluate("""() => { const o = document.querySelector('.dkey .k-oom'), c = getComputedStyle(o).backgroundColor;
+              return { hot: o.classList.contains('hot'), filled: !(c === 'transparent' || /rgba\\(.*,\\s*0\\)$/.test(c)), title: o.title }; }""")
+            check("deck OOM %s: %s" % ("recent" if hot else "since boot", "filled" if hot else "outlined, not filled"),
+                  k["hot"] == hot and k["filled"] == hot and k["title"] == ("3 OOM kills since boot, one in the last 10 minutes" if hot else "2 OOM kills since boot"), k)
+            pg.close()
 
         check("no page errors", not errors, errors)
         browser.close()
