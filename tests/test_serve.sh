@@ -450,6 +450,41 @@ eq "away cross-origin refused" "$(req POST /api/away -H 'Content-Type: applicati
 eq "away text/plain refused" "$(req POST /api/away -H 'Content-Type: text/plain' -H 'X-Board: 1' -H "$ORIGIN" --data-binary '{"state":"on"}')" "415"
 big_away="$(python3 -c 'import json; print(json.dumps({"state":"on","said":"x"*20000}))')"
 eq "away over the body cap refused" "$(post /api/away "$big_away")" "413"
+eq "  the refused body is drained and the connection closed" "$(curl -s --path-as-is -o /dev/null -D - -X POST -H 'Content-Type: application/json' -H 'X-Board: 1' -H "$ORIGIN" --data-binary "$big_away" "$B/api/away" | tr -d '\r' | grep -ci '^connection: close$')" "1"
+eq "  a refused CSRF body too" "$(curl -s --path-as-is -o /dev/null -D - -X POST -H 'Content-Type: application/json' -H 'X-Board: 1' -H 'Origin: https://evil.example' --data-binary '{"state":"on"}' "$B/api/away" | tr -d '\r' | grep -ci '^connection: close$')" "1"
+eq "request framing: one response per connection, TE and bad lengths refused" "$(python3 - "$PORT" <<'PYEOF'
+import socket, sys
+port = int(sys.argv[1])
+host = "127.0.0.1:%d" % port
+smuggled = "GET /api/state HTTP/1.1\r\nHost: %s\r\n\r\n" % host
+
+def talk(raw):
+    s = socket.create_connection(("127.0.0.1", port), timeout=5)
+    s.sendall(raw.encode())
+    data = b""
+    try:
+        while True:
+            c = s.recv(65536)
+            if not c:
+                break
+            data += c
+    except socket.timeout:
+        pass
+    s.close()
+    return data.decode("latin-1")
+
+out = []
+for method in ("GET", "PUT", "OPTIONS", "HEAD"):
+    r = talk("%s / HTTP/1.1\r\nHost: %s\r\nContent-Length: %d\r\n\r\n%s" % (method, host, len(smuggled), smuggled))
+    out.append("%s:%d" % (method, r.count("HTTP/1.1 ")))
+for name, hdrs in (("te", "Transfer-Encoding: chunked\r\nContent-Length: 4\r\n"),
+                   ("dup", "Content-Length: 2\r\nContent-Length: 2\r\n"),
+                   ("plus", "Content-Length: +2\r\n")):
+    r = talk("POST /api/rc HTTP/1.1\r\nHost: %s\r\nContent-Type: application/json\r\n%s\r\n{}" % (host, hdrs))
+    out.append("%s:%s" % (name, r.split(" ", 2)[1] if r.startswith("HTTP/1.1 ") else "none"))
+print(",".join(out))
+PYEOF
+)" "GET:1,PUT:1,OPTIONS:1,HEAD:1,te:400,dup:400,plus:400"
 [ -e "$AWF" ] && bad "refused POSTs write nothing" || ok "refused POSTs write nothing"
 eq "approver turns away on" "$(post /api/away '{"state":"on","said":"back tomorrow; agree among yourselves"}')" "200"
 eq "  reply" "$(body '"\(.away)/\(.status)"')" "true/on"

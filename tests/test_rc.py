@@ -1200,6 +1200,41 @@ class ServeTest(unittest.TestCase):
                 status, resp = self.post(body, hdrs, raw)
                 self.assertEqual(status, want, (name, resp))
                 self.assertNotIn("Traceback", json.dumps(resp))
+        # Over the cap but within the drain: the 413 arrives every time, never a connection reset.
+        for _ in range(20):
+            status, resp = self.post({"code": "CP", "state": "off", "pad": "x" * 30000})
+            self.assertEqual((status, resp.get("error")), (413, "too_large"))
+        # Far over it: answered when the client still listens, else closed; the server carries on.
+        try:
+            status, _ = self.post({"code": "CP", "state": "off", "pad": "x" * 600000})
+            self.assertEqual(status, 413)
+        except (ConnectionResetError, BrokenPipeError, urllib.error.URLError):
+            pass
+        # A client trickling its body (1 byte every 1.5 s) still gets the 413 within the drain's
+        # overall deadline (2 s), not after it stops sending.
+        import socket
+        import threading
+        sock = socket.create_connection(("127.0.0.1", self.port), timeout=10)
+        head = ("POST /api/rc HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nContent-Type: application/json\r\nX-Board: 1\r\n"
+                "Origin: http://127.0.0.1:%d\r\nContent-Length: 30000\r\n\r\n" % (self.port, self.port))
+        sock.sendall(head.encode())
+        stop = threading.Event()
+
+        def trickle():
+            while not stop.wait(1.5):
+                try:
+                    sock.sendall(b"x")
+                except OSError:
+                    return
+        threading.Thread(target=trickle, daemon=True).start()
+        t0 = time.monotonic()
+        try:
+            first = sock.recv(200)
+        finally:
+            stop.set()
+            sock.close()
+        self.assertTrue(first.startswith(b"HTTP/1.1 413"), first)
+        self.assertLess(time.monotonic() - t0, 3.5)
         self.assertFalse(os.path.exists(os.path.join(HOME, "rc-prefs.json")))
         status, resp = self.post(ok)
         self.assertEqual(status, 200, resp)
