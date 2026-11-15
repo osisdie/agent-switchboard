@@ -10,6 +10,9 @@
 #                                              create a question (or gate) decision, print its id
 #   board decisions [--status S] [--json]      list decisions
 #   board answer ID ANSWER|--answer-file PATH --by WHO [--option N]
+#   board answer ID --options I,J|--form-file PATH --by WHO
+#                                              a form of several questions: one option per
+#                                              question, or free text for some (JSON by file)
 #                                              mark a decision answered (mirrors the board db);
 #                                              WHO must be in approvers (release_managers for
 #                                              gate:production), else it is marked unauthorized
@@ -170,16 +173,30 @@ JQ_PANE_ANSWER='
     | ($a | length) > 0 and ($a | length) <= $max and ($a | test("[\u0000-\u001f\u007f-\u009f]") | not)
     and ($a | test("\\\\;$") | not);
   def multi: ((.questions // []) | length) > 1;
+  # Free text for one question of a form: what board answer --form-file keeps of it (control,
+  # escape and line-break characters become spaces, runs of space one, trimmed) and whether it can
+  # be typed into the form ("Type something", then Enter).
+  def clean_text: tostring | gsub("[\u0000-\u001f\u007f-\u009f\u2028\u2029\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]+"; " ") | gsub("\\s+"; " ")
+    | gsub("^ +| +$"; "");
+  def ft_ok: type == "string" and length > 0 and length <= $max
+    and (test("[\u0000-\u001f\u007f-\u009f\u2028\u2029\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]") | not)
+    and (test("\\\\;$") | not);
   def pane_relay: if multi then "operator"
     elif (.pressable == true) and labels_unique and (pane_index != null or typeable)
     then "press" else "operator" end;
   # A form of several questions answered one option per question (board answer --options):
   # "ok", or why it cannot be pressed.
-  def multi_check: (.answer_options // null) as $o | (.questions // []) as $qs
+  # A question answered with text has answer_options = its "Type something" row (options + 1) and
+  # its text in answer_texts.
+  def multi_check: (.answer_options // null) as $o | (.answer_texts // null) as $t | (.questions // []) as $qs
     | if .pressable != true then "not pressable"
       elif ($o | type) != "array" or ($o | length) != ($qs | length) then "answer_options do not match the questions"
-      elif any(range(0; $qs | length); ($o[.] | type) != "number" or $o[.] < 1 or $o[.] > ($qs[.].options | length) or $o[.] > 8)
-        then "an option is out of range"
+      elif $t != null and (($t | type) != "array" or ($t | length) != ($qs | length)) then "answer_texts do not match the questions"
+      elif any(range(0; $qs | length); . as $i | ($o[$i] | type) != "number" or $o[$i] < 1
+             or (if $t != null and $t[$i] != null
+                 then $o[$i] != ($qs[$i].options | length) + 1 or $o[$i] > 9 or ($t[$i] | ft_ok | not)
+                 else $o[$i] > ($qs[$i].options | length) or $o[$i] > 8 end))
+        then "an option is out of range, or a text cannot be typed"
       elif any($qs[]; .multiSelect == true) then "multi-select"
       elif any($qs[]; ([ .options[].label | tostring | trim | ascii_downcase ] | unique | length) != (.options | length))
         then "repeated labels"
@@ -208,6 +225,10 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
     decisions) echo "usage: board decisions [--status pending|answered|relayed|stale|timeout|unauthorized|answered_in_pane] [--json]" ;;
     answer) echo "usage: board answer ID ANSWER|--answer-file PATH --by WHO [--option N]"
         echo "  --option N (pane question): the clicked option; refused (exit 2) unless its label is ANSWER." 
+        echo "       board answer ID --options I,J[,..] --by WHO      (a form: one option per question)"
+        echo "       board answer ID --form-file PATH --by WHO        (a form with free text: JSON"
+        echo "         [{\"question_index\": 0, \"option\": 2}, {\"question_index\": 1, \"text\": \"...\"}];"
+        echo "         text becomes one line of <= $FREE_TEXT_MAX printable characters, else exit 2)"
         echo "  a free-text answer that asks for a secret value is refused (exit 6, nothing written)."
         echo "  mark a decision answered. WHO must be in approvers (production gate or stage:"
         echo "  release_managers, falling back to approvers). Otherwise the decision is marked"
@@ -534,9 +555,10 @@ allowed_by() {
 
 cmd_answer() {
   need_jq
-  local id="${1:-}" answer="${2:-}" by="" option="" options=""
+  local id="${1:-}" answer="${2:-}" by="" option="" options="" form_file=""
   # board answer ID --options 1,2 --by WHO: a form of several questions, one option per question.
-  if [ "$answer" = --options ]; then answer=""; shift 1
+  # board answer ID --form-file PATH --by WHO: the same with free text for some questions (JSON).
+  if [ "$answer" = --options ] || [ "$answer" = --form-file ]; then answer=""; shift 1
   elif [ $# -ge 2 ]; then shift 2; else set --; fi
   # --answer-file PATH: the answer from a file, so untrusted text (a db answer the operator mirrors)
   # never goes through a shell argument.
@@ -549,11 +571,12 @@ cmd_answer() {
       --by) shift; by="${1:-}" ;;
       --option) shift; option="${1:-}" ;;
       --options) shift; options="${1:-}" ;;
+      --form-file) shift; form_file="${1:-}"; [ -n "$form_file" ] || die "answer: --form-file needs a file" ;;
       *) die "answer: unknown option $1" ;;
     esac
     shift
   done
-  [ -n "$id" ] && { [ -n "$answer" ] || [ -n "$options" ]; } && [ -n "$by" ] || { sub_usage answer >&2; exit 2; }
+  [ -n "$id" ] && { [ -n "$answer" ] || [ -n "$options" ] || [ -n "$form_file" ]; } && [ -n "$by" ] || { sub_usage answer >&2; exit 2; }
   local f; f="$(dec_path "$id")"
   [ -f "$f" ] || die "no such decision: $id"
   # --options I,J,...: one option number per question of a pane form, checked before anything is
@@ -575,6 +598,53 @@ cmd_answer() {
     answer="$(jq -r --argjson o "$opts_json" '[ range(0; .questions | length) as $i | .questions[$i]
         | ((.header // "") | tostring | gsub("^\\s+|\\s+$"; "")) as $h
         | (if $h == "" then "Q\($i + 1)" else $h end) + ": " + (.options[$o[$i] - 1].label | tostring) ] | join(" · ")' "$f")"
+  fi
+  # --form-file PATH: [{"question_index": 0, "option": 2} | {"question_index": 1, "text": "..."}, ...],
+  # one entry per question, in order. Free text is untrusted: it comes by file (never a shell
+  # argument), loses control, escape and line-break characters (a newline would submit early or
+  # move the focus), must then be 1-$FREE_TEXT_MAX characters and not end in "\;", and goes
+  # through the secret guard below. Checked before anything is written (exit 2).
+  local texts_json="null"
+  if [ -n "$form_file" ]; then
+    { [ -z "$answer" ] && [ -z "$option" ] && [ -z "$options" ]; } \
+      || { echo "board answer: --form-file takes no answer text, --option or --options" >&2; exit 2; }
+    [ -f "$form_file" ] && [ -r "$form_file" ] || die "answer: --form-file needs a readable file"
+    local parsed
+    parsed="$(jq -c --argjson max "$FREE_TEXT_MAX" --slurpfile d "$f" "$JQ_PANE_ANSWER"'
+      . as $a | $d[0] as $dec | ($dec.questions // []) as $qs
+      | def bad($w): {ok: false, why: $w};
+      if $dec.source != "pane" then bad("--form-file is only for a question shown in a session")
+      elif ($qs | length) < 2 then bad("--form-file is for a form of several questions")
+      elif any($qs[]; .multiSelect == true) then bad("a multi-select question is answered in the session")
+      elif ($a | type) != "array" or ($a | length) != ($qs | length) then bad("one answer per question, in order")
+      elif any(range(0; $a | length); . as $i | $a[$i] as $e
+             | ($e | type) != "object"
+               or (($e | keys) - ["question_index", "option", "text"] | length) > 0
+               or (($e | has("question_index")) and $e.question_index != $i)
+               or (($e | has("option")) == ($e | has("text"))))
+        then bad("each answer is {question_index, option} or {question_index, text}")
+      elif any(range(0; $a | length); . as $i | $a[$i] | has("option")
+             and ((.option | type) != "number" or .option != (.option | floor) or .option < 1
+                  or .option > ($qs[$i].options | length) or .option > 8))
+        then bad("an option number is out of range")
+      elif any($a[]; has("text") and ((.text | type) != "string" or (.text | length) > 1000))
+        then bad("a text answer must be a string")
+      elif any(range(0; $a | length); . as $i | $a[$i] | has("text")
+             and (((.text | clean_text) | ft_ok | not) or ($qs[$i].options | length) + 1 > 9))
+        then bad("a text answer is empty, longer than \($max) characters, or ends in \"\\;\"")
+      else {ok: true,
+            options: [ range(0; $a | length) as $i | $a[$i] | if has("option") then .option else ($qs[$i].options | length) + 1 end ],
+            texts: [ $a[] | if has("text") then (.text | clean_text) else null end ]} end' "$form_file" 2>/dev/null)" \
+      || { echo "board answer: --form-file is not valid JSON; nothing recorded" >&2; exit 2; }
+    [ "$(jq -r '.ok' <<<"$parsed")" = true ] \
+      || { echo "board answer: $(jq -r '.why' <<<"$parsed") on $id; nothing recorded" >&2; exit 2; }
+    opts_json="$(jq -c '.options' <<<"$parsed")"
+    texts_json="$(jq -c '.texts' <<<"$parsed")"
+    options="$(jq -r '.options | map(tostring) | join(",")' <<<"$parsed")"
+    answer="$(jq -r --argjson o "$opts_json" --argjson t "$texts_json" '[ range(0; .questions | length) as $i | .questions[$i]
+        | ((.header // "") | tostring | gsub("^\\s+|\\s+$"; "")) as $h
+        | (if $h == "" then "Q\($i + 1)" else $h end) + ": "
+          + (if $t[$i] != null then $t[$i] else (.options[$o[$i] - 1].label | tostring) end) ] | join(" · ")' "$f")"
   fi
   local raw_answer="$answer"
   answer="$(guard_scrub "$answer")"   # a free-text answer is shown on the board and relayed
@@ -625,9 +695,16 @@ cmd_answer() {
   # alerted. Checked after the approver check, so nobody else can raise these alerts.
   # (--options: every part is one of the session's own labels, which always passes, as one option
   # of a single question does; the composed text was scrubbed above.)
-  local held
-  if [ -n "$opts_json" ]; then :
-  elif held="$(printf '%s' "$raw_answer" | python3 "$GUARD" screen-answer "$f")"; then :; else
+  local held="" t_i
+  if [ "$texts_json" != null ]; then
+    # Each free-text part of a form goes through the guard on its own.
+    while IFS= read -r t_i; do
+      [ -n "$t_i" ] || continue
+      held="$(jq -r '.' <<<"$t_i" | python3 "$GUARD" screen-answer "$f")" || break
+      held=""
+    done < <(jq -c '.[] | select(. != null)' <<<"$texts_json")
+  fi
+  if [ -n "$held" ] || { [ -z "$opts_json" ] && ! held="$(printf '%s' "$raw_answer" | python3 "$GUARD" screen-answer "$f")"; }; then
     log_event "$(jq -cn --arg id "$id" --arg by "$by" --arg r "$held" --argjson now "$(now_ms)" \
       '{ts: $now, type: "guard", action: "held-answer", id: $id, by: $by, reason: $r}')"
     "$REPO/bin/board-notify" send --level high --key "guard:held-answer:$id" --board "$id" \
@@ -643,12 +720,12 @@ cmd_answer() {
   if [ "$(jq -r '.source // empty' "$f")" = pane ]; then
     # A pane question: map the answer to its option number, and decide how it reaches the session.
     if [ -n "$opts_json" ]; then
-      update_decision "$id" '.answer_options = $o | .answer_index = null
-        | .relay = (if .pressable == true then "press" else "operator" end)' --argjson o "$opts_json"
-      echo "$id answered (options $options, relay by $(jq -r '.relay' "$f"))"
+      update_decision "$id" '.answer_options = $o | .answer_texts = $t | .answer_index = null
+        | .relay = (if .pressable == true then "press" else "operator" end)' --argjson o "$opts_json" --argjson t "$texts_json"
+      echo "$id answered (options $options$( [ "$texts_json" != null ] && echo ", free text"), relay by $(jq -r '.relay' "$f"))"
       return 0
     fi
-    update_decision "$id" "$JQ_PANE_ANSWER"'.answer_index = pane_index | .relay = pane_relay | .answer_options = null' --argjson max "$FREE_TEXT_MAX"
+    update_decision "$id" "$JQ_PANE_ANSWER"'.answer_index = pane_index | .relay = pane_relay | .answer_options = null | .answer_texts = null' --argjson max "$FREE_TEXT_MAX"
     local idx relay
     idx="$(jq -r '.answer_index // empty' "$f")"
     relay="$(jq -r '.relay' "$f")"
@@ -1075,7 +1152,7 @@ cmd_press() {
     # question at a time by press_multi below. Recomputed from the decision, never trusted.
     multi=1
     local chk
-    chk="$(jq -r "$JQ_PANE_ANSWER"'multi_check' "$df")"
+    chk="$(jq -r --argjson max "$FREE_TEXT_MAX" "$JQ_PANE_ANSWER"'multi_check' "$df")"
     [ "$chk" = ok ] || refuse_auth "$dec_id cannot be pressed from the board: $chk"
     [ "$(jq -r '.relay // empty' "$df")" = press ] || refuse_auth "the answer to $dec_id relays by message, not by keys"
   elif [ "$action" = answer ]; then
@@ -1319,9 +1396,13 @@ press_free_text() {
 # review screen ("Review your answers": each question and "→ label") with "1. Submit answers".
 # Only the lines after the last tab bar count: the session's own text above (the prompt that asked
 # for the form) may repeat the questions. For each question: its start and every label in order
-# must show, the hook state must still be this prompt, then its option digit. Then the review
-# screen must list every question with the chosen label, and its submit row's digit is pressed.
-# Never Enter. A check that fails before the first key exits 3; after it, 5 (partial, stale).
+# must show, the hook state must still be this prompt, then its option digit. A question answered
+# with free text (answer_texts) takes its "Type something" row instead: the row's digit (the
+# picker stays on the question with that row focused), the text typed literally, and Enter only
+# once the focused row shows the typed text; Enter there confirms the text and moves on, as a digit
+# does. Then the review screen must list every question with the chosen label or text, and its
+# submit row's digit is pressed (never Enter there). A check that fails before the first key
+# exits 3; after it, 5 (partial, stale): typed text whose echo does not match is never confirmed.
 # nows — the text on stdin without whitespace, ASCII or Unicode (NBSP, the U+2000 spaces, ideographic
 # space, zero-width space, BOM; the set the hook's jq removes): how press_multi compares the screen
 # with the stored questions, on both sides alike.
@@ -1329,6 +1410,7 @@ nows() { LC_ALL=C sed -E 's/[[:space:]]|\xc2[\x85\xa0]|\xe1\x9a\x80|\xe2\x80[\x8
 press_multi() {
   local pane="$1" sf="$2" df="$3" sha="$4" lines="$5"
   local tabbar review submit footer focus n i t tries key sent=0 raw="" prev="" why="" digit name
+  local ftlabel text want send
   tabbar="$(cfg_get press.tabbar_regex)"; review="$(cfg_get press.review_regex)"
   submit="$(cfg_get press.submit_label)"; footer="$(cfg_get press.question_regex)"; focus="$(cfg_get press.focus_regex)"
   # Configured patterns are checked before any key: each must be a valid extended regex for grep -E
@@ -1346,6 +1428,9 @@ press_multi() {
   if [ -z "$submit" ] || [ "${#submit}" -gt 80 ] || [[ $submit =~ [[:cntrl:]] ]]; then
     refuse "press.submit_label must be plain text (1-80 characters)" "$pane" config
   fi
+  ftlabel="$(cfg_get press.free_text_label)"
+  [ -n "$ftlabel" ] || refuse "press.free_text_label is not configured" "$pane"
+  grep -Eq -- "$ftlabel" <<<'' 2>/dev/null; [ $? -le 1 ] || refuse "press.free_text_label is not a valid pattern (grep -E)" "$pane"
   n="$(jq -r '.questions | length' "$df")"
   fail() { if [ "$sent" = 0 ]; then refuse "$1" "$pane"; else partial "$1" "$pane"; fi; }
   same_prompt() {
@@ -1379,6 +1464,26 @@ press_multi() {
       rest="${rest#*"$lab"}"
     done < <(jq -r --argjson i "$1" '.questions[$i].options[].label' "$df")
     grep -Eq -- "$footer" <<<"$raw" || { why="the picker of question $(($1 + 1)) is not open"; return 1; }
+    if [ -n "$text" ]; then  # the row the digit goes to must be "Type something"
+      grep -Eq -- "^[[:space:]]*(${focus})?[[:space:]]*${key}\.[[:space:]]*(${ftlabel})" <<<"$raw" \
+        || { why="row $key of question $(($1 + 1)) is not \"Type something\""; return 1; }
+    fi
+  }
+  # check_ft_focus I — after the "Type something" digit: that row is focused, still unedited.
+  check_ft_focus() {
+    raw="$(form_region)" || { why="the form closed after the \"Type something\" key of question $(($1 + 1))"; return 1; }
+    grep -Eq -- "^[[:space:]]*(${focus})[[:space:]]*${key}\.[[:space:]]*(${ftlabel})" <<<"$raw" \
+      || { why="\"Type something\" of question $(($1 + 1)) is not focused; nothing typed"; return 1; }
+  }
+  # check_typed I — the focused row is the "Type something" row and holds the typed text right
+  # after "K." (its first 20 non-space characters), as the picker draws it ("❯ 3. teal green").
+  check_typed() {
+    local row ok=0
+    raw="$(form_region)" || { why="the form closed while typing question $(($1 + 1))"; return 1; }
+    while IFS= read -r row; do
+      [[ "$(nows <<<"$row")" == *"$key.$want"* ]] && { ok=1; break; }
+    done < <(grep -E -- "^[[:space:]]*(${focus})[[:space:]]*${key}\." <<<"$raw")
+    [ "$ok" = 1 ] || { why="the typed text is not on the focused \"Type something\" row of question $(($1 + 1)); Enter not pressed"; return 1; }
   }
   # check_review — RAW is a fresh capture of the review screen: every question in order, exactly
   # one "→ label" line per question equal to the chosen label, and one Submit row: the focused row
@@ -1399,7 +1504,8 @@ press_multi() {
     while IFS= read -r seg; do shown+=("$(nows <<<"${seg#*→}")"); done < <(grep -E '^[[:space:]]*→' <<<"$raw")
     [ "${#shown[@]}" = "$n" ] || { why="the review screen shows ${#shown[@]} answers for $n questions"; return 1; }
     for ((t = 0; t < n; t++)); do
-      lbl="$(jq -r --argjson i "$t" '.questions[$i].options[.answer_options[$i] - 1].label' "$df")"
+      lbl="$(jq -r --argjson i "$t" 'if (.answer_texts // [])[$i] != null then .answer_texts[$i]
+        else .questions[$i].options[.answer_options[$i] - 1].label end' "$df")"
       [ "${shown[$t]}" = "$(nows <<<"$lbl")" ] \
         || { why="the review screen shows another answer for question $((t + 1))"; return 1; }
     done
@@ -1432,11 +1538,26 @@ press_multi() {
   }
   local i2
   for ((i = 0; i < n; i++)); do
+    key="$(jq -r --argjson i "$i" '.answer_options[$i]' "$df")"
+    text="$(jq -r --argjson i "$i" '(.answer_texts // [])[$i] // empty' "$df")"
     await check_question "$i" || fail "$why"
     same_prompt || fail "pending prompt changed (question $((i + 1)))"
-    key="$(jq -r --argjson i "$i" '.answer_options[$i]' "$df")"
     tmux send-keys -t "$pane" "$key" || fail "send-keys failed (question $((i + 1)))"
     sent=1; prev="$raw"
+    if [ -n "$text" ]; then
+      # Recomputed from the decision: one line of printable text (multi_check), never "\;" at the end.
+      [[ $text == *[[:cntrl:]]* ]] && partial "free text of question $((i + 1)) contains control characters" "$pane"
+      await check_ft_focus "$i" || partial "$why" "$pane"
+      same_prompt || partial "pending prompt changed before typing (question $((i + 1)))" "$pane"
+      # tmux reads a trailing ";" as a command separator: escape it (the text never ends in "\;").
+      send="$text"; [[ $send == *";" ]] && send="${send%;}\\;"
+      tmux send-keys -t "$pane" -l -- "$send" || partial "send-keys failed (typing question $((i + 1)))" "$pane"
+      want="$(nows <<<"$text")"; want="${want:0:20}"
+      await check_typed "$i" || partial "$why" "$pane"
+      same_prompt || partial "pending prompt changed while typing (question $((i + 1))); Enter not pressed" "$pane"
+      tmux send-keys -t "$pane" Enter || partial "send-keys failed (Enter, question $((i + 1)))" "$pane"
+      prev="$raw"
+    fi
   done
   await check_review || partial "$why; nothing submitted" "$pane"
   same_prompt || partial "pending prompt changed before submitting" "$pane"
