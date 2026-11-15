@@ -12,6 +12,7 @@ T="$(mktemp -d "${TMPDIR:-/tmp}/switchboard-away.XXXXXX")"
 trap 'rm -rf "$T"' EXIT
 
 export BOARD_HOME="$T/home"
+export CLAUDE_JSON="$T/claude.json"  # the account fixture, never ~/.claude.json
 export BOARD_CONFIG_DIR="$T/config"
 export CLAUDE_SESSIONS_DIR="$T/sessions"
 export CLAUDE_SETTINGS="$T/settings.json"

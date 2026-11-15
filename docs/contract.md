@@ -282,6 +282,7 @@ State (`/api/state` and every SSE frame):
 
 ```json
 { "mode": "local", "me": "local|<email>", "writable": true, "can_message": true|false, "generated_at": 0,
+  "account": {"email": "...", "org": "..."|null} | {"hidden": true} | null,
   "sessions":  [ {code, aliases, state, status, task, tmux, remote_url, pending, updated_at} ],
   "decisions": [ decision files, newest 200, without session_id/tmux_pane ],
   "tasks":     [ task files, newest 50 ],
@@ -296,6 +297,12 @@ State (`/api/state` and every SSE frame):
                  idle_seconds}, breakthrough, updated_at, updated_by, channels: {slack: bool, ...} } | null,
   "resources": { see "Resources": resources.json without pids, paths or unknown fields }|null }
 ```
+
+`account` is the Claude account the sessions run on, from `$BOARD_HOME/account.json` (the collector
+copies only `oauthAccount.emailAddress` / `organizationName` from `~/.claude.json`, mode 0600). Only
+an identity in `approvers` gets the email; everyone else gets `{"hidden": true}`. `null` when it is
+unknown or switched off (`BOARD_SHOW_ACCOUNT=0`, or `usage.show_account: false` in fleet.yaml). The
+operator never mirrors it to the Artifact db.
 
 The shape matches what the page reads from the Artifact db (`sessions/*`, `decisions/*`, `tasks/*`,
 `approvals/*`, `messages/*` + replies, `meta/operator`, `meta/ledger`, `meta/resources`). `task` is the title of the

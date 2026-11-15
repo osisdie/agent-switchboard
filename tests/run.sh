@@ -12,6 +12,7 @@ T="$(mktemp -d "${TMPDIR:-/tmp}/switchboard-test.XXXXXX")"
 trap 'rm -rf "$T"' EXIT
 
 export BOARD_HOME="$T/home"
+export CLAUDE_JSON="$T/claude.json"  # the account fixture, never ~/.claude.json
 export BOARD_CONFIG_DIR="$T/config"
 export CLAUDE_SESSIONS_DIR="$T/sessions"
 export CLAUDE_SETTINGS="$T/settings.json"
@@ -253,6 +254,26 @@ kill "$dup_pid" "$dup_pid2" 2>/dev/null
 rm -f "${CLAUDE_SESSIONS_DIR:?}/${dup_pid:?}.json" "${CLAUDE_SESSIONS_DIR:?}/${dup_pid2:?}.json" "${BOARD_HOME:?}/state/s-qa.json"
 cp "$T/cp-reg.json" "$CLAUDE_SESSIONS_DIR/$live_pid.json"
 "$REPO/bin/board-collect" --once --no-notify
+
+echo "collector: account"
+printf '%s\n' '{"oauthAccount": {"emailAddress": "owner@example.com", "organizationName": "Example Org", "accountUuid": "acc-1"},' \
+  ' "primaryApiKey": "fixture-key-not-real", "userID": "u-1", "projects": {"/w": {"history": ["x"]}}}' > "$CLAUDE_JSON"
+"$REPO/bin/board-collect" --once --no-notify
+acct="$BOARD_HOME/account.json"
+eq "account: email and org only" "$(jq -r '[.email, .org] | join("|")' "$acct")/$(jq -r 'keys | join(",")' "$acct")" "owner@example.com|Example Org/email,org,source_mtime,updated_at"
+eq "  0600" "$(stat -c %a "$acct")" "600"
+grep -q 'fixture-key\|acc-1\|u-1\|history' "$acct" && bad "  nothing else from the file" || ok "  nothing else from the file"
+BOARD_SHOW_ACCOUNT=0 "$REPO/bin/board-collect" --once --no-notify
+eq "  BOARD_SHOW_ACCOUNT=0 removes it" "$([ -e "$acct" ] && echo kept || echo removed)" "removed"
+"$REPO/bin/board-collect" --once --no-notify
+cp "$BOARD_CONFIG_DIR/fleet.yaml" "$T/fleet.yaml.acct"
+printf 'usage:\n  show_account: false\n' >> "$BOARD_CONFIG_DIR/fleet.yaml"
+"$REPO/bin/board-collect" --once --no-notify
+eq "  usage.show_account: false removes it" "$([ -e "$acct" ] && echo kept || echo removed)" "removed"
+cp "$T/fleet.yaml.acct" "$BOARD_CONFIG_DIR/fleet.yaml"
+rm -f "${CLAUDE_JSON:?}"
+"$REPO/bin/board-collect" --once --no-notify
+eq "  no ~/.claude.json: no email" "$(jq -r '.email' "$acct")" "null"
 
 echo "collector: a session alone in another session's tmux"
 cp "$BOARD_CONFIG_DIR/fleet.yaml" "$T/fleet.yaml.bak"

@@ -19,6 +19,7 @@ cleanup() {
 trap cleanup EXIT
 
 export BOARD_HOME="$T/home"
+export CLAUDE_JSON="$T/claude.json"  # the account fixture, never ~/.claude.json
 export BOARD_CONFIG_DIR="$T/config"
 export CLAUDE_SESSIONS_DIR="$T/sessions"
 export CLAUDE_SETTINGS="$T/settings.json"
@@ -131,7 +132,11 @@ start
 # ---------------------------------------------------------------- state
 echo "state:"
 eq "GET /api/state 200" "$(req GET /api/state)" "200"
-eq "state keys" "$(body 'keys | join(",")')" "approvals,can_message,consensus,decisions,generated_at,ledger,me,messages,mode,notify,operator,owner_away,replies,resources,sessions,tasks,writable"
+eq "state keys" "$(body 'keys | join(",")')" "account,approvals,can_message,consensus,decisions,generated_at,ledger,me,messages,mode,notify,operator,owner_away,replies,resources,sessions,tasks,writable"
+eq "account: null when not known" "$(body '.account')" "null"
+echo '{"oauthAccount":{"emailAddress":"owner@example.com","organizationName":"Example Org"}}' > "$CLAUDE_JSON"
+"$REPO/bin/board-collect" --once --no-notify >/dev/null 2>&1
+eq "account: the local approver sees the email" "$(req GET /api/state >/dev/null; body '.account.email + "|" + .account.org')" "owner@example.com|Example Org"
 eq "me is local on loopback" "$(body .me)" "local"
 eq "mode local" "$(body .mode)" "local"
 eq "session CP needs-you" "$(body '.sessions[] | select(.code=="CP") | .state')" "needs-you"
@@ -706,6 +711,9 @@ EOF
   eq "tunnel me: expired JWT refused" "$(treq GET /api/me "${TUNNEL_HDRS[@]}" -H "$(jwt expired)")" "401"
   eq "tunnel me: foreign Host refused" "$(treq GET /api/me -H 'Host: evil.example' -H "$(jwt good)")" "421"
   eq "tunnel me: an email outside the list refused" "$(treq GET /api/me "${TUNNEL_HDRS[@]}" -H "$(jwt nobody)")" "403"
+  eq "tunnel: an approver sees the account email" "$(treq GET /api/state "${TUNNEL_HDRS[@]}" -H "$(jwt good)" >/dev/null; body '.account.email')" "owner@example.com"
+  eq "tunnel: a release manager who is not an approver does not" "$(treq GET /api/state "${TUNNEL_HDRS[@]}" -H "$(jwt rm)" >/dev/null; body '.account | tojson')" '{"hidden":true}'
+  grep -q 'owner@example.com' "$T/body" && bad "  the email appears nowhere in that state" || ok "  the email appears nowhere in that state"
   eq "the email header cannot override the token" "$(treq GET /api/state "${TUNNEL_HDRS[@]}" -H "$(jwt good)" -H 'Cf-Access-Authenticated-User-Email: rm@example.com' >/dev/null; body .me)" "boss@example.com"
   eq "tunnel: loopback Host refused" "$(treq GET /api/state -H "Host: 127.0.0.1:$TPORT" -H "$(jwt good)")" "421"
   eq "tunnel: foreign Host refused" "$(treq GET /api/state -H 'Host: evil.example' -H "$(jwt good)")" "421"
@@ -753,6 +761,8 @@ EOF
   start
   eq "allowed_emails: a listed viewer reads the state" "$(treq GET /api/state "${TUNNEL_HDRS[@]}" -H "$(jwt nobody)")" "200"
   eq "  can_message false" "$(body .can_message)" "false"
+  eq "  a viewer sees account: hidden" "$(body '.account | tojson')" '{"hidden":true}'
+  grep -q 'owner@example.com' "$T/body" && bad "  no email for the viewer" || ok "  no email for the viewer"
   eq "tunnel me: a listed viewer (not an approver)" "$(treq GET /api/me "${TUNNEL_HDRS[@]}" -H "$(jwt nobody)")" "200"
   eq "  viewer role only" "$(body '.identity + "/" + .via + "/" + (.roles | join(",")) + "/" + (.is_approver | tostring) + "/" + (.is_release_manager | tostring)')" "intruder@example.com/access/viewer/false/false"
   dec d-1-q8 question

@@ -18,6 +18,10 @@ Usage: collect.py [--no-notify] [--baseline] [--verbose]
 - Samples system resources every resources.interval seconds into resources.json (lib/resources.py)
   and adds only their digest (`resources`: null or {level, worst}) to the snapshot, so raw numbers
   never change snapshot.json.
+- The Claude account the sessions run on: only oauthAccount.emailAddress / organizationName from
+  ~/.claude.json (re-read when its mtime changes; never any token) into $BOARD_HOME/account.json
+  (0600). Off with BOARD_SHOW_ACCOUNT=0 or fleet.yaml usage.show_account: false (the file is then
+  removed). board-serve shows the email to approvers only; the operator never mirrors it.
 - Card details per session: `title` (the pane title Claude Code sets, from one batched
   `tmux list-panes -a`), `repo` / `branch` (basename of the git toplevel of cwd and the current
   branch, cached 30 s in $BOARD_HOME/gitinfo.json), `last_event`, `notification_type` and `recent`
@@ -258,6 +262,55 @@ def card_details(rows, home, now, titles=None, hosts=None):
         r["branch"] = (g or {}).get("branch")
 
 
+def account_enabled(cfg):
+    if os.environ.get("BOARD_SHOW_ACCOUNT", "").strip().lower() in ("0", "false", "no", "off"):
+        return False
+    usage = cfg.get("usage") if isinstance(cfg.get("usage"), dict) else {}
+    return usage.get("show_account") is not False
+
+
+def claude_json_path():
+    return os.environ.get("CLAUDE_JSON") or os.path.join(os.path.expanduser("~"), ".claude.json")
+
+
+def account_info(cfg, home):
+    """Write $BOARD_HOME/account.json {email, org, source_mtime, updated_at} (0600) from
+    ~/.claude.json oauthAccount.emailAddress / organizationName, nothing else. Re-read only when the
+    source changed. Disabled: the file is removed. Returns the record or None."""
+    path = os.path.join(home, "account.json")
+    if not account_enabled(cfg):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        return None
+    src = claude_json_path()
+    try:
+        mtime = os.stat(src).st_mtime_ns
+    except OSError:
+        mtime = None
+    cur = read_json(path)
+    if isinstance(cur, dict) and cur.get("source_mtime") == mtime:
+        return cur
+    email = org = None
+    if mtime is not None:
+        data = read_json(src)
+        oa = data.get("oauthAccount") if isinstance(data, dict) else None
+        if isinstance(oa, dict):
+            email = clean_text(oa.get("emailAddress"), 200) or None
+            org = clean_text(oa.get("organizationName"), 200) or None
+        del data, oa  # nothing else from the file is kept
+    rec = {"email": email, "org": org, "source_mtime": mtime, "updated_at": now_ms()}
+    tmp = "%s.tmp.%d" % (path, os.getpid())
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(rec, fh)
+        fh.write("\n")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+    return rec
+
+
 def live_registry():
     out = []
     for path in glob.glob(os.path.join(fleet.sessions_dir(), "*.json")):
@@ -483,6 +536,11 @@ def main(argv):
     now = now_ms()
     sessions = build_sessions(cfg, home, str(cfg.get("remote_url_prefix") or ""))
     card_details(sessions, home, now)
+    try:
+        account_info(cfg, home)
+    except (OSError, ValueError) as exc:  # never breaks the collector
+        if verbose:
+            print("account: %s" % exc)
     decisions = process_decisions(cfg, home, sessions, now)
     tasks = load_tasks(home)
     attach_tasks(sessions, tasks)
