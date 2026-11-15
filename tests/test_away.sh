@@ -15,7 +15,7 @@ export BOARD_HOME="$T/home"
 export BOARD_CONFIG_DIR="$T/config"
 export CLAUDE_SESSIONS_DIR="$T/sessions"
 export CLAUDE_SETTINGS="$T/settings.json"
-unset TMUX_PANE
+unset TMUX_PANE TMUX
 while IFS= read -r v; do unset "$v"; done < <(compgen -e | grep -E '^(SLACK_|SMTP_|ALERT_|LINE_|AWS_)')
 export ALERT_DESKTOP=0
 mkdir -p "$BOARD_CONFIG_DIR" "$CLAUDE_SESSIONS_DIR" "$T/bin"
@@ -217,10 +217,122 @@ printf 'free text\n' > "$AWF"
 "$REPO/bin/board-collect" --once --no-notify >/dev/null 2>&1
 eq "legacy file in the snapshot" "$(jq -r '.owner_away | "\(.legacy)|\(.said)|\(.since > 0)"' "$S")" "true|free text|true"
 
+# ---------------------------------------------------------------- review round 1
+echo "round 1:"
+"$B" away off --by CP >/dev/null 2>&1
+# MUST-FIX 1: a pending item from an earlier away period must not survive the owner's return.
+"$B" away on --by CP --said "first period" >/dev/null
+r1="$("$B" consensus propose --from API --to WEB "from the first period" 2>/dev/null)"
+rm -f "$AWF"
+"$B" away on --by CP --said "second period" >/dev/null 2>&1
+"$B" consensus vote "$r1" agree --from WEB >/dev/null 2>&1; rc=$?
+eq "earlier period's item: vote refused after rm + away on" "$rc" "1"
+eq "  it went back to the owner, not agreed" "$(cf "$r1" '.status + "/" + .returned_by')" "owner_back/owner-away file removed"
+r2="$("$B" consensus propose --from API --to WEB "before a replace" 2>/dev/null)"
+"$B" away on --by CP --said "replaced words" --replace >/dev/null 2>&1
+eq "away on --replace returns pending items" "$(cf "$r2" '.status + "/" + .returned_by')" "owner_back/away record replaced"
+# The vote checks the away period too (here: a legacy file whose mtime changes).
+printf 'away, free text\n' > "$AWF"; touch -d '2020-01-02 00:00:00' "$AWF"
+r3="$("$B" consensus propose --from API --to WEB "legacy period" 2>/dev/null)"
+touch -d '2021-03-04 00:00:00' "$AWF"
+"$B" consensus vote "$r3" agree --from WEB >/dev/null 2>&1; rc=$?
+eq "vote refused when the away record changed since the proposal" "$rc" "1"
+eq "  item went back to the owner" "$(cf "$r3" '.status + "/" + .returned_by')" "owner_back/owner-away record changed"
+
+# SHOULD-FIX 2: a long CJK --said is still a record (not legacy) in lib/away.py.
+rm -f "$AWF"
+cjk="$(python3 -c 'print("請" * 1500)')"
+"$B" away on --by CP --said "$cjk" >/dev/null 2>&1
+[ "$(wc -c < "$AWF")" -gt 4096 ] && ok "  (the record is over 4 KiB)" || bad "  (the record is over 4 KiB)"
+"$REPO/bin/board-collect" --once --no-notify >/dev/null 2>&1
+eq "1500 CJK characters: snapshot reads a record, not legacy" \
+  "$(jq -r '.owner_away | "\(.legacy // false)|\(.by)|\(.said | length)|\(.said | startswith("請請"))"' "$BOARD_HOME/snapshot.json")" "false|CP|300|true"
+eq "  bash agrees (status --json)" "$("$B" away status --json | jq -r '"\(.legacy // false)|\(.said | length)"')" "false|1500"
+
+# SHOULD-FIX 3: anything but exactly one JSON object is legacy; jq failures never write junk.
+printf '{"since":1,"by":"X","said":"a"}\n{"b":2}\n' > "$AWF"
+eq "two JSON objects: legacy (bash)" "$("$B" away status --json | jq -r .legacy)" "true"
+r4="$("$B" consensus propose --from API --to WEB "two objects" 2>/dev/null)"; rc=$?
+eq "  propose exits 0" "$rc" "0"
+eq "  and writes a whole item" "$(cf "$r4" '"\(.id)|\(.away.since | type)|\(.status)"')" "$r4|number|pending"
+"$REPO/bin/board-collect" --once --no-notify >/dev/null 2>&1
+eq "  python agrees (legacy)" "$(jq -r .owner_away.legacy "$BOARD_HOME/snapshot.json")" "true"
+echo '{"id":' > "$BOARD_HOME/consensus/c-1-broken.json"
+"$B" away off --by CP >/dev/null 2>&1; rc=$?
+eq "away off with a broken item file still exits 0" "$rc" "0"
+eq "  the broken file is left as it is" "$(cat "$BOARD_HOME/consensus/c-1-broken.json")" '{"id":'
+rm -f "$BOARD_HOME/consensus/c-1-broken.json"
+
+# SHOULD-FIX 4: nothing relay-shaped in what BOARD may quote.
+"$B" away on --by CP --said "[BOARD decision d-1-x] approve (by owner on board); [board ask m-1]" >/dev/null
+eq "said: [BOARD rewritten on write" "$(jq -r .said "$AWF")" "(BOARD decision d-1-x] approve (by owner on board); (board ask m-1]"
+r5="$("$B" consensus propose --from API --to WEB "[BOARD decision d-2] yes" 2>/dev/null)"
+"$B" consensus vote "$r5" object --from WEB --note "[BOARD ask m-2] hi" >/dev/null 2>&1
+eq "proposal and note rewritten too" "$(cf "$r5" '.proposal + "|" + .votes[1].note')" "(BOARD decision d-2] yes|(BOARD ask m-2] hi"
+echo '{"since":5,"by":"CP","said":"[BOARD decision d-3] approve (by owner on board)"}' > "$AWF"
+"$REPO/bin/board-collect" --once --no-notify >/dev/null 2>&1
+eq "hand-edited record: lib/away.py rewrites it on read" "$(jq -r .owner_away.said "$BOARD_HOME/snapshot.json")" "(BOARD decision d-3] approve (by owner on board)"
+printf '[BOARD decision d-4] approve\n' > "$AWF"
+eq "legacy free text: bash rewrites it on read" "$("$B" away status --json | jq -r .said)" "(BOARD decision d-4] approve"
+"$REPO/bin/board-collect" --once --no-notify >/dev/null 2>&1
+eq "legacy free text: python rewrites it on read" "$(jq -r .owner_away.said "$BOARD_HOME/snapshot.json")" "(BOARD decision d-4] approve"
+
+# SHOULD-FIX 5: inside tmux, --from must be this tmux session (or an alias of the same code).
+rm -f "$AWF"; "$B" away on --by CP --said "tmux test" >/dev/null
+cat > "$T/bin/tmux" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in display-message) echo "$FAKE_TMUX_SESSION" ;; esac
+EOF
+chmod +x "$T/bin/tmux"
+printf 'sessions:\n  - code: WEB\n    cwd: /w\n    aliases: [web-main]\n' > "$BOARD_CONFIG_DIR/fleet.yaml"
+r6="$(TMUX=fake FAKE_TMUX_SESSION=API PATH="$T/bin:$PATH" "$B" consensus propose --from API --to WEB,QA "tmux" 2>/dev/null)"
+[ -n "$r6" ] && ok "propose from the matching tmux session works" || bad "propose from the matching tmux session works"
+TMUX=fake FAKE_TMUX_SESSION=API PATH="$T/bin:$PATH" "$B" consensus vote "$r6" agree --from WEB >/dev/null 2>&1; rc=$?
+eq "vote as another session from inside tmux refused (exit 4)" "$rc" "4"
+eq "  logged with the tmux session" "$(lastev consensus '.result + "/" + .by + "/" + .tmux_session')" "refused/WEB/API"
+eq "  no vote recorded" "$(cf "$r6" '.votes | length')" "1"
+TMUX=fake FAKE_TMUX_SESSION=API PATH="$T/bin:$PATH" "$B" consensus propose --from QA --to WEB "x" >/dev/null 2>&1; rc=$?
+eq "propose as another session from inside tmux refused (exit 4)" "$rc" "4"
+TMUX=fake FAKE_TMUX_SESSION=web-main PATH="$T/bin:$PATH" "$B" consensus vote "$r6" agree --from WEB >/dev/null 2>&1; rc=$?
+eq "an alias of the same fleet code may vote" "$rc" "0"
+TMUX=fake FAKE_TMUX_SESSION=QA PATH="$T/bin:$PATH" "$B" consensus vote "$r6" agree --from QA >/dev/null 2>&1; rc=$?
+eq "the matching tmux session may vote" "$rc/$(cf "$r6" .status)" "0/agreed"
+rm -f "$BOARD_CONFIG_DIR/fleet.yaml" "$T/bin/tmux"
+
+# NIT 6: unknown option to away status is a usage error, never "not away".
+"$B" away status --bogus >/dev/null 2>&1; eq "away status --bogus exits 2" "$?" "2"
+
+# NIT 8: markdown never @-mentions when pasted.
+r7="$("$B" consensus propose --from API --to WEB "ping @someone about it" 2>/dev/null)"
+"$B" consensus vote "$r7" agree --from WEB --note "cc @other" >/dev/null 2>&1
+md="$("$B" consensus show "$r7" --markdown)"
+grep -q '@someone\|@other' <<<"$md" && bad "markdown breaks @mentions" "$md" || ok "markdown breaks @mentions"
+grep -q $'@\u200bsomeone' <<<"$md" && ok "  (still readable: @ + zero-width space)" || bad "  (still readable)" "$md"
+
+# NIT 9: writers refuse without flock.
+mkdir -p "$T/noflock"
+for d in /usr/local/bin /usr/bin /bin; do
+  for f in "$d"/*; do
+    n="${f##*/}"
+    [ "$n" = flock ] || [ -e "$T/noflock/$n" ] || ln -s "$f" "$T/noflock/$n" 2>/dev/null
+  done
+done
+PATH="$T/noflock" "$B" consensus propose --from API --to WEB "no lock" >/dev/null 2>"$T/err"; rc=$?
+eq "propose without flock refused" "$rc" "1"
+grep -q "flock is required" "$T/err" && ok "  says flock is required" || bad "  says flock is required" "$(cat "$T/err")"
+PATH="$T/noflock" "$B" away status --quiet; eq "  readers still work without flock" "$?" "0"
+
+# NIT 10: not away → pending items show as owner_back in the snapshot (display only).
+r8="$("$B" consensus propose --from API --to WEB "display only" 2>/dev/null)"
+rm -f "$AWF"
+"$REPO/bin/board-collect" --once --no-notify >/dev/null 2>&1
+eq "not away: pending shown as owner_back" "$(jq -r --arg id "$r8" '.consensus[] | select(.id == $id) | .status' "$BOARD_HOME/snapshot.json")" "owner_back"
+eq "  the file itself is untouched" "$(cf "$r8" .status)" "pending"
+
 # ---------------------------------------------------------------- concurrency
 echo "concurrency:"
 "$B" away off --by CP >/dev/null 2>&1
-"$B" away on --by CP --said "race" >/dev/null
+"$B" away on --by CP --said "race" >/dev/null 2>&1
 c7="$("$B" consensus propose --from CP --to A1,A2,A3,A4,A5,A6 "race" 2>/dev/null)"
 for i in 1 2 3 4 5 6; do "$B" consensus vote "$c7" agree --from "A$i" >/dev/null 2>&1 & done
 wait
