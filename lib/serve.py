@@ -17,6 +17,7 @@ listeners (docs/contract.md, "Local adapter API"):
   GET  /                               the board page, in local mode
   GET  /api/state                      the board state (sessions, decisions, tasks, ...)
   GET  /api/events                     Server-Sent Events: the full state on every change
+  GET  /api/me                         who is asking: identity, how it was verified, roles
   POST /api/decisions/<id>/answer      {"answer": "..."}   (via `board answer` / `board press`)
   POST /api/messages                   {"to": "CODE"|"all", "body": "..."}
   POST /api/away                       {"state": "on"|"off", "said": "..."}   (approvers only;
@@ -187,6 +188,15 @@ def allowed_ids(cfg, dec):
 def deciders(cfg):
     """approvers ∪ release_managers: who may act on the board at all."""
     return set(fleet.id_list(cfg, "approvers")) | set(fleet.id_list(cfg, "release_managers"))
+
+
+def roles_of(cfg, ident):
+    """The board roles of a verified identity (GET /api/me). is_release_manager is effective: it
+    is true for an approver too when release_managers is empty (the fallback of allowed_ids)."""
+    is_approver = match_id(ident, fleet.id_list(cfg, "approvers")) is not None
+    is_rm = match_id(ident, allowed_ids(cfg, {"gate": "production"})) is not None
+    roles = [r for r, on in (("approver", is_approver), ("release_manager", is_rm)) if on] or ["viewer"]
+    return {"roles": roles, "is_approver": is_approver, "is_release_manager": is_rm}
 
 
 def tunnel_allowed(cfg):
@@ -513,7 +523,8 @@ RESET_CSS = (":root{color-scheme:light;padding-top:env(safe-area-inset-top,0px);
 def render_page(nonce):
     with open(PAGE, encoding="utf-8") as fh:
         body = fh.read()
-    # The only inline script gets the CSP nonce; nothing else in the page is executable.
+    # Every inline <script> (the pre-paint theme script and the app) gets the CSP nonce;
+    # nothing else in the page is executable.
     body = body.replace("<script>", '<script nonce="%s">' % nonce)
     head = ('<!doctype html>\n<html lang="en"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">'
@@ -659,7 +670,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         try:
             self.check_host()
-            ident, _via = self.identity()
+            ident, via = self.identity()
         except Refused as exc:
             return self.refuse(exc)
         path = urllib.parse.urlsplit(self.path).path
@@ -670,6 +681,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.send_json(200, self.state_for(ident))
         if path == "/api/events":
             return self.events(ident)
+        if path == "/api/me":
+            return self.send_json(200, self.me_for(ident, via))
         if path == "/favicon.ico":
             self.send_response(204)
             self.send_header("Content-Length", "0")
@@ -684,6 +697,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         state.update({"mode": "local", "me": ident, "writable": True,
                       "can_message": match_id(ident, sorted(deciders(fleet.load_fleet()))) is not None})
         return state
+
+    def me_for(self, ident, via):
+        """GET /api/me: built only from the verified identity and fleet.yaml, never from request
+        headers. api_keys is added by the key backend once it exists (docs/contract.md)."""
+        me = {"identity": ident, "via": "access" if via == "cf-jwt" else "local"}
+        me.update(roles_of(fleet.load_fleet(), ident))
+        return me
 
     def page(self):
         nonce = secrets.token_urlsafe(16)

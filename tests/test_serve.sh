@@ -163,6 +163,27 @@ done
 grep -qiE '%3Cscript|alert\(1\)' "$T/body" && bad "  the query is not reflected" || ok "  the query is not reflected"
 eq "HEAD /?d=... 200" "$(req HEAD "/?d=d-1-perm" -I)" "200"
 
+# ---------------------------------------------------------------- GET /api/me
+echo "me:"
+eq "GET /api/me 200" "$(req GET /api/me)" "200"
+eq "me keys" "$(body 'keys | join(",")')" "identity,is_approver,is_release_manager,roles,via"
+eq "me: local identity via the local listener" "$(body '.identity + "/" + .via')" "local/local"
+eq "me: local is an approver" "$(body '[.roles[], .is_approver] | map(tostring) | join(",")')" "approver,true"
+eq "me: not a release manager (release_managers set)" "$(body .is_release_manager)" "false"
+eq "me: no api_keys before the key backend" "$(body 'has("api_keys")')" "false"
+req GET /api/me -H 'X-Echo-Marker: zq-marker-77' -H 'User-Agent: zq-agent-77' >/dev/null
+grep -q 'zq-' "$T/body" && bad "me: request headers are not echoed" "$(cat "$T/body")" || ok "me: request headers are not echoed"
+eq "me: foreign Host refused" "$(req GET /api/me -H 'Host: evil.example')" "421"
+eq "  generic error" "$(body .error)" "bad_host"
+eq "me: forwarded request refused" "$(req GET /api/me -H 'X-Forwarded-For: 203.0.113.9')" "403"
+eq "me: POST is not a route" "$(post /api/me '{}')" "404"
+write_cfg "" "[boss@example.com]"
+eq "me: local outside approvers is a viewer" "$(req GET /api/me >/dev/null; body '.roles | join(",")')" "viewer"
+write_cfg "" "[local]"
+sed -i 's/^release_managers: .*/release_managers: []/' "$BOARD_CONFIG_DIR/fleet.yaml"
+eq "me: empty release_managers falls back to approvers" "$(req GET /api/me >/dev/null; body '(.roles | join(",")) + "/" + (.is_release_manager | tostring)')" "approver,release_manager/true"
+write_cfg ""
+
 # ---------------------------------------------------------------- allowlist / traversal / host
 echo "allowlist:"
 for p in /../../etc/passwd /%2e%2e/%2e%2e/etc/passwd /artifact/board.html /lib/serve.py /events.jsonl /api/../snapshot.json /api/state/../../x; do
@@ -529,6 +550,16 @@ EOF
   done
   eq "garbage JWT refused" "$(treq GET /api/state "${TUNNEL_HDRS[@]}" -H 'Cf-Access-Jwt-Assertion: a.b.c')" "401"
   eq "valid JWT: identity from the token" "$(treq GET /api/state "${TUNNEL_HDRS[@]}" -H "$(jwt good)" >/dev/null; body .me)" "boss@example.com"
+  eq "tunnel me: approver JWT" "$(treq GET /api/me "${TUNNEL_HDRS[@]}" -H "$(jwt good)")" "200"
+  eq "  identity and via from the token" "$(body '.identity + "/" + .via')" "boss@example.com/access"
+  eq "  roles" "$(body '(.roles | join(",")) + "/" + (.is_approver | tostring) + "/" + (.is_release_manager | tostring)')" "approver/true/false"
+  eq "tunnel me: the email header cannot override the token" "$(treq GET /api/me "${TUNNEL_HDRS[@]}" -H "$(jwt good)" -H 'Cf-Access-Authenticated-User-Email: rm@example.com' >/dev/null; body .identity)" "boss@example.com"
+  eq "tunnel me: release manager" "$(treq GET /api/me "${TUNNEL_HDRS[@]}" -H "$(jwt rm)" >/dev/null; body '(.roles | join(",")) + "/" + (.is_release_manager | tostring)')" "release_manager/true"
+  eq "tunnel me: no JWT refused" "$(treq GET /api/me "${TUNNEL_HDRS[@]}")" "401"
+  eq "  generic error" "$(body '.error + "/" + .detail')" "unauthenticated/Cloudflare Access token missing"
+  eq "tunnel me: expired JWT refused" "$(treq GET /api/me "${TUNNEL_HDRS[@]}" -H "$(jwt expired)")" "401"
+  eq "tunnel me: foreign Host refused" "$(treq GET /api/me -H 'Host: evil.example' -H "$(jwt good)")" "421"
+  eq "tunnel me: an email outside the list refused" "$(treq GET /api/me "${TUNNEL_HDRS[@]}" -H "$(jwt nobody)")" "403"
   eq "the email header cannot override the token" "$(treq GET /api/state "${TUNNEL_HDRS[@]}" -H "$(jwt good)" -H 'Cf-Access-Authenticated-User-Email: rm@example.com' >/dev/null; body .me)" "boss@example.com"
   eq "tunnel: loopback Host refused" "$(treq GET /api/state -H "Host: 127.0.0.1:$TPORT" -H "$(jwt good)")" "421"
   eq "tunnel: foreign Host refused" "$(treq GET /api/state -H 'Host: evil.example' -H "$(jwt good)")" "421"
@@ -576,6 +607,8 @@ EOF
   start
   eq "allowed_emails: a listed viewer reads the state" "$(treq GET /api/state "${TUNNEL_HDRS[@]}" -H "$(jwt nobody)")" "200"
   eq "  can_message false" "$(body .can_message)" "false"
+  eq "tunnel me: a listed viewer (not an approver)" "$(treq GET /api/me "${TUNNEL_HDRS[@]}" -H "$(jwt nobody)")" "200"
+  eq "  viewer role only" "$(body '.identity + "/" + .via + "/" + (.roles | join(",")) + "/" + (.is_approver | tostring) + "/" + (.is_release_manager | tostring)')" "intruder@example.com/access/viewer/false/false"
   dec d-1-q8 question
   BOARD_HOME="$BOARD_HOME" "$REPO/bin/board" answer d-1-q8 "go" --by boss@example.com >/dev/null
   eq "  a viewer's answer on an approver-answered decision: 403" "$(tpost /api/decisions/d-1-q8/answer '{"answer":"stop"}' "${TUNNEL_HDRS[@]}" -H "$(jwt nobody)")" "403"
