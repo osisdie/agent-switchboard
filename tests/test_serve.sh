@@ -288,7 +288,7 @@ eq "pomodoro: session row" "$(body --argjson at "$NOW" '.pomodoro.sessions.CP | 
 eq "pomodoro: seen is the last run floored to 5 minutes" "$(body --argjson at "$NOW" '.pomodoro | "\(.seen == ($at - $at % 300000))/\(.seen_step_ms)"')" "true/300000"
 eq "pomodoro: session keys" "$(body '.pomodoro.sessions.CP | keys | join(",")')" "done,done_at,focus_ms,progress_ms,running,started_at,state"
 eq "pomodoro: a bad code is dropped" "$(body '.pomodoro.sessions | keys | join(",")')" "CP"
-eq "pomodoro: 14 days, oldest first, today last" "$(body '.pomodoro | "\(.days | length)/\(.days[-1].date == .today)/\(.days[-1].sessions.CP)"')" "14/true/3"
+eq "pomodoro: 14 days, oldest first, today last, no per-stream map" "$(body '.pomodoro | "\(.days | length)/\(.days[-1].date == .today)/\(.days[-1].done)/\(.days[-1] | has("sessions"))"')" "14/true/3/false"
 eq "pomodoro: days older than 14 dropped" "$(body '[.pomodoro.days[] | select(.date == "2000-01-01")] | length')" "0"
 eq "pomodoro: no path anywhere" "$(body '[.pomodoro | .. | strings | select(test("/"))] | length')" "0"
 

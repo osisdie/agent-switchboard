@@ -1097,7 +1097,7 @@ GRACE = `pomodoro.grace_minutes`, default 2; MODE = `pomodoro.mode`, `accumulate
 | `working` | runs. At FOCUS minutes of focus it completes at that exact moment: the stream's tally for the local day it completed in goes up by one, and the next pomodoro starts at once with the remainder (50 minutes of work = 2) |
 | `done`, `rest` | paused. `accumulate`: progress kept, however long the break (agents pause between prompts all the time). `strict` (the human pomodoro): a done/rest run longer than GRACE resets it to 0:00; a shorter one keeps its progress |
 | `needs-you` | paused, progress kept, however long the human takes |
-| `gone` (teammate streams only) | paused, progress kept. A gone stream with no progress is dropped; one with progress is dropped after 14 days |
+| `gone` (teammate streams only) | paused, progress kept. A gone stream with no progress is dropped; one with progress is dropped after 24 hours (its day tallies stay) |
 | `offline` (or a session code no longer in the snapshot) | reset |
 | no collector run for longer than NODATA = max(GRACE, 60 s, 20 s + 2 × `poll_interval`) | that gap is a break. `strict`: every current pomodoro resets. `accumulate`: progress kept; the gap is never credited as focus |
 
@@ -1149,14 +1149,14 @@ there is no file):
   "today": "2026-11-15", "day_start": 1763164800000,      // today's local midnight
   "seen": 1763193600000, "seen_step_ms": 300000,          // the last run, floored to 5 min (null: nothing runs)
   "fleet": { "done": 14, "focus_ms": 20400000, "teammates_done": 2 },   // every stream, teammates included
-  "sessions": {                                           // every stream: a teammate's right after its session
+  "sessions": {                                           // the streams worth a row (below): a teammate's right after its session
     "API": { "done": 3, "focus_ms": 4800000, "running": true, "state": "working",
              "started_at": 1763193000000, "progress_ms": null, "done_at": 1763192000000 },
     "API/tests": { "done": 2, "focus_ms": 3420000, "running": false, "state": "rest",
                    "started_at": null, "progress_ms": 420000, "done_at": 1763191000000 },
     "WEB": { "done": 1, "focus_ms": 1800000, "running": false, "state": "needs-you",
              "started_at": null, "progress_ms": 360000, "done_at": 1763180000000 } },
-  "days": [ { "date": "2026-11-02", "done": 9, "focus_ms": 14580000, "sessions": { "API": 2 } },
+  "days": [ { "date": "2026-11-02", "done": 9, "focus_ms": 14580000 },   // no per-stream map (`board pomodoro --json` has it)
             … 14 entries, oldest first, today last … ] }
 ```
 
@@ -1173,13 +1173,23 @@ bucket (none while nothing runs):
 - The page runs the clocks while `now − seen` < `seen_step_ms` + 3 minutes, and otherwise holds them
   at `seen + seen_step_ms` and shows them as paused (the collector stopped).
 - No `at`: `board pomodoro --json` (and `--mirror`) give the numbers as of the last run instead.
+- Bounded however many teammates came and went: `sessions` lists only the streams with a 🍅 or focus
+  today, or a current pomodoro (running, or paused with progress). A session with more than 50 such
+  teammates keeps the running ones and then the most 🍅 and focus; the rest fold into one
+  `CODE/+others` row (`done`, `focus_ms`, `streams`: how many, `active`: how many with a 🍅 or focus
+  today, `state: "folded"`, `progress_ms: 0`, never running; `+` never starts a teammate name). `fleet` and `days` count every stream, so they stay exact.
 - The page shows a session's own stream on its card's ring, its teammates' combined count and focus
   next to it ("teammates +N 🍅 · focus"), the fleet total on the 🍅 Today key, and in the panel the
-  sessions / teammates split with each teammate under its session.
+  totals (kept in view while it scrolls), the champion, 14 days, then one row per session with its
+  teammates included and folded under it: the top 10 sessions with something today, "Show all", and
+  a filter by session or teammate once there are more than 10.
 
 **Artifact:** the operator may mirror `board pomodoro --mirror` to
 `meta/pomodoro` (`today, tz, focus_ms, mode, fleet, sessions: {stream: {done, focus_ms}}, days,
 updated_at`): daily totals only, no running clock, nothing sensitive. The page reads it read-only.
+Bounded like the board view: only streams with a 🍅 or focus today, at most 50 teammates per session
+plus a `CODE/+others` row (`streams`, `active`), and `days` without per-stream maps; `fleet` and
+`days` stay exact.
 
 **CLI:** `board pomodoro [today|week] [--json|--mirror]`.
 

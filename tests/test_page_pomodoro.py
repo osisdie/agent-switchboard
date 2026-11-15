@@ -66,9 +66,17 @@ KEY_JS = """() => { const c = document.querySelector('#deck-grid .dcell[data-dec
     sameRow: Math.abs(r.top - rw.top) < 2, wideRight: Math.abs(rw.right - g.right) < 14, leftEdge: Math.abs(r.left - g.left) < 14 }; }"""
 PANEL_JS = """() => { const d = document.getElementById('pomo'), r = d.getBoundingClientRect();
   return { open: d.open, title: document.getElementById('pomo-title').innerText.trim(), text: d.innerText.replace(/\\s+/g, ' '),
-    rows: [...d.querySelectorAll('.pm-list li')].map((li) => li.querySelector('.pm-code').textContent + '×' + li.querySelector('.pm-cnt').textContent.slice(1)),
+    rows: [...d.querySelectorAll('.pm-list li:not(.pm-more)')].map((li) => (li.classList.contains('pm-sub') ? '+' : '') + li.querySelector('.pm-code').textContent + '×' + li.querySelector('.pm-cnt').textContent.slice(1)),
+    toggles: [...d.querySelectorAll('.pm-tgl')].map((b) => b.dataset.tm + ':' + b.getAttribute('aria-expanded') + ':' + b.textContent),
     days: d.querySelectorAll('.pm-day').length, today: !!d.querySelector('.pm-day:last-child.today'), width: r.width, vw: innerWidth,
     scrollW: document.scrollingElement.scrollWidth }; }"""
+NAMES_JS = """() => [...document.querySelectorAll('#pomo .pm-list .pm-code')].map((e) => ({ text: e.textContent, title: e.title,
+  clip: e.classList.contains('clip'), tab: e.getAttribute('tabindex'), cut: e.scrollWidth > e.clientWidth + 1 }))"""
+SUM_JS = """() => { const s = document.querySelector('#pomo .pm-sum'); if (!s) return null; const c = s.querySelector('.pm-champ');
+  return { text: s.innerText.replace(/\\s+/g, ' ').trim(), champ: c && c.dataset.champ, runner: (s.querySelector('[data-runner]') || { dataset: {} }).dataset.runner,
+    lead: (s.querySelector('[data-lead]') || { dataset: {} }).dataset.lead, none: !!s.querySelector('.pm-none') }; }"""
+POP_JS = """(id) => { const p = document.getElementById(id); return { shown: !p.hidden && p.getBoundingClientRect().width > 0, text: p.innerText.replace(/\\s+/g, ' ').trim(),
+  right: p.getBoundingClientRect().right, vw: document.documentElement.clientWidth }; }"""
 FAKE_TMUX = "#!/usr/bin/env bash\nexit 0\n"
 
 
@@ -200,8 +208,15 @@ def main():
             check("pressing it opens the panel", pn["open"] and "Pomodoro" in pn["title"], pn["title"])
             check("  fleet total and focus", "AI fleet: 19 🍅 · 9h 28m focus" in pn["text"], pn["text"][:200])
             check("  the sessions / teammates breakdown", "Sessions 14 🍅 · 7h 3m focus + teammates 5 🍅 · 2h 2" in pn["text"], pn["text"][:300])
-            check("  per-session counts today, most first, teammates under their session",
-                  pn["rows"][:4] == ["DOCS×5", "checker×2", "writer×3", "API×3"] and len(pn["rows"]) == 8, pn["rows"])
+            check("  one row per session, its teammates included, most first", pn["rows"] == ["DOCS×10", "API×3", "QA×3", "OPS×2", "WEB×1", "DATA×0"], pn["rows"])
+            check("  the teammates folded under their session", pn["toggles"] == ["DOCS:false:▸ 2 teammates"], pn["toggles"])
+            pg.click("#pomo .pm-tgl")
+            pg.clock.run_for(100)
+            pn2 = pg.evaluate(PANEL_JS)
+            check("  a click unfolds them under it", pn2["rows"][:3] == ["DOCS×10", "+checker×2", "+writer×3"] and pn2["toggles"] == ["DOCS:true:▾ 2 teammates"]
+                  and pg.evaluate("() => document.activeElement.classList.contains('pm-tgl')"), (pn2["rows"], pn2["toggles"]))
+            check("  the chart before the list, the totals first", pg.evaluate("""() => { const b = document.getElementById('pomo-body');
+              const y = (s) => b.querySelector(s).getBoundingClientRect().top; return y('.pm-head') < y('.pm-champ') && y('.pm-champ') < y('.pm-hist') && y('.pm-hist') < y('.pm-list'); }"""))
             check("  14 days, today last", pn["days"] == 14 and pn["today"], (pn["days"], pn["today"]))
             check("  the rules are explained", "Every session and every teammate runs its own pomodoro. Each 25 minutes" in pn["text"]
                   and "a break never resets it" in pn["text"], pn["text"][-260:])
@@ -275,6 +290,126 @@ def main():
             pn = pg.evaluate(PANEL_JS)
             check("  the panel says it is a mirror", "Mirrored by the operator" in pn["text"] and pn["rows"] == ["API×3", "WEB×1"], (pn["rows"], pn["text"][-120:]))
             pg.close()
+            print("panel: teammate names, the summary, the explainer")
+            # Two teammates tie on 🍅 (3 each): the one with more focus is the champion, though it sorts
+            # after the other by name. A long teammate name is clipped at phone width, never mangled.
+            long_name = "a-very-long-teammate-name-for-the-panel"
+            team = {"today": "2026-11-15", "tz": "", "focus_ms": 1500000, "mode": "accumulate", "fleet": {"done": 8, "focus_ms": 15000000},
+                    "sessions": {"API": {"done": 1, "focus_ms": 1800000}, "API/perf-next": {"done": 3, "focus_ms": 4800000},
+                                 "API/ux-actions": {"done": 3, "focus_ms": 5040000}, "API/" + long_name: {"done": 1, "focus_ms": 1600000},
+                                 "WEB": {"done": 0, "focus_ms": 1760000}},
+                    "days": [{"date": "2026-11-%02d" % (2 + i), "done": i, "focus_ms": 0, "sessions": {}} for i in range(14)], "updated_at": None}
+            pg = new_page(claude_stub(team), viewport={"width": 390, "height": 860}, is_mobile=True, has_touch=True)
+            check("phone: the cards render", open_paused(pg, PAGE, CARDS_UP))
+            pg.click("#deck-grid .dkey.pomo")
+            pg.clock.run_for(300)
+            pg.locator("#pomo .pm-tgl").tap()
+            pg.clock.run_for(100)
+            names = pg.evaluate(NAMES_JS)
+            by = {n["text"]: n for n in names}
+            check("teammate rows: the whole name, under its session", [n["text"] for n in names] == ["API", long_name, "perf-next", "ux-actions", "WEB"], [n["text"] for n in names])
+            check("  each name's title is the full stream name", by.get("perf-next", {}).get("title") == "API · perf-next" and by.get("API", {}).get("title") == "API"
+                  and by.get(long_name, {}).get("title") == "API · " + long_name, names)
+            ln = by.get(long_name, {})
+            check("  a name cut short is marked and takes the focus", ln.get("cut") and ln.get("clip") and ln.get("tab") == "0", ln)
+            check("  a name that fits is not", not by.get("perf-next", {}).get("clip") and by.get("perf-next", {}).get("tab") is None, by.get("perf-next"))
+            pg.locator("#pomo .pm-code.clip").first.tap()
+            check("  a tap shows all of it", pg.evaluate("() => { const e = document.activeElement; return e.classList.contains('pm-code') && e.scrollWidth <= e.clientWidth + 1; }"))
+            check("  no horizontal page scroll", pg.evaluate("() => document.scrollingElement.scrollWidth <= innerWidth"))
+            sm = pg.evaluate(SUM_JS)
+            check("summary: streams and person-hours", sm and "5 streams today: 2 sessions + 3 teammates" in sm["text"]
+                  and "≈ 4.2 person-hours of focus" in sm["text"], sm)
+            check("  the champion: most 🍅, a tie broken by focus", sm and sm["champ"] == "API/ux-actions" and sm["runner"] == "API/perf-next"
+                  and "🏆 Champion API · ux-actions · 3 🍅 · 1h 24m focus" in sm["text"] and "Runner-up API · perf-next · 3 🍅 · 1h 20m focus" in sm["text"], sm)
+            pg.locator("#pomo-why").tap()
+            w = pg.evaluate(POP_JS, "pomo-why-pop")
+            check("the 🍅 in the panel header explains it (a tap)", w["shown"] and "25 minutes of focus" in w["text"] and "teammate active" in w["text"]
+                  and "Mode accumulate" in w["text"] and "never resets" in w["text"], w)
+            check("  inside a 390 px screen", w["right"] <= w["vw"], w)
+            pg.close()
+
+            pg = new_page(claude_stub(team))
+            open_paused(pg, PAGE, CARDS_UP)
+            key = pg.locator("#deck-grid .dkey.pomo")
+            check("the Deck key is described by the explanation", key.get_attribute("aria-describedby") == "pomo-key-pop"
+                  and "25 minutes of focus" in pg.evaluate(POP_JS, "pomo-key-pop")["text"])
+            key.hover()
+            check("  shown on hover", pg.evaluate(POP_JS, "pomo-key-pop")["shown"])
+            pg.mouse.move(5, 5)
+            check("  gone on leaving", not pg.evaluate(POP_JS, "pomo-key-pop")["shown"])
+            key.focus()
+            pg.keyboard.press("Shift+Tab")
+            pg.keyboard.press("Tab")
+            check("  shown on keyboard focus", pg.evaluate(POP_JS, "pomo-key-pop")["shown"])
+            pg.keyboard.press("Escape")
+            check("  Escape closes it", not pg.evaluate(POP_JS, "pomo-key-pop")["shown"])
+            pg.keyboard.press("Enter")
+            pg.clock.run_for(300)
+            check("  the key still opens the panel, the explanation stays shut", pg.evaluate("() => document.getElementById('pomo').open")
+                  and not pg.evaluate(POP_JS, "pomo-key-pop")["shown"] and not pg.evaluate(POP_JS, "pomo-why-pop")["shown"])
+            pg.close()
+
+            pg = new_page("try { localStorage.setItem('switchboard.lang', 'zh-TW'); } catch (e) {}" + claude_stub(team))
+            open_paused(pg, PAGE, CARDS_UP)
+            pg.click("#deck-grid .dkey.pomo")
+            pg.clock.run_for(300)
+            sm = pg.evaluate(SUM_JS)
+            check("zh-TW: the summary", sm and "今日 5 個計時：2 個 session + 3 個 teammate" in sm["text"] and "≈ 相當於一個人專注 4.2 小時" in sm["text"]
+                  and "🏆 冠軍 API · ux-actions · 3 🍅 · 專注 1 小時 24 分" in sm["text"] and "亞軍 API · perf-next" in sm["text"], sm)
+            pg.hover("#pomo-why")
+            w = pg.evaluate(POP_JS, "pomo-why-pop")
+            check("  the explanation", w["shown"] and "專注 25 分鐘" in w["text"] and "teammate 正在活動" in w["text"] and "accumulate 模式" in w["text"], w)
+            check("  the 🍅 button's name", pg.get_attribute("#pomo-why", "aria-label") == "什麼算一個番茄鐘")
+            pg.close()
+
+            print("panel: 160 streams (20 sessions x 7 teammates)")
+            big = {"today": "2026-11-15", "tz": "", "focus_ms": 1500000, "mode": "accumulate", "sessions": {},
+                   "days": [{"date": "2026-11-%02d" % (2 + i), "done": i, "focus_ms": 0, "sessions": {}} for i in range(14)], "updated_at": None}
+            for i in range(20):
+                lead, quiet = "S%02d" % i, i >= 15            # S15..S19: nothing today
+                big["sessions"][lead] = {"done": 0 if quiet else i % 4, "focus_ms": 0 if quiet else (i % 4) * 1500000 + i * 60000}
+                for j in range(7):
+                    name = "helper-%d-%d" % (i, j) if j else "solo-%02d" % i
+                    big["sessions"]["%s/%s" % (lead, name)] = {"done": 0 if quiet else (i + j) % 3, "focus_ms": 0 if quiet else ((i + j) % 3) * 1500000 + j * 30000}
+            fleet_done = sum(r["done"] for r in big["sessions"].values())
+            big["fleet"] = {"done": fleet_done, "focus_ms": sum(r["focus_ms"] for r in big["sessions"].values())}
+            big["days"][-1].update(done=fleet_done)
+            pg = new_page(claude_stub(big), viewport={"width": 390, "height": 860}, is_mobile=True, has_touch=True)
+            check("  the page renders the data", open_paused(pg, PAGE, "() => !!document.querySelector('#deck-grid .dkey.pomo.on')"))
+            t_open = time.perf_counter()   # real time: the paused page clock fakes performance.now too
+            pg.evaluate("() => document.querySelector('#deck-grid .dkey.pomo').click()")
+            ms = (time.perf_counter() - t_open) * 1000
+            check("opens in reasonable time (%d ms)" % ms, ms < 1500, ms)
+            pn = pg.evaluate(PANEL_JS)
+            rows = [r for r in pn["rows"] if not r.startswith("+")]
+            check("  the top 10 sessions, teammates folded", len(pn["rows"]) == 10 and len(rows) == 10 and len(pn["toggles"]) == 10, pn["rows"])
+            check("  the totals are exact", "AI fleet: %d 🍅" % fleet_done in pn["text"], (fleet_done, pn["text"][:80]))
+            check("  no horizontal scroll at 390 px", pn["scrollW"] <= pn["vw"] and pg.evaluate("() => { const d = document.getElementById('pomo'); return d.scrollWidth <= d.clientWidth; }"))
+            check("  Show all (20), the quiet ones counted", pg.evaluate("() => document.querySelector('#pomo .pm-all').textContent") == "Show all (20)"
+                  and "5 with nothing today are hidden." in pn["text"], pn["text"][-200:])
+            pg.click("#pomo .pm-all")
+            pn = pg.evaluate(PANEL_JS)
+            counts = [int(r.split("×")[1]) for r in pn["rows"]]
+            check("  Show all: every session, and their counts add up to the fleet", len(pn["rows"]) == 20 and sum(counts) == fleet_done
+                  and pg.evaluate("() => document.querySelector('#pomo .pm-all').textContent") == "Show the top 10", (len(pn["rows"]), sum(counts), fleet_done))
+            pg.click("#pomo .pm-all")
+            q = pg.locator("#pomo-q")
+            check("  a filter box (more than 10 rows)", q.count() == 1)
+            q.fill("S07")
+            pn = pg.evaluate(PANEL_JS)
+            check("  filter by session code", [r.split("×")[0] for r in pn["rows"]] == ["S07"] and pg.evaluate("() => document.activeElement.id") == "pomo-q", pn["rows"])
+            q.fill("helper-3-4")
+            pn = pg.evaluate(PANEL_JS)
+            check("  filter by teammate name: its session, unfolded to the match", [r.split("×")[0] for r in pn["rows"]] == ["S03", "+helper-3-4"], pn["rows"])
+            q.fill("solo-1")
+            pn = pg.evaluate(PANEL_JS)
+            check("  several matches, quiet sessions included", sorted(r.split("×")[0] for r in pn["rows"] if not r.startswith("+")) == ["S%02d" % i for i in range(10, 20)], pn["rows"])
+            q.fill("no-such-name")
+            check("  nothing matches: said so", 'Nothing matches "no-such-name".' in pg.evaluate(PANEL_JS)["text"])
+            q.fill("")
+            check("  cleared: the top 10 again", len(pg.evaluate(PANEL_JS)["rows"]) == 10)
+            pg.close()
+
             print("the clock stops when the collector's data is stale")
             now_ms = int(time.time() * 1000)
             for label, seen, want_live in (("fresh", now_ms - now_ms % 300000, True), ("stale", now_ms - 20 * 60000, False)):
@@ -289,6 +424,14 @@ def main():
                 pg.clock.run_for(1300)
                 a2 = pg.evaluate(ROWS_JS).get("API") or {}
                 if want_live:
+                    pg.click("#deck-grid .dkey.pomo")
+                    pg.clock.run_for(300)
+                    sm = pg.evaluate(SUM_JS)
+                    check("  no pomodoro yet: said so, with the stream closest to its first", sm and sm["none"] and not sm["champ"] and sm["lead"] == "API"
+                          and "No pomodoro yet today: the first one is on its way." in sm["text"] and re.search(r"Closest API · 10:0\d of 25:00", sm["text"]), sm)
+                    pg.hover("#pomo-why")
+                    check("  strict mode explained (no mode in the view)", "Mode strict: a break longer than 2m resets it." in pg.evaluate(POP_JS, "pomo-why-pop")["text"])
+                    pg.click("#pomo-close")
                     check("  fresh: the clock runs from started_at", a1.get("live") and re.search(r"\b10:0\d / 25:00", a1.get("text", "")) and a2.get("text") != a1.get("text"), (a1, a2))
                 else:
                     check("  stale: the clock holds at the end of the last bucket, marked paused", not a1.get("live") and a1.get("text") == a2.get("text")

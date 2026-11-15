@@ -75,6 +75,9 @@ NAME_RE = re.compile(r"^%s$" % SEG)
 CODE_RE = re.compile(r"^%s(/%s)?$" % (SEG, SEG))   # a stream: "CODE" or "CODE/teammate-name"
 RES_STALE_MS = 2 * 60 * 1000  # resources.json older than this (plus 2 sample intervals): no teammate data
 DAY_MS = 24 * 3600 * 1000
+TEAM_GONE_MS = DAY_MS   # a gone teammate keeps its unfinished pomodoro this long (its day tallies stay)
+VIEW_TEAM_CAP = 50      # teammate rows per session in the board view; the rest fold into one
+OTHERS = "+others"      # "CODE/+others": the folded row ("+" never starts a real teammate name)
 
 
 # ------------------------------------------------------------------ settings and time
@@ -308,7 +311,8 @@ def step(doc, states, now, st):
             rec["seen_at"] = now
         elif rec.get("seen_at") is None or rec["seen_at"] > now:
             rec["seen_at"] = now                        # the clock moved back: start the wait again
-        if new in ("offline", GONE) and (not rec["acc"] or now - rec["seen_at"] > HISTORY_DAYS * DAY_MS):
+        keep_ms = TEAM_GONE_MS if new == GONE else HISTORY_DAYS * DAY_MS
+        if new in ("offline", GONE) and (not rec["acc"] or now - rec["seen_at"] > keep_ms):
             doc["sessions"].pop(code, None)              # nothing to keep (or gone too long)
         else:
             doc["sessions"][code] = rec
@@ -466,6 +470,35 @@ def raw_view(doc, now):
             "sessions": sessions, "days": days}
 
 
+def bound_streams(sessions, cap=VIEW_TEAM_CAP):
+    """The streams worth a row on the board: a 🍅 or focus today, or a current pomodoro (running, or
+    paused with progress). At most `cap` teammates per session: the running ones always, then the
+    most 🍅 and focus; the rest fold into one "CODE/+others" row with their summed counts,
+    `streams` (how many) and `active` (how many with a 🍅 or focus today), so every total stays exact. Folded streams never run, so the row needs no clock."""
+    keep = {c: v for c, v in sessions.items() if v["done"] or v["focus_ms"] or v["running"] or v["progress_ms"]}
+    by_lead = {}
+    for c, v in keep.items():
+        if is_teammate(c):
+            by_lead.setdefault(parent_of(c), []).append((c, v))
+    folded, extra = set(), {}
+    for lead, rows in by_lead.items():
+        if len(rows) <= cap:
+            continue
+        rows.sort(key=lambda cv: (not cv[1]["running"], -cv[1]["done"], -cv[1]["focus_ms"], cv[0]))
+        for c, v in rows[max(cap, sum(1 for _, r in rows if r["running"])):]:
+            folded.add(c)
+            # progress_ms stays 0 on purpose: the folded row is a tally, not a pomodoro (no ring, no clock)
+            e = extra.setdefault(lead + "/" + OTHERS, {"done": 0, "focus_ms": 0, "progress_ms": 0, "running": False,
+                                                       "state": "folded", "done_at": None, "streams": 0, "active": 0})
+            e["done"] += v["done"]
+            e["focus_ms"] += v["focus_ms"]
+            e["streams"] += 1
+            e["active"] += 1 if v["done"] or v["focus_ms"] else 0   # kept only for a paused pomodoro: not active
+    out = {c: v for c, v in keep.items() if c not in folded}
+    out.update(extra)
+    return {c: out[c] for c in sorted(out, key=lambda c: (parent_of(c), c))}
+
+
 def board_view(doc, now):
     """What board-serve gives the page (state.pomodoro): numbers and session codes only. It changes
     only when something a viewer sees changes, never with the collector's heartbeat, so it costs no
@@ -481,6 +514,11 @@ def board_view(doc, now):
     v = raw_view(doc, now)
     if not v:
         return None
+    # Bounded however many teammates came and went today: the rows worth showing (bound_streams);
+    # the fleet and day totals come from every stream. The page has no use for the per-day maps.
+    v["sessions"] = bound_streams(v["sessions"])
+    for d in v["days"]:
+        d.pop("sessions", None)
     at = v.pop("at")
     ds = day_start(now, tzinfo(v["tz"]))
     shift, running = 0, False
@@ -505,13 +543,20 @@ def board_view(doc, now):
 
 
 def mirror_view(view):
-    """meta/pomodoro for the Artifact: the daily totals (from raw_view), no running clock."""
+    """meta/pomodoro for the Artifact: the daily totals (from raw_view), no running clock. Bounded
+    like the board view: the streams with a 🍅 or focus today, at most VIEW_TEAM_CAP teammates per
+    session plus a "CODE/+others" row, and no per-day maps; fleet and days stay exact."""
     if not view:
         return None
+    counted = {c: v for c, v in view["sessions"].items() if v["done"] or v["focus_ms"]}
+    sessions = {}
+    for c, v in bound_streams(counted).items():
+        sessions[c] = {"done": v["done"], "focus_ms": v["focus_ms"]}
+        if "streams" in v:
+            sessions[c].update(streams=v["streams"], active=v["active"])
     return {"today": view["today"], "tz": view["tz"], "focus_ms": view["focus_ms"], "mode": view["mode"], "fleet": view["fleet"],
-            "sessions": {c: {"done": v["done"], "focus_ms": v["focus_ms"]} for c, v in view["sessions"].items()
-                         if v["done"] or v["focus_ms"]},
-            "days": view["days"], "updated_at": view["at"]}
+            "sessions": sessions, "days": [{k: d[k] for k in ("date", "done", "focus_ms")} for d in view["days"]],
+            "updated_at": view["at"]}
 
 
 def _mmss(ms):
