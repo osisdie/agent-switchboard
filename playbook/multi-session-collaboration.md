@@ -97,7 +97,10 @@ decision.
 | Only teammates waiting on the user remain | Don't repeat reminders. Stay quiet on cron, or reply with one line |
 
 - On every tick, check that each teammate's pane is alive and whether it has sent new messages.
-- When all teammates have finished, `CronDelete` the check.
+- On every tick, also **recycle** (section 8): stop teammates that delivered a final report, stopped,
+  or finished their role, and kill this session's leftover panes. A forgotten teammate keeps a whole
+  agent process alive (typically 250–400 MB). Mention the count only when something was recycled.
+- When all teammates have finished, recycle one last time, then `CronDelete` the check.
 
 ## 7. Teammates don't poll CI
 
@@ -109,8 +112,9 @@ decision.
 
 ## 8. Recycle panes
 
-Without being asked, after every merge, after a teammate's final report, and whenever a teammate's
-role ends:
+Without being asked, after every merge, after a teammate's final report, whenever a teammate's
+role ends, and on every progress-check tick (section 6), so a missed moment is caught within 10
+minutes:
 
 1. `TaskStop <name>`. This closes its pane.
 2. Sweep `tmux list-panes -a` and `kill-pane` any leftover pane of a teammate **this session**
