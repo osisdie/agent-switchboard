@@ -27,7 +27,7 @@ SESS = os.path.join(TMP, "sessions")
 BIN = os.path.join(TMP, "bin")
 os.environ.update({"BOARD_HOME": HOME, "BOARD_CONFIG_DIR": CFG, "CLAUDE_SESSIONS_DIR": SESS,
                    "CLAUDE_JSON": os.path.join(TMP, "claude.json"), "CLAUDE_SETTINGS": os.path.join(TMP, "settings.json"),
-                   "ALERT_DESKTOP": "0", "BOARD_PRESS_SETTLE": "0", "BOARD_RC_AUTO": "1"})
+                   "ALERT_DESKTOP": "0", "BOARD_PRESS_SETTLE": "0", "BOARD_ACTIONS_AUTO": "1", "BOARD_ACTION_POLL": "0.05"})
 for k in list(os.environ):
     if k.startswith(("SLACK_", "SMTP_", "ALERT_", "LINE_", "AWS_")) or k in ("TMUX", "TMUX_PANE", "BOARD_PUBLIC_URL", "DO_NOT_TRACK"):
         if k != "ALERT_DESKTOP":
@@ -44,6 +44,7 @@ LOG = os.path.join(TMP, "tmux.log")
 TCFG = os.path.join(TMP, "tmux.json")
 os.environ["FAKE_TMUX_LOG"] = LOG
 
+import actions  # noqa: E402
 import rc  # noqa: E402
 
 BOARD = os.path.join(REPO, "bin", "board")
@@ -73,6 +74,11 @@ def dialog(focus):
     return "\n".join(HEAD + body)
 
 
+COMPACT_TYPED = screen("❯ /compact", above=["  ❯ /compact     Clear conversation history but keep a summary in context"])
+COMPACTING = screen(above=["❯ /compact", "✻ Compacting conversation… (2s · ↓ 162 tokens)"],
+                    below=["  ⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt"])
+COMPACTED = screen(above=["❯ /compact", "  ⎿  Compacted (ctrl+o to see full summary)"])
+NOTHING = screen(above=["❯ /compact", "  ⎿  Not enough messages to compact."])
 DISCONNECTED = screen(above=["❯ /remote-control", "  ⎿  Remote Control disconnected."])
 UNKNOWN = screen(above=["● Unknown command: /remote-control"])
 
@@ -90,7 +96,7 @@ def board(*args, **kw):
 def write_fleet(extra="", sessions=None):
     sessions = sessions if sessions is not None else "  - code: CP\n    cwd: %s\n    autostart: true\n" % TMP
     with open(os.path.join(CFG, "fleet.yaml"), "w") as fh:
-        fh.write("approvers: [local]\nrc:\n  confirm_seconds: 1\n%s\nsessions:\n%s" % (extra, sessions))
+        fh.write("approvers: [local]\nsession_actions:\n  rc_confirm_seconds: 1\n  compact_start_seconds: 1\n  compact_seconds: 2\n%s\nsessions:\n%s" % (extra, sessions))
 
 
 def jload(path):
@@ -130,8 +136,9 @@ def close_lives():
 class Live:
     """One running session: a live pid, its registry file and hook state."""
 
-    def __init__(self, code="CP", status="idle", bridge=None, state="done", sid="s-cp", pane="%42"):
-        self.proc = subprocess.Popen(["sleep", "600"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    def __init__(self, code="CP", status="idle", bridge=None, state="done", sid="s-cp", pane="%42", env=None):
+        self.proc = subprocess.Popen(["sleep", "600"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                     env=dict(os.environ, **(env or {})))
         LIVES.append(self)
         self.pid = self.proc.pid
         self.sid = sid
@@ -165,8 +172,9 @@ class Live:
                 os.remove(p)
 
 
-def script(screens, on_send=None, on_capture=None, session="CP", fail_send=None):
-    cfg = {"session": session, "screens": screens, "on_send": on_send or {}, "on_capture": on_capture or {}}
+def script(screens, on_send=None, on_capture=None, session="CP", fail_send=None, seq=None):
+    cfg = {"session": session, "screens": screens, "on_send": on_send or {}, "on_capture": on_capture or {},
+           "seq": seq or {}}
     if fail_send:
         cfg["fail_send"] = fail_send
     with open(TCFG, "w") as fh:
@@ -187,7 +195,7 @@ def sent():
 
 
 def reset_home():
-    for n in ("rc-prefs.json", "rc-apply.json", "events.jsonl", "snapshot.json"):
+    for n in ("rc-prefs.json", "actions-last.json", "session-actions.json", "events.jsonl", "snapshot.json"):
         p = os.path.join(HOME, n)
         if os.path.exists(p):
             os.remove(p)
@@ -321,9 +329,9 @@ class ApplyTest(unittest.TestCase):
         self.assertEqual(rc_, 0, out + err)
         self.assertIn("confirmed", out)
         self.assertEqual(sent(), ["-l|--|/remote-control", "Enter"])
-        ev = [e for e in events() if e["action"] == "apply"][-1]
-        self.assertEqual((ev["result"], ev["want"], ev["pane"]), ("confirmed", "on", "%42"))
-        att = jload(os.path.join(HOME, "rc-apply.json"))["CP"]
+        ev = [e for e in events("session-action") if e["op"] == "run"][-1]
+        self.assertEqual((ev["result"], ev["action"], ev["pane"]), ("confirmed", "rc_on", "%42"))
+        att = jload(os.path.join(HOME, "actions-last.json"))["CP"]["rc_on"]
         self.assertEqual((att["result"], att["sid"]), ("confirmed", "s-cp"))
         snap = jload(os.path.join(HOME, "snapshot.json"))
         row = [s for s in snap["sessions"] if s["code"] == "CP"][0]
@@ -418,9 +426,9 @@ class ApplyTest(unittest.TestCase):
         self.assertEqual(rc_, 6, out)
         self.assertIn("unavailable", out)
         cfg = rc.fleet.load_fleet()
-        att = rc.load_attempts(HOME)["CP"]
-        self.assertFalse(rc.auto_allowed(cfg, att, "s-cp", "on", rc.now_ms() + 10 ** 9))
-        self.assertTrue(rc.auto_allowed(cfg, att, "s-new", "on", rc.now_ms()))
+        att = actions.load_last(HOME)["CP"]["rc_on"]
+        self.assertFalse(actions.auto_allowed(cfg, att, "s-cp", rc.now_ms() + 10 ** 9))
+        self.assertTrue(actions.auto_allowed(cfg, att, "s-new", rc.now_ms()))
 
     def test_already(self):
         self.live = Live(bridge="session_x")
@@ -439,13 +447,13 @@ class ApplyTest(unittest.TestCase):
         snap = jload(os.path.join(HOME, "snapshot.json"))
         sessions = snap["sessions"]
         self.assertTrue([s for s in sessions if s["code"] == "CP"][0]["rc"]["pending"])
-        self.assertEqual(rc.auto_candidates(sessions, rc.fleet.load_fleet(), HOME, rc.now_ms()), ["CP"])
-        self.assertEqual(rc.auto_candidates(sessions, {"rc": {"auto_apply": False}}, HOME, rc.now_ms()), [])
+        self.assertEqual(actions.auto_candidates(sessions, rc.fleet.load_fleet(), HOME, rc.now_ms()), ["CP"])
+        self.assertEqual(actions.auto_candidates(sessions, {"session_actions": {"auto_apply": False}}, HOME, rc.now_ms()), [])
         rc_, out, _ = board("rc", "apply", "--pending", "--auto")
         self.assertEqual(rc_, 0, out)
         self.assertEqual(sent(), ["-l|--|/remote-control", "Enter"])
         self.assertEqual(self.live.bridge(), "session_y")
-        self.assertTrue([e for e in events() if e["action"] == "apply"][-1]["auto"])
+        self.assertTrue([e for e in events("session-action") if e["op"] == "run"][-1]["auto"])
 
     def test_auto_ignores_fleet_yaml_only(self):
         write_fleet(sessions="  - code: CP\n    cwd: %s\n    remote_control: true\n" % TMP)
@@ -459,13 +467,13 @@ class ApplyTest(unittest.TestCase):
         self.assertEqual((row["rc"]["source"], row["rc"]["pending"]), ("fleet", False))
 
     def test_auto_retry_rules(self):
-        cfg = {"rc": {"retry_minutes": 10, "max_tries": 2}}
-        att = {"sid": "s", "want": "on", "result": "refused", "at": 1000, "tries": 1}
-        self.assertFalse(rc.auto_allowed(cfg, att, "s", "on", 1000 + 60000))
-        self.assertTrue(rc.auto_allowed(cfg, att, "s", "on", 1000 + 600000))
-        self.assertFalse(rc.auto_allowed(cfg, dict(att, tries=2), "s", "on", 10 ** 12))
-        self.assertTrue(rc.auto_allowed(cfg, att, "s", "off", 1000))
-        self.assertFalse(rc.auto_allowed(cfg, dict(att, result="partial"), "s", "on", 10 ** 12))
+        cfg = {"session_actions": {"retry_minutes": 10, "max_tries": 2}}
+        att = {"sid": "s", "result": "refused", "at": 1000, "tries": 1}
+        self.assertFalse(actions.auto_allowed(cfg, att, "s", 1000 + 60000))
+        self.assertTrue(actions.auto_allowed(cfg, att, "s", 1000 + 600000))
+        self.assertFalse(actions.auto_allowed(cfg, dict(att, tries=2), "s", 10 ** 12))
+        self.assertTrue(actions.auto_allowed(cfg, att, "s-other", 1000))
+        self.assertFalse(actions.auto_allowed(cfg, dict(att, result="partial"), "s", 10 ** 12))
 
     def test_collector_loop_flag_spawns(self):
         self.live = Live()
@@ -479,7 +487,7 @@ class ApplyTest(unittest.TestCase):
         self.assertEqual(self.live.bridge(), "session_z")
         # the background applier finishes (lock released) before the next test
         for _ in range(50):
-            if not rc.run_busy(HOME):
+            if not actions.run_busy(HOME):
                 break
             time.sleep(0.1)
 
@@ -491,26 +499,182 @@ class ApplyTest(unittest.TestCase):
         self.assertEqual(sent(), [])
 
 
+class CompactTest(unittest.TestCase):
+    def setUp(self):
+        reset_home()
+        write_fleet()
+
+    def tearDown(self):
+        close_lives()
+
+    def queue(self):
+        return actions.load_queue(HOME, rc.fleet.load_fleet())
+
+    def test_idle_compacts(self):
+        live = Live()
+        script([IDLE, COMPACT_TYPED], seq={"2": [COMPACTING, COMPACTED]},
+               on_send={"2": {"path": live.reg, "set": {"status": "busy", "statusUpdatedAt": 7}}},
+               on_capture={"4": {"path": live.reg, "set": {"status": "idle", "statusUpdatedAt": 9}}})
+        rc_, out, err = board("session", "CP", "compact", "--by", "tester")
+        self.assertEqual(rc_, 0, out + err)
+        self.assertIn("compact: confirmed", out)
+        self.assertEqual(sent(), ["-l|--|/compact", "Enter"])
+        self.assertEqual(self.queue(), {})
+        last = actions.load_last(HOME)["CP"]["compact"]
+        self.assertEqual((last["result"], last["sid"]), ("confirmed", "s-cp"))
+        self.assertTrue(last["done_at"])
+        row = [s for s in jload(os.path.join(HOME, "snapshot.json"))["sessions"] if s["code"] == "CP"][0]
+        self.assertEqual((row["compact"]["queued"], row["compact"]["done_at"]), (None, last["done_at"]))
+        ops = [(e["op"], e.get("action"), e.get("by")) for e in events("session-action")]
+        self.assertIn(("queue", "compact", "tester"), ops)
+        self.assertIn(("run", "compact", "tester"), ops)
+
+    def test_busy_queues_then_runs_when_idle(self):
+        live = Live(status="busy", state="working")
+        script([IDLE, COMPACT_TYPED], seq={"2": [COMPACTING, COMPACTED]},
+               on_send={"2": {"path": live.reg, "set": {"status": "busy", "statusUpdatedAt": 7}}})
+        rc_, out, _ = board("session", "CP", "compact")
+        self.assertEqual(rc_, 0, out)
+        self.assertIn("deferred", out)
+        self.assertIn("runs when the session is idle", out)
+        self.assertEqual(sent(), [])
+        self.assertEqual(self.queue()["CP"]["action"], "compact")
+        row = [s for s in jload(os.path.join(HOME, "snapshot.json"))["sessions"] if s["code"] == "CP"][0]
+        self.assertTrue(row["compact"]["queued"])
+        # the session goes idle; the collector's applier runs the queued compact
+        live.write(status="idle", statusUpdatedAt=6)
+        with open(live.state, "w") as fh:
+            json.dump({"session_id": "s-cp", "state": "done", "tmux_pane": "%42", "updated_at": 1}, fh)
+        script([IDLE, COMPACT_TYPED], seq={"2": [COMPACTING, COMPACTED]},
+               on_send={"2": {"path": live.reg, "set": {"status": "busy", "statusUpdatedAt": 7}}},
+               on_capture={"4": {"path": live.reg, "set": {"status": "idle", "statusUpdatedAt": 9}}})
+        subprocess.run([os.path.join(REPO, "bin", "board-collect"), "--once", "--no-notify"], check=True)
+        snap = jload(os.path.join(HOME, "snapshot.json"))["sessions"]
+        self.assertEqual(actions.auto_candidates(snap, rc.fleet.load_fleet(), HOME, rc.now_ms()), ["CP"])
+        rc_, out, _ = board("session", "apply", "--pending", "--auto")
+        self.assertEqual(rc_, 0, out)
+        self.assertEqual(sent(), ["-l|--|/compact", "Enter"])
+        self.assertEqual(self.queue(), {})
+
+    def test_nothing_to_compact(self):
+        Live()
+        script([IDLE, COMPACT_TYPED, NOTHING])
+        rc_, out, _ = board("session", "CP", "compact")
+        self.assertEqual(rc_, 0, out)
+        self.assertIn("nothing", out)
+        self.assertEqual(self.queue(), {})
+
+    def test_never_starts(self):
+        Live()
+        script([IDLE, COMPACT_TYPED, IDLE])
+        rc_, out, _ = board("session", "CP", "compact")
+        self.assertEqual(rc_, 6, out)
+        self.assertIn("unconfirmed", out)
+        self.assertEqual(list(self.queue()), ["CP"])   # kept: retried later (max_tries)
+
+    def test_still_running(self):
+        live = Live()
+        script([IDLE, COMPACT_TYPED, COMPACTING],
+               on_send={"2": {"path": live.reg, "set": {"status": "busy", "statusUpdatedAt": 7}}})
+        rc_, out, _ = board("session", "CP", "compact")
+        self.assertEqual(rc_, 0, out)
+        self.assertIn("started", out)
+        self.assertEqual(self.queue(), {})
+
+    def test_unexpected_screen_and_partial(self):
+        Live()
+        script([screen("❯ draft text")])
+        rc_, out, _ = board("session", "CP", "compact")
+        self.assertEqual((rc_, sent()), (3, []), out)
+        reset_home()
+        script([IDLE, screen("❯ /compactx")])
+        rc_, out, _ = board("session", "CP", "compact")
+        self.assertEqual((rc_, sent()), (5, ["-l|--|/compact"]), out)
+
+    def test_cancel_and_restart(self):
+        live = Live(status="busy", state="working")
+        script([IDLE])
+        board("session", "CP", "compact")
+        rc_, out, _ = board("session", "CP", "cancel", "--by", "tester")
+        self.assertEqual(rc_, 0)
+        self.assertEqual(self.queue(), {})
+        self.assertIn(("cancel", "tester"), [(e["op"], e.get("by")) for e in events("session-action")])
+        board("session", "CP", "compact")
+        live.close()
+        LIVES.remove(live)
+        Live(sid="s-new")
+        rc_, out, _ = board("session", "apply", "--pending")
+        self.assertIn("dropped", out)
+        self.assertEqual((self.queue(), sent()), ({}, []))
+
+    def test_usage(self):
+        for args in (["session"], ["session", "CP"], ["session", "CP", "hack"], ["session", "CP", "rc", "maybe"],
+                     ["session", "bad code", "compact"], ["session", "CP", "compact", "--by", "a b"],
+                     ["session", "NOPE", "compact"]):
+            rc_, _, err = board(*args)
+            self.assertEqual(rc_, 2, (args, err))
+        self.assertEqual(self.queue(), {})
+
+    def test_session_rc_alias(self):
+        live = Live()
+        script([IDLE, TYPED, ACTIVE], on_send={"2": {"path": live.reg, "set": {"bridgeSessionId": "session_q"}}})
+        rc_, out, _ = board("session", "CP", "rc", "on")
+        self.assertEqual(rc_, 0, out)
+        self.assertEqual(live.bridge(), "session_q")
+        self.assertEqual(rc.load(HOME)["sessions"]["CP"]["state"], "on")
+
+
+class DoNotTrackTest(unittest.TestCase):
+    def setUp(self):
+        reset_home()
+        write_fleet()
+
+    def tearDown(self):
+        close_lives()
+
+    def test_blocked(self):
+        Live(env={"DO_NOT_TRACK": "1"})
+        script([IDLE])
+        rc_, out, _ = board("rc", "on", "CP")
+        self.assertEqual(rc_, 6, out)
+        self.assertIn("DO_NOT_TRACK", out)
+        self.assertEqual(sent(), [])
+        row = [s for s in jload(os.path.join(HOME, "snapshot.json"))["sessions"] if s["code"] == "CP"][0]
+        self.assertEqual((row["rc"]["blocked"], row["rc"]["pending"]), ("do_not_track", False))
+        self.assertEqual(actions.auto_candidates([row], rc.fleet.load_fleet(), HOME, rc.now_ms()), [])
+
+    def test_fleet_up_option(self):
+        write_fleet("rc:\n  unset_do_not_track: true", sessions="  - code: CP\n    cwd: %s\n" % TMP)
+        script([""])
+        rc_, out, _ = run(os.path.join(REPO, "bin", "fleet-up"), "--dry-run", "--only", "CP", env={"DO_NOT_TRACK": "1"})
+        self.assertIn("env -u DO_NOT_TRACK claude -n CP --remote-control CP", out)
+        write_fleet(sessions="  - code: CP\n    cwd: %s\n" % TMP)
+        rc_, out, _ = run(os.path.join(REPO, "bin", "fleet-up"), "--dry-run", "--only", "CP", env={"DO_NOT_TRACK": "1"})
+        self.assertNotIn("env -u", out)
+        rc_, out, _ = run(os.path.join(REPO, "bin", "fleet-up"), "--dry-run", "--only", "CP")
+        self.assertNotIn("env -u", out)
+
+
 class ScreenTest(unittest.TestCase):
-    cfg = dict(rc.fleet.DEFAULTS["rc"])
+    cfg = dict(rc.fleet.DEFAULTS["session_actions"])
 
     def lines(self, s):
         return s.split("\n")
 
     def test_idle(self):
-        self.assertIsNone(rc.idle_screen(self.lines(IDLE), self.cfg))
+        self.assertIsNone(actions.idle_screen(self.lines(IDLE), self.cfg))
 
     def test_typed_box(self):
-        i, text = rc.prompt_box(self.lines(TYPED), self.cfg)
+        i, text = actions.prompt_box(self.lines(TYPED), self.cfg)
         self.assertEqual(text, "/remote-control")
 
     def test_history_prompt_is_not_the_box(self):
         # the dialog hides the input box; the echoed "❯ /remote-control" above it is history
-        i, why = rc.prompt_box(self.lines(dialog("Continue")), self.cfg)
+        i, why = actions.prompt_box(self.lines(dialog("Continue")), self.cfg)
         self.assertIsNone(i)
 
     def test_focus(self):
-        self.assertEqual(rc._focused(self.lines(dialog("Show QR"))), "Show QR code   Scan with your phone to open this session")
+        self.assertEqual(actions._focused(self.lines(dialog("Show QR"))), "Show QR code   Scan with your phone to open this session")
 
 
 # ----------------------------------------------------------------------------- board-serve
@@ -614,6 +778,26 @@ class ServeTest(unittest.TestCase):
         with urllib.request.urlopen("http://127.0.0.1:%d/api/state" % self.port, timeout=5) as r:
             st = json.loads(r.read())
         self.assertEqual(st["rc"]["all"], "on")
+        # POST /api/sessions/<code>/action
+        act = "/api/sessions/CP/action"
+        for name, body, hdrs, path, want in (
+                ("bad action", {"action": "rm -rf"}, None, act, 400),
+                ("free text", {"action": "compact; ls"}, None, act, 400),
+                ("unknown session", {"action": "compact"}, None, "/api/sessions/NOPE/action", 404),
+                ("bad code", {"action": "compact"}, None, "/api/sessions/a%20b/action", 404),
+                ("no X-Board", {"action": "compact"}, {"X-Board": None}, act, 403),
+                ("cross origin", {"action": "compact"}, {"Origin": "https://evil.example"}, act, 403)):
+            with self.subTest(name):
+                status, resp = self.post(body, hdrs, path=path)
+                self.assertEqual(status, want, (name, resp))
+        self.assertEqual(actions.load_queue(HOME, {}), {})
+        status, resp = self.post({"action": "compact"}, path=act)
+        self.assertEqual(status, 200, resp)
+        self.assertEqual(actions.load_queue(HOME, {})["CP"]["by"], "board:local")
+        ev = [e for e in events("serve") if e.get("action") == "session-action"][-1]
+        self.assertEqual((ev["code"], ev["name"], ev["result"]), ("CP", "compact", "ok"))
+        status, resp = self.post({"action": "rc_off"}, path=act)
+        self.assertEqual((status, resp["rc"]["sessions"]), (200, {"CP": "off"}))
 
     def test_not_approver_and_no_approvers(self):
         for approvers, err in (("[boss@example.com]", "not_approver"), ("[]", "no_approvers")):
@@ -622,6 +806,9 @@ class ServeTest(unittest.TestCase):
                 self.start(approvers)
                 status, resp = self.post({"code": "CP", "state": "off"})
                 self.assertEqual((status, resp.get("error")), (403, err))
+                status, resp = self.post({"action": "compact"}, path="/api/sessions/CP/action")
+                self.assertEqual((status, resp.get("error")), (403, err))
+                self.assertEqual(actions.load_queue(HOME, {}), {})
                 self.assertFalse(os.path.exists(os.path.join(HOME, "rc-prefs.json")))
                 ev = self.serve_events()[-1]
                 self.assertEqual(ev["result"], "refused")

@@ -33,9 +33,12 @@ listeners (docs/contract.md, "Local adapter API"):
                                        the board page's heartbeat, recorded in presence.json)
   POST /api/alerts/ack                 {"scope": "all"}  (approvers only; the Deck panel's
                                        "acknowledge all", via `board ack --by board:<identity> '*'`)
-  POST /api/rc                         {"code": "CODE"|"all", "state": "on"|"off"}  (approvers
-                                       only; via `board rc on|off CODE|all --by board:<identity>
-                                       --no-apply`, then `board rc apply` in the background)
+  POST /api/sessions/<code>/action     {"action": "compact"|"rc_on"|"rc_off"}  (approvers only;
+                                       stored via `board session CODE compact --queue-only` /
+                                       `board rc on|off CODE --no-apply`, then `board session
+                                       apply` types the fixed command in the background)
+  POST /api/rc                         {"code": "CODE"|"all", "state": "on"|"off"}  (the same for
+                                       Remote Control, also for all sessions)
 
 --check prints the resolved settings and exits. --watch serves nothing: it prints one line per
 item the local-mode operator must relay (see prompts/board-operator.md, "Local mode").
@@ -64,6 +67,7 @@ import guard  # noqa: E402
 import limit  # noqa: E402
 import messages  # noqa: E402
 import notify  # noqa: E402
+import actions  # noqa: E402
 import prefs  # noqa: E402
 import rc  # noqa: E402
 import resources  # noqa: E402
@@ -105,7 +109,7 @@ FORWARD_HEADERS = ("Cf-Connecting-Ip", "Cf-Ray", "X-Forwarded-For", "Forwarded",
                    "X-Forwarded-Proto", "X-Real-Ip", "Cf-Visitor", "Cdn-Loop",
                    "Cf-Access-Authenticated-User-Email", "Cf-Access-Jwt-Assertion")
 SESSION_KEYS = ("code", "aliases", "state", "status", "tmux", "remote_url", "pending", "updated_at",
-                "title", "repo", "branch", "last_event", "notification_type", "recent", "rc")
+                "title", "repo", "branch", "last_event", "notification_type", "recent", "rc", "compact")
 # Card extras from cards.json (lib/cards.py). CARD_PRIVATE ones reach approvers only (state_for).
 CARD_KEYS = ("teammates", "meter", "done", "doing", "prompt", "branch", "state_since")
 CARD_PRIVATE = ("doing", "prompt")
@@ -384,7 +388,7 @@ class StateBuilder:
         paths = [self.p(n) for n in ("snapshot.json", "usage.json", "usage-samples.json", "account.json",
                                     "limit.json", "operator.json",
                                     "ledger.json", "events.jsonl", "owner-away", prefs.PREFS_FILE,
-                                    rc.PREFS_FILE, rc.APPLY_FILE)]
+                                    rc.PREFS_FILE, actions.QUEUE_FILE, actions.LAST_FILE)]
         paths.append(self.p("resources.json"))  # rewritten on a bucketed change, else every 60 s
         paths.append(self.p("cards.json"))      # card extras (lib/cards.py), rewritten when changed
         for sub in ("decisions", "tasks", "consensus"):
@@ -945,6 +949,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if path == "/api/rc":
                 body = self.read_body()
                 return self.set_rc(body, ident, via)
+            m = re.fullmatch(r"/api/sessions/([^/]+)/action", path)
+            if m:
+                body = self.read_body()
+                return self.action(urllib.parse.unquote(m.group(1)), body, ident, via)
             raise Refused(404, "not_found")
         except Refused as exc:
             return self.refuse(exc)
@@ -1318,43 +1326,61 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.hub_kick()
         return self.send_json(200, {"status": "ok", "acked": n})
 
+    def known_code(self, code):
+        if not isinstance(code, str) or not CODE_RE.fullmatch(code):
+            return False
+        snap = read_json(os.path.join(self.server.home, "snapshot.json")) or {}
+        known = {str(s.get("code")) for s in snap.get("sessions") or [] if isinstance(s, dict)}
+        known |= {s["code"] for s in fleet.load_fleet()["sessions"]}
+        return code in known
+
     def set_rc(self, body, ident, via):
-        """Remote Control on/off from the board: approvers only, through the board CLI (argv).
-        The choice is stored at once; applying it to the running sessions (typing into their
-        panes, seconds each) runs in the background (`board rc apply`), and the page follows it
-        through the snapshot."""
+        """POST /api/rc {code|"all", state}: Remote Control for one session or all of them. For
+        one session it is the same as POST /api/sessions/<code>/action {action: rc_on|rc_off}."""
         code, state = body.get("code"), body.get("state")
         if state not in ("on", "off"):
             raise Refused(400, "bad_state", "state must be \"on\" or \"off\"")
-        if not isinstance(code, str) or (code != "all" and not CODE_RE.fullmatch(code)):
-            raise Refused(400, "bad_code", "code must be a session code or \"all\"")
-        if code != "all":
-            snap = read_json(os.path.join(self.server.home, "snapshot.json")) or {}
-            known = {str(s.get("code")) for s in snap.get("sessions") or [] if isinstance(s, dict)}
-            known |= {s["code"] for s in fleet.load_fleet()["sessions"]}
-            if code not in known:
-                raise Refused(400, "bad_code", "no such session on this board")
-        by = self.approver(ident, via, "rc", what="change Remote Control", code=code, state=state)
-        with self.server.write_lock:
-            rcode, out, err = self.board("rc", state, code, "--by", "board:%s" % by, "--no-apply")
-            if rcode != 0:
-                log("board rc %s %s failed (rc %d): %s %s" % (state, code, rcode, err, out))
-                self.audit(ident, via, "rc", code=code, state=state, result="error", rc=rcode)
-                raise Refused(500, "rc_failed", "the Remote Control choice could not be saved")
-            self.audit(ident, via, "rc", code=code, state=state, result="ok")
-        self.apply_rc(code, by)
-        self.hub_kick()
-        return self.send_json(200, {"status": "ok", "rc": rc_state(self.server.home)})
+        if code != "all" and not self.known_code(code):
+            raise Refused(400, "bad_code", "code must be a session on this board or \"all\"")
+        return self.session_action(code, "rc_" + state, ident, via, route="rc")
 
-    def apply_rc(self, code, by):
-        """`board rc apply CODE|--pending` in the background: never blocks the request."""
-        argv = [BOARD, "rc", "apply", "--by", "board:%s" % by] + (["--pending"] if code == "all" else [code])
+    def action(self, code, body, ident, via):
+        """POST /api/sessions/<code>/action {action}: an allowlisted session action."""
+        name = body.get("action")
+        if name not in actions.ACTIONS:
+            raise Refused(400, "bad_action", "action must be one of %s" % ", ".join(sorted(actions.ACTIONS)))
+        if not self.known_code(code):
+            raise Refused(404, "not_found", "no such session on this board")
+        return self.session_action(code, name, ident, via)
+
+    def session_action(self, code, name, ident, via, route="action"):
+        """Approvers only. The choice (rc) or the queue entry (compact) is stored at once through
+        the board CLI (argv); typing into the pane (seconds, or until the session is idle) runs
+        in the background (`board session apply`), and the page follows it in the snapshot."""
+        audit_action = "rc" if route == "rc" else "session-action"
+        kw = {"code": code, "state": name[3:]} if route == "rc" else {"code": code, "name": name}
+        by = self.approver(ident, via, audit_action, what="run session actions", **kw)
+        if name == "compact":
+            argv = ["session", code, "compact", "--by", "board:%s" % by, "--queue-only"]
+        else:
+            argv = ["rc", name[3:], code, "--by", "board:%s" % by, "--no-apply"]
+        with self.server.write_lock:
+            rcode, out, err = self.board(*argv)
+            if rcode != 0:
+                log("board %s failed (rc %d): %s %s" % (" ".join(argv[:3]), rcode, err, out))
+                self.audit(ident, via, audit_action, result="error", rc=rcode, **kw)
+                raise Refused(500, "action_failed" if route != "rc" else "rc_failed", "the session action could not be stored")
+            self.audit(ident, via, audit_action, result="ok", **kw)
+        apply_argv = [BOARD, "session", "apply", "--by", "board:%s" % by,
+                      "--only", "compact" if name == "compact" else "rc"] + (["--pending"] if code == "all" else [code])
         try:
-            subprocess.Popen(argv, env=dict(os.environ, BOARD_HOME=self.server.home),  # noqa: S603
+            subprocess.Popen(apply_argv, env=dict(os.environ, BOARD_HOME=self.server.home),  # noqa: S603
                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                              start_new_session=True)
         except OSError as exc:
-            log("board rc apply could not start: %r" % exc)
+            log("board session apply could not start: %r" % exc)
+        self.hub_kick()
+        return self.send_json(200, {"status": "ok", "action": name, "code": code, "rc": rc_state(self.server.home)})
 
 
 class Server(http.server.ThreadingHTTPServer):
