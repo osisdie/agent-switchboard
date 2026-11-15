@@ -684,11 +684,17 @@ EOF2
 grep -q '^decision d-1-perm' <<<"$w" && bad "--watch skips permission decisions" "$w" || ok "--watch skips permission decisions"
 grep -q '^message m-1-a ' <<<"$w" && bad "--watch skips replied messages" "$w" || ok "--watch skips replied messages"
 "$REPO/bin/board-serve" --watch --tick 1 > "$T/watch.out" & wpid=$!
-sleep 0.5
+# Wait (bounded) for the watcher's first pass instead of a fixed sleep: under load it may start late.
+for _ in $(seq 1 100); do grep -q '^away off$' "$T/watch.out" 2>/dev/null && break; sleep 0.1; done
 echo '{"id":"m-3-late","to":"CP","body":"x","by":"local","created_at":9,"status":"new"}' > "$BOARD_HOME/messages/m-3-late.json"
 "$REPO/bin/board" away on --by CP --said "watch test" >/dev/null
 wcid="$("$REPO/bin/board" consensus propose --from CP --to API "watch test" 2>/dev/null)"
-sleep 2.2
+for _ in $(seq 1 100); do
+  grep -q '^tick$' "$T/watch.out" && grep -q "^consensus $wcid pending\$" "$T/watch.out" \
+    && grep -q '^away on$' "$T/watch.out" && grep -q '^message m-3-late new$' "$T/watch.out" && break
+  sleep 0.1
+done
+sleep 1.2  # one more poll and tick, so a line printed twice would show
 kill "$wpid" 2>/dev/null; wait "$wpid" 2>/dev/null
 eq "--watch prints a new message once" "$(grep -c '^message m-3-late new$' "$T/watch.out")" "1"
 eq "--watch reports the owner-away state, then its change" "$(grep -c '^away off$' "$T/watch.out")/$(grep -c '^away on$' "$T/watch.out")" "1/1"
@@ -720,9 +726,22 @@ grep -q "would run: tmux new-window -d -t =switchboard: -n serve " <<<"$out" \
 out="$(FAKE_SB=1 FAKE_SERVE_WIN=1 fu --dry-run)"
 grep -q "window switchboard:serve exists — skip" <<<"$out" && ! grep -q "would run" <<<"$out" \
   && ok "fleet-up leaves an existing serve window alone" || bad "fleet-up leaves an existing serve window alone" "$out"
-python3 -c 'import socket,sys,time; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(("127.0.0.1", int(sys.argv[1]))); s.listen(); time.sleep(5)' "$PORT" &
-lpid=$!; sleep 0.3
-out="$(fu --dry-run)"
+# The listener takes a port of its own (bind to 0) and writes it to a file only once it listens:
+# no free-port race with other processes, and no fixed sleep before fleet-up probes it.
+LPF="$T/listener.port"; rm -f "$LPF"
+python3 -c 'import os,socket,sys,time
+s = socket.socket(); s.bind(("127.0.0.1", 0)); s.listen()
+tmp = sys.argv[1] + ".tmp"
+open(tmp, "w").write(str(s.getsockname()[1])); os.replace(tmp, sys.argv[1])
+time.sleep(30)' "$LPF" &
+lpid=$!
+for _ in $(seq 1 50); do [ -s "$LPF" ] && break; sleep 0.1; done
+if [ -s "$LPF" ]; then
+  printf 'collector: false\nserve:\n  enabled: true\n  port: %s\nsessions: []\n' "$(cat "$LPF")" > "$BOARD_CONFIG_DIR/fleet.yaml"
+  out="$(fu --dry-run)"
+else
+  out="the test listener did not start within 5 s"
+fi
 kill "$lpid" 2>/dev/null; wait "$lpid" 2>/dev/null
 grep -q "already answers — skip" <<<"$out" && ok "fleet-up skips when the port already answers" || bad "fleet-up skips when the port answers" "$out"
 printf 'collector: false\nsessions: []\n' > "$BOARD_CONFIG_DIR/fleet.yaml"
