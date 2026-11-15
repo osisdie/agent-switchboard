@@ -44,7 +44,8 @@ def shots():
 def demo_html(keep_fonts=False):
     """board.html wrapped as a stand-alone page in demo mode."""
     with open(os.path.join(REPO, "artifact", "board.html"), encoding="utf-8") as fh:
-        body = fh.read()
+        # board.html's own charset line (for a page opened from disk): the head below declares it.
+        body = re.sub(r"\A<meta charset=\"utf-8\">[^\n]*\n", "", fh.read(), count=1)
     fonts = ""
     if keep_fonts:
         fonts = " https://fonts.googleapis.com"

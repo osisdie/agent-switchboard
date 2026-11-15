@@ -114,6 +114,10 @@ def main():
         check("build-site runs", r.returncode == 0, r.stderr[-400:])
         for f in ["index.html", "demo.html", ".nojekyll", "icon.svg", "favicon.png"] + ["assets/screenshots/" + w for w in want]:
             check("  site/" + f, os.path.isfile(os.path.join(site, f)))
+        with open(os.path.join(site, "demo.html"), "rb") as fh:
+            demo = fh.read()
+        check("  demo.html: one charset declaration, in the first 1024 bytes (board.html's own line dropped)",
+              demo.count(b"<meta charset=") == 1 and b'<meta charset="utf-8">' in demo[:1024])
 
         s = socket.socket()
         s.bind(("127.0.0.1", 0))
