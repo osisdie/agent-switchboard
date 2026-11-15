@@ -125,7 +125,10 @@ def redact:
          if (.b | test("[0-9]")) and (.b | test("[a-z]")) and (.b | test("[A-Z]"))
             and ((.b | split("/") | map(length) | max) >= 24) then "[REDACTED]" else .b end);
 # AskUserQuestion: questions and options as the picker shows them, redacted and clipped. `clipped`
-# is true when anything a human answers by (a question, an option label, a count) was cut short.
+# is true when anything was cut short (a question, a header, an option label, a count);
+# `labels_clipped` only when what an answer is matched by was: an option label, or options or
+# questions left out. A question or header cut short still lets the card be pressed: the press
+# checks the labels and the start of the question on screen, never the clipped tail.
 def qtext($n): (. // "") | tostring | gsub("[\u0000-\u001f\u007f-\u009f]+"; " ") | redact
   | if length > $n then {t: (.[0:$n - 1] + "…"), c: true} else {t: ., c: false} end;
 def qinfo:
@@ -136,10 +139,12 @@ def qinfo:
            | [ (.options // [])[0:10][]? | (if type == "object" then . else {label: .} end)
                | {l: (.label | qtext(80) | .t |= gsub("^\\s+|\\s+$"; "")), d: (.description | qtext(160))} ] as $os
            | { question: $q.t, header: $h.t, multiSelect: (.multiSelect == true),
+               question_clipped: $q.c, header_clipped: $h.c,
                options: [ $os[] | {label: .l.t, description: .d.t} ],
-               c: ($q.c or any($os[]; .l.c) or (((.options // []) | length) > 10)) } ] as $out
-      | { questions: [ $out[] | del(.c) ],
-          clipped: (any($out[]; .c) or ($qs | length) > 6) } end;
+               lc: (any($os[]; .l.c) or (((.options // []) | length) > 10)) } ] as $out
+      | { questions: [ $out[] | del(.lc) ],
+          labels_clipped: (any($out[]; .lc) or ($qs | length) > 6),
+          clipped: (any($out[]; .lc or .question_clipped or .header_clipped) or ($qs | length) > 6) } end;
 JQ
 
 update() {
@@ -169,7 +174,8 @@ update() {
     | ($in.tool_name // "") as $tn
     | (info($in | fullin; $sha)
        + (if $tn == "AskUserQuestion" then ($in | qinfo) as $qi
-            | if $qi == null then {} else {questions: $qi.questions, questions_clipped: $qi.clipped} end
+            | if $qi == null then {} else {questions: $qi.questions, questions_clipped: $qi.clipped,
+                                            labels_clipped: $qi.labels_clipped} end
           else {} end)) as $si
     | ($o.recent_pre // []) as $recent
     | ($o.pending // null) as $pend
@@ -202,7 +208,9 @@ update() {
                                ambiguous: ($p.ambiguous // false),
                                decision_id: ($p.decision_id // null) }
                              + (if $p.questions == null then {}
-                                else {questions: $p.questions, questions_clipped: ($p.questions_clipped // false)} end)
+                                else {questions: $p.questions, questions_clipped: ($p.questions_clipped // false),
+                                      labels_clipped: (if ($p | has("labels_clipped")) then $p.labels_clipped
+                                                       else ($p.questions_clipped // false) end)} end)
                         end) }
         elif $ev == "UserPromptSubmit" then {state: "working", pending: null}
         elif $ev == "Stop" or $ev == "StopFailure" then {state: "done", pending: null}
@@ -244,7 +252,12 @@ update() {
       ( if $new_dec == null then null
         elif $pending.tool_name == "AskUserQuestion" then
           ($pending.questions // []) as $qs
-          | ($qs | length == 1 and ($qs[0].multiSelect | not) and ($pending.questions_clipped // false | not)
+          # Pressable unless an option label (or an option or question) was cut short; a long
+          # question or header alone does not stop it. An older pending without labels_clipped
+          # counts any clipping, as before.
+          | (if ($pending | has("labels_clipped")) then $pending.labels_clipped
+             else ($pending.questions_clipped // false) end) as $labels_clipped
+          | ($qs | length == 1 and ($qs[0].multiSelect | not) and ($labels_clipped | not)
              and ($qs[0].options | length) >= 1 and ($qs[0].options | length) <= 8
              # repeated labels (case-insensitive) would make a label answer ambiguous
              and ([ $qs[0].options[].label | ascii_downcase ] | unique | length) == ($qs[0].options | length)
@@ -253,6 +266,7 @@ update() {
               question: (if ($qs | length) > 0 then $qs[0].question else ($pending.summary // "") end),
               options: (if ($qs | length) == 1 then [ $qs[0].options[].label ] else [] end),
               questions: $qs, questions_clipped: ($pending.questions_clipped // false),
+              labels_clipped: $labels_clipped,
               pressable: $pressable, context: null,
               tool_use_id: $pending.tool_use_id, tool_name: $pending.tool_name,
               summary: $pending.summary, summary_truncated: $pending.summary_truncated,

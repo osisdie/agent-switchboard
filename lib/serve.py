@@ -103,6 +103,7 @@ DECISION_KEYS = ("id", "kind", "from", "question", "options", "context", "tool_u
                  "summary", "status", "answer", "answered_by", "answered_at", "relayed_at",
                  "created_at", "updated_at", "task_id", "stage", "gate", "artifact_ref",
                  "escalation_level", "notified_via", "summary_truncated",
+                 "labels_clipped",
                  # pane questions (an AskUserQuestion picker): source "pane"
                  "source", "questions", "questions_clipped", "pressable", "answer_index", "relay")
 OPERATOR_KEYS = ("heartbeat_at", "version", "operator_session", "account_hint")
@@ -558,15 +559,44 @@ RESET_CSS = (":root{color-scheme:light;padding-top:env(safe-area-inset-top,0px);
              "img{max-width:100%}[hidden]{display:none!important}")
 
 
+_PAGE_VERSION = [(None, None)]  # [((mtime_ns, size), version)]: one tuple, replaced whole
+
+
+def file_version(raw):
+    """The version of board.html: a short hash of its bytes as they are on disk (CRLF included)."""
+    return hashlib.sha256(raw).hexdigest()[:12]
+
+
+def page_version():
+    """The version of artifact/board.html as it is now (cached by mtime and size). An open page
+    compares it with the version it was served with, to offer a reload after an update."""
+    try:
+        st = os.stat(PAGE)
+    except OSError:
+        return None
+    key = (st.st_mtime_ns, st.st_size)
+    cached_key, cached = _PAGE_VERSION[0]
+    if cached_key != key:
+        with open(PAGE, "rb") as fh:
+            cached = file_version(fh.read())
+        _PAGE_VERSION[0] = (key, cached)
+    return cached
+
+
 def render_page(nonce):
-    with open(PAGE, encoding="utf-8") as fh:
-        body = fh.read()
+    # The bytes are hashed as they are, then decoded: a text-mode read would turn CRLF into LF and
+    # give a version that never equals page_version(), so every load would offer a reload.
+    with open(PAGE, "rb") as fh:
+        raw = fh.read()
+    version = file_version(raw)
+    body = raw.decode("utf-8")
     # Every inline <script> (the pre-paint theme script and the app) gets the CSP nonce;
     # nothing else in the page is executable.
     body = body.replace("<script>", '<script nonce="%s">' % nonce)
     head = ('<!doctype html>\n<html lang="en"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">'
             '<meta name="board-mode" content="local">'
+            '<meta name="board-version" content="%s">' % version +
             # Home-screen app (local mode only: the Artifact page cannot serve these files).
             '<link rel="icon" href="/favicon.png" sizes="32x32" type="image/png">'
             '<link rel="apple-touch-icon" href="/apple-touch-icon.png">'
@@ -742,7 +772,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         cfg = fleet.load_fleet()
         state.update({"mode": "local", "me": ident, "writable": True,
                       "can_message": match_id(ident, sorted(deciders(cfg))) is not None,
-                      "account": self.account_for(ident, cfg)})
+                      "account": self.account_for(ident, cfg), "page_version": page_version()})
         return state
 
     def account_for(self, ident, cfg):

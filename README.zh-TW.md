@@ -365,14 +365,15 @@ toplevel 的名稱和目前的分支，絕不顯示路徑），以及它現在�
   就把它關掉。
 - **pane 裡的問題（AskUserQuestion）**：session 用 Claude Code 的提問選單問你時，卡片會寫「`<CODE>` asks:」
   加上問題，每個選項一個按鈕（標籤與說明），還有一個 **Type something** 欄位，不再是沒有意義的 Allow/Deny。
-  hook 會保留問題與選項（遮蔽機密、截短：問題 300、標籤 80、說明 160 字元）。只有一題且是單選時，點按鈕會執行
+  hook 會保留問題與選項（遮蔽機密、截短：問題 300、標籤 80、說明 160 字元）。問題被截短時會照存下的內容顯示並標上
+  **（已截短）**；只要每個選項標籤都完整，按鈕仍然可用，按下時會檢查畫面上的問題開頭和每一個標籤。只有一題且是單選時，點按鈕會執行
   `board answer`（把標籤對應到選項編號）和 `board press <CODE> answer --expect <tool_use_id>`，檢查與
   permission 按鍵相同：approver 的回答、同一個 pending `tool_use_id` 與雜湊、畫面上有選單
   （`press.question_regex`）而且看得到問題開頭（或每一個選項標籤）。選項會送出它的數字鍵，立即選定。
   自由文字（一行、≤200 字元）會先選 **Type something**，用 `send-keys -l` 原樣輸入，只有選單上被選取的 **Type something**
   那一列（`press.free_text_label`）出現這段文字才按 Enter。送出部分按鍵後檢查失敗，就不按 Enter，卡片會請你到 session
   裡完成（exit 5）。選項按鈕也會送出選項編號，必須和標籤一致；標籤重複的卡片只能看。
-  更長的回答改用 `[BOARD decision <id>]` 訊息送給 session。多題、複選或被截短的卡片只能看，請到 session 裡回答。
+  更長的回答改用 `[BOARD decision <id>]` 訊息送給 session。多題、複選或選項標籤被截短的卡片只能看，請到 session 裡回答。
   session 往下走之後，卡片會變成 stale。
 
 ### 訊息

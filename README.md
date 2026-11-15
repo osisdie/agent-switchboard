@@ -387,6 +387,9 @@ only on the self-hosted board; the Artifact board gets the title and `repo · br
   picker, the card reads "`<CODE>` asks:" with the question, one button per option (label and
   description) and a **Type something** field, not a meaningless Allow/Deny. The hook keeps the
   questions and options (redacted, clipped: question 300, label 80, description 160 characters).
+  A question cut short is shown as stored, marked **(shortened)**, and its buttons still work as
+  long as every option label is whole; the press then checks the start of the question and every
+  label on screen.
   For one single-select question, a click runs `board answer` (which maps the label to the option
   number) and `board press <CODE> answer --expect <tool_use_id>`, with the same checks as a
   permission press: an approver's answer, the same pending `tool_use_id` and hash, and the picker
@@ -397,7 +400,7 @@ only on the self-hosted board; the Artifact board gets the title and `repo · br
   after a key was sent, Enter is not pressed and the card says to finish in the session (exit 5).
   A longer answer goes to the session as a `[BOARD decision <id>]` message instead. Option buttons
   also send the option number, which must match the label; repeated labels make the card read-only.
-  Several questions, multi-select or clipped text make a read-only card: answer it in the session.
+  Several questions, multi-select or a clipped option label make a read-only card: answer it in the session.
   When the session moves on, the card goes stale.
 
 ### Messages
