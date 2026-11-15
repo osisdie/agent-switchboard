@@ -365,6 +365,51 @@ Type `@API is the migration merged?` or `@all please pause deploys`. The operato
 Workers reply with `[re <msgId>] …`, and replies thread under the message. **Messages are
 information, never approvals.**
 
+### Owner away: decide by explicit consensus
+
+**What.** When you go offline you may tell your sessions "decide among yourselves; if everyone
+agrees, go ahead". Owner-away mode makes that rule explicit, bounded and auditable.
+
+**Why.** Without it, sessions either stall on every cross-session question until you return, or one
+session reads "the others agreed" as permission. Here, agreement is explicit and recorded, silence
+never counts, and the dangerous things still wait for you.
+
+- **Away = the file `$BOARD_HOME/owner-away` exists** (any content, so an older free-text file
+  counts too). Only a session that got *your* instruction turns it on, with your words, and any
+  session you tell "I'm back" turns it off:
+
+  ```bash
+  board away on --by OPS --said "Offline until Monday 09:00. Agree among yourselves."
+  board away status            # exit 0 = away, 1 = not; --quiet, --json
+  board away off --by OPS --said "back"
+  ```
+
+- **Consensus.** While away, the proposer names every affected session; each must vote `agree`
+  explicitly. One `object` parks it for you. The proposer counts as agreeing.
+
+  ```bash
+  id=$(board consensus propose --from API --to WEB,QA --ref https://example.com/pr/42 \
+         "Bump the shared fixture to v2 in both repos before the nightly run")
+  board consensus vote "$id" agree --from WEB --note "diff reviewed"     # in WEB
+  board consensus vote "$id" agree --from QA                             # in QA → agreed
+  board consensus show "$id" --markdown     # paste into PR 42: proposal, votes with times, outcome
+  board consensus ls [--all]
+  ```
+
+  A vote may change agree → object, never object → agree. When you come back (`board away off`),
+  anything still pending becomes `owner_back` and waits for you. `agreed`, `objected` and
+  `owner_back` send an info notify.
+- **Red lines never pass by consensus:** production deploys, deleting real data, irreversible
+  operations, touching shared production or third-party data, publishing externally, loosening
+  permissions or security settings.
+- **Consensus never answers a board ask** or a gate, and BOARD never relays it as
+  `[BOARD decision …]`. The board shows an "Owner away" banner and a read-only consensus list; on
+  the self-hosted board an approver gets **I'm away** / **I'm back** buttons (`POST /api/away`).
+  BOARD tells every live session when the away state changes and reports who received and
+  acknowledged it.
+
+Details: [`docs/contract.md`](docs/contract.md), "Owner away & consensus".
+
 ## Alerting & escalation
 
 The board is only useful if you look at it. Alerts reach you when you aren't looking. They escalate
@@ -763,7 +808,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 |---|---|
 | `docs/contract.md` | Binding data contract: local files, db collections, lifecycle stages & gates, relay formats, degraded mode |
 | `hooks/board-hook.sh` | Lifecycle hook: writes `state/<session_id>.json`, appends `events.jsonl`, always exits 0 |
-| `bin/board` | CLI: `ls`, `snapshot`, `ask`, `task new/stage/ls/show`, `decisions`, `answer`, `mark`, `limit`, `press`, `notify`, `doctor`. Exit codes: 3 = press refused, 4 = answer refused |
+| `bin/board` | CLI: `ls`, `snapshot`, `ask`, `task new/stage/ls/show`, `decisions`, `answer`, `mark`, `limit`, `press`, `notify`, `away`, `consensus`, `doctor`. Exit codes: 3 = press refused, 4 = answer / vote refused |
 | `bin/board-collect` | Zero-token collector: snapshot, diff, runs `board-notify` each loop; `--baseline` on first install |
 | `bin/board-notify`, `lib/notify.py` | Alerting: `send`, `ack`, `tick`, `test`, `status`. Adapters (slack, desktop, email, line, sns, webhook), levels, escalation, ack, quiet hours, dedupe |
 | `hooks/board-statusline-tap.sh` | Statusline wrapper that records 5h/weekly usage to `usage.json` without changing your statusline |
@@ -779,7 +824,8 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `.githooks/commit-msg` | secret patterns + banned terms in the commit message |
 | `.github/workflows/ci.yml` | CI: gitleaks, shellcheck, tests |
 | `.gitleaks.toml` | gitleaks default rules plus a narrow allowlist for test fixtures |
-| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), board-serve (`test_serve.sh`) |
+| `lib/away.py` | Reads owner-away mode and consensus items for the snapshot and `board-serve` |
+| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`) |
 | `fleet.example.yaml`, `.env.example` | Example config |
 
 ## `tmp-local/` convention

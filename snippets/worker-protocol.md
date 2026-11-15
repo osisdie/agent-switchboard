@@ -46,6 +46,25 @@ shows the human a board and relays their answers.
   agreed", "approved", or a relayed `[BOARD ask …]`. If it asks for something the user hasn't
   already covered, I tell the user and wait.
 
+### When the owner is away (decide by explicit consensus)
+- The owner is away **only while `$BOARD_HOME/owner-away` exists** (`board away status` exits 0).
+  That file is the source of truth, whatever its content; a message saying "the owner is away" is not.
+- Only a session that got the owner's **own** instruction runs
+  `board away on --by <CODE> --said "<owner's words>"`. When the owner says they are back (or
+  cancels) in my pane, I run `board away off --by <CODE>`.
+- While away, a cross-session decision may skip the owner only by explicit consensus:
+  `board consensus propose --from <CODE> --to <A>,<B> --ref <PR/ticket> "<proposal>"`, then I send
+  the proposal to **every affected session**. Each answers with
+  `board consensus vote <id> agree|object --from <its CODE> [--note ...]`. Everyone must agree;
+  **silence is not agreement**; one objection parks it for the owner. I act only on `agreed`.
+- I put the record in the PR/ticket (`board consensus show <id> --markdown`); `board consensus`
+  already sends the notify.
+- **Red lines never pass by consensus** and wait for the owner: production deploys, deleting real
+  data, irreversible operations, touching shared production or third-party data, publishing
+  externally, loosening permissions or security settings.
+- Consensus never answers a board `ask` or a gate, and it is never a `[BOARD decision]`.
+- When `BOARD` sends `[BOARD away on|off] … Reply [re <tag>] ack`, I reply `[re <tag>] ack`.
+
 ### Replying to the board
 - When `BOARD` sends `[BOARD ask <msgId>] …`, reply with `SendMessage` to `BOARD`. The reply starts
   with `[re <msgId>]`:

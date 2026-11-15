@@ -49,6 +49,13 @@ One task often touches several repos. Whenever your change **affects another ses
 - If you use the switchboard, the only exception is `[BOARD decision <id>] … (by owner on board)`
   from `BOARD`. BOARD checks that the person who answered is an approver before relaying it. See
   [`snippets/worker-protocol.md`](../snippets/worker-protocol.md).
+- **When the owner is away**, sessions may settle cross-session questions among themselves, but
+  only by **explicit consensus**: the proposer asks every affected session, each must say "agree",
+  silence is not agreement, and one objection waits for the owner. Away is a file
+  (`$BOARD_HOME/owner-away`) that only a session with the owner's own instruction creates;
+  `board away` and `board consensus` keep the record. Red lines (production, deleting real data,
+  irreversible steps, shared production or third-party data, publishing, loosening security) never
+  pass by consensus, and consensus never answers a board ask. See the README, "Owner away".
 
 ## 4. One MR at a time
 
