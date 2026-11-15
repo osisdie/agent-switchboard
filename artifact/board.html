@@ -2062,9 +2062,17 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     else if (P && okState(P.all)) { want = P.all; explicit = true; }
     else if (r && okState(r.want)) { want = r.want; explicit = !P && (r.source === 'session' || r.source === 'all'); }
     const blocked = running && !on && !!r && r.blocked === 'do_not_track';
-    const pending = running && on !== null && explicit && (want === 'on') !== on && !str(s.code).includes('/') && !(blocked && want === 'on');
+    // The server knows whether the board still tries (a choice made after the session started,
+    // tried at most once per session process); a choice just made here counts until it reports.
+    const mismatch = running && on !== null && explicit && (want === 'on') !== on && !str(s.code).includes('/') && !(blocked && want === 'on');
+    const reported = r && (P ? r.at != null && r.at === choiceAt(P, s.code) : true);
+    const pending = reported ? mismatch && !!r.pending : mismatch;
     const last = r && r.last && typeof r.last === 'object' ? r.last : null;
     return { running, on, want, explicit, pending, blocked, last: last && last.want === want ? str(last.result) : '' };
+  }
+  function choiceAt(P, code) {
+    const e = P && P.at && typeof P.at === 'object' ? P.at : null;
+    return e ? (e[code] != null ? e[code] : e.all) : null;
   }
   function rcEditor() { return S.demo || (awayEditor() && !!adapter && typeof adapter.setRc === 'function'); }
   function rcChip(s) {
