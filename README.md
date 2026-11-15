@@ -622,10 +622,10 @@ included. Teammates are the separate `claude` processes a session starts in extr
 
 | Key | Level | When |
 |---|---|---|
-| `res:mem`, `res:swap`, `res:disk:<mount>` | warn → high | over `resources.thresholds` (hysteresis, 2-sample dwell); repeats hourly while open. Memory alerts name idle teammates to reclaim first |
+| `res:mem`, `res:swap`, `res:disk:<id>` | warn → high | over `resources.thresholds` (hysteresis, 2-sample dwell; swap only while memory is short); repeats hourly while open. Memory alerts name idle teammates to reclaim first |
 | `res:oom:<count>` | high | the kernel's OOM killer fired |
 | `res:idle-teammates:<code>` | info (warn under memory pressure) | a session's teammates idle past `resources.teammate_idle_minutes` (30) |
-| `operator:stale` | high → urgent after 30 min | the operator's heartbeat is over 10 min old, or `board-serve --watch` is not running while `serve.enabled`, and something waits to be relayed |
+| `operator:stale` | high → urgent after 30 min | with `serve.enabled`: the operator's heartbeat is over 10 min old, or `board-serve --watch` is not running, and an answer or message waits to be relayed |
 
 `operator:stale` closes the gap where an operator session dies quietly: before it, only the
 page's banner showed it. Raw numbers live in `resources.json`; the snapshot only carries the

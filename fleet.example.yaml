@@ -39,12 +39,13 @@ serve:
 
 # System resources (lib/resources.py): the collector samples memory, swap, load, disks, OOM kills
 # and each session's processes and teammates every `interval` seconds into resources.json. Alerts
-# res:mem / res:swap / res:disk:<mount> (warn -> high), res:oom:<n> and res:idle-teammates:<code>.
+# res:mem / res:swap / res:disk:<id> (warn -> high), res:oom:<n> and res:idle-teammates:<code>.
 # The board shows them; it never stops a process. `board resources` prints the last sample.
 # resources:
 #   enabled: true
 #   interval: 15
-#   disks: auto                 # BOARD_HOME + each live session's cwd; or a list of paths
+#   disks: auto                 # BOARD_HOME + each live session's cwd (network/FUSE mounts skipped);
+#                               # or a list of paths (always probed, 2 s budget)
 #   thresholds:                 # [warn, high]; critical = high for 2 samples, or an OOM kill
 #     mem_available_pct: [15, 8]
 #     mem_available_mb:  [2048, 1024]
@@ -56,9 +57,9 @@ serve:
 #   teammate_idle_minutes: 30   # a teammate idle this long is flagged (and alerted, info/warn)
 #   # process_classes: {test: "regex", browser: "regex", build: "regex", container: "regex"}
 
-# Operator health: operator:stale alerts (high, urgent after 30 min) when operator.json's heartbeat
-# is older than this, or board-serve --watch is not running while serve is enabled, and something
-# waits for the operator.
+# Operator health (local mode, serve.enabled): operator:stale alerts (high, urgent after 30 min)
+# when operator.json's heartbeat is older than this, or board-serve --watch is not running, and an
+# answer or message waits to be relayed.
 # schedule:
 #   operator_stale_minutes: 10
 

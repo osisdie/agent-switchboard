@@ -424,7 +424,7 @@ It prints one line per item that needs you, once each, and nothing while there i
 
 Keep this Monitor running. While `serve.enabled` is on, the collector raises `operator:stale`
 (high, urgent after 30 minutes) when no `board-serve --watch` process exists or the heartbeat is
-older than `schedule.operator_stale_minutes` (10) and something waits for you.
+older than `schedule.operator_stale_minutes` (10) while an answer or message waits for you.
 
 On every line, first re-read `operator.json`. If `operator_session` is no longer you, go passive
 (section 3): stop the Monitor and write nothing.

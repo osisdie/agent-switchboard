@@ -58,7 +58,7 @@ Map hook events to states like this:
   "decisions": [ { ...decision file... } ],
   "tasks": [ ... ], "limit": {...}|null,
   "owner_away": { "since": 0, "by": "CP", "said": "..." } | null,
-  "resources": { "level": "ok|warn|high|critical", "worst": "mem|swap|disk:<mount>|load|oom"|null } | null,
+  "resources": { "level": "ok|warn|high|critical", "worst": "mem|swap|disk:<id>|load|oom"|null } | null,
   "consensus": [ { "id": "c-...", "from": "CP", "participants": ["CP","API"], "ref": "...", "proposal": "...",
                    "status": "pending|agreed|objected|owner_back", "votes": [ {"by","vote","at","note"} ],
                    "created_at": 0, "updated_at": 0, "decided_at": 0|null } ] }
@@ -516,19 +516,20 @@ Claude Code's statusline input JSON carries `rate_limits.five_hour` and `rate_li
 ## Resources
 
 The collector (`lib/resources.py`, zero tokens) samples the machine every `resources.interval`
-seconds (default 15) into `$BOARD_HOME/resources.json`. It is rewritten only when a rounded value
-changed; `snapshot.json` carries only `{level, worst}`. The board shows it; **nothing in the board
+seconds (default 15) into `$BOARD_HOME/resources.json`. It is rewritten when a rounded value
+changed, and at least every 60 s so its `at` shows the sampler is alive; `snapshot.json` carries
+only `{level, worst}`. The board shows it; **nothing in the board
 ever stops a process**.
 
 ```json
 { "at": 0, "platform": "linux|wsl|darwin|other", "level": "ok|warn|high|critical", "worst": "mem"|null,
-  "levels": { "mem": "ok", "swap": "ok", "load": "ok", "disk:/": "ok", "oom": "critical" },
+  "levels": { "mem": "ok", "swap": "ok", "load": "ok", "disk:disk1": "ok", "oom": "critical" },
   "cpu": {"pct": 37, "ncpu": 16, "load": [1.2, 0.9, 0.8], "load_per_cpu": 0.08},
   "mem": {"total_mb": 0, "available_mb": 0, "available_pct": 0, "psi_some_avg60": 0.0},
   "swap": {"total_mb": 0, "used_pct": 0}, "oom_kills": 2, "oom_kills_delta": 0, "oom_recent": false,
   "last_oom_at": null,
-  "disks": [ {"mount": "/", "total_mb": 0, "free_mb": 0, "free_pct": 0, "level": "ok",
-              "labels": ["$BOARD_HOME", "API"]} ],
+  "disks": [ {"id": "disk1", "mount": "/", "total_mb": 0, "free_mb": 0, "free_pct": 0, "level": "ok",
+              "labels": ["$BOARD_HOME", "API"], "unresponsive": true?} ],
   "sessions": [ {"code": "API", "pid": 123, "rss_mb": 0, "cpu_pct": 0, "tree_rss_mb": 0, "heavy_n": 0,
      "classes": {"test": {"n": 1, "rss_mb": 0, "cpu_pct": 0}},
      "children": [ {"class": "test|build|browser|container|claude|other", "comm": "pytest", "pid": 0,
@@ -538,14 +539,14 @@ ever stops a process**.
      "teammates_n": 0, "teammates_rss_mb": 0, "idle_teammates_n": 0} ],
   "orphan_teammates": [ teammate rows whose parent session is not live ],
   "heavy_running": 1, "teammate_idle_minutes": 30, "operator": {"watch": true|false|null},
-  "unavailable": ["psi", "swap"], "interval": 15 }
+  "unavailable": ["psi", "swap", "disk"], "interval": 15, "config_errors": [] }
 ```
 
 - **Sources.** Linux/WSL: `/proc/{stat,loadavg,meminfo,vmstat,pressure/memory,uptime}` and
   `/proc/<pid>/{stat,cmdline}`. Elsewhere: `os.getloadavg()`, `statvfs` and `ps -axo
   pid=,ppid=,rss=,%cpu=,time=,etime=,args=`. A metric that cannot be read is listed in
-  `unavailable`, never reported as 0. CPU% is the delta against the previous sample (`null` on the
-  first one).
+  `unavailable`, never reported as 0. CPU% is the delta of cumulative CPU time (`/proc` ticks or
+  ps `time`) against the previous sample; on the first one it is `null` (ps: its own `%cpu`).
 - **Sessions.** Each live session's process tree is walked by ppid from its registry pid.
   `children` keeps the top 3 per class; `classes` sums all of them. `rss_mb`/`cpu_pct` are the
   claude process itself.
@@ -559,19 +560,31 @@ ever stops a process**.
   `teammate_idle_minutes` × 60.
 - **Classes** match `comm` plus the base names of the first argv words (a shell is never a test):
   test `pytest|jest|vitest|go test|cargo test|mvn|gradle`, build `tsc|webpack|vite build|cargo
-  build|docker build`, browser `chrome|chromium|firefox|headless_shell|playwright`, container
-  `docker|containerd`; `resources.process_classes` overrides or adds patterns. **Heavy** = test,
+  build|docker build`, container `docker|containerd`, and browser `chrome|chromium|firefox|headless_shell`
+  matched on `comm` alone (an idle Playwright MCP server mentions them in its argv but is not a
+  browser; `playwright test` is a test); `resources.process_classes` overrides or adds patterns. **Heavy** = test,
   build or browser, or RSS > 1 GiB; `heavy_running` counts heavy processes whose parent is not
   heavy (one browser = one).
 - **Privacy.** Command lines are matched and never stored (a teammate's argv carries keys): only
-  `comm`, the class and the teammate name leave the sampler. Disks list session codes and
-  `$BOARD_HOME`, never paths. `/api/state` and `meta/resources` also drop pids.
+  `comm`, the class and the teammate name leave the sampler. `/api/state` and `meta/resources`
+  drop pids and the local `mount`: a disk is an opaque id (`disk1`, stable across samples) with the
+  labels of what lives there (`$BOARD_HOME`, session codes, or `disks[i]` for configured paths),
+  and level keys, `worst` and alert keys use that id.
+- **Disks.** `resources.disks: auto` probes `$BOARD_HOME` and each live session's cwd; a list
+  probes those paths. nfs, cifs/smb, 9p, FUSE and similar mounts are skipped in `auto` (decided
+  from `/proc/self/mountinfo`, without touching the path). The probes run in threads with a 2 s
+  budget per sample; a path that does not answer is reported `unresponsive` (and `disk` in
+  `unavailable`) and is not probed again for 10 minutes.
 - **Levels.** Per metric, from `resources.thresholds` `[warn, high]`: `mem_available_pct`,
   `mem_available_mb`, `psi_mem_some_avg60` (the worst of the three is `mem`), `swap_used_pct`,
-  `load_per_cpu`, and per disk `disk_free_pct`/`disk_free_mb`. Hysteresis: a lower-is-worse value
-  leaves a level at threshold × 4/3 (enter at 15% available, leave at 20%), a higher-is-worse one
-  at threshold × 3/4. Dwell: a level changes after 2 equal samples in a row. `critical` = `high`
-  for 2 samples, or a new OOM kill (`oom`, held 10 minutes). `level`/`worst` are the maximum.
+  `load_per_cpu`, and per disk `disk_free_pct`/`disk_free_mb`. Swap counts only while `mem` is at
+  warn or worse (swap use alone is normal). Hysteresis: a lower-is-worse value leaves a level at
+  threshold × 4/3 (enter at 15% available, leave at 20%), a higher-is-worse one at threshold × 3/4.
+  Dwell, per direction: 2 samples in a row worse than the committed level move it up, 2 better
+  move it down, to the step of that streak closest to the committed level. `critical` = `high` for
+  2 samples, or a new OOM kill (`oom`, held 10 minutes; a counter that goes backwards after a
+  reboot counts from 0). `level`/`worst` are the maximum. A threshold that is not two numbers falls
+  back to its default and is listed in `config_errors` (and by `board doctor`).
 - **Operator watch.** `operator.watch` is whether a `board-serve --watch` (`serve.py --watch`)
   process exists. It is checked even with `resources.enabled: false` (then `resources.json` holds
   only `{at, enabled: false, platform, operator}`).
@@ -581,17 +594,18 @@ Alerts (in `notify.tick()`, auto-resolved when the condition is gone; a `resourc
 
 | key | level | notes |
 |---|---|---|
-| `res:mem`, `res:swap`, `res:disk:<mount>` | warn → high (resource high or critical) | no time-based escalation; repeats every `repeat_minutes`. Memory alerts name idle teammates to reclaim first and the largest heavy processes. |
+| `res:mem`, `res:swap`, `res:disk:<id>` | warn → high (resource high or critical) | no time-based escalation; repeats every `repeat_minutes`. Memory alerts name idle teammates to reclaim first and the largest heavy processes. |
 | `res:oom:<count>` | high | once per OOM kill |
-| `res:idle-teammates:<code>`, `res:orphan-teammates` | info; warn while memory, swap or OOM is at warn or worse | teammates idle past `teammate_idle_minutes` (default 30); no repeat |
-| `operator:stale` | high → urgent after 30 min | `operator.json` `heartbeat_at` older than `schedule.operator_stale_minutes` (10), or missing / no `board-serve --watch` while `serve.enabled`, **and** something waits for the operator (a decision pending or answered, a new message) |
+| `res:idle-teammates:<code>`, `res:orphan-teammates` | info; warn while memory (PSI included) or OOM is at warn or worse, never for swap alone | teammates idle past `teammate_idle_minutes` (default 30); no repeat |
+| `operator:stale` | high → urgent after 30 min | only with `serve.enabled` (local mode): `operator.json` `heartbeat_at` older than `schedule.operator_stale_minutes` (10) or missing, or no `board-serve --watch` process, **and** something waits for the operator: what `--watch` would hand it (an answered question or gate, not a permission prompt; a new message). A decision still pending waits on the owner, not the operator. In Artifact mode the heartbeat is in `meta/operator`, which the collector cannot read, so nothing is judged. Held in quiet hours until it turns urgent. |
 
 The page shows a "System 系統" header tile (memory and swap bars, load, CPU, fullest disk, heavy
 jobs, OOM count) and a Resources section (per session: claude RSS/CPU, processes by class with
 the top 3, teammates with idle ones flagged; orphaned teammates; disks; unavailable metrics). A
 red banner shows at `critical`, and in local mode when `operator.watch` is `false`.
 
-`board resources [--json|--mirror] [--refresh]` prints the last sample; `board doctor` reports
+`board resources [--json|--mirror] [--refresh]` prints the last sample (`--refresh`: a fresh one,
+written nowhere, so the collector's dwell state does not move); `board doctor` reports
 the platform, missing metrics, the sample's age and the operator watch.
 
 ## Owner away & consensus

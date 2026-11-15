@@ -265,23 +265,33 @@ PR 1 ships the incident fix even if the rest slips.
   code or alias equals `@<team>`; the rest are `orphan_teammates`. Each has `name, pid, rss_mb,
   cpu_pct, age_s, idle_s, idle` (class `teammate`). `idle_s` is the time since its subtree last used
   ≥ 1% CPU or started a process. Alert `res:idle-teammates:<code>` (and `res:orphan-teammates`) is
-  info, or warn while memory, swap or OOM is at warn or worse. Memory alerts at ≥ warn name the idle
+  info, or warn while memory (PSI included) or OOM is at warn or worse. Memory alerts at ≥ warn name the idle
   teammates to reclaim first. The board never kills anything.
 - **resources.json** adds `levels` (per metric), `oom_recent`/`last_oom_at`, `operator.watch` (the
   J6 input, checked even with `resources.enabled: false`), `teammate_idle_minutes` and per-session
-  `classes`, `tree_rss_mb`, `heavy_n`. Disks carry `labels` (`$BOARD_HOME` and session codes)
-  instead of `paths`, so no path reaches the board. Command lines are matched, never stored.
-- **ps fallback** reads `pid=,ppid=,rss=,%cpu=,time=,etime=,args=`: `time` gives CPU deltas for
-  teammate idle time, and `args` gives the teammate flags.
+  `classes`, `tree_rss_mb`, `heavy_n`, and `config_errors`. Disks are opaque ids (`disk1`, ...)
+  with `labels` (`$BOARD_HOME`, session codes) instead of `paths`; levels, `worst` and alert keys
+  (`res:disk:<id>`) use the id, so no path reaches the board or an alert. Command lines are matched,
+  never stored. resources.json is also rewritten at least every 60 s, so `at` stays fresh when
+  nothing changes (resources disabled included).
+- **Disks** are probed in threads with a 2 s budget; a path that hangs is `unresponsive` and left
+  alone for 10 minutes. nfs/cifs/9p/FUSE mounts are skipped (from mountinfo) unless configured.
+- **ps fallback** reads `pid=,ppid=,rss=,%cpu=,time=,etime=,args=`: CPU% (and teammate idle time)
+  comes from `time` deltas between samples, as on Linux; `%cpu` only fills the first sample. `args`
+  gives the teammate flags.
 - **Thresholds.** `mem` is the worst of available %, available MB and PSI; a disk is the worst of
-  free % and free MB. Hysteresis: lower-is-worse values leave a level at threshold × 4/3,
-  higher-is-worse ones at × 3/4. An OOM kill keeps `oom` critical for 10 minutes. Load affects the
+  free % and free MB. Swap counts only while `mem` is at warn or worse. Hysteresis: lower-is-worse
+  values leave a level at threshold × 4/3, higher-is-worse ones at × 3/4. Dwell counts a streak
+  per direction and moves to the closest step the streak sustained. An OOM kill keeps `oom`
+  critical for 10 minutes. Browsers are classed by `comm` alone. Load affects the
   level but raises no alert of its own (as in section 5).
 - **Heavy count.** `heavy_running` counts heavy processes whose parent is not heavy, so one browser
   (or one test runner and its workers) counts once. A shell running `pytest` is class `other`.
 - **operator:stale** uses the existing escalation (high, urgent after `escalate_minutes.urgent`,
   default 30). Like every non-urgent alert it is held during `alerting.quiet_hours` until it turns
-  urgent; section 3's quiet-hours exception is for schedule messages and lands with PR 3. It also
-  fires when `serve.enabled` is on and no `operator.json` exists yet.
-- **"Something is pending"** for J6 means a decision `pending` or `answered` (not yet relayed), or a
-  message with `status: "new"`.
+  urgent; section 3's quiet-hours exception is for schedule messages and lands with PR 3. It is
+  judged only with `serve.enabled` (local mode; it also fires when no `operator.json` exists yet).
+  In Artifact mode the heartbeat is in `meta/operator`, which the collector cannot read.
+- **"Something is pending"** for J6 means what `board-serve --watch` hands the operator: an
+  answered question or gate (not a permission prompt, which board-serve presses) or a message with
+  `status: "new"`. A decision still pending waits on the owner.
