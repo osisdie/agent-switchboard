@@ -539,9 +539,13 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 .u-pop p { margin: 0; }
 .u-pop .k { color: var(--muted); }
 .u-pop .u-acct { overflow-wrap: anywhere; }
-.u-pop .lvls { display: flex; flex-wrap: wrap; gap: 4px; }
-.u-pop .lvls .esc { opacity: .45; }
-.u-pop .lvls .esc.on { opacity: 1; box-shadow: 0 0 0 1.5px currentColor; }
+/* the threshold legend is a scale, not an alert: every step neutral, only the level reached in colour */
+.u-pop .lvls { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
+.u-pop .lvls .esc { background: none; color: var(--muted); box-shadow: inset 0 0 0 1px var(--rule); font-weight: 500; }
+.u-pop .lvls .esc.on { font-weight: 600; box-shadow: none; }
+.u-pop .lvls .esc.on.warn { background: var(--lamp-soft); color: var(--lamp-ink); }
+.u-pop .lvls .esc.on.high { background: var(--heat-soft); color: var(--heat); }
+.u-pop .lvls .esc.on.urgent { background: var(--deny); color: var(--panel); }
 /* header popovers (every tile, meter and pill): same look; placed by placePop() so they stay on screen */
 .u-pop ul { margin: 0; padding-left: 18px; display: grid; gap: 2px; }
 .u-pop .mono { font-family: var(--f-mono); font-size: 12px; font-weight: 600; }
@@ -1240,7 +1244,10 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   // The usage popover: both windows, when they reset, when reported, the threshold reached and the
   // account the sessions run on (the email only for approvers; board-serve decides, the Artifact
   // mirror never carries it).
-  const THRESHOLDS = [{ at: 80, cls: 'warn', key: 'heads-up' }, { at: 90, cls: 'high', key: 'prepare to switch' }, { at: 95, cls: 'urgent', key: 'switch now' }];
+  // KEY names the threshold reached ("Threshold:" line, as the alerts say it); LEGEND is the calmer
+  // wording of the scale shown under it.
+  const THRESHOLDS = [{ at: 80, cls: 'warn', key: 'heads-up', legend: 'heads-up' }, { at: 90, cls: 'high', key: 'prepare to switch', legend: 'plan a switch' },
+    { at: 95, cls: 'urgent', key: 'switch now', legend: 'switch accounts' }];
   function renderUsagePop() {
     const pop = $('#usage-pop');
     if (!pop || pop.hidden) return;
@@ -1258,7 +1265,8 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     pop.append(h('p', null, h('span', { class: 'k', text: tr('Updated: ') }), upd ? rel(upd) + ' (' + hhmm(upd) + ')' : tr('not reported yet')));
     const hit = THRESHOLDS.filter((x) => worst >= x.at).pop();
     pop.append(h('p', null, h('span', { class: 'k', text: tr('Threshold: ') }), worst < 0 ? tr('unknown') : hit ? hit.at + '% · ' + tr(hit.key) : tr('below 80% · fine')));
-    pop.append(h('div', { class: 'lvls', 'aria-hidden': 'true' }, THRESHOLDS.map((x) => h('span', { class: 'esc ' + x.cls + (hit === x ? ' on' : ''), text: x.at + '% · ' + tr(x.key) }))));
+    pop.append(h('div', { class: 'lvls' }, h('span', { class: 'k', text: tr('Alerts at: ') }),
+      THRESHOLDS.map((x) => h('span', { class: 'esc ' + x.cls + (hit === x ? ' on' : ''), text: x.at + '% · ' + tr(x.legend) }))));
     const a = S.account;
     const acct = a && a.email ? str(a.email) + (a.org ? ' · ' + str(a.org) : '') : tr(a && a.hidden ? 'hidden' : isLocal() || S.demo ? 'not reported' : 'hidden');
     pop.append(h('p', { class: 'u-acct' }, h('span', { class: 'k', text: tr('Account: ') }), acct));
@@ -4944,6 +4952,9 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       "Decisions →": "決策 →",
       "Resources →": "資源 →",
       "Notifications: {state}": "通知：{state}",
+      "Alerts at: ": "提醒門檻：",
+      "plan a switch": "規劃切換",
+      "switch accounts": "切換帳號",
     };
   }
 })();
