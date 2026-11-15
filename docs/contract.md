@@ -1171,7 +1171,9 @@ first key sends nothing:
 1. The session must be idle: registry status `idle`, and the hook state, corrected as in the
    snapshot, `done` or `rest`. A `working` or `needs-you` session → `deferred` ("will run when
    idle"), nothing sent.
-2. The pane must be this session's: `display-message '#{session_name}\t#{pane_pid}'` must answer,
+2. The process must still be the session: the registry's `procStart` equals the start time in
+   `/proc/<pid>/stat` (or, without it, `startedAt` is within 5 minutes of it), and it is not a
+   zombie. A reused pid → `offline`. The pane must be this session's: `display-message '#{session_name}\t#{pane_pid}'` must answer,
    name the registry's tmux session when the registry has one, and `#{pane_pid}` must be the
    session process or one of its ancestors (the `/proc/<pid>/stat` parent chain). This is checked
    whether or not the registry has `tmux`. The last `session_actions.lines` (30) lines of
@@ -1221,7 +1223,8 @@ A compact on a busy session is queued in `session-actions.json` (`{CODE: {action
 sid}}`). It runs once the session is idle, and is dropped when it is older than `queue_hours` (12),
 when it has no `sid` (an offline session is never queued: `offline`, nothing queued), or when the
 session restarted (another `sid`). It is also dropped after a final result, or after
-`max_tries` retries. `board session CODE cancel` drops it.
+`max_tries` retries of `refused` / `failed` (nothing was submitted). Once Enter was pressed it is
+never retried, `unconfirmed` included: a compact must not run twice. `board session CODE cancel` drops it.
 
 **Pending work.** The looping collector (`board-collect`, not `--once`) passes `--apply-rc`. When
 a session is idle with a pane, has something pending (a Remote Control choice it does not follow
@@ -1229,7 +1232,7 @@ yet, or a queued compact) and no action running on it, it starts `actions.py app
 CODE...` in the background. For the same session process and action (and, for Remote Control,
 the same choice), `--auto` never retries a final result (`confirmed`, `already`,
 `nothing`, `started`, `unavailable`, `consent`, `partial`). It retries `refused`, `unconfirmed`
-and `failed` after `retry_minutes` (10), at most `max_tries` (3) times. Turn it off with
+(Remote Control only) and `failed` after `retry_minutes` (10), at most `max_tries` (3) times. Turn it off with
 `BOARD_ACTIONS_AUTO=0` or `session_actions.auto_apply: false`.
 
 ## Remote Control
@@ -1262,15 +1265,26 @@ flag for a running session; the `/remote-control` slash command (alias `/rc`) to
   this session", "Show QR code", "Continue" (focused) and the footer "Enter to select · Esc to
   continue". The board presses Up one row at a time, checking the focused row (`❯ …`) on screen
   after each key (at most 4 moves), until "Disconnect this session" is focused. Then it presses
-  Enter: `⎿ Remote Control disconnected.`, and `bridgeSessionId` goes back to `null`. Anything
-  unexpected gets Escape ("Continue": Remote Control stays on) → `refused`. The disconnect label
-  (`rc_disconnect_label`, anchored: `^\s*❯?\s*Disconnect this session\s*$`) is matched against
-  the focused row only.
+  Enter: `⎿ Remote Control disconnected.`, and `bridgeSessionId` goes back to `null`. When the
+  focus cannot be moved there, Escape closes the dialog ("Continue": Remote Control stays on) →
+  `refused`. The disconnect label (`rc_disconnect_label`, anchored:
+  `^\s*❯?\s*Disconnect this session\s*$`) is matched against the focused row only.
 - **The registry is wrong.** If it says off while Claude is on, `/remote-control` opens the
   Disconnect dialog: the board presses Escape → `refused`. If it says on while Claude is off and
-  never consented, the consent dialog opens: Escape → `consent`. On every exit that is not
-  `confirmed`, when Claude's empty input box is not on screen, the board presses Escape (in
-  Claude's dialogs that is "Continue" / "Never mind": nothing changes). No dialog is left open.
+  never consented, the consent dialog opens: Escape → `consent`.
+- **When the board presses Escape.** Only into one of Claude's Remote Control dialogs, recognized
+  on screen: no input box anywhere, nothing running (`busy_regex`), and below the last echoed
+  command a dialog footer (`dialog_regex`, "Enter to select|confirm") with the dialog's own rows
+  above it (the whole row "Disconnect this session", or the consent dialog's title
+  `rc_consent_title_regex` and "Never mind"). In those dialogs Escape is "Continue" / "Never
+  mind": nothing changes. It never presses Escape into a running turn, text in the box, or any
+  other picker (the user's own `/model`, say): the result is then `unconfirmed` and nothing else
+  is sent. A consent dialog that does not look as expected is therefore left open, and the owner
+  closes it.
+- **Scrollback never decides.** "Unknown command: /remote-control" counts only when it appears
+  in the few lines right above the input box after Enter, and was not there before Enter. The
+  consent and Disconnect texts count only inside a recognized dialog. The same words higher up
+  in the scrollback change nothing.
 - **Not available:** with `DO_NOT_TRACK` set, not signed in to claude.ai, or turned off by
   policy, Claude ignores `--remote-control` and answers `Unknown command: /remote-control` →
   `unavailable`. When the session's process has `DO_NOT_TRACK` set, the board knows this up
@@ -1281,7 +1295,9 @@ toggle, `board session CODE rc on|off`) applies it at once to the idle sessions 
 board then tries each running session at most once per (choice, session process), and only when
 the choice is newer than the process: `rc.at` > the registry's `startedAt`. A session started
 after the choice got it from fleet-up (or was started by hand, and is left as it is). After that
-one try, its result kept in `actions-last.json` with `choice_at`, the board stops: a change made
+one try, its result kept in `actions-last.json` with `choice_at`, the board stops. A session that
+already follows the choice when it is made (also with `--no-apply`, and for `all`) counts as tried
+at once (`already`). From then on a change made
 in the session by hand, for example someone disconnecting from the phone, wins until the owner
 makes a choice again. A refused try is retried up to `max_tries`; then the board gives up as
 well. `pending` (the dashed chip) is true only while the board still means to try. An explicit
