@@ -542,7 +542,13 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 .u-pop .lvls { display: flex; flex-wrap: wrap; gap: 4px; }
 .u-pop .lvls .esc { opacity: .45; }
 .u-pop .lvls .esc.on { opacity: 1; box-shadow: 0 0 0 1.5px currentColor; }
-@media (max-width: 480px) { .u-pop { left: auto; right: 0; } }
+/* header popovers (every tile, meter and pill): same look; placed by placePop() so they stay on screen */
+.u-pop ul { margin: 0; padding-left: 18px; display: grid; gap: 2px; }
+.u-pop .mono { font-family: var(--f-mono); font-size: 12px; font-weight: 600; }
+.u-pop .golink { font: inherit; font-weight: 600; color: var(--cord); background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline; text-align: left; }
+.hpill, .demo-tag[tabindex], #op-pill, .meter[tabindex] { cursor: default; }
+.hpill:focus-visible, .demo-tag:focus-visible, #op-pill:focus-visible, .meter:focus-visible, .needs-tile:focus-visible, .sys:focus-visible { outline: 2px solid var(--cord); outline-offset: 2px; }
+.hpill.away { color: var(--lamp-ink); background: var(--lamp-soft); border-color: color-mix(in srgb, var(--lamp) 40%, var(--rule)); }
 .u-row.lvl-amber { --u: var(--lamp-glow); }
 .u-row.lvl-amber .u-p { color: var(--lamp); }
 .u-row.lvl-orange { --u: var(--heat); }
@@ -814,8 +820,10 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     <div class="brand">
       <div class="brand-row">
         <h1>Agent Switchboard</h1>
-        <span class="demo-tag" id="demo-tag" hidden data-i18n>DEMO DATA</span>
-        <span class="pill unknown" id="op-pill"><span class="lamp"></span><span id="op-text">Connecting…</span></span>
+        <span class="demo-tag" id="demo-tag" tabindex="0" hidden data-i18n>DEMO DATA</span>
+        <span class="pill unknown" id="op-pill" tabindex="0"><span class="lamp"></span><span id="op-text">Connecting…</span></span>
+        <span class="pill hpill away" id="away-pill" tabindex="0" hidden><span class="lamp working" aria-hidden="true"></span><span data-i18n>Owner away</span></span>
+        <span class="pill hpill" id="notif-pill" tabindex="0" hidden><span class="nlamp" id="notif-pill-lamp" aria-hidden="true"></span><span id="notif-pill-t"></span></span>
       </div>
       <p data-i18n>Every Claude Code session on one panel. Answer what is waiting, see who is working, and send a note to any session.</p>
     </div>
@@ -826,9 +834,9 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
         <span class="s" id="needs-sub" data-i18n>Nothing waiting</span>
       </a>
       <div class="meter-group" aria-label="Sessions by state" data-i18n-attr="aria-label">
-        <div class="meter"><span class="n"><span class="lamp working"></span><span id="m-working">0</span></span><span class="l" data-i18n>Working</span></div>
-        <div class="meter"><span class="n"><span class="lamp done"></span><span id="m-done">0</span></span><span class="l" data-i18n>Done / idle</span></div>
-        <div class="meter"><span class="n"><span class="lamp offline"></span><span id="m-offline">0</span></span><span class="l" data-i18n>Offline</span></div>
+        <div class="meter" id="mt-working" tabindex="0"><span class="n"><span class="lamp working"></span><span id="m-working">0</span></span><span class="l" data-i18n>Working</span></div>
+        <div class="meter" id="mt-done" tabindex="0"><span class="n"><span class="lamp done"></span><span id="m-done">0</span></span><span class="l" data-i18n>Done / idle</span></div>
+        <div class="meter" id="mt-offline" tabindex="0"><span class="n"><span class="lamp offline"></span><span id="m-offline">0</span></span><span class="l" data-i18n>Offline</span></div>
       </div>
       <div class="usage" id="usage" tabindex="0" aria-label="Claude usage against limits" aria-describedby="usage-pop" data-i18n-attr="aria-label">
         <div class="u-title"><span data-i18n>Claude usage</span><span id="u-upd"></span></div>
@@ -1255,27 +1263,56 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     const acct = a && a.email ? str(a.email) + (a.org ? ' · ' + str(a.org) : '') : tr(a && a.hidden ? 'hidden' : isLocal() || S.demo ? 'not reported' : 'hidden');
     pop.append(h('p', { class: 'u-acct' }, h('span', { class: 'k', text: tr('Account: ') }), acct));
   }
-  (() => {
-    const box = $('#usage'), pop = $('#usage-pop');
-    let touch = false;
-    const show = () => { if (pop.hidden) { pop.hidden = false; renderUsagePop(); } };
+  // Header popovers: every tile, meter and pill in the header explains its number the same way.
+  // Hover (mouse) or focus opens one, Escape or leaving closes it; on touch a tap toggles it and a
+  // tap anywhere else closes it. A tile that is a link only opens its popover on a tap (the
+  // popover links on); a click or Enter still follows the link. One is open at a time.
+  const HPOPS = [];
+  function placePop(box, pop) {
+    pop.style.left = '0px'; pop.style.top = '0px';
+    const par = pop.offsetParent || document.body, pr = par.getBoundingClientRect(), br = box.getBoundingClientRect();
+    const vw = document.documentElement.clientWidth, gut = 16;
+    const x = Math.max(gut, Math.min(br.left, vw - gut - pop.offsetWidth));
+    pop.style.left = Math.round(x - pr.left) + 'px';
+    pop.style.top = Math.round(br.bottom + 8 - pr.top) + 'px';
+  }
+  function hidePops(except) { for (const o of HPOPS) if (o !== except) o.pop.hidden = true; }
+  function attachPop(box, pop, render) {
+    const P = { box, pop, render, touch: false, tapped: false, timer: 0 };
+    HPOPS.push(P);
+    box.setAttribute('aria-describedby', pop.id);
+    const inside = (n) => n instanceof Node && (box.contains(n) || pop.contains(n));
+    P.paint = () => { if (!pop.hidden && !pop.contains(document.activeElement)) { render(pop); placePop(box, pop); } };
+    const show = () => { clearTimeout(P.timer); if (!pop.hidden) return; hidePops(P); pop.hidden = false; render(pop); placePop(box, pop); };
     const hide = () => { pop.hidden = true; };
-    box.addEventListener('pointerenter', (e) => { if (e.pointerType === 'mouse') show(); });
-    box.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse' && document.activeElement !== box) hide(); });
-    box.addEventListener('focus', () => { if (!touch) show(); });
-    box.addEventListener('blur', () => { if (!touch) hide(); });
+    for (const el of [box, pop]) {
+      el.addEventListener('pointerenter', (e) => { if (e.pointerType === 'mouse') show(); });
+      el.addEventListener('pointerleave', (e) => {
+        if (e.pointerType !== 'mouse') return;
+        clearTimeout(P.timer);
+        P.timer = setTimeout(() => { if (!inside(document.activeElement)) hide(); }, 80);
+      });
+    }
+    box.addEventListener('focus', () => { if (!P.touch) show(); });
+    box.addEventListener('focusout', (e) => { if (!P.touch && !inside(e.relatedTarget)) hide(); });
+    pop.addEventListener('focusout', (e) => { if (!inside(e.relatedTarget)) hide(); });
     box.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !pop.hidden) { e.preventDefault(); hide(); } });
-    // Touch: a tap toggles it, a tap anywhere else closes it.
     box.addEventListener('pointerdown', (e) => {
       if (e.pointerType === 'mouse') return;
-      touch = true;
+      P.touch = true; P.tapped = true;
       if (pop.hidden) show(); else hide();
-      setTimeout(() => { touch = false; }, 400);
+      setTimeout(() => { P.touch = false; }, 400);
     });
-    document.addEventListener('pointerdown', (e) => { if (!pop.hidden && !(e.target instanceof Element && e.target.closest('#usage'))) hide(); });
-    // Escape closes it wherever the focus is (it may have opened on hover).
-    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !pop.hidden) hide(); });
-  })();
+    box.addEventListener('click', (e) => { if (P.tapped) { P.tapped = false; e.preventDefault(); } });
+    return P;
+  }
+  document.addEventListener('pointerdown', (e) => {
+    for (const o of HPOPS) if (!o.pop.hidden && !(e.target instanceof Node && (o.box.contains(e.target) || o.pop.contains(e.target)))) o.pop.hidden = true;
+  });
+  // Escape closes them wherever the focus is (one may have opened on hover).
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hidePops(null); });
+  function refreshPops() { for (const o of HPOPS) o.paint(); }
+  attachPop($('#usage'), $('#usage-pop'), () => renderUsagePop());
 
   function switchAdvice() {
     if (!(S.mode === 'live' || S.mode === 'demo')) return null;
@@ -1440,9 +1477,124 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     $('#nav-appr').textContent = S.approvals.length;
     document.title = a.total ? '(' + a.total + ') Agent Switchboard' : 'Agent Switchboard';
     renderDeck();
+    refreshPops();
+  }
+
+  // The away and notification pills in the header (their popovers say more).
+  function renderPills() {
+    $('#away-pill').hidden = !S.away;
+    const np = $('#notif-pill'), N = S.notify && typeof S.notify === 'object' ? S.notify : null, muted = activeMutes();
+    np.hidden = !N;
+    $('#notif-pill-lamp').className = 'nlamp' + (muted.length ? ' muted' : '');
+    $('#notif-pill-t').textContent = !muted.length ? tr('Push on') : muted.some((m) => m.target === 'all') ? tr('All muted') : tr('{n} muted', { n: muted.length });
+  }
+  const popLine = (k, ...v) => h('p', null, h('span', { class: 'k', text: k }), ...v);
+  const sinceOf = (s) => (s.card && ts(s.card.state_since)) || ts(s.updated_at) || 0;
+  function needsPop(pop) {
+    pop.textContent = '';
+    const t = hitlTargets(), now = Date.now();
+    if (!t.length) { pop.append(h('p', { text: tr('Nothing is waiting.') })); return; }
+    const who = (x) => (x.dec ? str(x.dec.from) : str(x.session.code)) || '?';
+    pop.append(popLine(tr('Waiting: '), tr(t.length === 1 ? '{n} item, longest first' : '{n} items, longest first', { n: t.length })));
+    pop.append(h('ul', null, t.slice(0, 8).map((x) => h('li', null, h('span', { class: 'mono', text: who(x) }),
+      ' · ' + tr('waiting for a {kind}', { kind: tr(x.kind) }) + ' · ' + compactDur(now - x.since))),
+      t.length > 8 ? h('li', { class: 'k', text: tr('+{n} more', { n: t.length - 8 }) }) : null));
+    const o = t[0];
+    pop.append(popLine(tr('Oldest: '), h('button', { class: 'golink', type: 'button', id: 'needs-pop-go',
+      onclick: () => { hidePops(null); revealTarget(o); }, text: tr('{who}, waiting {t} →', { who: who(o), t: compactDur(now - o.since) }) })));
+  }
+  function statePop(col) {
+    return (pop) => {
+      pop.textContent = '';
+      const now = Date.now();
+      const list = S.sessions.filter((s) => colOf(s) === col).sort((a, b) => sinceOf(a) - sinceOf(b));
+      if (!list.length) { pop.append(h('p', { text: tr('No sessions in this state.') })); return; }
+      pop.append(popLine(tr('Sessions: '), String(list.length) + (col === 'offline' ? '' : ' · ' + tr('longest in this state first'))));
+      pop.append(h('ul', null, list.slice(0, 8).map((s) => {
+        const t = sinceOf(s), title = str(s.title) || str(s.task);
+        return h('li', null, h('span', { class: 'mono', text: str(s.code) }),
+          ' · ' + (!t ? tr('time unknown') : col === 'offline' ? tr('last seen {ago}', { ago: rel(t) }) : tr('for {t}', { t: compactDur(now - t) })),
+          title ? ' · ' + (title.length > 60 ? title.slice(0, 59) + '…' : title) : '');
+      }), list.length > 8 ? h('li', { class: 'k', text: tr('+{n} more', { n: list.length - 8 }) }) : null));
+    };
+  }
+  function sysPop(pop) {
+    pop.textContent = '';
+    const r = resView();
+    if (!r) { pop.append(h('p', { text: tr('No resource data yet.') })); return; }
+    const levels = r.levels && typeof r.levels === 'object' ? r.levels : {};
+    const lv = (k) => (resLvl(levels[k]) ? ' · ' + trKnown(resLvl(levels[k]), RES_LEVELS) : '');
+    const lvl = resLvl(r.level) || 'ok';
+    pop.append(popLine(tr('Level: '), trKnown(lvl, RES_LEVELS) + (r.worst ? ' · ' + tr('worst: {what}', { what: metricName(r.worst, r) }) : '')));
+    const m = r.mem || {}, sw = r.swap || {}, c = r.cpu || {};
+    pop.append(popLine(tr('Memory: '), m.available_pct == null ? tr('not available here')
+      : tr('{pct}% used', { pct: Math.round(100 - Number(m.available_pct)) }) + (m.available_mb != null ? ' · ' + tr('{free} free of {total}', { free: fmtMb(m.available_mb), total: fmtMb(m.total_mb) }) : '') + lv('mem')));
+    pop.append(popLine(tr('Swap: '), sw.used_pct == null ? tr('not available here') : tr('{pct}% used', { pct: Math.round(Number(sw.used_pct)) }) + lv('swap')));
+    if (Array.isArray(c.load)) pop.append(popLine(tr('Load: '), c.load.slice(0, 3).map((x) => Number(x).toFixed(2)).join(' / ') + (c.ncpu ? ' · ' + tr('{n} cpu', { n: c.ncpu }) : '') + (c.pct != null ? ' · CPU ' + c.pct + '%' : '') + lv('load')));
+    const disks = objs(r.disks).filter((d) => d.free_pct != null).sort((a, b) => Number(a.free_pct) - Number(b.free_pct)).slice(0, 4);
+    if (disks.length) pop.append(popLine(tr('Disks: '), disks.map((d) => ((d.labels || []).map(str).filter(Boolean).join(', ') || str(d.id) || '?') + ' ' + tr('{pct}% free', { pct: d.free_pct })).join(' · ')));
+    pop.append(popLine(tr('OOM kills since boot: '), r.oom_kills == null ? tr('unknown') : String(r.oom_kills) + (r.oom_recent ? ' · ' + tr('one was recent') : '')));
+    pop.append(popLine(tr('Heavy jobs: '), String(r.heavy_running || 0)));
+    const idle = idleGroups(r), nIdle = idle.reduce((n, g) => n + g.idle.length, 0);
+    pop.append(popLine(tr('Idle teammates: '), nIdle ? String(nIdle) + ' · ' + idle.map((g) => (g.code || tr('no session')) + ' ' + g.idle.length).join(', ') : '0'));
+    pop.append(popLine(tr('Sampled: '), ts(r.at) ? rel(ts(r.at)) + ' (' + hhmm(ts(r.at)) + ')' : tr('unknown')));
+  }
+  function opPop(pop) {
+    pop.textContent = '';
+    const op = S.operator || {}, hb = ts(op.heartbeat_at);
+    pop.append(popLine(tr('Board: '), tr(S.demo ? 'demo data, on this page only' : isLocal() ? 'self-hosted (board-serve)' : 'claude.ai Artifact, mirrored by the operator')));
+    pop.append(popLine(tr('Last heartbeat: '), hb ? rel(hb) + ' (' + hhmm(hb) + ')' : tr('operator not seen yet')));
+    const w = S.resources && S.resources.operator && S.resources.operator.watch;
+    pop.append(popLine(tr('Operator watch: '), tr(w === true ? 'running' : w === false ? 'not running' : 'unknown')));
+    if (op.version) pop.append(popLine(tr('Version: '), str(op.version)));
+    pop.append(h('p', { class: 'k', text: tr('Counted offline after {m} minutes without a heartbeat.', { m: Math.round(STALE_MS / 60000) }) }));
+  }
+  function notifPop(pop) {
+    pop.textContent = '';
+    const N = S.notify && typeof S.notify === 'object' ? S.notify : null;
+    if (!N) { pop.append(h('p', { text: tr('No notification settings reported yet.') })); return; }
+    const mutes = activeMutes(), byT = new Map(mutes.map((m) => [m.target, m])), all = byT.get('all');
+    if (all) pop.append(h('p', { text: tr(all.include_urgent ? 'All push muted {until}, urgent too.' : 'All push muted {until}; urgent still breaks through.', { until: untilText(all.until) }) }));
+    pop.append(h('ul', null, NCHANNELS.map(([c, name]) => h('li', null, h('span', { class: 'mono', text: tr(name) }), ' · ' + chanState(N, c, byT.get(c), all)))));
+    const P = N.presence || {};
+    if (P.reduce === true) pop.append(popLine(tr('While watching: push from') + ' ', trKnown(str(P.min_level) || 'high', LEVELS)));
+    pop.append(h('p', null, h('button', { class: 'golink', type: 'button', onclick: () => { hidePops(null); openNotif(); }, text: tr('Notification settings →') })));
+  }
+  function awayPop(pop) {
+    pop.textContent = '';
+    const a = S.away;
+    if (!a) { pop.append(h('p', { text: tr('The owner is here.') })); return; }
+    const since = ts(a.since), pend = S.consensus.filter((c) => c.status === 'pending').length;
+    pop.append(popLine(tr('Since: '), since ? hhmm(since) + ' (' + rel(since) + ')' : tr('unknown')));
+    if (a.by) pop.append(popLine(tr('Set by: '), str(a.by)));
+    if (a.said) pop.append(h('p', { text: '“' + str(a.said) + '”' }));
+    pop.append(popLine(tr('Pending consensus: '), String(pend)));
+    pop.append(h('p', null, h('button', { class: 'golink', type: 'button', onclick: () => { hidePops(null); goSection('consensus'); }, text: tr('Consensus →') })));
+  }
+  function demoPop(pop) {
+    pop.textContent = '';
+    pop.append(h('p', { text: tr('Sample data, on this page only: answers, messages and settings go nowhere.') }));
+  }
+  function wirePops() {
+    const pop = (box, id, render, where) => {
+      const el = h('div', { class: 'u-pop', id, role: 'tooltip', hidden: true });
+      (where || box).after(el);
+      attachPop(box, el, render);
+    };
+    pop($('#demo-tag'), 'demo-pop', demoPop);
+    pop($('#op-pill'), 'op-pop', opPop);
+    pop($('#away-pill'), 'away-pop', awayPop);
+    pop($('#notif-pill'), 'notif-pop', notifPop);
+    pop($('#needs-tile'), 'needs-pop', needsPop);
+    const group = $('#mt-working').parentElement;
+    pop($('#mt-working'), 'working-pop', statePop('working'), group);
+    pop($('#mt-done'), 'done-pop', statePop('done'), group);
+    pop($('#mt-offline'), 'offline-pop', statePop('offline'), group);
+    pop($('#sys'), 'sys-pop', sysPop);
   }
 
   function renderBanners() {
+    renderPills(); refreshPops();
     const box = $('#banners'); box.textContent = '';
     const lim = limitText();
     if (S.away) {
@@ -2302,6 +2454,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   function renderResources() {
     const r = resView();
     renderSystem(r);
+    refreshPops();
     const groups = r ? idleGroups(r) : [];
     const nIdle = groups.reduce((n, g) => n + g.idle.length, 0);
     const nb = $('#nav-res'); nb.textContent = nIdle;
@@ -2554,6 +2707,15 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     }
     return {};
   }
+  // One channel's push state, as the notification dialog and the header popover show it.
+  function chanState(N, c, m, all) {
+    const eff = N.effective_min_level || {}, chans = N.channels || {};
+    // Urgent is stopped when either mute in force (the channel's or "all") includes it.
+    const urgentToo = !!((m && m.include_urgent) || (all && all.include_urgent));
+    return chans[c] === false ? tr('not configured') : all && !m ? tr('muted by "all"') + tr(urgentToo ? ', urgent too' : ' · urgent gets through')
+      : m ? tr('muted {until}', { until: untilText(m.until) }) + tr(urgentToo ? ', urgent too' : ' · urgent gets through')
+      : tr('on · {floor}', { floor: tr((eff[c] || 'info') === 'urgent' ? '{level} only' : '{level} and up', { level: trKnown(eff[c] || 'info', LEVELS) }) });
+  }
   function renderNotifButton() {
     const lamp = $('#notif-lamp'), label = $('#notif-label'), muted = activeMutes();
     lamp.className = 'nlamp' + (!S.notify ? ' unknown' : muted.length ? ' muted' : '');
@@ -2596,7 +2758,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
           : h('button', { class: 'btn primary', type: 'button', id: 'notif-mute-all', disabled: dis || null, onclick: () => setNotify(muteBody('all')), text: tr('Mute all') })),
       h('div', { class: 'nf-line' }, h('label', { for: 'notif-dur', text: tr('Mute') }), durSel,
         h('label', { class: 'chk' }, urg, tr('include urgent (no breakthrough)')))));
-    const eff = N.effective_min_level || {}, floors = N.min_level || {}, chans = N.channels || {};
+    const floors = N.min_level || {}, chans = N.channels || {};
     const floorOpts = (t) => {
       const f = floors[t] || {};
       const def = f.source === 'config' ? tr('default ({level}, fleet.yaml)', { level: trKnown(f.level, LEVELS) }) : tr('default ({level})', { level: tr(f.source === 'prefs' ? 'remove' : 'info') });
@@ -2606,11 +2768,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     const rows = h('ul', { class: 'nf-rows' });
     for (const [c, name] of NCHANNELS) {
       const m = byT.get(c), off = chans[c] === false;
-      // Urgent is stopped when either mute in force (the channel's or "all") includes it.
-      const urgentToo = !!((m && m.include_urgent) || (all && all.include_urgent));
-      const state = off ? tr('not configured') : all && !m ? tr('muted by "all"') + tr(urgentToo ? ', urgent too' : ' · urgent gets through')
-        : m ? tr('muted {until}', { until: untilText(m.until) }) + tr(urgentToo ? ', urgent too' : ' · urgent gets through')
-        : tr('on · {floor}', { floor: tr((eff[c] || 'info') === 'urgent' ? '{level} only' : '{level} and up', { level: trKnown(eff[c] || 'info', LEVELS) }) });
+      const state = chanState(N, c, m, all);
       rows.append(h('li', { class: 'nf-row', id: 'nf-' + c },
         h('span', { class: 'nf-name', text: tr(name) }),
         h('span', { class: 'nf-state' + (off ? ' off' : m || all ? ' muted' : ''), text: state }),
@@ -3055,6 +3213,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     setTimeout(done, 2500);
   }
 
+  wirePops();
   function renderAll() { renderHeader(); renderBanners(); renderNotif(); renderDecisions(); renderConsensus(); renderTasks(); renderBoard(); renderMessages(); renderApprovals(); renderResources(); if ($('#info').open) renderLedger(); openLinked(); }
 
   /* ----------------------------------------------------------- deep links */
@@ -4715,6 +4874,44 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       "Answer on the self-hosted board or in the session (multi-question form).": "請在自架看板或 session 中回答（多題表單）。",
       "Your choices are picked in {who}'s form one question at a time, then submitted.": "你的選擇會在 {who} 的表單中逐題選取，然後送出。",
       "Answers picked and submitted in {who}.": "已在 {who} 選取並送出回答。",
+      "{n} item, longest first": "{n} 項，等最久的在前",
+      "{n} items, longest first": "{n} 項，等最久的在前",
+      "Waiting: ": "等待中：",
+      "Oldest: ": "等最久：",
+      "{who}, waiting {t} →": "{who}，已等 {t} →",
+      "No sessions in this state.": "沒有 session 在這個狀態。",
+      "Sessions: ": "Session：",
+      "longest in this state first": "在這個狀態最久的在前",
+      "time unknown": "時間不明",
+      "last seen {ago}": "最後出現 {ago}",
+      "for {t}": "已 {t}",
+      "Level: ": "等級：",
+      "Memory: ": "記憶體：",
+      "{pct}% used": "已用 {pct}%",
+      "Swap: ": "Swap：",
+      "Load: ": "負載：",
+      "Disks: ": "磁碟：",
+      "OOM kills since boot: ": "開機以來 OOM kill：",
+      "one was recent": "最近有一次",
+      "Heavy jobs: ": "重度工作：",
+      "Idle teammates: ": "閒置 teammate：",
+      "no session": "無 session",
+      "Sampled: ": "取樣：",
+      "Board: ": "看板：",
+      "demo data, on this page only": "示範資料，只在這個頁面",
+      "self-hosted (board-serve)": "自架（board-serve）",
+      "claude.ai Artifact, mirrored by the operator": "claude.ai Artifact，由 operator 同步",
+      "Last heartbeat: ": "最後心跳：",
+      "Operator watch: ": "Operator watch：",
+      "Version: ": "版本：",
+      "Counted offline after {m} minutes without a heartbeat.": "超過 {m} 分鐘沒有心跳就算離線。",
+      "No notification settings reported yet.": "還沒有回報通知設定。",
+      "The owner is here.": "主人在。",
+      "Since: ": "開始於：",
+      "Set by: ": "設定者：",
+      "Pending consensus: ": "待決共識：",
+      "Consensus →": "共識 →",
+      "Sample data, on this page only: answers, messages and settings go nowhere.": "示範資料，只在這個頁面：回答、訊息和設定都不會送出。",
     };
   }
 })();
