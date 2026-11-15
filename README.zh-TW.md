@@ -167,7 +167,7 @@ scripts/setup-dev.sh           # only if you'll commit to this repo: pre-commit 
   | `remote_url_prefix` | `https://claude.ai/code/` | 每個 session 的 Remote Control 連結前綴 |
   | `serve.enabled`、`serve.port` | `false`、`39410` | 自架看板：由 `fleet-up` 啟動 `board-serve`；本機監聽器（身分為 `local`） |
   | `serve.tunnel.*` | 關閉 | `enabled`、`port`（port + 1）、`hostname`、`team_domain`、`aud`：cloudflared 指向的監聽器；身分 = 經過驗證的 Cloudflare Access token 裡的 email |
-  | `press.prompt_regex`、`press.question_regex`、`press.free_text_label`、`press.lines`、`press.allow_keys`、`press.deny_keys` | 見範例 | `board press` 用的畫面檢查與按鍵（`question_regex`：AskUserQuestion 選單） |
+  | `press.prompt_regex`、`press.question_regex`、`press.free_text_label`、`press.tabbar_regex`、`press.review_regex`、`press.submit_label`、`press.lines`、`press.allow_keys`、`press.deny_keys` | 見範例 | `board press` 用的畫面檢查與按鍵（`question_regex`：AskUserQuestion 選單；`tabbar_regex`、`review_regex`、`submit_label`：多題表單） |
 
 - `.env`：告警管道（Slack、email、LINE、SNS、webhook，全部選用，見
   [告警與升級](#alerting--escalation)）。從 `.env.example` 開始改。
@@ -394,7 +394,10 @@ pane 標題裡的任務、執行中或閒置、記憶體用量）、已用的 co
   自由文字（一行、≤200 字元）會先選 **Type something**，用 `send-keys -l` 原樣輸入，只有選單上被選取的 **Type something**
   那一列（`press.free_text_label`）出現這段文字才按 Enter。送出部分按鍵後檢查失敗，就不按 Enter，卡片會請你到 session
   裡完成（exit 5）。選項按鈕也會送出選項編號，必須和標籤一致；標籤重複的卡片只能看。
-  更長的回答改用 `[BOARD decision <id>]` 訊息送給 session。多題、複選或選項標籤被截短的卡片只能看，請到 session 裡回答。
+  更長的回答改用 `[BOARD decision <id>]` 訊息送給 session。
+  多題表單（最多 4 題、單選）在自架看板上每題都有選項按鈕：每題選一個，再按**送出回答**。
+  `board press` 會逐題確認畫面上的題目後再選，最後確認檢查畫面，選 **Submit answers**（絕不按 Enter）。
+  複選或選項標籤被截短的卡片只能看，請到 session 裡回答。
   session 往下走之後，卡片會變成 stale。
 
 ### 訊息
