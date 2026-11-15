@@ -327,7 +327,14 @@ flowchart LR
 | **Done / idle** | 這一輪已結束，等待輸入 | `Stop`、Notification `idle_prompt` |
 | **Offline** | 列在 `fleet.yaml` 裡但沒有在執行 | 收集器（沒有存活的行程） |
 
-每張卡片都連到該 session 的 Remote Control 網址，並顯示它的 tmux 目標，方便你直接切進去。
+每張卡片顯示 session 的代號和狀態、Claude Code 寫在 pane 標題裡的工作標題、`repo · branch`（git
+toplevel 的名稱和目前的分支，絕不顯示路徑），以及它現在在做什麼：「Running Bash: npm test」、
+「Waiting: permission for Edit」、「Idle since 14:05」。點一下或按 Enter 會展開詳細資料：完整標題、
+它在等的決策（各自連到決策卡）、執行中的工具呼叫、tmux 目標和 Remote Control 連結。展開的卡片在
+即時更新時會保持展開。
+
+這些內容一律視為不可信的文字：移除控制字元、路徑只留最後一段、過長的文字會截斷。工具呼叫的摘要
+可能含有指令內容，所以只出現在自架看板上；Artifact 看板只會拿到標題和 `repo · branch`。
 
 ### 決策
 
@@ -908,7 +915,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `lib/away.py` | 為 snapshot 和 `board-serve` 讀取 owner-away 模式與共識項目 |
 | `lib/resources.py` | 資源取樣器（記憶體、磁碟、OOM、每個 session 的程序與 teammate），產生 `resources.json`、snapshot 摘要和 `board resources` |
 | `docs/design/` | 設計文件，例如 `resources-and-scheduling.md`（資源、排程器、經驗） |
-| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`）、資源取樣器（`test_resources.py`，fixture `/proc`），以及選用的頁面告警連結、通知控制、個人選單與主題、主畫面 app headless 檢查（`test_page_links.py`、`test_page_notify.py`、`test_page_profile.py`、`test_page_pwa.py`：需要 python playwright，沒有就略過；CI 不執行） |
+| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`）、資源取樣器（`test_resources.py`，fixture `/proc`），以及選用的頁面告警連結、通知控制、個人選單與主題、主畫面 app、session 卡片 headless 檢查（`test_page_links.py`、`test_page_notify.py`、`test_page_profile.py`、`test_page_pwa.py`、`test_page_cards.py`：需要 python playwright，沒有就略過；CI 不執行） |
 | `CONTRIBUTING.md` | 開發環境設定、測試，以及讓 `README.zh-TW.md` 保持同步的規則 |
 | `fleet.example.yaml`、`.env.example` | 設定範例 |
 
