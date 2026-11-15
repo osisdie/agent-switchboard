@@ -24,6 +24,7 @@ Usage: collect.py [--no-notify] [--baseline] [--verbose]
   (the tool calls in flight: tool name + the hook's redacted summary). All of it is untrusted text:
   control characters removed, paths cut to their last component, clipped. Never a full path.
 """
+import getpass
 import glob
 import json
 import os
@@ -47,9 +48,47 @@ SUMMARY_MAX = 160
 NAME_MAX = 80
 RECENT_MAX = 3
 GIT_TTL_MS = 30 * 1000
-# An absolute or home path (Unix or Windows), not part of a URL or a word: replaced by "…/<last part>".
-PATH_RE = re.compile(r"(?<![\w.:/~\\-])(?:~(?=/)|/|[A-Za-z]:\\)[^\s'\"`<>|;&()]+")
+# A path, not part of a URL or a word: replaced by "…/<last part>". file:// URLs, UNC
+# (\\server\share), Windows (C:\ or C:/), home (~/x, ~user/x) and absolute Unix paths; a quoted
+# path may contain spaces.
+_PATH_START = r"(?:file://|\\\\|[A-Za-z]:[\\/]|~[\w.-]*/|/)"
+QUOTED_PATH_RE = re.compile(r"""(?<![\w.:/~\\…-])(["'])(%s[^"'\n]*)\1""" % _PATH_START)
+PATH_RE = re.compile(r"""(?<![\w.:/~\\…-])%s[^\s'"`<>|;&()]+""" % _PATH_START)
 ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?)")
+# scheme://user:password@ or scheme://user@ in a URL: the credentials are dropped.
+URL_CREDS_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s@'\"]+@")
+# The hook's redaction (hooks/board-hook.sh, def redact), for text that never went through it.
+REDACT = [
+    (re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{6,}"), r"\1 [REDACTED]"),
+    (re.compile(r"xox[abposr]-[A-Za-z0-9-]+"), "[REDACTED]"),
+    (re.compile(r"(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})"), "[REDACTED]"),
+    (re.compile(r"\b(sk|pk|rk)_(live|test)_[A-Za-z0-9]{16,}"), "[REDACTED]"),
+    (re.compile(r"glpat-[A-Za-z0-9_-]{20,}"), "[REDACTED]"),
+    (re.compile(r"AIza[A-Za-z0-9_-]{35}"), "[REDACTED]"),
+    (re.compile(r"npm_[A-Za-z0-9]{36}"), "[REDACTED]"),
+    (re.compile(r"A[KS]IA[0-9A-Z]{16}"), "[REDACTED]"),
+    (re.compile(r"""(?i)((?<![\w-])--(?:password|passwd|pass|token|secret|api[_-]?key)(?:\s+|=))("[^"]*"|'[^']*'|[^\s"';|&]+)"""),
+     r"\1[REDACTED]"),
+    (re.compile(r"""((?<![\w-])-p\s+)([^\s"'/.~0-9;|&-][^\s"';|&]*)"""), r"\1[REDACTED]"),
+    (re.compile(r"""((?<![\w-])(?:-u|--user)(?:\s+|=))([^\s:"']+:[^\s"']+)"""), r"\1[REDACTED]"),
+    (re.compile(r"""(?i)(password|passwd|token|secret|api[_-]?key|access[_-]?key|client[_-]?secret)(["']?)(\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s&'",}]+)"""),
+     r"\1\2\3[REDACTED]"),
+]
+LONG_HEX_RE = re.compile(r"\b[0-9a-fA-F]{32,}\b")
+LONG_B64_RE = re.compile(r"[A-Za-z0-9+/_-]{40,}={0,2}")
+SHELL_TITLE_RE = re.compile(r"\S+@\S+:")  # an OSC title a shell sets: user@host: ~/dir
+
+
+def redact(text):
+    for rx, sub in REDACT:
+        text = rx.sub(sub, text)
+    text = LONG_HEX_RE.sub(lambda m: m.group(0) if len(m.group(0)) == 40 and re.fullmatch(r"[0-9a-f]+", m.group(0)) else "[REDACTED]", text)
+
+    def b64(m):
+        b = m.group(0)
+        mixed = re.search(r"[0-9]", b) and re.search(r"[a-z]", b) and re.search(r"[A-Z]", b)
+        return "[REDACTED]" if mixed and max(len(x) for x in b.split("/")) >= 24 else b
+    return LONG_B64_RE.sub(b64, text)
 
 
 def now_ms():
@@ -86,33 +125,51 @@ def clean_text(value, limit):
     if not isinstance(value, str):
         return ""
     text = "".join(" " if unicodedata.category(c)[0] == "C" else c for c in ANSI_RE.sub("", value))
+    text = redact(URL_CREDS_RE.sub(r"\1", text))
 
-    def short(m):
-        tail = re.split(r"[/\\]", m.group(0).rstrip("/\\"))[-1]
-        return "…/" + tail if tail and tail != "~" else "…"
-    text = " ".join(PATH_RE.sub(short, text).split())
+    def last(path):
+        tail = re.split(r"[/\\]", path.rstrip("/\\"))[-1]
+        return "…/" + tail if tail and not tail.startswith("~") and not tail.endswith(":") else "…"
+    text = QUOTED_PATH_RE.sub(lambda m: m.group(1) + last(m.group(2)) + m.group(1), text)
+    text = " ".join(PATH_RE.sub(lambda m: last(m.group(0)), text).split())
     return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
 
 
 def hostnames():
+    """This machine's names, lowercased: the full name, the short name and <short>.local."""
     names = set()
     try:
-        full = socket.gethostname()
-        names.update({full.lower(), full.split(".")[0].lower()})
+        full = socket.gethostname().lower()
+        short = full.split(".")[0]
+        names.update({full, short, short + ".local"})
+        names.update(n.lower() for n in [socket.getfqdn()] if n)
     except OSError:
         pass
     return {n for n in names if n}
 
 
-def clean_title(raw, hosts):
-    """A pane title as Claude Code sets it ("✳ Fix the login form"): the leading status glyph
-    (spinner, ✳, ...) dropped. tmux's default title is the host name: never published."""
+def local_user():
+    try:
+        return getpass.getuser()
+    except Exception:  # noqa: BLE001 - no user name known
+        return ""
+
+
+def clean_title(raw, hosts, user=None):
+    """A pane title as the session sets it ("✳ Fix the login form"): the leading status glyph
+    (spinner, ✳, ...) dropped. Never published: tmux's default (the host name), a shell's own
+    title (user@host: ~/dir), or any title naming this host or the local user as a word."""
     if not isinstance(raw, str):
         return ""
     t = raw.strip()
     while t and unicodedata.category(t[0])[0] not in "LN":
         t = t[1:]
-    if not t or t.lower() in hosts or t.lower() == "claude code":
+    if not t or t.lower() == "claude code" or SHELL_TITLE_RE.search(t):
+        return ""
+    words = set(re.findall(r"[\w.-]+", t.lower()))
+    words |= {w.strip(".-") for w in words}
+    user = local_user() if user is None else user
+    if words & hosts or (user and re.search(r"(?<![\w.-])%s(?![\w-])" % re.escape(user.lower()), t.lower())):
         return ""
     return clean_text(t, TITLE_MAX)
 
@@ -141,17 +198,21 @@ def git_where(cwd):
         return None, None
     env = dict(os.environ, GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0")
 
-    def git(*args):
-        try:
-            r = subprocess.run(["git", "-C", cwd] + list(args), capture_output=True, text=True,
-                               timeout=3, check=False, env=env, stdin=subprocess.DEVNULL)
-        except (OSError, subprocess.SubprocessError):
-            return None
-        return r.stdout.strip() if r.returncode == 0 else None
-    top = git("rev-parse", "--show-toplevel")
+    # One call. Its exit code is not 0 on a branch with no commits yet, but the top level still
+    # prints first; "HEAD" for the branch then means no commits (exit != 0) or detached (exit 0).
+    try:
+        r = subprocess.run(["git", "-C", cwd, "rev-parse", "--show-toplevel", "--abbrev-ref", "HEAD"],
+                           capture_output=True, text=True, timeout=3, check=False, env=env,
+                           stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None, None
+    lines = r.stdout.splitlines()
+    top = lines[0].strip() if lines and lines[0].startswith("/") else None
     if not top:
         return None, None
-    branch = git("symbolic-ref", "--short", "-q", "HEAD") or "detached"
+    branch = lines[1].strip() if len(lines) > 1 else ""
+    if branch in ("", "HEAD"):
+        branch = "detached" if r.returncode == 0 else "no commits"
     return clean_text(os.path.basename(top.rstrip("/")), NAME_MAX) or None, clean_text(branch, NAME_MAX) or None
 
 
@@ -248,6 +309,11 @@ def build_sessions(cfg, home, prefix):
         name = reg.get("name") or None
         raw = tsess or name or str(reg.get("pid"))
         code = amap.get(raw) or (amap.get(name) if not tsess and name else None) or raw
+        # A session started or renamed inside another session's tmux: its own registered name, when
+        # it maps to a fleet code, says which card it is, not the tmux session it runs in.
+        own = amap.get(name) if name else None
+        if own and own != code and own in fleet_by_code:
+            code = own
         sid = reg.get("sessionId")
         st = read_json(os.path.join(home, "state", "%s.json" % sid)) if sid else None
         st = st if isinstance(st, dict) else {}

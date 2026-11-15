@@ -69,19 +69,25 @@ Map hook events to states like this:
 
 - **Where sessions come from:** live entries in `~/.claude/sessions/<pid>.json`, where `/proc/<pid>` exists. Each is merged with `state/<session_id>.json`.
 - **`code`:** the tmux session name (the part before `:` in `tmux`). If there is no tmux, use the registered `name`. `fleet.yaml` may map aliases to codes.
+- **The registered name wins over the tmux session.** A process whose registered `name` maps to a
+  fleet code (code or alias) gets that code, even when it runs inside another session's tmux.
 - **One process, one card.** When several live processes resolve to the same code (teammate panes
   inside a session's tmux, a session started or renamed inside another session's tmux), the one
   whose registered name is the code or an alias and that started first keeps it. Each other one
   takes the fleet code its own registered name maps to, if no live process holds that code;
   otherwise it becomes `CODE/<name>`.
 - **Sessions in `fleet.yaml` that aren't running** appear with state `offline`.
-- **Card details** (all untrusted text: control characters and ANSI escapes removed, any absolute
-  or home path cut to `…/<last part>`, clipped):
+- **Card details** (all untrusted text: control characters and ANSI escapes removed; URL
+  credentials (`scheme://user:pass@`) dropped; tokens redacted with the hook's patterns; any path
+  (absolute, `~/`, `~user/`, `C:\` or `C:/`, UNC `\\server\share`, `file://`, quoted with spaces)
+  cut to `…/<last part>`; clipped):
   - `title`: the pane title Claude Code sets (`✳ <summary>`), from one `tmux list-panes -a` per run,
-    leading status glyph dropped, at most 120 chars. Never tmux's default (the host name) or
-    "Claude Code".
-  - `repo` / `branch`: the basename of `git rev-parse --show-toplevel` in `cwd` and the current
-    branch (`detached` for a detached HEAD), cached per cwd for 30 s in `$BOARD_HOME/gitinfo.json`.
+    leading status glyph dropped, at most 120 chars. Dropped entirely when it is tmux's default (the
+    host name), a shell's own title (`user@host: dir`), or names this host (short name, FQDN,
+    `<short>.local`) or the local user as a word.
+  - `repo` / `branch`: from one `git rev-parse --show-toplevel --abbrev-ref HEAD` in `cwd`: the
+    basename of the top level and the current branch (`detached` for a detached HEAD, `no commits`
+    on a new branch), cached per cwd for 30 s in `$BOARD_HOME/gitinfo.json`.
     Never the path itself.
   - `last_event`, `notification_type`: from the hook state file.
   - `recent`: the last 3 tool calls in flight (the hook's `recent_pre`): tool name and the hook's

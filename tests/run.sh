@@ -156,6 +156,7 @@ HOST="$(python3 -c 'import socket; print(socket.gethostname())')"
 printf '%%42\t✳ Fix the login form in /home/someone/private/app/login.py\n%%9\t%s\n' "$HOST" > "$FAKE_PANES"
 mkdir -p "$T/repos/web-app/src"
 git -C "$T/repos/web-app" init -q -b feature/cards
+git -C "$T/repos/web-app" -c user.name=t -c user.email=t@example.com commit -q --allow-empty -m init
 jq --arg cwd "$T/repos/web-app/src" '.cwd = $cwd' "$T/cp-reg.json" > "$CLAUDE_SESSIONS_DIR/$live_pid.json"
 cat > "$BOARD_HOME/state/s-qa.json" <<EOF
 {"session_id":"s-qa","state":"working","last_event":"PreToolUse","notification_type":null,"updated_at":1,
@@ -178,12 +179,58 @@ eq "recent: control characters gone, clipped to 160" "$(sj QA '.recent[2].summar
 eq "offline fleet rows carry empty details" "$(sj GONE '([.title, .repo, .branch, .last_event] | map(tostring) | join(",")) + "/" + (.recent | length | tostring)')" "null,null,null,null/0"
 eq "no path in any session's card fields" "$(jq -r '[.sessions[] | .title, .repo, .branch, (.recent[]? | .summary)] | map(select(. != null)) | map(select(test("/home|/tmp|someone/|Users"))) | length' "$snap")" "0"
 grep -q "$T/repos" "$BOARD_HOME/gitinfo.json" && ok "git info cached per cwd" || bad "git info cached per cwd"
-git -C "$T/repos/web-app" symbolic-ref HEAD refs/heads/other
+git -C "$T/repos/web-app" checkout -q -b other
 "$REPO/bin/board-collect" --once --no-notify
 eq "git info reused within 30 s" "$(sj CP .branch)" "feature/cards"
 jq 'map_values(.at = 0)' "$BOARD_HOME/gitinfo.json" > "$T/gi.json" && mv "$T/gi.json" "$BOARD_HOME/gitinfo.json"
 "$REPO/bin/board-collect" --once --no-notify
 eq "  and refreshed after" "$(sj CP .branch)" "other"
+git -C "$T/repos/web-app" checkout -q --detach
+jq 'map_values(.at = 0)' "$BOARD_HOME/gitinfo.json" > "$T/gi.json" && mv "$T/gi.json" "$BOARD_HOME/gitinfo.json"
+"$REPO/bin/board-collect" --once --no-notify
+eq "  detached HEAD" "$(sj CP .branch)" "detached"
+git init -q -b fresh "$T/repos/unborn"
+eq "  a repo with no commits yet: one git call still names it" \
+  "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import collect; print("/".join(map(str, collect.git_where(sys.argv[2]))))' "$REPO/lib" "$T/repos/unborn")" "unborn/no commits"
+
+echo "collector: untrusted text"
+while IFS=$'\t' read -r verdict name detail; do
+  if [ "$verdict" = ok ]; then ok "$name"; else bad "$name" "$detail"; fi
+done < <(python3 - "$REPO/lib" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import collect as c
+T = lambda t: c.clean_text(t, 200)
+H = {"devbox", "devbox.local", "devbox.example.com"}
+cases = [
+    ("file:// URL cut", T("open file:///home/u/x/report.html now"), "open …/report.html now"),
+    ("UNC path cut", T("copy \\\\server\\share\\dir\\a.txt"), "copy …/a.txt"),
+    ("C:/ path cut", T("C:/Users/me/proj/a.txt"), "…/a.txt"),
+    ("C:\\ path cut", T("edit C:\\Users\\me\\a.txt"), "edit …/a.txt"),
+    ("~user and ~/ paths cut", T("~bob/notes/x.md and ~/y.md"), "…/x.md and …/y.md"),
+    ("quoted path with spaces: no middle parts", T("cat '/home/a b/c d.txt' x"), "cat '…/c d.txt' x"),
+    ("double-quoted path with spaces", T('see "/srv/my dir/f.log"'), 'see "…/f.log"'),
+    ("URL credentials dropped", T("https://user:pw@example.com/a and ssh://git@example.com/r.git"),
+     "https://example.com/a and ssh://example.com/r.git"),
+    ("tokens redacted", T("hdr " + "Bear" + "er " + "k7" * 7 + " --pass" + "word " + "hun" + "ter" + "2 " + "gh" + "p_" + "a" * 24),
+     "hdr Bearer [REDACTED] --password [REDACTED] [REDACTED]"),
+    ("URLs and a lone slash untouched", T("see https://example.com/a/b ok, a / b"), "see https://example.com/a/b ok, a / b"),
+    ("title: glyph dropped", c.clean_title("✳ Fix the login form", H, user="bob"), "Fix the login form"),
+    ("title: a shell's user@host: title dropped", c.clean_title("bob@devbox: ~/x", H, user="bob"), ""),
+    ("title: any user@host: dropped", c.clean_title("deploy@build-7: /srv", H, user="bob"), ""),
+    ("title: <host>.local dropped", c.clean_title("Deploy on devbox.local today", H, user="bob"), ""),
+    ("title: the host name as a word dropped", c.clean_title("Fix DevBox build", H, user="bob"), ""),
+    ("title: the FQDN dropped", c.clean_title("ping devbox.example.com", H, user="bob"), ""),
+    ("title: the user name as a word dropped", c.clean_title("Talk to bob about it", H, user="bob"), ""),
+    ("title: a word containing the user name kept", c.clean_title("Fix bobcat parser", H, user="bob"), "Fix bobcat parser"),
+    ("title: tokens and paths redacted too", c.clean_title("⠂ Rotate ghp_" + "b" * 24 + " in /etc/app/key.pem", H, user="bob"),
+     "Rotate [REDACTED] in …/key.pem"),
+    ("host names include <short>.local", sorted(n for n in c.hostnames() if n.endswith(".local"))[:1] != [], True),
+]
+for name, got, want in cases:
+    print(("ok\t%s\t" if got == want else "FAIL\t%s\tgot %r, want %r") % ((name,) if got == want else (name, got, want)))
+PY
+)
 unset FAKE_PANES
 
 echo "collector: one process, one card"
@@ -205,6 +252,21 @@ eq "resources list each process once too" "$(jq -r '[.sessions[].code] | sort | 
 kill "$dup_pid" "$dup_pid2" 2>/dev/null
 rm -f "${CLAUDE_SESSIONS_DIR:?}/${dup_pid:?}.json" "${CLAUDE_SESSIONS_DIR:?}/${dup_pid2:?}.json" "${BOARD_HOME:?}/state/s-qa.json"
 cp "$T/cp-reg.json" "$CLAUDE_SESSIONS_DIR/$live_pid.json"
+"$REPO/bin/board-collect" --once --no-notify
+
+echo "collector: a session alone in another session's tmux"
+cp "$BOARD_CONFIG_DIR/fleet.yaml" "$T/fleet.yaml.bak"
+printf '  - code: SOLO\n    cwd: /w/solo\n' >> "$BOARD_CONFIG_DIR/fleet.yaml"
+sleep 600 & solo_pid=$!
+# Registered as SOLO, running in GONE's tmux while GONE's own process is not running: it is SOLO.
+echo "{\"pid\":$solo_pid,\"sessionId\":\"s-solo\",\"cwd\":\"/w\",\"tmux\":\"GONE:@7.%81\",\"name\":\"SOLO\",\"status\":\"busy\",\"startedAt\":11}" > "$CLAUDE_SESSIONS_DIR/$solo_pid.json"
+"$REPO/bin/board-collect" --once --no-notify
+eq "its registered name wins over the tmux session" "$(sj SOLO '.state + "/" + .name')" "working/SOLO"
+eq "  GONE stays offline" "$(sj GONE .state)" "offline"
+eq "  one card each" "$(jq -r '[.sessions[].code] | join(",")' "$snap")" "CP,GONE,INFRA,QA,SOLO"
+kill "$solo_pid" 2>/dev/null
+rm -f "${CLAUDE_SESSIONS_DIR:?}/${solo_pid:?}.json"
+cp "$T/fleet.yaml.bak" "$BOARD_CONFIG_DIR/fleet.yaml"
 "$REPO/bin/board-collect" --once --no-notify
 
 out="$("$REPO/bin/board" ls)"
