@@ -1758,12 +1758,12 @@ eq "task writers wait for the task lock" "$r1,$r2" "0,0"
 nd0="$(ndec)"; gates0="$(jq -c .gates "$tf")"
 (flock "$tf.lock" sleep 3) & lockpid=$!; sleep 0.2
 BOARD_TASK_LOCK_WAIT=1 "$B" ask --from CP --task "$tid" --gate owner "Locked?" >/dev/null 2>&1; r1=$?
-eq "ask --task fails closed on a held task lock" "$r1,$(ndec),$(jq -c .gates "$tf")" "1,$nd0,$gates0"
+eq "ask --task fails closed on a held task lock" "$r1,$(ndec),$(jq -c .gates "$tf")" "8,$nd0,$gates0"
 g4="$(BOARD_TASK_LOCK_WAIT=5 "$B" ask --from CP --task "$tid" --gate owner "Unlocked?")"
 wait "$lockpid"
 (flock "$tf.lock" sleep 3) & lockpid=$!; sleep 0.2
 BOARD_TASK_LOCK_WAIT=1 "$B" answer "$g4" approve --by u-owner >/dev/null 2>&1; r1=$?
-eq "answer on a busy task records nothing, exits 1" "$r1,$(jq -r .status "$BOARD_HOME/decisions/$g4.json"),$(jq -r --arg g "$g4" '.gates[] | select(.decision_id == $g) | .status' "$tf")" "1,pending,pending"
+eq "answer on a busy task records nothing, exits 8" "$r1,$(jq -r .status "$BOARD_HOME/decisions/$g4.json"),$(jq -r --arg g "$g4" '.gates[] | select(.decision_id == $g) | .status' "$tf")" "8,pending,pending"
 wait "$lockpid"
 "$B" answer "$g4" approve --by u-owner >/dev/null; r1=$?
 eq "answering again updates the task" "$r1,$(jq -r --arg g "$g4" '.gates[] | select(.decision_id == $g) | .status' "$tf")" "0,approved"

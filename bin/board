@@ -228,7 +228,9 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
         echo "                 [--task ID] [--stage S] [--gate G] [--artifact REF]"
         echo "  create a decision and print its id. With --task/--gate it is a gate decision"
         echo "  (defaults: stage = the task's stage, gate = owner, options = approve / request changes)."
-        echo "  stages: $STAGES" ;;
+        echo "  stages: $STAGES"
+        echo "  exit 8: the task was busy (or its gate could not be written); nothing was created, run"
+        echo "  the same ask again." ;;
     decisions) echo "usage: board decisions [--status pending|answered|relayed|stale|timeout|unauthorized|answered_in_pane] [--json]" ;;
     answer) echo "usage: board answer ID ANSWER|--answer-file PATH --by WHO [--option N]"
         echo "  --option N (pane question): the clicked option; refused (exit 2) unless its label is ANSWER." 
@@ -237,6 +239,8 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
         echo "         [{\"question_index\": 0, \"option\": 2}, {\"question_index\": 1, \"text\": \"...\"}];"
         echo "         text becomes one line of <= $FREE_TEXT_MAX printable characters, else exit 2)"
         echo "  a free-text answer that asks for a secret value is refused (exit 6, nothing written)."
+        echo "  exit 8: the gate's task was busy (nothing recorded) or was not updated (answer kept);"
+        echo "  run the same answer again, and relay it only once it exits 0."
         echo "  mark a decision answered. WHO must be in approvers (production gate or stage:"
         echo "  release_managers, falling back to approvers). Otherwise the decision is marked"
         echo "  unauthorized and the command exits 4. No approvers configured = refused (fails closed)."
@@ -507,11 +511,10 @@ cmd_ask() {
     opts_json="[]"
   fi
   mkdir -p "$BOARD_HOME/decisions"
-  # Lock first: while ask waits for the task, no decision exists that the collector could pick up
-  # and alert on, and a timeout leaves nothing behind.
-  if [ -n "$tf" ]; then task_lock "$tf" || die "ask: nothing was created; try again"; fi
-  # The secret guard scrubs the question, options and context before they are stored.
-  write_atomic "$(dec_path "$id")" "$(jq -n --arg id "$id" --arg from "$from" --arg q "$question" \
+  # The secret guard scrubs the question, options and context before they are stored. Built before
+  # the task lock is taken, so nothing but jq runs while it is held.
+  local dec_json
+  dec_json="$(jq -n --arg id "$id" --arg from "$from" --arg q "$question" \
     --arg ctx "$context" --argjson opts "$opts_json" --argjson now "$now" \
     --arg task "$task" --arg stage "$stage" --arg gate "$gate" --arg art "$artifact" '
     def nz: if . == "" then null else . end;
@@ -522,13 +525,20 @@ cmd_ask() {
     + (if $task != "" or $gate != "" or $stage != "" then
          { task_id: ($task | nz), stage: ($stage | nz), gate: ($gate | nz), artifact_ref: ($art | nz) }
        else {} end)' | { python3 "$GUARD" scrub-json || [ $? = 3 ]; })"
+  # Lock first: while ask waits for the task, no decision exists that the collector could pick up
+  # and alert on, and a timeout leaves nothing behind (exit 8: run the same ask again).
+  if [ -n "$tf" ]; then
+    task_lock "$tf" || { echo "board: ask: nothing was created; run the same ask again" >&2; exit 8; }
+  fi
+  write_atomic "$(dec_path "$id")" "$dec_json"
   if [ -n "$tf" ]; then
     task_jq "$tf" --arg id "$id" --arg stage "$stage" --arg gate "$gate" --argjson now "$now" '
       .gates = ((.gates // []) + [{ stage: $stage, gate: $gate, status: "pending", decision_id: $id,
                                     approved_by: null, approved_at: null }])
       | .updated_at = $now' || {
       rm -f "$(dec_path "$id")"   # fail closed: no decision without its gate on the task
-      die "ask: could not record the gate on task $task; nothing was created"
+      echo "board: ask: could not record the gate on task $task; nothing was created; run the same ask again" >&2
+      exit 8
     }
     task_unlock
   fi
@@ -778,7 +788,7 @@ cmd_answer() {
   if [ "$(jq -r '(.source // "") != "pane" and (.gate // "") != "" and (.task_id // "") != ""' "$f")" = true ]; then
     lock_tf="$(task_path "$(jq -r '.task_id' "$f")")"
     if [ -f "$lock_tf" ]; then
-      task_lock "$lock_tf" || { echo "board answer: nothing recorded; run the same answer again" >&2; exit 1; }
+      task_lock "$lock_tf" || { echo "board answer: nothing recorded; run the same answer again" >&2; exit 8; }
     else
       lock_tf=""
     fi
@@ -835,7 +845,7 @@ cmd_answer() {
       fi
     fi
     echo "$id answered ($gate gate $result)"
-    [ "$task_failed" = 0 ] || exit 1
+    [ "$task_failed" = 0 ] || exit 8
   else
     echo "$id answered"
   fi

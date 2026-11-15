@@ -1211,6 +1211,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if rc == 2 and option is not None:
                 self.audit(ident, via, "answer", id=did, result="refused", reason="option does not match")
                 raise Refused(400, "bad_option", "that option does not match the question; reload and try again")
+            if rc == 8:  # the gate's task was busy: nothing recorded, or the gate not yet updated
+                raise Refused(409, "task_busy", "the task is busy; try again in a moment")
             if rc == 4:
                 log("board answer %s refused: %s" % (did, err))
                 self.audit(ident, via, "answer", id=did, result="unauthorized")
