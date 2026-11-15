@@ -320,7 +320,8 @@ multiSelect, options: [{label, description}]}]}` on `PreToolUse` (with `tool_use
   anywhere else (a description, scrollback) does not count: Enter outside the picker would send
   the text to the session as a prompt.
 - **Claude Code in the pane.** Before any key, the pane's `#{pane_current_command}` must match
-  `press.tui_command_regex` (default `^(claude|node)`: `claude`, `claude.exe`, `node`; empty = not
+  `press.tui_command_regex` (default `^(claude(\.exe)?|node|[0-9]+(\.[0-9]+){2})$`: `claude`, `claude.exe`, `node`, or a version number
+  `X.Y.Z`, the native installer's binary, named after its version; empty = not
   checked), else exit 3 (`stale`, `status_reason: "screen"`): a TUI that crashed back to a shell
   would read the keys, the scroll key included, as readline input.
 - **A scrolled pane (exit 7).** When the last lines match neither `press.prompt_regex` /

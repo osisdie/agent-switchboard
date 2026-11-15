@@ -1026,8 +1026,8 @@ cmd_press() {
     attempt not_visible "$1" "${2:-}"
     local n; n="$(now_ms)"
     update_decision "$dec_id" '.status = "pending" | .answer = null | .answered_by = null | .answered_at = null
-        | .answer_index = null | .relay = null | .press_note = $note | .press_note_at = $now | .updated_at = $now
-        | del(.status_reason)' \
+        | .answer_index = null | .answer_options = null | .relay = null | .press_note = $note | .press_note_at = $now
+        | .updated_at = $now | del(.status_reason)' \
       --arg note "$PRESS_SCREEN_NOTE" --argjson now "$n" >/dev/null 2>&1
     log_event "$(jq -cn --arg id "$dec_id" --arg r "$1" --argjson now "$n" \
       '{ts: $now, type: "mark", id: $id, status: "pending", reason: ("press not visible: " + $r)}')"
@@ -1141,9 +1141,9 @@ cmd_press() {
   local regex lines full screen
   if [ "$action" = answer ]; then regex="$(cfg_get press.question_regex)"; else regex="$(cfg_get press.prompt_regex)"; fi
   [ -n "$regex" ] || refuse "no press regex configured for $action" "$pane" config
-  # The pane must run Claude Code's TUI (press.tui_command_regex against #{pane_current_command},
-  # e.g. claude, claude.exe, node): a TUI that crashed back to a shell would read the keys, the
-  # scroll key included, as readline input. Empty: not checked.
+  # The pane must run the TUI (press.tui_command_regex against #{pane_current_command}: claude,
+  # claude.exe, node, or the native installer's binary named X.Y.Z): a TUI that crashed back to a
+  # shell would read the keys, the scroll key included, as readline input. Empty: not checked.
   local tui_re pane_cmd
   tui_re="$(cfg_get press.tui_command_regex)"
   if [ -n "$tui_re" ]; then

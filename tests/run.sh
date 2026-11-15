@@ -922,6 +922,20 @@ d="$(askq tu_z4 "$Q1")"; "$B" answer "$d" "Blue" --by user-1 >/dev/null
 FAKE_TMUX_CMD=claude.exe seqpress tu_z4 "$U"
 eq "claude.exe counts as the TUI" "$?/$(keys_sent)" "0/send-keys -t %42 2|"
 qdone tu_z4
+# P9: the native installer's binary is named after its version; anything else (an editor, a
+# prefix of a TUI name, a version with junk) refuses before any key.
+d="$(askq tu_z6 "$Q1")"; "$B" answer "$d" "Blue" --by user-1 >/dev/null
+FAKE_TMUX_CMD=2.1.3 seqpress tu_z6 "$U"
+eq "a version-named binary (2.1.3) counts as the TUI" "$?/$(keys_sent)" "0/send-keys -t %42 2|"
+qdone tu_z6
+zn=6
+for cmd in vim claudette 2.1.3x node-red; do
+  zn=$((zn + 1))
+  d="$(askq "tu_z$zn" "$Q1")"; "$B" answer "$d" "Blue" --by user-1 >/dev/null
+  FAKE_TMUX_CMD=$cmd seqpress "tu_z$zn" "$U"
+  eq "pane runs '$cmd' -> exit 3, nothing sent" "$?/$(keys_sent)" "3/"
+  qdone "tu_z$zn"
+done
 # An unauthorized answer, then an approver's: status_reason not_approver is cleared.
 d="$(askq tu_z5 "$Q1")"
 "$B" answer "$d" "Blue" --by intruder >/dev/null 2>&1

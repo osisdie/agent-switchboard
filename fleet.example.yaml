@@ -97,8 +97,9 @@ press:
   # in Claude Code's TUI), then checks the screen again.
   scrolled_regex: '^[[:space:]]*[0-9]+ new messages? .*ctrl\+End.*$'
   scroll_key: C-End
-  # Before any key the pane's current command must be Claude Code's TUI ('' = not checked).
-  tui_command_regex: '^(claude|node)'
+  # Before any key the pane's current command must be the TUI: claude, claude.exe, node or a
+  # version number X.Y.Z (the native installer's binary). '' = not checked.
+  tui_command_regex: '^(claude(\.exe)?|node|[0-9]+(\.[0-9]+){2})$'
   lines: 30
   allow_keys: ["1"]
   deny_keys: ["Escape"]

@@ -49,9 +49,10 @@ DEFAULTS = {
         # submits in Claude Code's TUI) once and looks again.
         "scrolled_regex": r"^[[:space:]]*[0-9]+ new messages? .*ctrl\+End.*$",
         "scroll_key": "C-End",
-        # The pane's #{pane_current_command} must match this (Claude Code's TUI) before any key.
-        # Empty: not checked.
-        "tui_command_regex": r"^(claude|node)",
+        # The pane's #{pane_current_command} must match this (the TUI) before any key: claude,
+        # claude.exe, node, or a version number (the native installer's binary is named after its
+        # version, X.Y.Z). Empty: not checked.
+        "tui_command_regex": r"^(claude(\.exe)?|node|[0-9]+(\.[0-9]+){2})$",
     },
     # Session actions (lib/actions.py): fixed slash commands typed into an idle session's empty
     # prompt box, and what the pane must show before and after (Claude Code's own screens;

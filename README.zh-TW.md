@@ -388,7 +388,7 @@ pane 標題裡的任務、執行中或閒置、記憶體用量）、已用的 co
   **畫面捲動時**。提示開著的時候若有新訊息進來，Claude Code 的 TUI 可能停在往上捲的位置，最後幾行顯示
   「4 new messages (ctrl+End) ↓」而不是提示。如果最後 2 個非空白行之一整行符合 `press.scrolled_regex`
   （預設 `^[[:space:]]*[0-9]+ new messages? .*ctrl\+End.*$`；session 自己寫出的文字，例如「3 new messages for you」或「see below ↓」，永遠不會符合），
-  而且 pane 執行的是 Claude Code（`press.tui_command_regex`，預設 `^(claude|node)`），`board press` 會送出
+  而且 pane 執行的是 Claude Code（`press.tui_command_regex`，預設 `^(claude(\.exe)?|node|[0-9]+(\.[0-9]+){2})$`：`claude`、`claude.exe`、`node`，或像 `2.1.3` 這樣的版本號，也就是原生安裝程式的執行檔），`board press` 會送出
   一次 `press.scroll_key`（`C-End`，只會捲到最底，在 Claude Code 的 TUI 裡絕不會送出任何內容），再用新的
   畫面跑完所有檢查。如果這樣
   仍看不到提示，而 hook 狀態仍顯示同一個提示在等待，就以 exit 7 結束：只送出了那一個鍵，決策會回到

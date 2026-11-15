@@ -413,7 +413,7 @@ to the Artifact or put in an alert. Turn the prompt off with `cards: {show_promp
   scrolled up, and its last line shows "4 new messages (ctrl+End) ↓" instead of the prompt. If one
   of the last 2 non-blank lines is that line as a whole (`press.scrolled_regex`, default
   `^[[:space:]]*[0-9]+ new messages? .*ctrl\+End.*$`; text the session itself writes, such as "3 new messages for you" or "see below ↓", never
-  matches), and the pane runs Claude Code (`press.tui_command_regex`, default `^(claude|node)`),
+  matches), and the pane runs Claude Code (`press.tui_command_regex`, default `^(claude(\.exe)?|node|[0-9]+(\.[0-9]+){2})$`: `claude`, `claude.exe`, `node`, or a version number such as `2.1.3`, the native installer's binary),
   `board press` sends `press.scroll_key` (`C-End`, which only scrolls to the bottom and never
   submits in Claude Code's TUI) once, then runs every check on a fresh capture. If no
   prompt is visible even then, while the hook state still shows the same prompt waiting, it exits 7:
