@@ -36,7 +36,8 @@ MIN = 60 * 1000
 SEC = 1000
 # 2026-11-15 08:00:00 UTC
 T0 = int(dt.datetime(2026, 11, 15, 8, 0, tzinfo=dt.timezone.utc).timestamp() * 1000)
-ST = pomodoro.settings({"pomodoro": {"timezone": "UTC"}})
+ST = pomodoro.settings({"pomodoro": {"timezone": "UTC", "mode": "strict"}})   # the human pomodoro
+ACC = pomodoro.settings({"pomodoro": {"timezone": "UTC"}})                     # the default: accumulate
 
 
 def play(timeline, doc=None, st=ST, start=T0, tick=3 * SEC):
@@ -177,7 +178,7 @@ class Engine(unittest.TestCase):
         self.assertEqual(done_on(doc, DAY, "WEB"), 2)
         self.assertEqual(done_on(doc, DAY, "OPS"), 1)
         view = pomodoro.board_view(dict(doc, settings={"tz": "UTC"}), t)
-        self.assertEqual(view["fleet"], {"done": 4, "focus_ms": 100 * MIN})
+        self.assertEqual(view["fleet"], {"done": 4, "focus_ms": 100 * MIN, "teammates_done": 0})
         self.assertEqual(view["sessions"]["WEB"]["done"], 2)
         self.assertFalse(view["sessions"]["API"]["running"])
         self.assertTrue(view["sessions"]["OPS"]["running"])
@@ -215,7 +216,7 @@ class Engine(unittest.TestCase):
         self.assertEqual(doc["sessions"]["API"]["acc"], 10 * MIN)        # a 30 s break: kept
 
     def test_no_data_threshold_follows_poll_interval(self):
-        st = pomodoro.settings({"poll_interval": 60, "pomodoro": {"timezone": "UTC"}})
+        st = pomodoro.settings({"poll_interval": 60, "pomodoro": {"timezone": "UTC", "mode": "strict"}})
         self.assertEqual(pomodoro.nodata_ms(st), 140 * SEC)
         self.assertEqual(pomodoro.nodata_ms(ST), 2 * MIN)
         doc, _, t = play([(10, W)], st=st, tick=60 * SEC)
@@ -262,12 +263,12 @@ def write_cfg(text):
 
 
 class Collector(unittest.TestCase):
-    """pomodoro.run(): what the collector calls, with pomodoro.json on disk."""
+    """pomodoro.run(): what the collector calls, with pomodoro.json on disk (strict mode)."""
 
     def setUp(self):
         for f in os.listdir(HOME):
             os.remove(os.path.join(HOME, f))
-        self.cfg = {"pomodoro": {"timezone": "UTC"}}
+        self.cfg = {"pomodoro": {"timezone": "UTC", "mode": "strict"}}
         self.sent = []
         self.writes = 0
         real = pomodoro.write_doc
@@ -458,11 +459,11 @@ class Cli(unittest.TestCase):
 
     def test_json_and_mirror(self):
         v = json.loads(self.out("--json")[1])
-        self.assertEqual(set(v), {"enabled", "focus_ms", "grace_ms", "tz", "at", "today", "fleet", "sessions", "days"})
+        self.assertEqual(set(v), {"enabled", "focus_ms", "grace_ms", "tz", "mode", "at", "today", "fleet", "sessions", "days"})
         self.assertEqual(len(v["days"]), 14)
         self.assertEqual(set(v["sessions"]["API"]), {"done", "focus_ms", "progress_ms", "running", "state", "done_at"})
         m = json.loads(self.out("--mirror")[1])
-        self.assertEqual(set(m), {"today", "tz", "focus_ms", "fleet", "sessions", "days", "updated_at"})
+        self.assertEqual(set(m), {"today", "tz", "focus_ms", "mode", "fleet", "sessions", "days", "updated_at"})
         self.assertEqual(m["sessions"]["API"], {"done": 1, "focus_ms": 35 * MIN})
 
     def test_usage_error(self):
@@ -481,6 +482,193 @@ class Cli(unittest.TestCase):
         r = subprocess.run([os.path.join(REPO, "bin", "board"), "pomodoro", "year"],
                            capture_output=True, text=True, env=env, timeout=30)
         self.assertEqual(r.returncode, 2)
+
+
+# ------------------------------------------------------------------ v2: accumulate mode, teammate streams
+
+def res_doc(at, teammates, code="API"):
+    """A resources.json with one session's teammates: {name: idle_s} (None = first sight)."""
+    return {"at": at, "level": "ok", "sessions": [{"code": code, "teammates": [
+        {"name": n, "pid": 100 + i, "rss_mb": 300, "cpu_pct": 0.0, "age_s": 60, "idle_s": v,
+         "idle": v is not None and v >= 1800} for i, (n, v) in enumerate(sorted(teammates.items()))]}]}
+
+
+def write_res(doc):
+    with open(os.path.join(HOME, "resources.json"), "w", encoding="utf-8") as fh:
+        json.dump(doc, fh)
+
+
+def clear_home():
+    for f in os.listdir(HOME):
+        os.remove(os.path.join(HOME, f))
+
+
+class Accumulate(unittest.TestCase):
+    def test_default_mode_is_accumulate(self):
+        self.assertEqual((pomodoro.settings({})["mode"], ACC["mode"], ST["mode"]), ("accumulate", "accumulate", "strict"))
+        self.assertEqual(pomodoro.settings({"pomodoro": {"mode": "bogus"}})["mode"], "accumulate")
+
+    def test_ten_minute_break_carries_progress(self):
+        tl = [(15, W), (10, {"API": "rest"}), (15, W)]
+        doc, ev, _ = play(tl, st=ACC)
+        self.assertEqual(done_on(doc, DAY, "API"), 1)
+        self.assertEqual(doc["sessions"]["API"]["acc"], 5 * MIN)          # the remainder carries over
+        self.assertEqual(doc["days"][DAY]["API"]["focus_ms"], 30 * MIN)
+        self.assertEqual([e for e in ev if e["type"] == "reset"], [])
+        self.assertEqual([e["at"] for e in ev if e["type"] == "done"], [T0 + 35 * MIN])
+
+    def test_strict_mode_unchanged(self):
+        doc, ev, _ = play([(15, W), (10, {"API": "rest"}), (15, W)], st=ST)
+        self.assertEqual(done_on(doc, DAY, "API"), 0)
+        self.assertEqual(doc["sessions"]["API"]["acc"], 15 * MIN)
+        self.assertEqual([e["lost_ms"] for e in ev if e["type"] == "reset"], [15 * MIN])
+
+    def test_needs_you_still_pauses(self):
+        doc, _, _ = play([(10, W), (30, {"API": "needs-you"}), (15, W)], st=ACC)
+        self.assertEqual(done_on(doc, DAY, "API"), 1)
+        self.assertEqual(doc["days"][DAY]["API"]["focus_ms"], 25 * MIN)
+
+    def test_no_data_gap_keeps_progress_and_is_not_credited(self):
+        doc, _, t = play([(10, W)], st=ACC)
+        doc, ev = pomodoro.step(doc, W, t + 120 * MIN, ACC)      # the collector was down for 2 hours
+        self.assertEqual(doc["sessions"]["API"]["acc"], 10 * MIN)
+        self.assertEqual(doc["days"][DAY]["API"]["focus_ms"], 10 * MIN)
+        self.assertEqual(ev, [])
+
+    def test_offline_still_resets(self):
+        doc, ev, _ = play([(10, W), (1, {})], st=ACC)
+        self.assertNotIn("API", doc["sessions"])
+        self.assertEqual([e["lost_ms"] for e in ev if e["type"] == "reset"], [10 * MIN])
+
+
+class Teammates(unittest.TestCase):
+    def test_states_from_resources(self):
+        res = res_doc(T0, {"dev one": 0, "rev": 120, "old": 3000, "new": None, "../x": 0, "": 0})
+        self.assertEqual(pomodoro.teammate_states(res, T0, ACC),
+                         {"API/dev-one": "working", "API/rev": "rest", "API/old": "rest", "API/new": "rest",
+                          "API/x": "working"})
+        st = pomodoro.settings({"pomodoro": {"teammate_idle_s": 180}})
+        self.assertEqual(pomodoro.teammate_states(res, T0, st)["API/rev"], "working")
+        self.assertIsNone(pomodoro.teammate_states(res, T0 + 10 * MIN, ACC))           # stale
+        self.assertIsNone(pomodoro.teammate_states(dict(res, enabled=False), T0, ACC))
+        self.assertIsNone(pomodoro.teammate_states(None, T0, ACC))
+        bad = {"at": T0, "sessions": [{"code": "bad code!", "teammates": [{"name": "a", "idle_s": 0}]}]}
+        self.assertEqual(pomodoro.teammate_states(bad, T0, ACC), {})
+
+    def feed(self, minutes, lead, tms, start, tick=3 * SEC, cfg=None):
+        """Run the collector with the lead's state and its teammates' idle_s, resources.json fresh."""
+        cfg = cfg or {"pomodoro": {"timezone": "UTC"}}
+        t, end = start, start + int(minutes * MIN)
+        write_res(res_doc(t, tms))                          # the change is seen right at the boundary
+        pomodoro.run(cfg, HOME, [{"code": "API", "state": lead}], t)
+        while t < end:
+            t = min(end, t + tick)
+            write_res(res_doc(t, tms))
+            self.doc, _ = pomodoro.run(cfg, HOME, [{"code": "API", "state": lead}], t)
+        return t   # self.doc: the state after the last run (the file may lag it by < HEARTBEAT_MS)
+
+    def setUp(self):
+        clear_home()
+
+    def test_teammate_stream_accumulates_while_the_lead_rests(self):
+        t = self.feed(20, "rest", {"dev": 0}, T0)
+        t = self.feed(10, "rest", {"dev": 300}, t)          # idle 5 min: a break, progress kept
+        t = self.feed(10, "rest", {"dev": 0}, t)
+        doc = self.doc
+        self.assertEqual(doc["version"], 2)
+        self.assertEqual(done_on(doc, DAY, "API/dev"), 1)
+        self.assertEqual(doc["sessions"]["API/dev"]["acc"], 5 * MIN)
+        self.assertEqual(done_on(doc, DAY, "API"), 0)          # the lead's own stream: its own state only
+        self.assertNotIn("API", doc["days"][DAY])
+        v = pomodoro.board_view(doc, t)
+        self.assertEqual((v["fleet"]["done"], v["fleet"]["teammates_done"]), (1, 1))
+
+    def test_today_sums_every_stream(self):
+        t = self.feed(25, "working", {"dev": 0, "rev": 0}, T0, tick=20 * SEC)
+        v = pomodoro.raw_view(pomodoro.read_doc(HOME), t)
+        self.assertEqual(v["fleet"], {"done": 3, "focus_ms": 75 * MIN, "teammates_done": 2})
+        self.assertEqual(list(v["sessions"]), ["API", "API/dev", "API/rev"])
+        rc_buf = io.StringIO()
+        pomodoro.show([], home=HOME, now=t, out=rc_buf)
+        self.assertIn("AI fleet: 3 🍅 · 1h 15m focus (teammates 2 🍅)", rc_buf.getvalue())
+        self.assertIn("  + dev", rc_buf.getvalue())
+
+    def test_vanished_teammate_pauses_then_is_pruned(self):
+        t = self.feed(10, "rest", {"dev": 0, "rev": 0}, T0)
+        t = self.feed(1, "rest", {"dev": 0}, t)               # rev ended
+        t = self.feed(5, "rest", {}, t)                       # dev ended too
+        doc = self.doc
+        self.assertEqual(doc["sessions"]["API/rev"]["state"], "gone")
+        self.assertEqual(doc["sessions"]["API/rev"]["acc"], 10 * MIN)          # paused, kept
+        self.assertEqual(doc["sessions"]["API/dev"]["acc"], 11 * MIN)
+        doc2, _ = pomodoro.step(doc, {"API": "rest"}, t + 15 * 24 * 60 * MIN, ACC)
+        self.assertNotIn("API/rev", doc2["sessions"])                          # gone > HISTORY_DAYS
+        doc3, _ = pomodoro.step(doc, {"API": "rest", "API/rev": "working"}, t + 3 * SEC, ACC)
+        self.assertEqual(doc3["sessions"]["API/rev"]["acc"], 10 * MIN)         # back: carries on
+
+    def test_stale_resources_pause_teammates(self):
+        t = self.feed(10, "rest", {"dev": 0}, T0)
+        for i in range(1, 60):                                 # resources.json stops being refreshed
+            pomodoro.run({"pomodoro": {"timezone": "UTC"}}, HOME, [{"code": "API", "state": "rest"}], t + i * 5 * SEC)
+        doc = pomodoro.read_doc(HOME)
+        self.assertEqual(doc["sessions"]["API/dev"]["state"], "gone")
+        self.assertLess(doc["sessions"]["API/dev"]["acc"], 10 * MIN + 4 * MIN)  # stopped within the stale limit
+
+    def test_gone_without_progress_is_dropped(self):
+        doc, _ = pomodoro.step(None, {"API/dev": "rest"}, T0, ACC)
+        self.assertIn("API/dev", doc["sessions"])
+        doc, _ = pomodoro.step(doc, {}, T0 + 3 * SEC, ACC)
+        self.assertNotIn("API/dev", doc["sessions"])
+
+    def test_migrates_a_v1_file(self):
+        v1 = {"version": 1, "at": T0, "notified": {DAY: 0},
+              "sessions": {"API": {"state": "working", "acc": 5 * MIN, "away_since": None, "done_at": T0 - MIN}},
+              "days": {DAY: {"API": {"done": 3, "focus_ms": 80 * MIN}}, "2026-11-14": {"WEB": {"done": 2, "focus_ms": 50 * MIN}}},
+              "settings": {"focus_ms": 25 * MIN, "grace_ms": 2 * MIN, "tz": "UTC"}}
+        pomodoro.write_doc(HOME, v1)
+        self.assertEqual(pomodoro.raw_view(v1, T0)["mode"], "strict")      # what the v1 file ran with
+        self.feed(1, "working", {"dev": 0}, T0)
+        doc = self.doc
+        self.assertEqual(doc["version"], 2)
+        self.assertEqual(doc["settings"]["mode"], "accumulate")
+        self.assertEqual(done_on(doc, DAY, "API"), 3)
+        self.assertEqual(doc["days"][DAY]["API"]["focus_ms"], 81 * MIN)
+        self.assertEqual(doc["days"]["2026-11-14"]["WEB"]["done"], 2)
+        self.assertEqual(doc["sessions"]["API"]["acc"], 6 * MIN)
+        self.assertIn("seen_at", doc["sessions"]["API"])
+        self.assertEqual(pomodoro.raw_view(doc, T0 + MIN)["fleet"]["done"], 3)
+
+    def test_view_is_stable_with_teammates(self):
+        # resources.json is rewritten with a changing idle_s (0, 15, 30 s) and a fresh `at`: the view
+        # still changes only with the 5-minute seen bucket while everyone keeps working
+        cfg = {"pomodoro": {"timezone": "UTC"}}
+        write_res(res_doc(T0, {"dev": 0}))
+        pomodoro.run(cfg, HOME, [{"code": "API", "state": "working"}], T0)
+        out, t = [], T0
+        while t < T0 + 12 * MIN:
+            t += 3 * SEC
+            write_res(res_doc(t, {"dev": (t // (15 * SEC)) % 3 * 15}))
+            pomodoro.run(cfg, HOME, [{"code": "API", "state": "working"}], t)
+            out.append(pomodoro.board_view(pomodoro.read_doc(HOME), t))
+        changes = [(a, b) for a, b in zip(out, out[1:]) if a != b]
+        for a, b in changes:
+            self.assertNotEqual(a["seen"], b["seen"])
+            self.assertEqual(dict(a, seen=None), dict(b, seen=None))
+        self.assertLessEqual(len(changes), 3)
+        r = out[-1]["sessions"]["API/dev"]
+        self.assertEqual((r["running"], r["started_at"]), (True, T0))
+
+    def test_privacy_of_the_file(self):
+        res = res_doc(T0, {"dev": 0})
+        res["sessions"][0].update({"title": "secret prompt", "cwd": "/somewhere/private"})
+        res["sessions"][0]["teammates"][0]["title"] = "another prompt"
+        write_res(res)
+        pomodoro.run({"pomodoro": {"timezone": "UTC"}}, HOME, [{"code": "API", "state": "working",
+                                                                 "title": "x prompt", "cwd": "/private"}], T0)
+        with open(os.path.join(HOME, "pomodoro.json"), encoding="utf-8") as fh:
+            text = fh.read()
+        for word in ("prompt", "private", "somewhere"):
+            self.assertNotIn(word, text)
 
 
 if __name__ == "__main__":

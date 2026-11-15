@@ -561,21 +561,27 @@ to what needs you.
 
 A light, fun tally of how much focused work the AI fleet gets done. The idea comes from the Focus
 Timer of [ulanzi-lab](https://github.com/osisdie/ulanzi-lab), where you press a key to start a
-pomodoro. Here each session presses its own while it works.
+pomodoro. Here every Claude session, teammates included, presses its own while it works, and
+Today adds them all up.
 
-- **One pomodoro = 25 minutes of a session working.** When it ends the session's tally goes up and
-  the next one starts at once, so 50 minutes of work counts as 2.
-- **Short gaps don't break it.** A done/idle stretch of up to 2 minutes (between tool calls, a
-  quick turn) pauses the clock and keeps the progress. A longer one resets the current pomodoro.
+- **One pomodoro = 25 minutes of focus.** A session focuses while it is working; a teammate while
+  the resources sampler sees it active (idle under a minute). A lead counts only its own work.
+  Each 25 minutes adds one to that stream's tally and the rest carries over, so 50 minutes of work
+  counts as 2.
+- **Breaks don't reset it** (`mode: accumulate`, the default): agents pause between prompts all the
+  time, so focus simply adds up. `mode: strict` is the human pomodoro: a done/idle stretch longer
+  than 2 minutes resets the current one.
 - **Waiting for you pauses it** (needs-you), however long you take: the session is mid-task.
-  Going offline resets it, and so does a gap with no collector data longer than the grace.
-- The collector counts it from the session states it already reads (zero tokens) into
-  `$BOARD_HOME/pomodoro.json` (0600): per local day and session, the count, the focused minutes
-  and the current pomodoro, for 14 days. Days roll over at local midnight (`pomodoro.timezone`,
+  Going offline resets it. A teammate that ended (or no sampler data) pauses its pomodoro.
+- The collector counts it from the session states and teammate activity it already reads (zero
+  tokens) into `$BOARD_HOME/pomodoro.json` (0600): per local day and stream, the count, the focused
+  minutes and the current pomodoro, for 14 days. Days roll over at local midnight (`pomodoro.timezone`,
   default the system's). The tally survives collector restarts.
-- **On the board:** each card shows a small tomato ring with `12:34 / 25:00` and `🍅×3 today`. The
-  Deck key **🍅 Today** shows the fleet total (`14 · 5h 50m focus`) with a 7-day sparkline, and
-  opens a panel with each session's count today and the last 14 days. A finished pomodoro gets a
+- **On the board:** each card shows a small tomato ring with `12:34 / 25:00` and `🍅×3 today`, plus
+  `teammates +5 🍅 · 2h 20m` when its teammates focused. The Deck key **🍅 Today** shows the fleet
+  total, teammates included (`19 · 9h 28m focus`), with a 7-day sparkline, and opens a panel with
+  the sessions / teammates split, each session's count today with its teammates under it, and the
+  last 14 days. A finished pomodoro gets a
   short burst of tomatoes (none with *reduce motion*).
 - `board pomodoro [today|week] [--json|--mirror]` prints the same tallies in a terminal (`--mirror`:
   the `meta/pomodoro` document for the Artifact page).
@@ -586,7 +592,9 @@ pomodoro. Here each session presses its own while it works.
 pomodoro:                 # fleet.yaml; all optional
   enabled: true
   focus_minutes: 25
-  grace_minutes: 2
+  mode: accumulate        # or strict: a break longer than grace_minutes resets the pomodoro
+  grace_minutes: 2        # strict only
+  teammate_idle_s: 60     # a teammate idle this long is on a break
   timezone: ""            # IANA name, e.g. Asia/Taipei; empty = the system's
   notify: false
   notify_every: 10

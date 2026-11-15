@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """tests/test_page_pomodoro.py — optional headless check of the pomodoro surfaces in
 artifact/board.html: the tomato ring on a session card (mm:ss of 25:00, ticking while the session
-works, paused otherwise, "🍅×N today"), the Deck key "🍅 Today" (fleet total, focus, 7-day
+works, paused otherwise, "🍅×N today", the teammates' combined figure), the Deck key "🍅 Today" (fleet total, focus, 7-day
 sparkline) and its panel (sessions today, 14 days), the celebration when a pomodoro completes
 (none under reduced motion), zh-TW, phone width with no horizontal page scroll, the Artifact page
 (meta/pomodoro, read-only, no clock) and board-serve end to end (the real collector writes
@@ -157,22 +157,29 @@ def main():
             q = rows.get("QA") or {}
             check("no current pomodoro: the count only", q and not q.get("ring") and q.get("text") == "🍅×3 today", q)
             check("nothing today and no progress: no row", "DATA" not in rows and "MOBILE" not in rows, sorted(rows))
+            check("the teammates' combined count and focus on their lead's card", re.search(r"teammates \+5 🍅 · 2h 2\dm", d.get("text", ""))
+                  and "2 teammates: 5 🍅, 2h 2" in d.get("label", ""), d)
+            check("  a teammate stream has no card row of its own", not any("/" in c for c in rows), sorted(rows))
+            check("  no teammates, no figure", "teammates" not in a.get("text", "") and "teammates" not in q.get("text", ""), (a, q))
 
             print("demo: the Deck key and its panel")
             k = pg.evaluate(KEY_JS)
-            check("🍅 Today key: fleet total and focus", k and k["tag"] == "BUTTON" and k["text"].upper().startswith("🍅 TODAY") and " 14 " in " " + k["text"] + " "
-                  and "7h 3m focus" in k["text"], k)
-            check("  aria-label", k and k["label"] == "AI fleet: 14 🍅 · 7h 3m focus. Press for the pomodoro tally.", k and k["label"])
+            check("🍅 Today key: fleet total and focus", k and k["tag"] == "BUTTON" and k["text"].upper().startswith("🍅 TODAY") and " 19 " in " " + k["text"] + " "
+                  and "9h 28m focus" in k["text"], k)   # 14 by the sessions + 5 by DOCS's teammates
+            check("  aria-label", k and k["label"] == "AI fleet: 19 🍅 · 9h 28m focus. Press for the pomodoro tally.", k and k["label"])
             check("  7-day sparkline, today highlighted", k and len(k["bars"]) == 7 and k["bars"][-1]["today"] and not k["bars"][0]["today"], k and k["bars"])
             check("  shares the last row with the wide strip", k and k["sameRow"] and k["wideRight"] and k["leftEdge"], k)
             pg.click("#deck-grid .dkey.pomo")
             pg.wait_for_timeout(300)
             pn = pg.evaluate(PANEL_JS)
             check("pressing it opens the panel", pn["open"] and "Pomodoro" in pn["title"], pn["title"])
-            check("  fleet total and focus", "AI fleet: 14 🍅 · 7h 3m focus" in pn["text"], pn["text"][:200])
-            check("  per-session counts today, most first", pn["rows"][:2] == ["DOCS×5", "API×3"] and len(pn["rows"]) == 6, pn["rows"])
+            check("  fleet total and focus", "AI fleet: 19 🍅 · 9h 28m focus" in pn["text"], pn["text"][:200])
+            check("  the sessions / teammates breakdown", "Sessions 14 🍅 · 7h 3m focus + teammates 5 🍅 · 2h 2" in pn["text"], pn["text"][:300])
+            check("  per-session counts today, most first, teammates under their session",
+                  pn["rows"][:4] == ["DOCS×5", "checker×2", "writer×3", "API×3"] and len(pn["rows"]) == 8, pn["rows"])
             check("  14 days, today last", pn["days"] == 14 and pn["today"], (pn["days"], pn["today"]))
-            check("  the rules are explained", "A pomodoro is 25 minutes of a session working." in pn["text"] and "up to 2m" in pn["text"], pn["text"][-260:])
+            check("  the rules are explained", "Every session and every teammate runs its own pomodoro. Each 25 minutes" in pn["text"]
+                  and "a break never resets it" in pn["text"], pn["text"][-260:])
             pg.click("#pomo-close")
             check("  Close closes it", not pg.evaluate("() => document.getElementById('pomo').open"))
 
@@ -180,7 +187,7 @@ def main():
             ok = wait_for(pg, "() => (document.querySelector('.spomo[data-pomo=\"OPS\"]') || {}).innerText?.includes('🍅×3')", 15000)
             check("the count goes up when the clock reaches 25:00", ok, pg.evaluate(ROWS_JS).get("OPS"))
             check("  a celebration on the card and the Deck key", pg.evaluate("() => window.__bursts") >= 2, pg.evaluate("() => window.__bursts"))
-            check("  fleet total follows", " 15 " in " " + pg.evaluate(KEY_JS)["text"] + " ", pg.evaluate(KEY_JS)["text"])
+            check("  fleet total follows", " 20 " in " " + pg.evaluate(KEY_JS)["text"] + " ", pg.evaluate(KEY_JS)["text"])
             pg.wait_for_timeout(1800)
             check("  the burst is gone afterwards", pg.evaluate("() => document.querySelectorAll('.pomo-burst, .pomo-pop').length") == 0)
             pg.close()
@@ -216,14 +223,14 @@ def main():
             pg.goto(PAGE + "?demo=1")
             pg.wait_for_timeout(600)
             k = pg.evaluate(KEY_JS)
-            check("key in Chinese", k and k["text"].startswith("🍅 今日") and "專注 7 小時 3 分" in k["text"] and k["label"].startswith("AI 團隊：14 🍅"), k)
+            check("key in Chinese", k and k["text"].startswith("🍅 今日") and "專注 9 小時 28 分" in k["text"] and k["label"].startswith("AI 團隊：19 🍅"), k)
             r = pg.evaluate(ROWS_JS)
-            check("card rows in Chinese", "今日 🍅×5" in r["DOCS"]["text"] and r["API"]["label"] == "API · 番茄鐘 9:00 / 25:00 (暫停中) · 今日 3 🍅", (r["DOCS"], r["API"]["label"]))
+            check("card rows in Chinese", "今日 🍅×5" in r["DOCS"]["text"] and "隊友 +5 🍅" in r["DOCS"]["text"] and r["API"]["label"] == "API · 番茄鐘 9:00 / 25:00 (暫停中) · 今日 3 🍅", (r["DOCS"], r["API"]["label"]))
             pg.click("#deck-grid .dkey.pomo")
             pg.wait_for_timeout(300)
             pn = pg.evaluate(PANEL_JS)
             check("panel in Chinese", "番茄鐘" in pn["title"] and "今日各 session" in pn["text"].lower() and "最近 14 天" in pn["text"]
-                  and "AI 團隊：14 🍅" in pn["text"] and "一個番茄鐘是 session 工作 25 分鐘" in pn["text"], pn["text"][:300])
+                  and "AI 團隊：19 🍅" in pn["text"] and "隊友 5 🍅" in pn["text"] and "每個 session 和每位隊友都有自己的番茄鐘" in pn["text"], pn["text"][:300])
             left = [w for w in ("sessions today", "last 14 days", "focus", "today is", "a pomodoro", "close") if w in pn["text"].lower()]
             check("  no English left in the panel", not left, left)
             pg.close()

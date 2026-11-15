@@ -458,7 +458,7 @@ Rules:
 | `consensus/{id}` | operator | a `snapshot.consensus` item as it is. Read-only on the page: no page write path, never relayed as a `[BOARD decision]`. |
 | `meta/notify` | operator | the notification controls, read-only on the page: `board-notify status --json` → `.controls` without `presence.present`, plus `channels` (`{slack: true, ...}`, booleans only). See "Notification controls". |
 | `meta/resources` | operator | `board resources --mirror`: the `/api/state` `resources` block with percentages bucketed to 5% and sizes to 100 MB. Written only when `snapshot.resources` changes, at most every 10 minutes. Read-only on the page. |
-| `meta/pomodoro` | operator (optional) | `board pomodoro --mirror`: today's fleet and per-session pomodoro counts and focus, and 14 days of totals. Written when today's fleet count changes or the day rolls over. Read-only on the page; no running clock. See "Pomodoro". |
+| `meta/pomodoro` | operator (optional) | `board pomodoro --mirror`: today's fleet and per-stream (session and teammate) pomodoro counts and focus, and 14 days of totals. Written when today's fleet count changes or the day rolls over. Read-only on the page; no running clock. See "Pomodoro". |
 | `meta/ledger` | operator | `rows[]`: `{version, date, what, review, lead:{input,cache_read,cache_write,output,total}, teammate, note}` and `total{}`. The page renders this as the "版本與花費" (versions and cost) table in an Info dialog/footer. |
 
 ## Local adapter API (`bin/board-serve`, `lib/serve.py`)
@@ -1050,7 +1050,7 @@ calls an existing approver-only route after a confirm step.
 | System | the resources level, mem and swap bars, the OOM badge | scroll to Resources | — |
 | Quiet | the notification mute state | open the Notifications dialog | mute all push for 1 h / unmute all (`POST /api/notify-prefs`) |
 | Owner | owner-away on or off, since when | scroll to Consensus | away on / off (`POST /api/away`) |
-| 🍅 Today | the fleet's pomodoros today, focus time and a 7-day sparkline (see "Pomodoro") | open the pomodoro panel: per-session counts today and 14 days | — |
+| 🍅 Today | the fleet's pomodoros today (sessions and teammates), focus time and a 7-day sparkline (see "Pomodoro") | open the pomodoro panel: per-session counts today with each teammate under its session, and 14 days | — |
 | Fleet (wide) | up to 4 sessions with state pills (waiting first), the 5h and 7d bars and the burn rate; it shares the last row with 🍅 Today | scroll to Board | — |
 
 - **Alert wave:** when a session newly enters needs-you (not on the first render), a ring in its
@@ -1070,22 +1070,33 @@ calls an existing approver-only route after a confirm step.
 
 ## Pomodoro
 
-Each session runs its own pomodoro while it works, and the board keeps a daily tally per session
-and for the fleet (`lib/pomodoro.py`; the idea comes from the Focus Timer of
+Every Claude session, teammates included, runs its own pomodoro while it works, and the board keeps
+a daily tally per stream and for the fleet (`lib/pomodoro.py`; the idea comes from the Focus Timer of
 [ulanzi-lab](https://github.com/osisdie/ulanzi-lab)). The collector advances it on every run from
-the session states it already derived (the snapshot's `state` per code): zero tokens, no transcript
-read.
+data it already has: zero tokens, no transcript read.
 
-**Timer rules** (deterministic, per session code; FOCUS = `pomodoro.focus_minutes`, default 25;
-GRACE = `pomodoro.grace_minutes`, default 2):
+**Streams.** One per top-level session (key = its code), focused while the snapshot's `state` is
+`working`; and one per teammate (key `CODE/teammate-name`, the name reduced to `[A-Za-z0-9_.-]`, at
+most 64 characters), focused while `resources.json` reports it active: `idle` is not true and
+`idle_s` is known and below `pomodoro.teammate_idle_s` (default 60), so `working`, otherwise `rest`.
+A lead's stream counts only its own state, never its teammates' work. When `resources.json` is
+missing, disabled or older than 2 minutes plus two `resources.interval`s, and when a teammate is no
+longer listed, its stream is `gone`.
+
+**Timer rules** (deterministic, per stream; FOCUS = `pomodoro.focus_minutes`, default 25;
+GRACE = `pomodoro.grace_minutes`, default 2; MODE = `pomodoro.mode`, `accumulate` (default) or
+`strict`):
 
 | state seen | the current pomodoro |
 |---|---|
-| `working` | runs. At FOCUS minutes of focus it completes at that exact moment: the code's tally for the local day it completed in goes up by one, and the next pomodoro starts at once (50 minutes of work = 2) |
-| `done`, `rest` | paused. A done/rest run longer than GRACE resets it to 0:00; a shorter one keeps its progress |
+| `working` | runs. At FOCUS minutes of focus it completes at that exact moment: the stream's tally for the local day it completed in goes up by one, and the next pomodoro starts at once with the remainder (50 minutes of work = 2) |
+| `done`, `rest` | paused. `accumulate`: progress kept, however long the break (agents pause between prompts all the time). `strict` (the human pomodoro): a done/rest run longer than GRACE resets it to 0:00; a shorter one keeps its progress |
 | `needs-you` | paused, progress kept, however long the human takes |
-| `offline` (or a code no longer in the snapshot) | reset |
-| no collector run for longer than NODATA = max(GRACE, 60 s, 20 s + 2 × `poll_interval`) | that gap is a break: every current pomodoro resets |
+| `gone` (teammate streams only) | paused, progress kept. A gone stream with no progress is dropped; one with progress is dropped after 14 days |
+| `offline` (or a session code no longer in the snapshot) | reset |
+| no collector run for longer than NODATA = max(GRACE, 60 s, 20 s + 2 × `poll_interval`) | that gap is a break. `strict`: every current pomodoro resets. `accumulate`: progress kept; the gap is never credited as focus |
+
+Day tallies are per stream; the fleet's day (Today, the milestones) is the sum over all streams.
 
 - The time between two collector runs counts for the state seen at the first of them; nothing is
   extrapolated past the last run.
@@ -1095,38 +1106,49 @@ GRACE = `pomodoro.grace_minutes`, default 2):
   today stays (the clock moved back across midnight, or `pomodoro.timezone` moved west).
 - A clock that moves back credits nothing for that run, and a done/rest run never starts after
   `now`.
-- No short-break counting: a break is just a pause (or a reset after GRACE).
+- No short-break counting: a break is just a pause (or, in `strict`, a reset after GRACE).
 
 **`$BOARD_HOME/pomodoro.json`** (0600, written by the collector only):
 
 ```json
-{ "version": 1,
+{ "version": 2,
   "at": 1763193600000,                       // the last run this file reflects (epoch ms)
-  "settings": { "focus_ms": 1500000, "grace_ms": 120000, "tz": "Asia/Taipei" },
+  "settings": { "focus_ms": 1500000, "grace_ms": 120000, "tz": "Asia/Taipei", "mode": "accumulate" },
   "sessions": { "API": { "state": "working", "acc": 600000,   // ms into the current pomodoro
                          "away_since": null,                  // start of the current done/rest run
-                         "done_at": 1763192000000 } },        // the last completion
-  "days": { "2026-11-15": { "API": { "done": 3, "focus_ms": 5400000 } } },
+                         "done_at": 1763192000000,            // the last completion
+                         "seen_at": 1763193600000 },          // last run it was not offline/gone
+                "API/tests": { "state": "rest", "acc": 420000, "away_since": 1763193300000,
+                               "done_at": 1763191000000, "seen_at": 1763193600000 } },
+  "days": { "2026-11-15": { "API": { "done": 3, "focus_ms": 5400000 },
+                            "API/tests": { "done": 2, "focus_ms": 3420000 } } },
   "notified": { "2026-11-15": 10 } }          // the last fleet milestone reached today
 ```
 
+Only stream keys, states and numbers: no prompt, title or cwd. Version 1 (no teammate streams,
+no `mode`, no `seen_at`) is read as is: its sessions and days carry over (today's tallies kept),
+`seen_at` starts at its `at`, and the next write is version 2.
+
 It is rewritten when something a viewer sees changes (a state, a tally, a reset, a milestone) and
-at least every 20 s while a pomodoro runs or is paused. A run that skips the write loses nothing:
+at least every 20 s while a pomodoro runs (in `strict`, also while one is paused: a gap would
+reset it). A run that skips the write loses nothing:
 the next run integrates again from the stored `at`. So a restarted collector carries on: the stored
 `at` can lag the last run by up to 20 s, so a restart shorter than NODATA − 20 s (100 s with the
 defaults) keeps every pomodoro. `pomodoro.enabled: false` removes the file.
 
-**`/api/state` `pomodoro`** (`board_view`, numbers and session codes only; null when there is no
-file):
+**`/api/state` `pomodoro`** (`board_view`, numbers, session codes and teammate names only; null when
+there is no file):
 
 ```json
-{ "enabled": true, "focus_ms": 1500000, "grace_ms": 120000, "tz": "",
+{ "enabled": true, "focus_ms": 1500000, "grace_ms": 120000, "tz": "", "mode": "accumulate",
   "today": "2026-11-15", "day_start": 1763164800000,      // today's local midnight
   "seen": 1763193600000, "seen_step_ms": 300000,          // the last run, floored to 5 min (null: nothing runs)
-  "fleet": { "done": 14, "focus_ms": 20400000 },
-  "sessions": {
+  "fleet": { "done": 14, "focus_ms": 20400000, "teammates_done": 2 },   // every stream, teammates included
+  "sessions": {                                           // every stream: a teammate's right after its session
     "API": { "done": 3, "focus_ms": 4800000, "running": true, "state": "working",
              "started_at": 1763193000000, "progress_ms": null, "done_at": 1763192000000 },
+    "API/tests": { "done": 2, "focus_ms": 3420000, "running": false, "state": "rest",
+                   "started_at": null, "progress_ms": 420000, "done_at": 1763191000000 },
     "WEB": { "done": 1, "focus_ms": 1800000, "running": false, "state": "needs-you",
              "started_at": null, "progress_ms": 360000, "done_at": 1763180000000 } },
   "days": [ { "date": "2026-11-02", "done": 9, "focus_ms": 14580000, "sessions": { "API": 2 } },
@@ -1146,9 +1168,12 @@ bucket (none while nothing runs):
 - The page runs the clocks while `now − seen` < `seen_step_ms` + 3 minutes, and otherwise holds them
   at `seen + seen_step_ms` and shows them as paused (the collector stopped).
 - No `at`: `board pomodoro --json` (and `--mirror`) give the numbers as of the last run instead.
+- The page shows a session's own stream on its card's ring, its teammates' combined count and focus
+  next to it ("teammates +N 🍅 · focus"), the fleet total on the 🍅 Today key, and in the panel the
+  sessions / teammates split with each teammate under its session.
 
 **Artifact:** the operator may mirror `board pomodoro --mirror` to
-`meta/pomodoro` (`today, tz, focus_ms, fleet, sessions: {code: {done, focus_ms}}, days,
+`meta/pomodoro` (`today, tz, focus_ms, mode, fleet, sessions: {stream: {done, focus_ms}}, days,
 updated_at`): daily totals only, no running clock, nothing sensitive. The page reads it read-only.
 
 **CLI:** `board pomodoro [today|week] [--json|--mirror]`.
