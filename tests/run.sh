@@ -773,6 +773,8 @@ jq --argjson s "$((c3 + 5000))" '.last_stop_at = $s' "$BOARD_HOME/state/$SID.jso
 PATH="$T/bin:$PATH" "$REPO/bin/board-collect" --once --no-notify >/dev/null 2>&1
 eq "...then a finished turn -> hint, still pending" "$(dj "$a3" '.hint + "/" + .status + "/" + (.hint_at | tostring)')" "maybe_answered_in_session/pending/$((c3 + 5000))"
 a4="$(ask_id)"
+c4="$(dj "$a4" .created_at)"
+jq --argjson p "$((c4 - 2000))" --argjson s "$((c4 - 1000))" '.last_prompt_at = $p | .last_stop_at = $s' "$BOARD_HOME/state/$SID.json" > "$T/sx" && mv "$T/sx" "$BOARD_HOME/state/$SID.json"
 PATH="$T/bin:$PATH" "$REPO/bin/board-collect" --once --no-notify >/dev/null 2>&1
 eq "a prompt from before the ask -> no hint" "$(dj "$a4" '.hint // "none"')" "none"
 "$B" resolve "$a3" --in-pane --from CP >/dev/null
