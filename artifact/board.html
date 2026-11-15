@@ -1415,6 +1415,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     $('#nav-life').textContent = S.tasks.length;
     $('#nav-appr').textContent = S.approvals.length;
     document.title = a.total ? '(' + a.total + ') Agent Switchboard' : 'Agent Switchboard';
+    renderDeck();
   }
 
   function renderBanners() {
@@ -2634,10 +2635,10 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   function sessionPress(code) {
     const s = findSession(code);
     if (!s) return;
-    const d = sessionDecisions(s).sort((a, b) => ts(a.created_at) - ts(b.created_at))[0];
+    // The prompt the pane shows first, else the oldest pending decision, else the session's card.
     const p = s.pending && typeof s.pending === 'object' ? s.pending : null;
-    const id = d ? d.id : p && p.decision_id ? str(p.decision_id) : null;
-    const card = id ? document.getElementById('dec-' + id) : null;
+    const d = sessionDecisions(s).sort((a, b) => ts(a.created_at) - ts(b.created_at))[0];
+    const card = (p && p.decision_id && document.getElementById('dec-' + str(p.decision_id))) || (d && document.getElementById('dec-' + d.id));
     if (card) revealCard(card); else revealSession(s.code);
   }
   function usagePress() {
@@ -2729,7 +2730,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     setTimeout(done, 2500);
   }
 
-  function renderAll() { renderHeader(); renderBanners(); renderNotif(); renderDecisions(); renderConsensus(); renderTasks(); renderBoard(); renderMessages(); renderApprovals(); renderResources(); renderDeck(); if ($('#info').open) renderLedger(); openLinked(); }
+  function renderAll() { renderHeader(); renderBanners(); renderNotif(); renderDecisions(); renderConsensus(); renderTasks(); renderBoard(); renderMessages(); renderApprovals(); renderResources(); if ($('#info').open) renderLedger(); openLinked(); }
 
   /* ----------------------------------------------------------- deep links */
   // Alerts link to <board>/?d=<decision id> (m= message, c= consensus); a #<id> or #dec-<id> hash
@@ -3095,18 +3096,18 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       // Owner away + consensus: mirrored by the operator; the page never writes them.
       db.doc('meta/away').onSnapshot((snap) => {
         const d = snap.exists ? snap.data() : null;
-        S.away = d && d.active === true ? d : null; renderBanners(); renderConsensus();
+        S.away = d && d.active === true ? d : null; renderBanners(); renderConsensus(); renderDeck();
       }, () => {});
       // Notification controls: mirrored by the operator (board-notify status --json); read-only here.
       db.doc('meta/notify').onSnapshot((snap) => {
         const d = snap.exists ? snap.data() : null;
-        S.notify = d && typeof d === 'object' ? d : null; renderBanners(); renderNotif();
+        S.notify = d && typeof d === 'object' ? d : null; renderBanners(); renderNotif(); renderDeck();
       }, () => {});
       db.collection('consensus').orderBy('created_at', 'desc').limit(50).onSnapshot((snap) => {
         S.consensus = docs(snap); S.got.consensus = true; renderConsensus(); openLinked();
       }, () => {});
       // System resources: mirrored by the operator when the level changes; the page never writes it.
-      db.doc('meta/resources').onSnapshot((snap) => { S.resources = snap.exists ? snap.data() : null; renderBanners(); renderResources(); }, () => {});
+      db.doc('meta/resources').onSnapshot((snap) => { S.resources = snap.exists ? snap.data() : null; renderBanners(); renderResources(); renderDeck(); }, () => {});
     } catch (e) {
       feedFailed('the board')(e);
     }
@@ -3549,7 +3550,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   setInterval(() => {
     for (const t of document.querySelectorAll('time[data-ts]')) t.textContent = rel(Number(t.dataset.ts));
     const off = operatorOffline();
-    if (off !== wasOffline) { wasOffline = off; renderAll(); } else { renderHeader(); renderBanners(); renderDeck(); }
+    if (off !== wasOffline) { wasOffline = off; renderAll(); } else { renderHeader(); renderBanners(); }
   }, 30000);
   setInterval(() => { if (room) refreshCanSend(); }, 20000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden && room) refreshCanSend(); });
