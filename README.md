@@ -461,7 +461,10 @@ only after a second look, and it confirms the result in the session registry. A 
 needs-you session is left alone, and the collector applies the change when it goes idle. Turning
 it off walks Claude's "Disconnect this session" dialog, and anything unexpected there gets Escape.
 `fleet-up` starts sessions with or without `--remote-control` to match the choice, and
-`remote_control: true|false` in `fleet.yaml` sets a session's default.
+`remote_control: true|false` in `fleet.yaml` sets a session's default. The board tries a running
+session once per choice, and only if the choice is newer than the session. After that, a change
+made by hand in the session (say, disconnecting from your phone) wins until you make a choice
+again; the toggle on the page or `board rc` always forces it.
 
 **Note.** With `DO_NOT_TRACK` set in the environment that starts the sessions, Claude Code ignores
 `--remote-control` and has no `/remote-control`. `board doctor` warns about it.

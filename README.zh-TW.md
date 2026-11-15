@@ -428,7 +428,9 @@ board rc clear API               # 忘掉設定：回到 fleet.yaml（預設開�
 時才會輸入；再看一次才按 Enter，並從 session registry 確認結果。工作中或 needs-you 的 session
 不會被碰，收集器會等它閒置再套用。關閉時會走 Claude 的「Disconnect this session」對話框，遇到
 任何意料之外的畫面就按 Escape。`fleet-up` 會依設定決定啟動時要不要加 `--remote-control`，
-`fleet.yaml` 裡的 `remote_control: true|false` 則是各 session 的預設值。
+`fleet.yaml` 裡的 `remote_control: true|false` 則是各 session 的預設值。對執行中的 session，
+看板每個設定只試一次，而且只在設定比 session 新的時候。之後在 session 裡手動做的變更（例如從手機
+中斷連線）優先，直到你再做一次設定；頁面上的開關或 `board rc` 一律會強制套用。
 
 **注意**：啟動 session 的環境如果設了 `DO_NOT_TRACK`，Claude Code 會忽略 `--remote-control`，
 也沒有 `/remote-control`。`board doctor` 會提出警告。

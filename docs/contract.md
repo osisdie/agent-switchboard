@@ -1171,22 +1171,33 @@ first key sends nothing:
 1. The session must be idle: registry status `idle`, and the hook state, corrected as in the
    snapshot, `done` or `rest`. A `working` or `needs-you` session → `deferred` ("will run when
    idle"), nothing sent.
-2. The pane must belong to the session's tmux session (`display-message`). The last
-   `session_actions.lines` (30) lines of `capture-pane` must show Claude's input box: the last line
-   that starts with `❯` has a rule (`rule_regex`) right above and right below it, and holds
-   nothing else (`prompt_regex`). There must be no `esc to interrupt` anywhere and no dialog
-   footer (`dialog_regex`) below the box. Anything else → `refused`, nothing sent.
+2. The pane must be this session's: `display-message '#{session_name}\t#{pane_pid}'` must answer,
+   name the registry's tmux session when the registry has one, and `#{pane_pid}` must be the
+   session process or one of its ancestors (the `/proc/<pid>/stat` parent chain). This is checked
+   whether or not the registry has `tmux`. The last `session_actions.lines` (30) lines of
+   `capture-pane` must show Claude's input box: the last line that starts with `❯` has a rule
+   (`rule_regex`) right above and right below it, and holds nothing else (`prompt_regex`). There
+   must be no `esc to interrupt` anywhere, and below the box no dialog footer (`dialog_regex`)
+   and no vim mode line (`mode_regex`, `-- NORMAL --`: Enter would not submit). Anything else →
+   `refused`, nothing sent. A fresh session sometimes shows a dim placeholder in the box
+   (`❯ Try "…"`). It counts as not empty and is refused; it is gone after the first prompt.
 3. The registry and hook state are read again. Then `send-keys -l -- <command>`.
 4. The box must now hold exactly the command, and the session must still be idle. Else `partial`
    (exit 5): the text is typed, Enter is not pressed, and the owner clears it.
 5. Enter, then the action's own confirmation (below).
 
+One action at a time per session: `actions-<code>.lock` (flock). The collector's applier skips a
+session whose lock is held. A CLI call (and the board's background apply) waits
+`lock_wait_seconds` (20); after that it only reports `busy`, "stored; will apply when the session
+is free". The choice or the queued compact stays, and the collector applies it later. Sessions
+never wait for each other.
+
 Every attempt appends `{type: "session-action", op: "run", code, action, result, reason, by,
 auto, pane}` to `events.jsonl`. Queueing, cancelling and dropping append `op: "queue"|"cancel"|
 "drop"|"done"`. The last attempt per session and action is kept in `actions-last.json`:
-`{CODE: {ACTION: {sid, result, reason, at, tries, done_at}}}`.
+`{CODE: {ACTION: {sid, result, reason, at, tries, choice_at, done_at}}}`.
 
-Results: `confirmed`, `already`, `deferred`, `offline`, `nothing`, `started`, `dropped` (exit 0),
+Results: `confirmed`, `already`, `deferred`, `offline`, `nothing`, `started`, `dropped`, `busy` (exit 0),
 `refused` (3), `partial` (5), `unconfirmed` / `unavailable` / `consent` (6), `failed` (1).
 
 **compact.** These screens were observed in Claude Code 2.1.x:
@@ -1200,20 +1211,23 @@ Results: `confirmed`, `already`, `deferred`, `offline`, `nothing`, `started`, `d
 
 The board confirms the start within `compact_start_seconds` (15; else `unconfirmed`). It then
 waits up to `compact_seconds` (600) for `idle` plus the `Compacted` line → `confirmed`. Not enough
-messages → `nothing`. Still running at the end → `started`, and it finishes in the session.
+messages → `nothing`. Still running at the end → `started`, and it finishes in the session. Idle
+again with neither the `Compacting` nor the `Compacted` line for `compact_idle_seconds` (5)
+→ `unconfirmed` ("interrupted?", for example Esc pressed in the session).
 `done_at` is the board's own record of the last confirmed compact; the hook does not see
 compactions.
 
 A compact on a busy session is queued in `session-actions.json` (`{CODE: {action, by, at,
-sid}}`). It runs once the session is idle, and is dropped when it is older than `queue_hours` (12)
-or when the session restarted (another `sid`). It is also dropped after a final result, or after
+sid}}`). It runs once the session is idle, and is dropped when it is older than `queue_hours` (12),
+when it has no `sid` (an offline session is never queued: `offline`, nothing queued), or when the
+session restarted (another `sid`). It is also dropped after a final result, or after
 `max_tries` retries. `board session CODE cancel` drops it.
 
 **Pending work.** The looping collector (`board-collect`, not `--once`) passes `--apply-rc`. When
-a session is idle with a pane and has something pending (a Remote Control choice it does not
-follow yet, or a queued compact), it starts `actions.py apply --pending --auto` in the background.
-Only one applier runs at a time (`actions-run.lock`; `--auto` skips while it is held). For the
-same session process and action, `--auto` never retries a final result (`confirmed`, `already`,
+a session is idle with a pane, has something pending (a Remote Control choice it does not follow
+yet, or a queued compact) and no action running on it, it starts `actions.py apply --auto
+CODE...` in the background. For the same session process and action (and, for Remote Control,
+the same choice), `--auto` never retries a final result (`confirmed`, `already`,
 `nothing`, `started`, `unavailable`, `consent`, `partial`). It retries `refused`, `unconfirmed`
 and `failed` after `retry_minutes` (10), at most `max_tries` (3) times. Turn it off with
 `BOARD_ACTIONS_AUTO=0` or `session_actions.auto_apply: false`.
@@ -1249,27 +1263,49 @@ flag for a running session; the `/remote-control` slash command (alias `/rc`) to
   continue". The board presses Up one row at a time, checking the focused row (`❯ …`) on screen
   after each key (at most 4 moves), until "Disconnect this session" is focused. Then it presses
   Enter: `⎿ Remote Control disconnected.`, and `bridgeSessionId` goes back to `null`. Anything
-  unexpected gets Escape ("Continue": Remote Control stays on) → `refused`.
+  unexpected gets Escape ("Continue": Remote Control stays on) → `refused`. The disconnect label
+  (`rc_disconnect_label`, anchored: `^\s*❯?\s*Disconnect this session\s*$`) is matched against
+  the focused row only.
+- **The registry is wrong.** If it says off while Claude is on, `/remote-control` opens the
+  Disconnect dialog: the board presses Escape → `refused`. If it says on while Claude is off and
+  never consented, the consent dialog opens: Escape → `consent`. On every exit that is not
+  `confirmed`, when Claude's empty input box is not on screen, the board presses Escape (in
+  Claude's dialogs that is "Continue" / "Never mind": nothing changes). No dialog is left open.
 - **Not available:** with `DO_NOT_TRACK` set, not signed in to claude.ai, or turned off by
   policy, Claude ignores `--remote-control` and answers `Unknown command: /remote-control` →
   `unavailable`. When the session's process has `DO_NOT_TRACK` set, the board knows this up
   front (`rc.blocked`): it types nothing and the page shows "RC unavailable: DO_NOT_TRACK is set".
 
-A choice made on the board is applied to the running sessions it covers at once if they are idle,
-and later by the collector if not. `fleet.yaml` alone never makes the board type into a pane.
+**The board choice and a change made by hand.** Making a choice (`board rc on|off`, the board's
+toggle, `board session CODE rc on|off`) applies it at once to the idle sessions it covers. The
+board then tries each running session at most once per (choice, session process), and only when
+the choice is newer than the process: `rc.at` > the registry's `startedAt`. A session started
+after the choice got it from fleet-up (or was started by hand, and is left as it is). After that
+one try, its result kept in `actions-last.json` with `choice_at`, the board stops: a change made
+in the session by hand, for example someone disconnecting from the phone, wins until the owner
+makes a choice again. A refused try is retried up to `max_tries`; then the board gives up as
+well. `pending` (the dashed chip) is true only while the board still means to try. An explicit
+action on the page or the CLI always forces the choice. `fleet.yaml` alone never makes the board
+type into a pane.
 
 **DO_NOT_TRACK.** In the environment that starts the sessions, `DO_NOT_TRACK` disables Remote
 Control in all of them; `board doctor` and `fleet-up` warn about it. `rc.unset_do_not_track: true`
-in `fleet.yaml` makes fleet-up start sessions that want Remote Control with `env -u DO_NOT_TRACK
-claude …`. The default is false: the environment is left as it is.
+in `fleet.yaml` makes fleet-up always start sessions that want Remote Control with `env -u
+DO_NOT_TRACK claude …`, whether or not fleet-up itself sees the variable (the pane's shell may
+set it). `env` runs a program, so `CLAUDE_BIN` must then be an executable path or a name on
+`PATH`, not a shell alias or function. The default is false: the environment is left as it is.
 
 **Trade-offs.** Typing into a live session is the same risk as `board press`, bounded the same
 way: only when idle, only into an empty box, Enter only after a second look, and a fixed command.
-If the owner turns Remote Control on by hand in a session whose board choice is off, the board
-turns it off again the next time that session is idle: the board choice is the source of truth.
-To keep a session's own setting, run `board rc clear CODE`; with no `all` choice, `fleet.yaml`
-alone never changes a running session. A session that cannot get Remote Control at runtime gets
-it at its next start through fleet-up.
+There is a window between the last screen check and Enter (the time to type a command and read
+the screen once, well under a second): a human typing into the pane at that moment could have
+their keystrokes mixed with the command. The board then sees an unexpected box and stops
+(`partial`), or the command runs; it never submits text the human typed. A change made by hand
+is respected after the board's one try (above); `board rc clear CODE` forgets the board choice
+altogether. A session that cannot get Remote Control at runtime gets it at its next start
+through fleet-up. The session code `all` is reserved (`fleet.yaml` entries named `all` are
+skipped). board-serve checks who is asking before it looks at the request body, so a refused
+probe is audited whatever it sent.
 
 **The page.** Each running session card shows an RC chip: `RC on`, `RC off`, `RC unavailable`
 (DO_NOT_TRACK), or a dashed `RC → on|off` when a choice waits for the session to be idle. In the
