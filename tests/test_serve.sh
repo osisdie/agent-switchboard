@@ -505,6 +505,43 @@ grep -q 'board press d-1-permb' "$T/serve.err" && ok "  details logged on stderr
 grep -q 'send-keys' "$FAKE_TMUX_LOG" && bad "  no keys sent on stale" "$(cat "$FAKE_TMUX_LOG")" || ok "  no keys sent on stale"
 eq "  decision file stale" "$(jq -r .status "$BOARD_HOME/decisions/d-1-permb.json")" "stale"
 
+# ---------------------------------------------------------------- pane question -> board press
+echo "pane question:"
+cp "$BOARD_HOME/state/$SID.json" "$T/state.saved"
+Q1='[{"question":"Which color do you prefer for the test?","header":"Color","options":[{"label":"Red","description":"warm"},{"label":"Blue","description":"cool"},{"label":"Green","description":"natural"}],"multiSelect":false}]'
+paneq() {  # paneq ID TOOL_USE_ID QUESTIONS PRESSABLE — a hook-made pane question pending in the state
+  jq --arg tu "$2" --argjson q "$3" '.state = "needs-you" | .pending = {tool_use_id: $tu, tool_name: "AskUserQuestion",
+      summary: $q[0].question, summary_sha256: ("sha-" + $tu), questions: $q}' "$T/state.saved" > "$T/st" && mv "$T/st" "$BOARD_HOME/state/$SID.json"
+  dec "$1" question "$(jq -cn --arg s "$SID" --arg tu "$2" --argjson q "$3" --argjson p "$4" \
+    '{from: null, source: "pane", session_id: $s, tool_use_id: $tu, tool_name: "AskUserQuestion", question: $q[0].question,
+      options: (if ($q | length) == 1 then [$q[0].options[].label] else [] end), questions: $q, pressable: $p,
+      summary: $q[0].question, summary_sha256: ("sha-" + $tu)}')"
+}
+printf ' ☐ Color\n\nWhich color do you prefer for the test?\n\n❯ 1. Red\n     warm\n  2. Blue\n     cool\n  3. Green\n     natural\n  4. Type something.\n\nEnter to select · ↑/↓ to navigate · Esc to cancel\n' > "$FAKE_TMUX_SCREEN"
+paneq d-1-pq1 tu_q1 "$Q1" true
+eq "state lists the pane question with its questions" "$(req GET /api/state >/dev/null; body '.decisions[] | select(.id=="d-1-pq1") | "\(.source)/\(.pressable)/\(.questions[0].options[1].description)"')" "pane/true/cool"
+: > "$FAKE_TMUX_LOG"
+eq "pane question: option answer 200" "$(post /api/decisions/d-1-pq1/answer '{"answer":"Blue"}')" "200"
+eq "  status relayed" "$(body .status)" "relayed"
+grep -q '^send-keys -t %42 2$' "$FAKE_TMUX_LOG" && ok "  board press sent the option's number key" || bad "  board press sent the option's number key" "$(cat "$FAKE_TMUX_LOG")"
+eq "  decision file relayed, option 2" "$(jq -r '"\(.status)/\(.answer_index)"' "$BOARD_HOME/decisions/d-1-pq1.json")" "relayed/2"
+eq "  press audited" "$(jq -s -r '[.[] | select(.type=="serve" and .action=="press")] | last | "\(.id)/\(.result)"' "$BOARD_HOME/events.jsonl")" "d-1-pq1/sent"
+QM='[{"question":"Which color?","header":"Color","options":[{"label":"Red","description":""}],"multiSelect":false},{"question":"Which size?","header":"Size","options":[{"label":"S","description":""}],"multiSelect":false}]'
+paneq d-1-pq2 tu_q2 "$QM" false
+: > "$FAKE_TMUX_LOG"
+eq "multi-question pane card: answer refused 409" "$(post /api/decisions/d-1-pq2/answer '{"answer":"Red"}')" "409"
+eq "  error answer_in_session" "$(body .error)" "answer_in_session"
+eq "  file untouched" "$(jq -r .status "$BOARD_HOME/decisions/d-1-pq2.json")" "pending"
+rm -f "$BOARD_HOME/decisions/d-1-pq2.json"
+paneq d-1-pq3 tu_q3 "$Q1" true
+eq "free text too long for the picker: 200" "$(post /api/decisions/d-1-pq3/answer "$(jq -cn --arg a "$(printf 'w%.0s' $(seq 1 250))" '{answer: $a}')")" "200"
+eq "  status answered (relayed by message)" "$(body .status)/$(jq -r .relay "$BOARD_HOME/decisions/d-1-pq3.json")" "answered/operator"
+grep -q send-keys "$FAKE_TMUX_LOG" && bad "  nothing pressed" "$(cat "$FAKE_TMUX_LOG")" || ok "  nothing pressed"
+grep -q '^decision d-1-pq3 answered' <<<"$("$REPO/bin/board-serve" --watch --once)" && ok "  --watch hands it to the operator" || bad "  --watch hands it to the operator"
+rm -f "$BOARD_HOME/decisions/d-1-pq3.json"
+cp "$T/state.saved" "$BOARD_HOME/state/$SID.json"
+printf ' Bash command\n   rm -rf build\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n' > "$FAKE_TMUX_SCREEN"
+
 # ---------------------------------------------------------------- local listener: forwarded = refused
 echo "local listener:"
 for hd in 'Cf-Connecting-IP: 203.0.113.9' 'Cf-Ray: 1-x' 'X-Forwarded-For: 203.0.113.9' 'Forwarded: for=203.0.113.9' \
