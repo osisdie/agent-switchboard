@@ -1024,7 +1024,9 @@ bucket (none while nothing runs):
   one has `progress_ms` and `started_at: null`.
 - Today's `focus_ms` (per session, `fleet`, the last `days` entry) leaves out the running stretches.
   The page adds `min(now, started_at + FOCUS) − max(started_at, day_start)` for each running
-  session.
+  session. This base can be negative: when a pomodoro paused across midnight, part of its progress
+  counts for yesterday, but the formula above credits all of it after `day_start`. The server never
+  clamps it (that would break base + live); the page clamps only the sum it shows at 0.
 - The page runs the clocks while `now − seen` < `seen_step_ms` + 3 minutes, and otherwise holds them
   at `seen + seen_step_ms` and shows them as paused (the collector stopped).
 - No `at`: `board pomodoro --json` (and `--mirror`) give the numbers as of the last run instead.

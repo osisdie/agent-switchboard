@@ -3295,7 +3295,9 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
     const full = pomoFull(p), start = num(r.started_at), seen = num(p.seen), step = num(p.seen_step_ms) || 300000;
     const running = r.running === true && start != null;
     const live = running && seen != null && now - seen < step + POMO_STALE_MS;
-    // a stopped collector: the clock holds at the end of its last freshness bucket
+    // A stopped collector: the clock holds at the end of its last freshness bucket. The view has no
+    // `at` on purpose (it would change with every heartbeat), so this can run up to seen_step_ms past
+    // the last real run: a few minutes of overshoot on a board whose collector is down.
     const t = live || !running ? now : Math.max(start, Math.min(now, (seen != null ? seen : start) + step));
     const ms = Math.max(0, Math.min(full, running ? t - start : (num(r.progress_ms) || 0)));
     const today = running ? Math.max(0, Math.min(t, start + full) - Math.max(start, num(p.day_start) || 0)) : 0;
@@ -3442,7 +3444,7 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
     box.append(h('p', { class: 'pm-total' }, h('strong', { text: tr('AI fleet: {n} 🍅', { n: num(p.fleet.done) || 0 }) }), ' · ', tr('{focus} focus', { focus: pomoDur(pomoFleetFocus(p, now)) })),
       h('p', { class: 'note', text: tr('Today is {day} ({tz}).', { day: str(p.today), tz: str(p.tz) || tr('system time') }) }));
     const rows = Object.entries(p.sessions || {}).filter(([, r]) => r && typeof r === 'object')
-      .sort((a, b) => (num(b[1].done) || 0) - (num(a[1].done) || 0) || (num(b[1].focus_ms) || 0) - (num(a[1].focus_ms) || 0) || a[0].localeCompare(b[0]));
+      .sort((a, b) => (num(b[1].done) || 0) - (num(a[1].done) || 0) || pomoFocus(p, b[1], now) - pomoFocus(p, a[1], now) || a[0].localeCompare(b[0]));
     box.append(h('h3', { text: tr('Sessions today') }));
     if (!rows.length) box.append(h('p', { class: 'note', text: tr('No pomodoros yet today.') }));
     else box.append(h('ul', { class: 'pm-list' }, rows.map(([code, r]) => {

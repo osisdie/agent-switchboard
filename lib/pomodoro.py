@@ -386,6 +386,8 @@ def board_view(doc, now):
             r["started_at"] = at - r["progress_ms"]
             r["progress_ms"] = None
             live = max(0, at - max(r["started_at"], ds))  # the running stretch that counts for today
+            # May go negative when the pomodoro paused across midnight (part of its progress counted
+            # for yesterday). Never clamp it here: base + live must stay the collector's focus.
             r["focus_ms"] -= live
             shift += live
         else:
