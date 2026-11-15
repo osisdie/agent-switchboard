@@ -97,8 +97,12 @@ Waiting costs no tokens. When it fires:
 1. Read `snapshot.json`. Compare it with what you last wrote, and keep only changed sessions and
    decisions.
 2. Send one `write_db` **batch** with the diff:
-   - `sessions/{code}`: `code, aliases, state, status, task, tmux, remote_url, pending, updated_at`.
-     `task` is a short summary you write. Never copy raw prompt text.
+   - `sessions/{code}`: `code, aliases, state, status, task, tmux, remote_url, pending, updated_at,
+     title, repo, branch, last_event, notification_type`. `task` is a short summary you write. Never
+     copy raw prompt text. `title`, `repo` and `branch` come from the snapshot as they are (already
+     cleaned by the collector: no paths, clipped).
+   - **Never mirror `recent`** (the tool calls in flight). Its summaries can hold command text, so
+     it stays on the self-hosted board; the Artifact card says so.
    - `decisions/{id}`: new local decisions (`kind` `question` or `permission`), created with
      `status: "pending"`.
    - `meta/operator.heartbeat_at`.

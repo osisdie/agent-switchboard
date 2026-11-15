@@ -111,6 +111,17 @@ cat > "$CLAUDE_SESSIONS_DIR/999999999.json" <<'EOF'
 {"pid":999999999,"sessionId":"dead","cwd":"/w","tmux":"DEAD:@1.%1","name":"DEAD","status":"idle"}
 EOF
 
+# The collector reads pane titles with `tmux list-panes -a`: a fake, so a real tmux server on this
+# machine never leaks into the tests. Everything else fails, as tmux does without a server.
+mkdir -p "$T/fakebin"
+cat > "$T/fakebin/tmux" <<'EOF'
+#!/usr/bin/env bash
+[ "$1" = "list-panes" ] && [ -n "${FAKE_PANES:-}" ] && { cat "$FAKE_PANES"; exit 0; }
+exit 1
+EOF
+chmod +x "$T/fakebin/tmux"
+export PATH="$T/fakebin:$PATH"
+
 echo "collector:"
 "$REPO/bin/board-collect" --once --no-notify
 snap="$BOARD_HOME/snapshot.json"
@@ -139,8 +150,43 @@ sleep 0.05
 "$REPO/bin/board-collect" --once --no-notify
 eq "unchanged snapshot not rewritten" "$(jq .generated_at "$snap")" "$gen1"
 
-echo "collector: one process, one card"
+echo "collector: card details"
+export FAKE_PANES="$T/panes.txt"
+HOST="$(python3 -c 'import socket; print(socket.gethostname())')"
+printf '%%42\t✳ Fix the login form in /home/someone/private/app/login.py\n%%9\t%s\n' "$HOST" > "$FAKE_PANES"
+mkdir -p "$T/repos/web-app/src"
+git -C "$T/repos/web-app" init -q -b feature/cards
+jq --arg cwd "$T/repos/web-app/src" '.cwd = $cwd' "$T/cp-reg.json" > "$CLAUDE_SESSIONS_DIR/$live_pid.json"
+cat > "$BOARD_HOME/state/s-qa.json" <<EOF
+{"session_id":"s-qa","state":"working","last_event":"PreToolUse","notification_type":null,"updated_at":1,
+ "recent_pre":[{"tool_use_id":"t1","tool_name":"Read","summary":"old"},
+               {"tool_use_id":"t2","tool_name":"Grep","summary":"needle in C:\\\\Users\\\\someone\\\\notes.txt"},
+               {"tool_use_id":"t3","tool_name":"Edit","summary":"~/secret/dir/app.py"},
+               {"tool_use_id":"t4","tool_name":"Bash","summary":"cd /home/someone/repo && npm test \u001b[31m$(printf 'x%.0s' $(seq 1 300))"}]}
+EOF
+"$REPO/bin/board-collect" --once --no-notify
 sj() { jq -r --arg c "$1" ".sessions[] | select(.code==\$c) | $2" "$snap"; }
+eq "title from the pane, glyph dropped, path cut" "$(sj CP .title)" "Fix the login form in …/login.py"
+eq "tmux's default title (the host name) is not published" "$(sj QA .title)" "null"
+eq "repo is the basename of the git toplevel" "$(sj CP .repo)" "web-app"
+eq "branch" "$(sj CP .branch)" "feature/cards"
+eq "no repo outside git" "$(sj INFRA '.repo, .branch' | tr '\n' ' ')" "null null "
+eq "last_event / notification_type" "$(sj QA '.last_event + "/" + (.notification_type | tostring)')" "PreToolUse/null"
+eq "recent: the last 3 tool calls" "$(sj QA '[.recent[].tool] | join(",")')" "Grep,Edit,Bash"
+eq "recent: Windows and home paths cut" "$(sj QA '.recent[0].summary + " | " + .recent[1].summary')" "needle in …/notes.txt | …/app.py"
+eq "recent: control characters gone, clipped to 160" "$(sj QA '.recent[2].summary | ([explode[] | select(. < 32 or . == 127)] | length | tostring) + "/" + (length | tostring) + "/" + .[0:24]')" "0/160/cd …/repo && npm test xx"
+eq "offline fleet rows carry empty details" "$(sj GONE '([.title, .repo, .branch, .last_event] | map(tostring) | join(",")) + "/" + (.recent | length | tostring)')" "null,null,null,null/0"
+eq "no path in any session's card fields" "$(jq -r '[.sessions[] | .title, .repo, .branch, (.recent[]? | .summary)] | map(select(. != null)) | map(select(test("/home|/tmp|someone/|Users"))) | length' "$snap")" "0"
+grep -q "$T/repos" "$BOARD_HOME/gitinfo.json" && ok "git info cached per cwd" || bad "git info cached per cwd"
+git -C "$T/repos/web-app" symbolic-ref HEAD refs/heads/other
+"$REPO/bin/board-collect" --once --no-notify
+eq "git info reused within 30 s" "$(sj CP .branch)" "feature/cards"
+jq 'map_values(.at = 0)' "$BOARD_HOME/gitinfo.json" > "$T/gi.json" && mv "$T/gi.json" "$BOARD_HOME/gitinfo.json"
+"$REPO/bin/board-collect" --once --no-notify
+eq "  and refreshed after" "$(sj CP .branch)" "other"
+unset FAKE_PANES
+
+echo "collector: one process, one card"
 sleep 600 & dup_pid=$!
 sleep 600 & dup_pid2=$!
 # Started inside CP's tmux, registered as GONE (renamed): it is GONE, not CP/GONE + an offline GONE.
@@ -152,7 +198,7 @@ eq "codes: each process once" "$(jq -r '[.sessions[].code] | join(",")' "$snap")
 eq "the renamed process is GONE, live" "$(sj GONE '.state + "/" + .name')" "working/GONE"
 eq "CP is still the process named CP" "$(sj CP .session_id)" "$SID"
 kill "$dup_pid" "$dup_pid2" 2>/dev/null
-rm -f "${CLAUDE_SESSIONS_DIR:?}/${dup_pid:?}.json" "${CLAUDE_SESSIONS_DIR:?}/${dup_pid2:?}.json"
+rm -f "${CLAUDE_SESSIONS_DIR:?}/${dup_pid:?}.json" "${CLAUDE_SESSIONS_DIR:?}/${dup_pid2:?}.json" "${BOARD_HOME:?}/state/s-qa.json"
 cp "$T/cp-reg.json" "$CLAUDE_SESSIONS_DIR/$live_pid.json"
 "$REPO/bin/board-collect" --once --no-notify
 

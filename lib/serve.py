@@ -91,7 +91,8 @@ CODE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 FORWARD_HEADERS = ("Cf-Connecting-Ip", "Cf-Ray", "X-Forwarded-For", "Forwarded", "X-Forwarded-Host",
                    "X-Forwarded-Proto", "X-Real-Ip", "Cf-Visitor", "Cdn-Loop",
                    "Cf-Access-Authenticated-User-Email", "Cf-Access-Jwt-Assertion")
-SESSION_KEYS = ("code", "aliases", "state", "status", "tmux", "remote_url", "pending", "updated_at")
+SESSION_KEYS = ("code", "aliases", "state", "status", "tmux", "remote_url", "pending", "updated_at",
+                "title", "repo", "branch", "last_event", "notification_type", "recent")
 DECISION_KEYS = ("id", "kind", "from", "question", "options", "context", "tool_use_id", "tool_name",
                  "summary", "status", "answer", "answered_by", "answered_at", "relayed_at",
                  "created_at", "updated_at", "task_id", "stage", "gate", "artifact_ref",

@@ -54,7 +54,10 @@ Map hook events to states like this:
                   "cwd": "...", "tmux": "CP:@3.%7", "tmux_pane": "%7",
                   "status": "busy|idle", "state": "working|needs-you|done|rest|offline",
                   "pending": {...}|null, "remote_url": "https://claude.ai/code/<bridgeSessionId>"|null,
-                  "updated_at": 0 } ],
+                  "updated_at": 0,
+                  "title": "Fix the login form"|null, "repo": "web-app"|null, "branch": "main"|null,
+                  "last_event": "PreToolUse"|null, "notification_type": "permission_prompt"|null,
+                  "recent": [ {"tool": "Bash", "summary": "npm test -- …/login.spec.ts"} ] } ],
   "decisions": [ { ...decision file... } ],
   "tasks": [ ... ], "limit": {...}|null,
   "owner_away": { "since": 0, "by": "CP", "said": "..." } | null,
@@ -72,6 +75,17 @@ Map hook events to states like this:
   takes the fleet code its own registered name maps to, if no live process holds that code;
   otherwise it becomes `CODE/<name>`.
 - **Sessions in `fleet.yaml` that aren't running** appear with state `offline`.
+- **Card details** (all untrusted text: control characters and ANSI escapes removed, any absolute
+  or home path cut to `…/<last part>`, clipped):
+  - `title`: the pane title Claude Code sets (`✳ <summary>`), from one `tmux list-panes -a` per run,
+    leading status glyph dropped, at most 120 chars. Never tmux's default (the host name) or
+    "Claude Code".
+  - `repo` / `branch`: the basename of `git rev-parse --show-toplevel` in `cwd` and the current
+    branch (`detached` for a detached HEAD), cached per cwd for 30 s in `$BOARD_HOME/gitinfo.json`.
+    Never the path itself.
+  - `last_event`, `notification_type`: from the hook state file.
+  - `recent`: the last 3 tool calls in flight (the hook's `recent_pre`): tool name and the hook's
+    redacted summary, at most 160 chars. Self-hosted board only: the operator never mirrors it.
 - **`owner_away`** is `null` when `$BOARD_HOME/owner-away` does not exist, else its record. A file
   that is not a JSON object (free text, empty) still means away: `{since: <mtime ms>, by: null,
   said: <first 300 chars>, legacy: true}`.
@@ -128,7 +142,7 @@ Rules:
 
 | Collection / doc | Writer | Fields |
 |---|---|---|
-| `sessions/{code}` | operator | `code, aliases[], state, status, task` (short summary, never raw prompt), `tmux, remote_url, pending{tool_name,summary,tool_use_id}, updated_at` |
+| `sessions/{code}` | operator | `code, aliases[], state, status, task` (short summary, never raw prompt), `tmux, remote_url, pending{tool_name,summary,tool_use_id}, updated_at, title, repo, branch, last_event, notification_type`. **Never `recent`**: tool summaries can hold command text, so they stay on the self-hosted board |
 | `decisions/{id}` | operator | fields as in `decisions/<id>.json` above. Only the operator writes `answer, answered_by` (= the path id of the answer it relayed), `answered_at`, `status`, `relayed_at`. An Editor's page may set `status: "answered"` as a display hint. The operator ignores it, and ignores who set it. |
 | `answers/{userId}/d/{decisionId}` | that user (page) | `{answer, answered_at, note}`. For permission cards, `answer` is `"allow"` or `"deny"`; the page never offers `"allow"` when the decision has `summary_truncated: true`. The operator lists `answers/<id>/d` for each id in `approver_ids` ∪ `release_manager_ids`, takes the identity **from the path**, and runs `board answer <decisionId> <answer> --by <id>`. If several approvers answered, the earliest `answered_at` wins. |
 | `messages/{id}` | page (Editors) creates; operator updates | `to` (code or `"all"`), `body`, `by` (user id), `created_at`, `status: "new"\|"relayed"\|"replied"`. The operator adds `relayed_to[]` and `relayed_at`. |

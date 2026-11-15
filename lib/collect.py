@@ -18,13 +18,21 @@ Usage: collect.py [--no-notify] [--baseline] [--verbose]
 - Samples system resources every resources.interval seconds into resources.json (lib/resources.py)
   and adds only their digest (`resources`: null or {level, worst}) to the snapshot, so raw numbers
   never change snapshot.json.
+- Card details per session: `title` (the pane title Claude Code sets, from one batched
+  `tmux list-panes -a`), `repo` / `branch` (basename of the git toplevel of cwd and the current
+  branch, cached 30 s in $BOARD_HOME/gitinfo.json), `last_event`, `notification_type` and `recent`
+  (the tool calls in flight: tool name + the hook's redacted summary). All of it is untrusted text:
+  control characters removed, paths cut to their last component, clipped. Never a full path.
 """
 import glob
 import json
 import os
+import re
+import socket
 import subprocess
 import sys
 import time
+import unicodedata
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import away  # noqa: E402
@@ -34,6 +42,14 @@ import notify  # noqa: E402
 import resources  # noqa: E402
 
 FINAL = ("relayed", "stale", "timeout", "unauthorized")
+TITLE_MAX = 120
+SUMMARY_MAX = 160
+NAME_MAX = 80
+RECENT_MAX = 3
+GIT_TTL_MS = 30 * 1000
+# An absolute or home path (Unix or Windows), not part of a URL or a word: replaced by "…/<last part>".
+PATH_RE = re.compile(r"(?<![\w.:/~\\-])(?:~(?=/)|/|[A-Za-z]:\\)[^\s'\"`<>|;&()]+")
+ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?)")
 
 
 def now_ms():
@@ -62,6 +78,123 @@ def append_event(home, ev):
             fh.write(json.dumps(ev, ensure_ascii=False) + "\n")
     except OSError:
         pass
+
+
+def clean_text(value, limit):
+    """Untrusted text for a card: no control characters, no paths (only their last component),
+    single spaces, at most `limit` characters. "" when nothing is left."""
+    if not isinstance(value, str):
+        return ""
+    text = "".join(" " if unicodedata.category(c)[0] == "C" else c for c in ANSI_RE.sub("", value))
+
+    def short(m):
+        tail = re.split(r"[/\\]", m.group(0).rstrip("/\\"))[-1]
+        return "…/" + tail if tail and tail != "~" else "…"
+    text = " ".join(PATH_RE.sub(short, text).split())
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
+
+
+def hostnames():
+    names = set()
+    try:
+        full = socket.gethostname()
+        names.update({full.lower(), full.split(".")[0].lower()})
+    except OSError:
+        pass
+    return {n for n in names if n}
+
+
+def clean_title(raw, hosts):
+    """A pane title as Claude Code sets it ("✳ Fix the login form"): the leading status glyph
+    (spinner, ✳, ...) dropped. tmux's default title is the host name: never published."""
+    if not isinstance(raw, str):
+        return ""
+    t = raw.strip()
+    while t and unicodedata.category(t[0])[0] not in "LN":
+        t = t[1:]
+    if not t or t.lower() in hosts or t.lower() == "claude code":
+        return ""
+    return clean_text(t, TITLE_MAX)
+
+
+def pane_titles():
+    """{pane_id: raw title} for every tmux pane, in one call. {} without tmux."""
+    try:
+        r = subprocess.run(["tmux", "list-panes", "-a", "-F", "#{pane_id}\t#{pane_title}"],
+                           capture_output=True, text=True, timeout=5, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    if r.returncode != 0:
+        return {}
+    out = {}
+    for line in r.stdout.splitlines():
+        pane, _, title = line.partition("\t")
+        if pane.startswith("%"):
+            out[pane] = title
+    return out
+
+
+def git_where(cwd):
+    """(repo, branch) for a working directory: the basename of its git toplevel and the current
+    branch ("detached" for a detached HEAD). (None, None) outside a repo."""
+    if not isinstance(cwd, str) or not cwd or not os.path.isdir(cwd):
+        return None, None
+    env = dict(os.environ, GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0")
+
+    def git(*args):
+        try:
+            r = subprocess.run(["git", "-C", cwd] + list(args), capture_output=True, text=True,
+                               timeout=3, check=False, env=env, stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return r.stdout.strip() if r.returncode == 0 else None
+    top = git("rev-parse", "--show-toplevel")
+    if not top:
+        return None, None
+    branch = git("symbolic-ref", "--short", "-q", "HEAD") or "detached"
+    return clean_text(os.path.basename(top.rstrip("/")), NAME_MAX) or None, clean_text(branch, NAME_MAX) or None
+
+
+def git_info(home, cwds, now):
+    """repo / branch per cwd, cached in $BOARD_HOME/gitinfo.json for GIT_TTL_MS."""
+    path = os.path.join(home, "gitinfo.json")
+    cache = read_json(path)
+    cache = cache if isinstance(cache, dict) else {}
+    out, changed = {}, False
+    for cwd in sorted({c for c in cwds if isinstance(c, str) and c}):
+        hit = cache.get(cwd)
+        if not (isinstance(hit, dict) and isinstance(hit.get("at"), int) and 0 <= now - hit["at"] < GIT_TTL_MS):
+            repo, branch = git_where(cwd)
+            hit = {"at": now, "repo": repo, "branch": branch}
+            changed = True
+        out[cwd] = hit
+    if changed or set(cache) != set(out):
+        try:
+            write_json_atomic(path, out)
+        except OSError:
+            pass
+    return out
+
+
+def recent_tools(st):
+    """The tool calls in flight (the hook's recent_pre), newest last: tool name + clipped summary."""
+    out = []
+    for r in (st.get("recent_pre") or [])[-RECENT_MAX:]:
+        if isinstance(r, dict) and r.get("tool_name"):
+            out.append({"tool": clean_text(r["tool_name"], 40), "summary": clean_text(r.get("summary"), SUMMARY_MAX)})
+    return out
+
+
+def card_details(rows, home, now, titles=None, hosts=None):
+    """Adds title, repo, branch to each session row (cwd and tmux_pane stay internal)."""
+    titles = pane_titles() if titles is None else titles
+    hosts = hostnames() if hosts is None else hosts
+    info = git_info(home, [r.get("cwd") for r in rows if r.get("pid")], now)
+    for r in rows:
+        r["title"] = clean_title(titles.get(r.get("tmux_pane") or ""), hosts) or None if r.get("pid") else None
+        g = info.get(r.get("cwd")) if r.get("pid") else None
+        r["repo"] = (g or {}).get("repo")
+        r["branch"] = (g or {}).get("branch")
 
 
 def live_registry():
@@ -136,6 +269,9 @@ def build_sessions(cfg, home, prefix):
             "status": status,
             "state": state,
             "pending": st.get("pending") if state == "needs-you" else None,
+            "last_event": clean_text(st.get("last_event"), 40) or None,
+            "notification_type": clean_text(st.get("notification_type"), 40) or None,
+            "recent": recent_tools(st) if state not in ("offline",) else [],
             "remote_url": (prefix + bridge) if bridge else None,
             "updated_at": max(int(st.get("updated_at") or 0), int(reg.get("updatedAt") or 0)),
             "_started": reg.get("startedAt") or 0,
@@ -172,6 +308,7 @@ def build_sessions(cfg, home, prefix):
                 "code": s["code"], "aliases": [s["code"]] + s["aliases"], "name": None, "pid": None,
                 "session_id": None, "cwd": s.get("cwd"), "tmux": None, "tmux_pane": None,
                 "status": None, "state": "offline", "pending": None, "remote_url": None, "updated_at": 0,
+                "last_event": None, "notification_type": None, "recent": [],
             })
     rows.sort(key=lambda r: r["code"])
     return rows
@@ -278,6 +415,7 @@ def main(argv):
     cfg = fleet.load_fleet()
     now = now_ms()
     sessions = build_sessions(cfg, home, str(cfg.get("remote_url_prefix") or ""))
+    card_details(sessions, home, now)
     decisions = process_decisions(cfg, home, sessions, now)
     tasks = load_tasks(home)
     attach_tasks(sessions, tasks)
