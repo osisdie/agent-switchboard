@@ -446,6 +446,36 @@ The avatar at the top right of the board opens a small menu:
 
 Escape closes the menu and puts focus back on the avatar button.
 
+### Deck panel
+
+Near the top of the board sits a **Deck**: big keys laid out like a hardware key deck (5 × 3 keys
+and a wide strip; 3 columns on a phone). It is for a glance from across the room, and for one tap
+to what needs you.
+
+| Key | Shows | Press |
+|---|---|---|
+| **HITL** | how many sessions wait and the longest wait; a green ✓ when nothing waits | jump to the longest-waiting decision and focus it (as an alert link does); press again within 5 s for the next one |
+| **S1–S8** | each session's code, state colour, time in state and title. A waiting key blinks: **purple** for a question, **orange** for a plan (plan mode or a lifecycle gate), **red** for a permission | the decision its pane shows, else its card; ↗ in the corner opens Remote Control |
+| **5h / 7d** | usage rings with the reset countdown, dimmed when the report is over 15 min old | the usage popover |
+| **5h burn** | `⚠ 1h 29m to the 5h limit` or `pace OK` (see "Usage meter") | the usage popover |
+| **System** | the resources level, memory and swap bars, the OOM badge | Resources |
+| **Quiet** | whether push is muted | the Notifications dialog |
+| **Owner** | owner-away on or off | Consensus |
+| **Fleet** (wide) | up to four sessions with state pills, the 5h / 7d bars and the burn rate | Board |
+
+- When a session starts waiting, a ripple in its waiting colour spreads across the deck from its
+  key, once. With *reduce motion* set in the OS, keys keep their colour without blinking and there
+  is no ripple.
+- **Approvers on the self-hosted board** also get a small second action, each behind a confirm
+  step: acknowledge all open alerts (✓✓ on HITL, or a long press), mute all push for an hour /
+  unmute, and owner-away on / off. They use the same approver-only routes as the rest of the board
+  (`POST /api/alerts/ack` runs `board ack --by board:<you> '*'`). The Artifact page shows a
+  read-only deck.
+- **No new power.** A key only navigates or calls one of those routes. There are no keys that type
+  into a session (prompts, Enter, `/compact`): answer a prompt on its decision card.
+- Hide it with **Hide deck**, or in the profile menu (**Deck panel**). The choice is kept in this
+  browser.
+
 ### Owner away: decide by explicit consensus
 
 **What.** When you go offline you may tell your sessions "decide among yourselves; if everyone
@@ -737,6 +767,14 @@ viewer of the Artifact board, sees "account: hidden". Turn it off with `BOARD_SH
 Thresholds are configurable (`alerting.thresholds`). Each one fires once per reset window. The page shows both meters (5h and 7d) with reset countdowns. The
 meter reflects the session whose statusline rendered last. With two accounts on one machine, it can
 show either of them.
+
+**Burn rate.** The collector also keeps the last hour of 5h readings in
+`$BOARD_HOME/usage-samples.json` (one sample per 20 s; it starts over when the window resets) and
+fits a least-squares line through the last 30 minutes. The Deck shows `⚠ 1h 29m to the 5h limit`
+when that line reaches 100% before the window resets, `pace OK` when it doesn't, `pace …` with
+fewer than 3 samples or under 5 minutes of data, and dims it when no session has reported usage for
+15 minutes. It is a glance, not an alert: the 80/90/95% alerts above are unchanged. It is shown on
+the self-hosted board only (the operator does not mirror it).
 
 ### Switching accounts (operator failover playbook)
 
@@ -1077,7 +1115,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `lib/guard.py`, `lib/messages.py` | Secret guardrails: the outbound scrubber and the inbound secret-request screen; board messages and replies through them (held, release, reply) |
 | `lib/resources.py` | Resources sampler (memory, disks, OOM, per-session processes and teammates) for `resources.json`, the snapshot digest and `board resources` |
 | `docs/design/` | Design notes, e.g. `resources-and-scheduling.md` (resources, scheduler, lessons) |
-| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), the resources sampler (`test_resources.py`, fixture `/proc`), the secret guardrails (`test_guard.py`), and the optional headless checks of the page's alert links, notifications control, profile menu and theme, home-screen app, session cards, usage popover and language toggle (`test_page_links.py`, `test_page_notify.py`, `test_page_profile.py`, `test_page_pwa.py`, `test_page_cards.py`, `test_page_guard.py` (held-message cards), `test_page_usage.py`, `test_page_i18n.py`, plus `test_site.py` for the screenshots and the Pages site: need python playwright, skip without it; not run in CI) |
+| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), the resources sampler (`test_resources.py`, fixture `/proc`), the secret guardrails (`test_guard.py`), and the optional headless checks of the page's alert links, notifications control, profile menu and theme, home-screen app, session cards, usage popover, language toggle and Deck panel (`test_page_links.py`, `test_page_notify.py`, `test_page_profile.py`, `test_page_pwa.py`, `test_page_cards.py`, `test_page_guard.py` (held-message cards), `test_page_usage.py`, `test_page_i18n.py`, `test_page_deck.py`, plus `test_site.py` for the screenshots and the Pages site: need python playwright, skip without it; not run in CI) |
 | `CONTRIBUTING.md` | Dev setup, tests, and the rule for keeping `README.zh-TW.md` in sync |
 | `fleet.example.yaml`, `.env.example` | Example config |
 
@@ -1091,6 +1129,18 @@ tracked files. Before you push a fork, you can also check by hand:
 ```bash
 git grep -niE "$(paste -sd'|' tmp-local/banned-terms.txt)"
 ```
+
+## Related project
+
+A sibling project drives a hardware key deck (a 5 × 3 grid plus a
+wide key) from the same Claude Code hooks: waiting sessions blink, a HITL key jumps to the longest
+wait, and a fleet strip shows usage and burn rate. The Deck panel borrows its layout and ideas; no
+assets are shared.
+
+The two run side by side without knowing about each other. Their hooks are independent entries in
+`settings.json`, and each keeps its own state: the deck's hub listens on `127.0.0.1:39300`, this
+board on `127.0.0.1:39410`. The board makes no call to the deck's hub, and the deck's "type into a
+session" keys stay out of scope here on purpose (see "Deck panel").
 
 ## Credits
 

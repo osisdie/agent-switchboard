@@ -416,6 +416,31 @@ toplevel 的名稱和目前的分支，絕不顯示路徑），以及它現在�
 
 按 Escape 會關閉選單，焦點回到頭像按鈕。
 
+### 按鍵面板（Deck）
+
+看板上方有一個 **Deck**：照實體按鍵盤排列的大按鍵（5 × 3 個按鍵加一條寬按鍵；手機上是 3 欄）。
+它讓你隔著一段距離也能一眼看完，按一下就到需要你的地方。
+
+| 按鍵 | 顯示 | 按下 |
+|---|---|---|
+| **HITL** | 有幾個 session 在等、最久等了多久；沒有在等的事時顯示綠色 ✓ | 跳到等最久的決策並聚焦它（跟告警連結一樣）；5 秒內再按跳到下一個 |
+| **S1–S8** | 每個 session 的代號、狀態顏色、這個狀態維持多久和標題。在等的按鍵會閃爍：**紫色**是問題、**橘色**是計畫（plan mode 或生命週期關卡）、**紅色**是權限 | 它的窗格正在顯示的決策，否則是它的卡片；角落的 ↗ 開啟 Remote Control |
+| **5h / 7d** | 用量圓環和重設倒數；回報超過 15 分鐘就變暗 | 用量提示框 |
+| **5h 消耗** | `⚠ 1 小時 29 分 後到 5h 上限` 或 `速度 OK`（見「用量計」） | 用量提示框 |
+| **系統** | 資源等級、記憶體與 swap 長條、OOM 標記 | 資源 |
+| **勿擾** | 推播是否靜音 | 通知對話框 |
+| **主人** | 主人不在模式開或關 | 共識 |
+| **全體**（寬按鍵） | 最多四個 session 的狀態標籤、5h／7d 長條和消耗速度 | 看板 |
+
+- session 開始等待時，會從它的按鍵向整個面板擴散一圈它等待顏色的漣漪，只跑一次。作業系統設定了
+  「減少動態效果」時，按鍵保留顏色但不閃爍，也沒有漣漪。
+- **自架看板上的 approver** 還有一個小的第二動作，每個都要先確認：確認所有未處理的警示（HITL 上的 ✓✓，或長按）、
+  全部推播靜音 1 小時／取消靜音、主人不在模式開／關。它們走看板其他地方用的同一批 approver 專用路由
+  （`POST /api/alerts/ack` 會執行 `board ack --by board:<你> '*'`）。Artifact 頁面上的面板是唯讀的。
+- **不增加任何權限。** 按鍵只會導覽，或呼叫上面那些路由。沒有會對 session 打字的按鍵（提示詞、Enter、
+  `/compact`）：提示請在它的決策卡片上回答。
+- 用 **收起面板** 收起，或在個人選單（**按鍵面板**）設定。選擇會記在這個瀏覽器裡。
+
 ### 主人不在時：以明確的共識做決定
 
 **是什麼**。你離線時，可能會跟各個 session 說「你們自己商量，大家都同意就去做」。owner-away
@@ -680,6 +705,12 @@ Claude Code 會把 `rate_limits.five_hour` 和 `rate_limits.seven_day`（`used_p
 門檻可以設定（`alerting.thresholds`）。每個門檻在每個重設週期只觸發一次。頁面會同時顯示兩個用量計
 （5h 和 7d）以及重設倒數。用量計反映的是最後一次繪製 statusline 的那個 session。同一台機器上有兩個帳號時，
 它可能顯示其中任何一個。
+
+**消耗速度。** 收集器也會把最近一小時的 5h 讀數存在 `$BOARD_HOME/usage-samples.json`（每 20 秒一筆；
+區間重設時從頭開始），並對最近 30 分鐘的樣本做最小平方法直線擬合。這條線在區間重設前就會到 100% 時，
+Deck 顯示 `⚠ 1 小時 29 分 後到 5h 上限`；不會時顯示 `速度 OK`；樣本少於 3 筆或資料不足 5 分鐘時顯示
+`速度 …`；15 分鐘沒有任何 session 回報用量時變暗。它只供一眼參考，不是告警：上面 80/90/95% 的告警不變。
+只有自架看板會顯示（operator 不會把它同步到 Artifact）。
 
 ### 切換帳號（operator 容錯移轉手冊）
 
@@ -984,7 +1015,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `lib/guard.py`、`lib/messages.py` | 機密防護：對外的去除機密與對內的要機密篩檢；看板訊息與回覆都經過它們（攔下、放行、回覆） |
 | `lib/resources.py` | 資源取樣器（記憶體、磁碟、OOM、每個 session 的程序與 teammate），產生 `resources.json`、snapshot 摘要和 `board resources` |
 | `docs/design/` | 設計文件，例如 `resources-and-scheduling.md`（資源、排程器、經驗） |
-| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`）、資源取樣器（`test_resources.py`，fixture `/proc`）、機密防護（`test_guard.py`），以及選用的頁面告警連結、通知控制、個人選單與主題、主畫面 app、session 卡片、用量提示框與語言切換 headless 檢查（`test_page_links.py`、`test_page_notify.py`、`test_page_profile.py`、`test_page_pwa.py`、`test_page_cards.py`、`test_page_guard.py`（被攔下的訊息卡片）、`test_page_usage.py`、`test_page_i18n.py`，以及截圖和 Pages 網站的 `test_site.py`：需要 python playwright，沒有就略過；CI 不執行） |
+| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`）、資源取樣器（`test_resources.py`，fixture `/proc`）、機密防護（`test_guard.py`），以及選用的頁面告警連結、通知控制、個人選單與主題、主畫面 app、session 卡片、用量提示框、語言切換與按鍵面板 headless 檢查（`test_page_links.py`、`test_page_notify.py`、`test_page_profile.py`、`test_page_pwa.py`、`test_page_cards.py`、`test_page_guard.py`（被攔下的訊息卡片）、`test_page_usage.py`、`test_page_i18n.py`、`test_page_deck.py`，以及截圖和 Pages 網站的 `test_site.py`：需要 python playwright，沒有就略過；CI 不執行） |
 | `CONTRIBUTING.md` | 開發環境設定、測試，以及讓 `README.zh-TW.md` 保持同步的規則 |
 | `fleet.example.yaml`、`.env.example` | 設定範例 |
 
@@ -997,6 +1028,16 @@ banned terms 的 pre-commit 檢查（見上文）會讓這些名稱進不了被�
 ```bash
 git grep -niE "$(paste -sd'|' tmp-local/banned-terms.txt)"
 ```
+
+## 相關專案
+
+有一個姊妹專案用同一批 Claude Code hook 驅動一台實體按鍵盤
+（5 × 3 格加一個寬按鍵）：在等的 session 會閃爍、HITL 鍵跳到等最久的、全體長條顯示用量與消耗速度。
+這裡的按鍵面板借用了它的排列與想法，沒有共用任何素材。
+
+兩者可以並行，彼此互不知道對方。它們的 hook 是 `settings.json` 裡各自獨立的項目，也各自保存狀態：
+按鍵盤的 hub 監聽 `127.0.0.1:39300`，這個看板是 `127.0.0.1:39410`。看板不會呼叫按鍵盤的 hub；
+按鍵盤上「對 session 打字」的按鍵在這裡刻意不做（見「按鍵面板」）。
 
 ## 致謝
 
