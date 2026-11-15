@@ -836,7 +836,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `.github/workflows/ci.yml` | CI: gitleaks, shellcheck, tests |
 | `.gitleaks.toml` | gitleaks default rules plus a narrow allowlist for test fixtures |
 | `lib/away.py` | Reads owner-away mode and consensus items for the snapshot and `board-serve` |
-| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`) |
+| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), and the optional headless check of the page's alert links (`test_page_links.py`: needs python playwright, skips without it; not run in CI) |
 | `fleet.example.yaml`, `.env.example` | Example config |
 
 ## `tmp-local/` convention
