@@ -4,6 +4,9 @@ AskUserQuestion picker with several single-select questions) on the board:
   - board-serve: one toggle group per question; "Send answers" only once every question has a
     pick; picks survive a re-render (a language switch); the POST body is {"options": [...]},
     nothing else; works from the keyboard;
+  - free text per question: a text box under each question; typing clears its pick and a pick
+    clears its text; the POST body is {"answers": [{question_index, option | text}]}, the text on
+    one line (newlines and escapes become spaces);
   - the claude.ai Artifact page: read-only, with a note (no relay presses a form there).
 
 Needs python playwright and a Chromium it can launch; without them it prints "skipped" and
@@ -150,6 +153,36 @@ def main():
             check("the POST carries only the option numbers", posts == [{"options": [2, 1]}], posts)
             toasts = pg.evaluate("() => [...document.querySelectorAll('.toast')].map((t) => t.textContent)")
             check("the toast says the answers were submitted", any("已在 CP 選取並送出回答" in t for t in toasts), toasts)
+            pg.close()
+
+            print("board-serve, free text per question:")
+            pg = new_page()
+            posts.clear()
+            pg.route("**/api/decisions/*/answer", capture)
+            pg.goto("http://127.0.0.1:%d/" % port)
+            pg.wait_for_selector("#dec-%s .pq-text" % DID, timeout=5000)
+            sel = "#dec-%s" % DID
+            n_text = pg.locator(sel + " .pq-text").count()
+            check("every question has its own text box", n_text == 2, n_text)
+            check("  with the single-question placeholder", pg.get_attribute(sel + ' .pq-text[data-q="2"]', "placeholder") == "Or type a different answer")
+            pg.click(sel + ' .pq-opt[data-q="2"][data-option="2"]')
+            pg.fill(sel + ' .pq-text[data-q="2"]', "teal green")
+            pressed = pg.evaluate("(s) => [...document.querySelectorAll(s + ' .pq-opt')].map((b) => b.getAttribute('aria-pressed'))", sel)
+            check("typing clears that question's option pick", pressed == ["false", "false", "false", "false"], pressed)
+            send = pg.locator(sel + ' button[data-focus="send-form"]')
+            check("  Send still waits for question 1", send.is_disabled())
+            pg.fill(sel + ' .pq-text[data-q="1"]', "navy")
+            pg.click(sel + ' .pq-opt[data-q="1"][data-option="2"]')
+            check("picking an option clears that question's text", pg.input_value(sel + ' .pq-text[data-q="1"]') == "")
+            check("  Send enabled: an option for 1, text for 2", not send.is_disabled())
+            # A pasted newline and escape never reach the session: the text box itself drops line
+            # breaks (an <input> value holds none), the page turns the escape into a space.
+            pg.evaluate("""(s) => { const i = document.querySelector(s + ' .pq-text[data-q="2"]');
+              i.value = 'teal' + String.fromCharCode(10) + 'green' + String.fromCharCode(27) + '[2J  '; i.dispatchEvent(new Event('input', { bubbles: true })); }""", sel)
+            send.click()
+            pg.wait_for_timeout(400)
+            check("the POST carries {question_index, option | text}, text on one line",
+                  posts == [{"answers": [{"question_index": 0, "option": 2}, {"question_index": 1, "text": "tealgreen [2J"}]}], posts)
             pg.close()
 
             print("claude adapter (Artifact):")
