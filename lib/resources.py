@@ -899,7 +899,7 @@ def sample(rcfg, home, sessions, state, now):
         "orphan_teammates": orphans, "heavy_running": heavy_roots,
         "teammate_idle_minutes": rcfg["teammate_idle_minutes"],
         "operator": {"watch": watch if procs else None},
-        "unavailable": sorted(set(unavailable)), "interval": rcfg["interval"],
+        "unavailable": sorted(set(unavailable)), "interval": rcfg["interval"], "thresholds": thr,
         "config_errors": rcfg.get("config_errors") or [],
     })
     state["at"] = now
@@ -1091,6 +1091,7 @@ def board_view(doc):
         "orphan_teammates": [{k: t.get(k) for k in BOARD_TM_KEYS} for t in doc.get("orphan_teammates") or [] if isinstance(t, dict)],
         "heavy_running": doc.get("heavy_running"), "unavailable": doc.get("unavailable") or [],
         "teammate_idle_minutes": doc.get("teammate_idle_minutes"), "operator": doc.get("operator"),
+        "thresholds": doc.get("thresholds") if isinstance(doc.get("thresholds"), dict) else None,
     }
 
 

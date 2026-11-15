@@ -539,10 +539,20 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 .u-pop p { margin: 0; }
 .u-pop .k { color: var(--muted); }
 .u-pop .u-acct { overflow-wrap: anywhere; }
-.u-pop .lvls { display: flex; flex-wrap: wrap; gap: 4px; }
-.u-pop .lvls .esc { opacity: .45; }
-.u-pop .lvls .esc.on { opacity: 1; box-shadow: 0 0 0 1.5px currentColor; }
-@media (max-width: 480px) { .u-pop { left: auto; right: 0; } }
+/* the threshold legend is a scale, not an alert: every step neutral, only the level reached in colour */
+.u-pop .lvls { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
+.u-pop .lvls .esc { background: none; color: var(--muted); box-shadow: inset 0 0 0 1px var(--rule); font-weight: 500; }
+.u-pop .lvls .esc.on { font-weight: 600; box-shadow: none; }
+.u-pop .lvls .esc.on.warn { background: var(--lamp-soft); color: var(--lamp-ink); }
+.u-pop .lvls .esc.on.high { background: var(--heat-soft); color: var(--heat); }
+.u-pop .lvls .esc.on.urgent { background: var(--deny); color: var(--panel); }
+/* header popovers (every tile, meter and pill): same look; placed by placePop() so they stay on screen */
+.u-pop ul { margin: 0; padding-left: 18px; display: grid; gap: 2px; }
+.u-pop .mono { font-family: var(--f-mono); font-size: 12px; font-weight: 600; }
+.u-pop .golink { font: inherit; font-weight: 600; color: var(--cord); background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline; text-align: left; }
+.hpill, .demo-tag[tabindex], #op-pill, .meter[tabindex] { cursor: default; }
+.hpill:focus-visible, .demo-tag:focus-visible, #op-pill:focus-visible, .meter:focus-visible, .needs-tile:focus-visible, .sys:focus-visible { outline: 2px solid var(--cord); outline-offset: 2px; }
+.hpill.away { color: var(--lamp-ink); background: var(--lamp-soft); border-color: color-mix(in srgb, var(--lamp) 40%, var(--rule)); }
 .u-row.lvl-amber { --u: var(--lamp-glow); }
 .u-row.lvl-amber .u-p { color: var(--lamp); }
 .u-row.lvl-orange { --u: var(--heat); }
@@ -638,6 +648,18 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 .lvl.critical { background: var(--deny-soft); color: var(--deny); }
 .oom { font-family: var(--f-mono); font-size: 11px; padding: 0 6px; border-radius: 9px; background: var(--off-soft); color: var(--muted); }
 .oom.hot { background: var(--deny); color: #fff; }
+/* a since-boot OOM count is history, not an alarm: neutral unless one was recent */
+.oom:not(.hot) { background: none; box-shadow: inset 0 0 0 1px var(--rule); color: var(--muted); }
+/* the System tile names what drives its level: that row in the level's colour, and one line why */
+.sys .u-title { flex-wrap: wrap; }
+.sys .s-badges { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
+.sys.lv-warn { --lvc: var(--lamp); }
+.sys.lv-high { --lvc: var(--heat); }
+.sys.lv-critical { --lvc: var(--deny); }
+.sys .u-row.drive .u-k { color: var(--lvc); font-weight: 700; }
+.sys .s-line .drive, .sys .s-line .drive b { color: var(--lvc); font-weight: 700; }
+.sys .s-why { font-size: 12px; font-weight: 600; color: var(--lvc); overflow-wrap: anywhere; }
+.sys .s-why[hidden] { display: none; }
 .res-meta { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--muted); font-size: 13px; }
 .res-meta b { color: var(--ink); font-weight: 600; }
 .res-note { margin: 0; font-size: 13px; color: var(--muted); }
@@ -720,6 +742,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 .dkey .k-bar.lv-red i { background: var(--dk-perm); }
 .dkey .k-oom { font-family: var(--f-mono); font-size: 10.5px; padding: 0 5px; border-radius: 8px; background: var(--dk-edge); color: var(--dk-muted); }
 .dkey .k-oom.hot { background: var(--dk-perm); color: var(--dk-on-ink); }
+.dkey .k-oom:not(.hot) { background: none; box-shadow: inset 0 0 0 1px var(--dk-edge); }
 .dkey.lvl-warn .k-lvl { color: var(--dk-amber); }
 .dkey.lvl-high .k-lvl { color: var(--dk-plan); }
 .dkey.lvl-critical .k-lvl { color: var(--dk-perm); }
@@ -814,8 +837,10 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     <div class="brand">
       <div class="brand-row">
         <h1>Agent Switchboard</h1>
-        <span class="demo-tag" id="demo-tag" hidden data-i18n>DEMO DATA</span>
-        <span class="pill unknown" id="op-pill"><span class="lamp"></span><span id="op-text">Connecting…</span></span>
+        <span class="demo-tag" id="demo-tag" tabindex="0" hidden data-i18n>DEMO DATA</span>
+        <span class="pill unknown" id="op-pill" tabindex="0"><span class="lamp"></span><span id="op-text">Connecting…</span></span>
+        <span class="pill hpill away" id="away-pill" tabindex="0" hidden><span class="lamp working" aria-hidden="true"></span><span data-i18n>Owner away</span></span>
+        <span class="pill hpill" id="notif-pill" tabindex="0" hidden><span class="nlamp" id="notif-pill-lamp" aria-hidden="true"></span><span id="notif-pill-t"></span></span>
       </div>
       <p data-i18n>Every Claude Code session on one panel. Answer what is waiting, see who is working, and send a note to any session.</p>
     </div>
@@ -826,9 +851,9 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
         <span class="s" id="needs-sub" data-i18n>Nothing waiting</span>
       </a>
       <div class="meter-group" aria-label="Sessions by state" data-i18n-attr="aria-label">
-        <div class="meter"><span class="n"><span class="lamp working"></span><span id="m-working">0</span></span><span class="l" data-i18n>Working</span></div>
-        <div class="meter"><span class="n"><span class="lamp done"></span><span id="m-done">0</span></span><span class="l" data-i18n>Done / idle</span></div>
-        <div class="meter"><span class="n"><span class="lamp offline"></span><span id="m-offline">0</span></span><span class="l" data-i18n>Offline</span></div>
+        <div class="meter" id="mt-working" tabindex="0"><span class="n"><span class="lamp working"></span><span id="m-working">0</span></span><span class="l" data-i18n>Working</span></div>
+        <div class="meter" id="mt-done" tabindex="0"><span class="n"><span class="lamp done"></span><span id="m-done">0</span></span><span class="l" data-i18n>Done / idle</span></div>
+        <div class="meter" id="mt-offline" tabindex="0"><span class="n"><span class="lamp offline"></span><span id="m-offline">0</span></span><span class="l" data-i18n>Offline</span></div>
       </div>
       <div class="usage" id="usage" tabindex="0" aria-label="Claude usage against limits" aria-describedby="usage-pop" data-i18n-attr="aria-label">
         <div class="u-title"><span data-i18n>Claude usage</span><span id="u-upd"></span></div>
@@ -837,10 +862,11 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
         <div class="u-row none" id="u-7d"><span class="u-k">7d</span><span class="u-bar" role="meter" aria-label="Weekly usage" data-i18n-attr="aria-label" aria-valuemin="0" aria-valuemax="100"><span style="width:0%"></span></span><span class="u-p">—</span><span class="u-r">not reported</span></div>
       </div>
       <a class="sys" id="sys" href="#resources" aria-label="System resources" data-i18n-attr="aria-label" hidden>
-        <span class="u-title"><span data-i18n>System</span><span><span class="lvl" id="sys-lvl">—</span> <span class="oom" id="sys-oom" title="OOM kills since boot" data-i18n-attr="title">OOM 0</span></span></span>
+        <span class="u-title"><span data-i18n>System</span><span class="s-badges"><span class="lvl" id="sys-lvl">—</span><span class="oom" id="sys-oom">OOM 0</span></span></span>
         <span class="u-row none" id="sys-mem"><span class="u-k" data-i18n>Mem</span><span class="u-bar" role="meter" aria-label="Memory used" data-i18n-attr="aria-label" aria-valuemin="0" aria-valuemax="100"><span style="width:0%"></span></span><span class="u-p">—</span><span class="u-r"></span></span>
         <span class="u-row none" id="sys-swap"><span class="u-k" data-i18n>Swap</span><span class="u-bar" role="meter" aria-label="Swap used" data-i18n-attr="aria-label" aria-valuemin="0" aria-valuemax="100"><span style="width:0%"></span></span><span class="u-p">—</span></span>
         <span class="s-line" id="sys-line"></span>
+        <span class="s-why" id="sys-why" hidden></span>
       </a>
     </div>
   </header>
@@ -1232,7 +1258,10 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   // The usage popover: both windows, when they reset, when reported, the threshold reached and the
   // account the sessions run on (the email only for approvers; board-serve decides, the Artifact
   // mirror never carries it).
-  const THRESHOLDS = [{ at: 80, cls: 'warn', key: 'heads-up' }, { at: 90, cls: 'high', key: 'prepare to switch' }, { at: 95, cls: 'urgent', key: 'switch now' }];
+  // KEY names the threshold reached ("Threshold:" line, as the alerts say it); LEGEND is the calmer
+  // wording of the scale shown under it.
+  const THRESHOLDS = [{ at: 80, cls: 'warn', key: 'heads-up', legend: 'heads-up' }, { at: 90, cls: 'high', key: 'prepare to switch', legend: 'plan a switch' },
+    { at: 95, cls: 'urgent', key: 'switch now', legend: 'switch accounts' }];
   function renderUsagePop() {
     const pop = $('#usage-pop');
     if (!pop || pop.hidden) return;
@@ -1250,32 +1279,83 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     pop.append(h('p', null, h('span', { class: 'k', text: tr('Updated: ') }), upd ? rel(upd) + ' (' + hhmm(upd) + ')' : tr('not reported yet')));
     const hit = THRESHOLDS.filter((x) => worst >= x.at).pop();
     pop.append(h('p', null, h('span', { class: 'k', text: tr('Threshold: ') }), worst < 0 ? tr('unknown') : hit ? hit.at + '% · ' + tr(hit.key) : tr('below 80% · fine')));
-    pop.append(h('div', { class: 'lvls', 'aria-hidden': 'true' }, THRESHOLDS.map((x) => h('span', { class: 'esc ' + x.cls + (hit === x ? ' on' : ''), text: x.at + '% · ' + tr(x.key) }))));
+    pop.append(h('div', { class: 'lvls' }, h('span', { class: 'k', text: tr('Alerts at: ') }),
+      THRESHOLDS.map((x) => h('span', { class: 'esc ' + x.cls + (hit === x ? ' on' : ''), text: x.at + '% · ' + tr(x.legend) }))));
     const a = S.account;
     const acct = a && a.email ? str(a.email) + (a.org ? ' · ' + str(a.org) : '') : tr(a && a.hidden ? 'hidden' : isLocal() || S.demo ? 'not reported' : 'hidden');
     pop.append(h('p', { class: 'u-acct' }, h('span', { class: 'k', text: tr('Account: ') }), acct));
   }
-  (() => {
-    const box = $('#usage'), pop = $('#usage-pop');
-    let touch = false;
-    const show = () => { if (pop.hidden) { pop.hidden = false; renderUsagePop(); } };
-    const hide = () => { pop.hidden = true; };
-    box.addEventListener('pointerenter', (e) => { if (e.pointerType === 'mouse') show(); });
-    box.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse' && document.activeElement !== box) hide(); });
-    box.addEventListener('focus', () => { if (!touch) show(); });
-    box.addEventListener('blur', () => { if (!touch) hide(); });
-    box.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !pop.hidden) { e.preventDefault(); hide(); } });
-    // Touch: a tap toggles it, a tap anywhere else closes it.
+  // Header popovers: every tile, meter and pill in the header explains its number the same way.
+  // Hover (mouse) or focus opens one, Escape or leaving closes it; on touch a tap toggles it and a
+  // tap anywhere else closes it. A tile that is a link only opens its popover on a tap (the
+  // popover links on); a click or Enter still follows the link. One is open at a time.
+  const HPOPS = [];
+  function placePop(box, pop) {
+    pop.style.left = '0px'; pop.style.top = '0px';
+    const par = pop.offsetParent || document.body, pr = par.getBoundingClientRect(), br = box.getBoundingClientRect();
+    const vw = document.documentElement.clientWidth, gut = 16;
+    const x = Math.max(gut, Math.min(br.left, vw - gut - pop.offsetWidth));
+    pop.style.left = Math.round(x - pr.left) + 'px';
+    pop.style.top = Math.round(br.bottom + 8 - pr.top) + 'px';
+  }
+  // RESTORE: a popover that holds the focus hands it back to its box before it closes.
+  function hidePops(except, restore) { for (const o of HPOPS) if (o !== except) o.hide(restore); }
+  // A text-only popover is a tooltip (role=tooltip, aria-describedby). One with buttons is a
+  // non-modal disclosure instead: aria-expanded / aria-controls on the box, the panel a group
+  // named by its box.
+  function attachPop(box, pop, render, interactive) {
+    const P = { box, pop, render, touch: false, tapped: false, quiet: false, timer: 0 };
+    HPOPS.push(P);
+    if (interactive) {
+      pop.setAttribute('role', 'group'); pop.setAttribute('aria-labelledby', box.id);
+      box.setAttribute('aria-controls', pop.id); box.setAttribute('aria-expanded', 'false');
+    } else {
+      pop.setAttribute('role', 'tooltip'); box.setAttribute('aria-describedby', pop.id);
+    }
+    const inside = (n) => n instanceof Node && (box.contains(n) || pop.contains(n));
+    const sync = () => { if (interactive) box.setAttribute('aria-expanded', pop.hidden ? 'false' : 'true'); };
+    P.paint = () => { if (!pop.hidden && !pop.contains(document.activeElement)) { render(pop); placePop(box, pop); } };
+    P.place = () => { if (!pop.hidden) placePop(box, pop); };
+    P.hide = (restore) => {
+      if (pop.hidden) return;
+      if (restore && pop.contains(document.activeElement)) { P.quiet = true; box.focus({ preventScroll: true }); P.quiet = false; }
+      pop.hidden = true; sync();
+    };
+    const show = () => { clearTimeout(P.timer); if (!pop.hidden) return; hidePops(P, true); pop.hidden = false; sync(); render(pop); placePop(box, pop); };
+    for (const el of [box, pop]) {
+      el.addEventListener('pointerenter', (e) => { if (e.pointerType === 'mouse') show(); });
+      el.addEventListener('pointerleave', (e) => {
+        if (e.pointerType !== 'mouse') return;
+        clearTimeout(P.timer);
+        P.timer = setTimeout(() => { if (!inside(document.activeElement)) P.hide(); }, 80);
+      });
+    }
+    box.addEventListener('focus', () => { if (!P.touch && !P.quiet) show(); });
+    box.addEventListener('focusout', (e) => { if (!P.touch && !inside(e.relatedTarget)) P.hide(); });
+    pop.addEventListener('focusout', (e) => { if (!inside(e.relatedTarget)) P.hide(); });
+    box.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !pop.hidden) { e.preventDefault(); P.hide(true); } });
     box.addEventListener('pointerdown', (e) => {
       if (e.pointerType === 'mouse') return;
-      touch = true;
-      if (pop.hidden) show(); else hide();
-      setTimeout(() => { touch = false; }, 400);
+      P.touch = true; P.tapped = true;
+      if (pop.hidden) show(); else P.hide();
+      setTimeout(() => { P.touch = false; }, 400);
     });
-    document.addEventListener('pointerdown', (e) => { if (!pop.hidden && !(e.target instanceof Element && e.target.closest('#usage'))) hide(); });
-    // Escape closes it wherever the focus is (it may have opened on hover).
-    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !pop.hidden) hide(); });
-  })();
+    // The click of this tap follows its pointerup at once: clear the flag just after, however long
+    // the finger stayed down.
+    box.addEventListener('pointerup', (e) => { if (e.pointerType !== 'mouse') setTimeout(() => { P.tapped = false; }, 50); });
+    box.addEventListener('pointercancel', () => { P.tapped = false; });
+    box.addEventListener('click', (e) => { if (P.tapped) { P.tapped = false; e.preventDefault(); } });
+    return P;
+  }
+  document.addEventListener('pointerdown', (e) => {
+    for (const o of HPOPS) if (!o.pop.hidden && !(e.target instanceof Node && (o.box.contains(e.target) || o.pop.contains(e.target)))) o.hide();
+  });
+  // Escape closes them wherever the focus is (one may have opened on hover); focus inside one
+  // goes back to its box.
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hidePops(null, true); });
+  window.addEventListener('resize', () => { for (const o of HPOPS) o.place(); });
+  function refreshPops() { for (const o of HPOPS) o.paint(); }
+  attachPop($('#usage'), $('#usage-pop'), () => renderUsagePop());
 
   function switchAdvice() {
     if (!(S.mode === 'live' || S.mode === 'demo')) return null;
@@ -1440,9 +1520,137 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     $('#nav-appr').textContent = S.approvals.length;
     document.title = a.total ? '(' + a.total + ') Agent Switchboard' : 'Agent Switchboard';
     renderDeck();
+    refreshPops();
+  }
+
+  // The away and notification pills in the header (their popovers say more).
+  function renderPills() {
+    $('#away-pill').hidden = !S.away;
+    const np = $('#notif-pill'), N = S.notify && typeof S.notify === 'object' ? S.notify : null, muted = activeMutes();
+    np.hidden = !N;
+    $('#notif-pill-lamp').className = 'nlamp' + (muted.length ? ' muted' : '');
+    const state = !muted.length ? tr('Push on') : muted.some((m) => m.target === 'all') ? tr('All muted') : tr('{n} muted', { n: muted.length });
+    $('#notif-pill-t').textContent = state;
+    np.setAttribute('aria-label', tr('Notifications: {state}', { state }));
+  }
+  const popLine = (k, ...v) => h('p', null, h('span', { class: 'k', text: k }), ...v);
+  const sinceOf = (s) => (s.card && ts(s.card.state_since)) || ts(s.updated_at) || 0;
+  function needsPop(pop) {
+    pop.textContent = '';
+    const t = hitlTargets(), now = Date.now();
+    const onward = () => h('p', null, h('button', { class: 'golink', type: 'button', id: 'needs-pop-sec',
+      onclick: () => { hidePops(null); goSection('decisions'); }, text: tr('Decisions →') }));
+    if (!t.length) { pop.append(h('p', { text: tr('Nothing is waiting.') }), onward()); return; }
+    const who = (x) => (x.dec ? str(x.dec.from) : str(x.session.code)) || '?';
+    pop.append(popLine(tr('Waiting: '), tr(t.length === 1 ? '{n} item, longest first' : '{n} items, longest first', { n: t.length })));
+    pop.append(h('ul', null, t.slice(0, 8).map((x) => h('li', null, h('span', { class: 'mono', text: who(x) }),
+      ' · ' + tr('waiting for a {kind}', { kind: tr(x.kind) }) + ' · ' + compactDur(now - x.since))),
+      t.length > 8 ? h('li', { class: 'k', text: tr('+{n} more', { n: t.length - 8 }) }) : null));
+    const o = t[0];
+    pop.append(popLine(tr('Oldest: '), h('button', { class: 'golink', type: 'button', id: 'needs-pop-go',
+      onclick: () => { hidePops(null); revealTarget(o); }, text: tr('{who}, waiting {t} →', { who: who(o), t: compactDur(now - o.since) }) })));
+    pop.append(onward());
+  }
+  function statePop(col) {
+    return (pop) => {
+      pop.textContent = '';
+      const now = Date.now();
+      const list = S.sessions.filter((s) => colOf(s) === col).sort((a, b) => sinceOf(a) - sinceOf(b));
+      if (!list.length) { pop.append(h('p', { text: tr('No sessions in this state.') })); return; }
+      pop.append(popLine(tr('Sessions: '), String(list.length) + (col === 'offline' ? '' : ' · ' + tr('longest in this state first'))));
+      pop.append(h('ul', null, list.slice(0, 8).map((s) => {
+        const t = sinceOf(s), title = str(s.title) || str(s.task);
+        return h('li', null, h('span', { class: 'mono', text: str(s.code) }),
+          ' · ' + (!t ? tr('time unknown') : col === 'offline' ? tr('last seen {ago}', { ago: rel(t) }) : tr('for {t}', { t: compactDur(now - t) })),
+          title ? ' · ' + (title.length > 60 ? title.slice(0, 59) + '…' : title) : '');
+      }), list.length > 8 ? h('li', { class: 'k', text: tr('+{n} more', { n: list.length - 8 }) }) : null));
+    };
+  }
+  function sysPop(pop) {
+    pop.textContent = '';
+    sysPopBody(pop);
+    pop.append(h('p', null, h('button', { class: 'golink', type: 'button', id: 'sys-pop-sec',
+      onclick: () => { hidePops(null); goSection('resources'); }, text: tr('Resources →') })));
+  }
+  function sysPopBody(pop) {
+    const r = resView();
+    if (!r) { pop.append(h('p', { text: tr('No resource data yet.') })); return; }
+    const levels = r.levels && typeof r.levels === 'object' ? r.levels : {};
+    const lv = (k) => (resLvl(levels[k]) ? ' · ' + trKnown(resLvl(levels[k]), RES_LEVELS) : '');
+    const lvl = resLvl(r.level) || 'ok', why = resWhy(r);
+    pop.append(popLine(tr('Why: '), why ? why.text + (why.critical && why.metric !== 'oom' ? tr('; high for 2 samples in a row') : '') : tr('all within limits')));
+    pop.append(popLine(tr('Level: '), trKnown(lvl, RES_LEVELS) + (r.worst ? ' · ' + tr('worst: {what}', { what: metricName(r.worst, r) }) : '')));
+    const m = r.mem || {}, sw = r.swap || {}, c = r.cpu || {};
+    pop.append(popLine(tr('Memory: '), m.available_pct == null ? tr('not available here')
+      : tr('{pct}% used', { pct: Math.round(100 - Number(m.available_pct)) }) + (m.available_mb != null ? ' · ' + tr('{free} free of {total}', { free: fmtMb(m.available_mb), total: fmtMb(m.total_mb) }) : '') + lv('mem')));
+    pop.append(popLine(tr('Swap: '), sw.used_pct == null ? tr('not available here') : tr('{pct}% used', { pct: Math.round(Number(sw.used_pct)) }) + lv('swap')));
+    if (Array.isArray(c.load)) pop.append(popLine(tr('Load: '), c.load.slice(0, 3).map((x) => Number(x).toFixed(2)).join(' / ') + (c.ncpu ? ' · ' + tr('{n} cpu', { n: c.ncpu }) : '') + (c.pct != null ? ' · CPU ' + c.pct + '%' : '') + lv('load')));
+    const disks = objs(r.disks).filter((d) => d.free_pct != null).sort((a, b) => Number(a.free_pct) - Number(b.free_pct)).slice(0, 4);
+    if (disks.length) pop.append(popLine(tr('Disks: '), disks.map((d) => ((d.labels || []).map(str).filter(Boolean).join(', ') || str(d.id) || '?') + ' ' + tr('{pct}% free', { pct: d.free_pct })).join(' · ')));
+    pop.append(popLine(tr('OOM kills since boot: '), r.oom_kills == null ? tr('unknown') : String(r.oom_kills) + (r.oom_recent ? ' · ' + tr('one was recent') : '')));
+    pop.append(popLine(tr('Heavy jobs: '), String(r.heavy_running || 0)));
+    const idle = idleGroups(r), nIdle = idle.reduce((n, g) => n + g.idle.length, 0);
+    pop.append(popLine(tr('Idle teammates: '), nIdle ? String(nIdle) + ' · ' + idle.map((g) => (g.code || tr('no session')) + ' ' + g.idle.length).join(', ') : '0'));
+    pop.append(popLine(tr('Sampled: '), ts(r.at) ? rel(ts(r.at)) + ' (' + hhmm(ts(r.at)) + ')' : tr('unknown')));
+    pop.append(h('p', { class: 'k', text: tr('Levels: warn and high at each threshold; critical = high for 2 samples in a row, or an OOM kill in the last 10 minutes.') }));
+  }
+  function opPop(pop) {
+    pop.textContent = '';
+    const op = S.operator || {}, hb = ts(op.heartbeat_at);
+    pop.append(popLine(tr('Board: '), tr(S.demo ? 'demo data, on this page only' : isLocal() ? 'self-hosted (board-serve)' : 'claude.ai Artifact, mirrored by the operator')));
+    pop.append(popLine(tr('Last heartbeat: '), hb ? rel(hb) + ' (' + hhmm(hb) + ')' : tr('operator not seen yet')));
+    const w = S.resources && S.resources.operator && S.resources.operator.watch;
+    pop.append(popLine(tr('Operator watch: '), tr(w === true ? 'running' : w === false ? 'not running' : 'unknown')));
+    if (op.version) pop.append(popLine(tr('Version: '), str(op.version)));
+    pop.append(h('p', { class: 'k', text: tr('Counted offline after {m} minutes without a heartbeat.', { m: Math.round(STALE_MS / 60000) }) }));
+  }
+  function notifPop(pop) {
+    pop.textContent = '';
+    const N = S.notify && typeof S.notify === 'object' ? S.notify : null;
+    if (!N) { pop.append(h('p', { text: tr('No notification settings reported yet.') })); return; }
+    const mutes = activeMutes(), byT = new Map(mutes.map((m) => [m.target, m])), all = byT.get('all');
+    if (all) pop.append(h('p', { text: tr(all.include_urgent ? 'All push muted {until}, urgent too.' : 'All push muted {until}; urgent still breaks through.', { until: untilText(all.until) }) }));
+    pop.append(h('ul', null, NCHANNELS.map(([c, name]) => h('li', null, h('span', { class: 'mono', text: tr(name) }), ' · ' + chanState(N, c, byT.get(c), all)))));
+    const P = N.presence || {};
+    if (P.reduce === true) pop.append(popLine(tr('While watching: push from') + ' ', trKnown(str(P.min_level) || 'high', LEVELS)));
+    pop.append(h('p', null, h('button', { class: 'golink', type: 'button', onclick: () => { hidePops(null); openNotif(); }, text: tr('Notification settings →') })));
+  }
+  function awayPop(pop) {
+    pop.textContent = '';
+    const a = S.away;
+    if (!a) { pop.append(h('p', { text: tr('The owner is here.') })); return; }
+    const since = ts(a.since), pend = S.consensus.filter((c) => c.status === 'pending').length;
+    pop.append(popLine(tr('Since: '), since ? hhmm(since) + ' (' + rel(since) + ')' : tr('unknown')));
+    if (a.by) pop.append(popLine(tr('Set by: '), str(a.by)));
+    if (a.said) pop.append(h('p', { text: '“' + str(a.said) + '”' }));
+    pop.append(popLine(tr('Pending consensus: '), String(pend)));
+    pop.append(h('p', null, h('button', { class: 'golink', type: 'button', onclick: () => { hidePops(null); goSection('consensus'); }, text: tr('Consensus →') })));
+  }
+  function demoPop(pop) {
+    pop.textContent = '';
+    pop.append(h('p', { text: tr('Sample data, on this page only: answers, messages and settings go nowhere.') }));
+  }
+  function wirePops() {
+    // INTERACTIVE: the popover holds buttons (a disclosure, not a tooltip).
+    const pop = (box, id, render, interactive, where) => {
+      const el = h('div', { class: 'u-pop', id, hidden: true });
+      (where || box).after(el);
+      attachPop(box, el, render, interactive);
+    };
+    pop($('#demo-tag'), 'demo-pop', demoPop);
+    pop($('#op-pill'), 'op-pop', opPop);
+    pop($('#away-pill'), 'away-pop', awayPop, true);
+    pop($('#notif-pill'), 'notif-pop', notifPop, true);
+    pop($('#needs-tile'), 'needs-pop', needsPop, true);
+    const group = $('#mt-working').parentElement;
+    pop($('#mt-working'), 'working-pop', statePop('working'), false, group);
+    pop($('#mt-done'), 'done-pop', statePop('done'), false, group);
+    pop($('#mt-offline'), 'offline-pop', statePop('offline'), false, group);
+    pop($('#sys'), 'sys-pop', sysPop, true);
   }
 
   function renderBanners() {
+    renderPills(); refreshPops();
     const box = $('#banners'); box.textContent = '';
     const lim = limitText();
     if (S.away) {
@@ -2243,7 +2451,53 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   const BAR_LVL = { ok: 'ok', warn: 'amber', high: 'orange', critical: 'red' };
   function fmtMb(v) { const n = Number(v); if (!isFinite(n)) return '?'; return n >= 1024 ? (n / 1024).toFixed(1) + ' GB' : Math.round(n) + ' MB'; }
   function fmtAge(s) { const n = Number(s); if (!isFinite(n) || s == null) return '—'; return n < 60 ? Math.round(n) + 's' : dur(n * 1000); }
-  const METRIC_NAMES = { mem: 'memory', swap: 'swap', load: 'load', oom: 'OOM kill' };
+  const METRIC_NAMES = { mem: 'memory', swap: 'swap', load: 'CPU load', oom: 'OOM kill' };
+  // The collector's thresholds ([warn, high]; critical = high for 2 samples in a row, or an OOM kill
+  // in the last 10 minutes): r.thresholds when the board reports them, else these defaults.
+  const RES_THR = { mem_available_pct: [15, 8], mem_available_mb: [2048, 1024], swap_used_pct: [50, 80], psi_mem_some_avg60: [10, 25],
+    load_per_cpu: [1.5, 3.0], disk_free_pct: [10, 3], disk_free_mb: [5120, 1024] };
+  const fmtThr = (v) => (Number.isInteger(Number(v)) ? Number(v).toFixed(1) : String(v));
+  // Why the System level is what it is, in words: { metric, text, critical } or null when ok.
+  // The collector holds a level for a while (hysteresis, dwell), so the value may already be back
+  // under the shown level's threshold: then it says the level is easing, never "2.80 (high ≥ 3.0)".
+  const thrOk = (v) => Array.isArray(v) && v.length === 2 && v.every((x) => typeof x === 'number' && Number.isFinite(x));
+  function resWhy(r) {
+    const lvl = resLvl(r.level) || 'ok', w = str(r.worst);
+    if (lvl === 'ok' || !w) return null;
+    const given = r.thresholds && typeof r.thresholds === 'object' ? r.thresholds : {};
+    const step = lvl === 'warn' ? 0 : 1, L = trKnown(lvl === 'warn' ? 'warn' : 'high', RES_LEVELS);
+    // A threshold the board sent that is not two finite numbers falls back to the default.
+    const at = (k) => (thrOk(given[k]) ? given[k] : RES_THR[k])[step];
+    const num = (v) => (v == null || !isFinite(Number(v)) ? null : Number(v));
+    const meets = (v, k, low) => v != null && (low ? v <= at(k) : v >= at(k));
+    // The bracket: "high ≥ 3.0" when the value is past it, "high from ≥ 3.0, easing" when not.
+    const bound = (v, k, low, shown) => tr(meets(v, k, low) ? (low ? '{lvl} ≤ {t}' : '{lvl} ≥ {t}') : (low ? '{lvl} from ≤ {t}, easing' : '{lvl} from ≥ {t}, easing'),
+      { lvl: L, t: shown });
+    let text = '';
+    if (w === 'oom') text = tr('an OOM kill in the last 10 minutes');
+    else if (w === 'load') {
+      const c = r.cpu || {}, load = Array.isArray(c.load) ? num(c.load[0]) : null, n = num(c.ncpu);
+      const per = num(c.load_per_cpu) != null ? num(c.load_per_cpu) : load != null && n ? load / n : null;
+      text = per == null ? tr('CPU load') : tr('Load {load} / {n} cpu = {per} per cpu ({bound})',
+        { load: load == null ? '?' : load.toFixed(1), n: n || '?', per: per.toFixed(2), bound: bound(per, 'load_per_cpu', false, fmtThr(at('load_per_cpu'))) });
+    } else if (w === 'mem') {
+      const m = r.mem || {}, pct = num(m.available_pct), mb = num(m.available_mb), psi = num(m.psi_some_avg60);
+      if (!meets(pct, 'mem_available_pct', true) && meets(mb, 'mem_available_mb', true))
+        text = tr('Memory {mb} available ({bound})', { mb: fmtMb(mb), bound: bound(mb, 'mem_available_mb', true, fmtMb(at('mem_available_mb'))) });
+      else if (!meets(pct, 'mem_available_pct', true) && meets(psi, 'psi_mem_some_avg60', false))
+        text = tr('Memory pressure {psi} ({bound})', { psi: psi.toFixed(1), bound: bound(psi, 'psi_mem_some_avg60', false, fmtThr(at('psi_mem_some_avg60'))) });
+      else text = tr('Memory {pct}% available ({bound})', { pct: pct == null ? '?' : Math.round(pct), bound: bound(pct, 'mem_available_pct', true, at('mem_available_pct') + '%') });
+    } else if (w === 'swap') {
+      const u = num((r.swap || {}).used_pct);
+      text = tr('Swap {pct}% used ({bound})', { pct: u == null ? '?' : Math.round(u), bound: bound(u, 'swap_used_pct', false, at('swap_used_pct') + '%') });
+    } else if (w.startsWith('disk:')) {
+      const d = objs(r.disks).find((x) => str(x.id) === w.slice(5)) || {}, name = metricName(w, r), fp = num(d.free_pct), fm = num(d.free_mb);
+      text = !meets(fp, 'disk_free_pct', true) && meets(fm, 'disk_free_mb', true)
+        ? tr('{disk}: {mb} free ({bound})', { disk: name, mb: fmtMb(fm), bound: bound(fm, 'disk_free_mb', true, fmtMb(at('disk_free_mb'))) })
+        : tr('{disk}: {pct}% free ({bound})', { disk: name, pct: fp == null ? '?' : fp, bound: bound(fp, 'disk_free_pct', true, at('disk_free_pct') + '%') });
+    } else text = metricName(w, r);
+    return { metric: w.split(':')[0], worst: w, text, critical: lvl === 'critical' };
+  }
   function metricName(m, r) {
     const k = str(m);
     if (!k.startsWith('disk:')) return k ? trMap(METRIC_NAMES, k) : tr('resources');
@@ -2281,27 +2535,44 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     if (!r) return;
     const levels = r.levels && typeof r.levels === 'object' ? r.levels : {};
     const lvl = resLvl(r.level) || 'ok';
-    const chip = $('#sys-lvl'); chip.className = 'lvl ' + lvl; chip.textContent = trKnown(lvl, RES_LEVELS);
+    const why = resWhy(r), w = str(r.worst);
+    const short = w.startsWith('disk:') ? tr('disk {id}', { id: w.slice(5) }) : w ? metricName(w, r) : '';
+    const chip = $('#sys-lvl'); chip.className = 'lvl ' + lvl;
+    chip.textContent = trKnown(lvl, RES_LEVELS) + (why && short ? ' · ' + short : '');
     chip.title = r.worst ? tr('worst: {what}', { what: metricName(r.worst, r) }) : tr('all within limits');
-    const oom = $('#sys-oom');
+    tile.classList.remove('lv-warn', 'lv-high', 'lv-critical');
+    if (why) tile.classList.add('lv-' + lvl);
+    // A since-boot count is history: neutral and labelled so; only a recent OOM kill alarms.
+    const oom = $('#sys-oom'), n = r.oom_kills == null ? '?' : r.oom_kills;
     oom.hidden = r.oom_kills == null;
-    oom.textContent = 'OOM ' + (r.oom_kills == null ? '?' : r.oom_kills);
+    oom.textContent = r.oom_recent ? 'OOM ' + n : tr('OOM {n} since boot', { n });
+    oom.setAttribute('aria-label', tr(r.oom_recent ? '{n} OOM kills since boot, one in the last 10 minutes' : '{n} OOM kills since boot', { n }));
+    oom.title = oom.getAttribute('aria-label');
     oom.classList.toggle('hot', !!r.oom_recent);
     const m = r.mem || {}, sw = r.swap || {};
     setBar($('#sys-mem'), m.available_pct == null ? null : 100 - Number(m.available_pct), resLvl(levels.mem),
       null, m.available_mb == null ? tr('not available here') : tr('{free} free of {total}', { free: fmtMb(m.available_mb), total: fmtMb(m.total_mb) }) + (m.psi_some_avg60 ? ' · psi ' + Number(m.psi_some_avg60).toFixed(1) : ''));
     setBar($('#sys-swap'), sw.used_pct, resLvl(levels.swap));
+    // The row that drives the level, in the level's colour, and why in one line.
+    $('#sys-mem').classList.toggle('drive', !!why && why.metric === 'mem');
+    $('#sys-swap').classList.toggle('drive', !!why && why.metric === 'swap');
     const line = $('#sys-line'); line.textContent = '';
     const c = r.cpu || {};
-    if (Array.isArray(c.load)) line.append(h('span', null, tr('Load') + ' ', h('b', { text: Number(c.load[0]).toFixed(2) }), c.ncpu ? ' / ' + tr('{n} cpu', { n: c.ncpu }) : ''));
+    if (Array.isArray(c.load)) line.append(h('span', { class: why && why.metric === 'load' ? 'drive' : null, id: 'sys-load' }, tr('Load') + ' ', h('b', { text: Number(c.load[0]).toFixed(2) }), c.ncpu ? ' / ' + tr('{n} cpu', { n: c.ncpu }) : ''));
     if (c.pct != null) line.append(h('span', null, 'CPU ', h('b', { text: c.pct + '%' })));
     const disks = objs(r.disks).filter((d) => d.free_pct != null).sort((a, b) => Number(a.free_pct) - Number(b.free_pct));
-    if (disks.length) line.append(h('span', { title: (disks[0].labels || []).map(str).join(', ') }, tr('Disk') + ' ', h('b', { text: tr('{pct}% free', { pct: disks[0].free_pct }) })));
+    const dk = why && why.metric === 'disk' ? disks.find((d) => 'disk:' + str(d.id) === why.worst) : null;
+    const shown = dk || disks[0];
+    if (shown) line.append(h('span', { class: dk ? 'drive' : null, title: (shown.labels || []).map(str).join(', ') }, tr('Disk') + ' ', h('b', { text: tr('{pct}% free', { pct: shown.free_pct }) })));
     if (r.heavy_running) line.append(h('span', null, h('b', { text: String(r.heavy_running) }), ' ' + tr('heavy')));
+    const whyEl = $('#sys-why');
+    whyEl.hidden = !why;
+    whyEl.textContent = why ? why.text : '';
   }
   function renderResources() {
     const r = resView();
     renderSystem(r);
+    refreshPops();
     const groups = r ? idleGroups(r) : [];
     const nIdle = groups.reduce((n, g) => n + g.idle.length, 0);
     const nb = $('#nav-res'); nb.textContent = nIdle;
@@ -2554,6 +2825,15 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     }
     return {};
   }
+  // One channel's push state, as the notification dialog and the header popover show it.
+  function chanState(N, c, m, all) {
+    const eff = N.effective_min_level || {}, chans = N.channels || {};
+    // Urgent is stopped when either mute in force (the channel's or "all") includes it.
+    const urgentToo = !!((m && m.include_urgent) || (all && all.include_urgent));
+    return chans[c] === false ? tr('not configured') : all && !m ? tr('muted by "all"') + tr(urgentToo ? ', urgent too' : ' · urgent gets through')
+      : m ? tr('muted {until}', { until: untilText(m.until) }) + tr(urgentToo ? ', urgent too' : ' · urgent gets through')
+      : tr('on · {floor}', { floor: tr((eff[c] || 'info') === 'urgent' ? '{level} only' : '{level} and up', { level: trKnown(eff[c] || 'info', LEVELS) }) });
+  }
   function renderNotifButton() {
     const lamp = $('#notif-lamp'), label = $('#notif-label'), muted = activeMutes();
     lamp.className = 'nlamp' + (!S.notify ? ' unknown' : muted.length ? ' muted' : '');
@@ -2596,7 +2876,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
           : h('button', { class: 'btn primary', type: 'button', id: 'notif-mute-all', disabled: dis || null, onclick: () => setNotify(muteBody('all')), text: tr('Mute all') })),
       h('div', { class: 'nf-line' }, h('label', { for: 'notif-dur', text: tr('Mute') }), durSel,
         h('label', { class: 'chk' }, urg, tr('include urgent (no breakthrough)')))));
-    const eff = N.effective_min_level || {}, floors = N.min_level || {}, chans = N.channels || {};
+    const floors = N.min_level || {}, chans = N.channels || {};
     const floorOpts = (t) => {
       const f = floors[t] || {};
       const def = f.source === 'config' ? tr('default ({level}, fleet.yaml)', { level: trKnown(f.level, LEVELS) }) : tr('default ({level})', { level: tr(f.source === 'prefs' ? 'remove' : 'info') });
@@ -2606,11 +2886,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     const rows = h('ul', { class: 'nf-rows' });
     for (const [c, name] of NCHANNELS) {
       const m = byT.get(c), off = chans[c] === false;
-      // Urgent is stopped when either mute in force (the channel's or "all") includes it.
-      const urgentToo = !!((m && m.include_urgent) || (all && all.include_urgent));
-      const state = off ? tr('not configured') : all && !m ? tr('muted by "all"') + tr(urgentToo ? ', urgent too' : ' · urgent gets through')
-        : m ? tr('muted {until}', { until: untilText(m.until) }) + tr(urgentToo ? ', urgent too' : ' · urgent gets through')
-        : tr('on · {floor}', { floor: tr((eff[c] || 'info') === 'urgent' ? '{level} only' : '{level} and up', { level: trKnown(eff[c] || 'info', LEVELS) }) });
+      const state = chanState(N, c, m, all);
       rows.append(h('li', { class: 'nf-row', id: 'nf-' + c },
         h('span', { class: 'nf-name', text: tr(name) }),
         h('span', { class: 'nf-state' + (off ? ' off' : m || all ? ' muted' : ''), text: state }),
@@ -2865,7 +3141,8 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     } else if (m.key === 'sys') {
       const label = m.has ? tr('System: {lvl}', { lvl: trKnown(m.level, RES_LEVELS) }) + (m.mem != null ? ' · ' + tr('memory {pct}%', { pct: m.mem }) : '') : tr('System: no resource data yet');
       key = keyBtn('sys lvl-' + (m.level || 'ok'), label, () => goSection('resources'),
-        h('span', { class: 'k-lab' }, h('span', { text: tr('System') }), m.oom != null ? h('span', { class: 'k-oom' + (m.oomHot ? ' hot' : ''), text: 'OOM ' + m.oom }) : null),
+        h('span', { class: 'k-lab' }, h('span', { text: tr('System') }), m.oom != null ? h('span', { class: 'k-oom' + (m.oomHot ? ' hot' : ''), text: 'OOM ' + m.oom,
+          title: tr(m.oomHot ? '{n} OOM kills since boot, one in the last 10 minutes' : '{n} OOM kills since boot', { n: m.oom }) }) : null),
         h('span', { class: 'k-lvl', text: m.has ? trKnown(m.level, RES_LEVELS) : '—' }),
         h('span', { class: 'k-bars' }, deckBar(tr('Mem'), m.mem, m.memLvl), deckBar(tr('Swap'), m.swap, m.swapLvl)));
     } else if (m.key === 'quiet') {
@@ -3055,6 +3332,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     setTimeout(done, 2500);
   }
 
+  wirePops();
   function renderAll() { renderHeader(); renderBanners(); renderNotif(); renderDecisions(); renderConsensus(); renderTasks(); renderBoard(); renderMessages(); renderApprovals(); renderResources(); if ($('#info').open) renderLedger(); openLinked(); }
 
   /* ----------------------------------------------------------- deep links */
@@ -4631,7 +4909,6 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       "Deck panel": "按鍵面板",
       "Shown": "展開",
       "Collapsed": "收起",
-      "Waiting": "等待中",
       "Waiting: not known yet": "等待中：還不知道",
       "Nothing is waiting": "沒有在等的事",
       "Nothing is waiting.": "沒有在等的事。",
@@ -4715,6 +4992,69 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       "Answer on the self-hosted board or in the session (multi-question form).": "請在自架看板或 session 中回答（多題表單）。",
       "Your choices are picked in {who}'s form one question at a time, then submitted.": "你的選擇會在 {who} 的表單中逐題選取，然後送出。",
       "Answers picked and submitted in {who}.": "已在 {who} 選取並送出回答。",
+      "{n} item, longest first": "{n} 項，等最久的在前",
+      "{n} items, longest first": "{n} 項，等最久的在前",
+      "Waiting: ": "等待中：",
+      "Oldest: ": "等最久：",
+      "{who}, waiting {t} →": "{who}，已等 {t} →",
+      "No sessions in this state.": "沒有 session 在這個狀態。",
+      "Sessions: ": "Session：",
+      "longest in this state first": "在這個狀態最久的在前",
+      "time unknown": "時間不明",
+      "last seen {ago}": "最後出現 {ago}",
+      "for {t}": "已 {t}",
+      "Level: ": "等級：",
+      "Memory: ": "記憶體：",
+      "{pct}% used": "已用 {pct}%",
+      "Swap: ": "Swap：",
+      "Load: ": "負載：",
+      "Disks: ": "磁碟：",
+      "OOM kills since boot: ": "開機以來 OOM kill：",
+      "one was recent": "最近有一次",
+      "Heavy jobs: ": "重度工作：",
+      "Idle teammates: ": "閒置 teammate：",
+      "no session": "無 session",
+      "Sampled: ": "取樣：",
+      "Board: ": "看板：",
+      "demo data, on this page only": "示範資料，只在這個頁面",
+      "self-hosted (board-serve)": "自架（board-serve）",
+      "claude.ai Artifact, mirrored by the operator": "claude.ai Artifact，由 operator 同步",
+      "Last heartbeat: ": "最後心跳：",
+      "Operator watch: ": "Operator watch：",
+      "Version: ": "版本：",
+      "Counted offline after {m} minutes without a heartbeat.": "超過 {m} 分鐘沒有心跳就算離線。",
+      "No notification settings reported yet.": "還沒有回報通知設定。",
+      "The owner is here.": "主人在。",
+      "Since: ": "開始於：",
+      "Set by: ": "設定者：",
+      "Pending consensus: ": "待決共識：",
+      "Consensus →": "共識 →",
+      "Sample data, on this page only: answers, messages and settings go nowhere.": "示範資料，只在這個頁面：回答、訊息和設定都不會送出。",
+      "Decisions →": "決策 →",
+      "Resources →": "資源 →",
+      "Notifications: {state}": "通知：{state}",
+      "Alerts at: ": "提醒門檻：",
+      "plan a switch": "規劃切換",
+      "switch accounts": "切換帳號",
+      "CPU load": "CPU 負載",
+      "an OOM kill in the last 10 minutes": "最近 10 分鐘內有 OOM kill",
+      "OOM {n} since boot": "開機以來 OOM {n}",
+      "{n} OOM kills since boot": "開機以來 {n} 次 OOM kill",
+      "{n} OOM kills since boot, one in the last 10 minutes": "開機以來 {n} 次 OOM kill，最近 10 分鐘內有一次",
+      "Why: ": "原因：",
+      "; high for 2 samples in a row": "；連續 2 次取樣都在 high",
+      "Levels: warn and high at each threshold; critical = high for 2 samples in a row, or an OOM kill in the last 10 minutes.": "等級：每個門檻分 warn 和 high；連續 2 次取樣在 high，或最近 10 分鐘內有 OOM kill，就是 critical。",
+      "Load {load} / {n} cpu = {per} per cpu ({bound})": "負載 {load} / {n} cpu = 每顆 cpu {per}（{bound}）",
+      "Memory {mb} available ({bound})": "記憶體可用 {mb}（{bound}）",
+      "Memory pressure {psi} ({bound})": "記憶體壓力 {psi}（{bound}）",
+      "Memory {pct}% available ({bound})": "記憶體可用 {pct}%（{bound}）",
+      "Swap {pct}% used ({bound})": "Swap 已用 {pct}%（{bound}）",
+      "{disk}: {pct}% free ({bound})": "{disk}：剩 {pct}%（{bound}）",
+      "{disk}: {mb} free ({bound})": "{disk}：剩 {mb}（{bound}）",
+      "{lvl} ≤ {t}": "{lvl}，門檻 ≤ {t}",
+      "{lvl} ≥ {t}": "{lvl}，門檻 ≥ {t}",
+      "{lvl} from ≤ {t}, easing": "{lvl}，門檻 ≤ {t}，正在回落",
+      "{lvl} from ≥ {t}, easing": "{lvl}，門檻 ≥ {t}，正在回落",
     };
   }
 })();

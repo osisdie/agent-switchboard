@@ -152,6 +152,45 @@ def main():
             check("a second tap on the meter closes it", not pg.evaluate(POP_JS)["open"])
             pg.close()
 
+            print("threshold legend: a calm scale, only the level reached in colour:")
+            LEGEND_JS = """() => { const p = document.getElementById('usage-pop'), l = p.querySelector('.lvls');
+              const bg = (e) => getComputedStyle(e).backgroundColor;
+              const clear = (c) => c === 'transparent' || /rgba\\(.*,\\s*0\\)$/.test(c);
+              const r = p.getBoundingClientRect();
+              return { label: l.querySelector('.k').textContent, chips: [...l.querySelectorAll('.esc')].map((e) => ({ text: e.textContent, filled: !clear(bg(e)), on: e.classList.contains('on') })),
+                text: p.innerText, right: r.right, vw: document.documentElement.clientWidth, sw: document.scrollingElement.scrollWidth }; }"""
+            for scheme, vp in (("light", {"width": 1280, "height": 860}), ("dark", {"width": 390, "height": 844})):
+                for pct, filled in ((39, []), (96, ["95% · switch accounts"])):
+                    pg = new_page(CLAUDE_STUB.replace("pct: 42", "pct: %d" % pct), viewport=vp, color_scheme=scheme, has_touch=vp["width"] < 400)
+                    pg.goto(PAGE)
+                    pg.wait_for_timeout(600)
+                    if vp["width"] < 400:
+                        pg.tap("#usage")
+                    else:
+                        pg.hover("#usage")
+                    pg.wait_for_timeout(100)
+                    lg = pg.evaluate(LEGEND_JS)
+                    tag = "%s, %dpx, %d%%" % (scheme, vp["width"], pct)
+                    check("%s: the legend is labelled, calm wording" % tag, lg["label"] == "Alerts at: "
+                          and [c["text"] for c in lg["chips"]] == ["80% · heads-up", "90% · plan a switch", "95% · switch accounts"], lg)
+                    check("%s: filled chips %s" % (tag, filled or "none"), [c["text"] for c in lg["chips"] if c["filled"]] == filled, lg["chips"])
+                    check("%s: the Threshold line is unchanged" % tag,
+                          ("Threshold: 95% · switch now" if pct == 96 else "Threshold: below 80% · fine") in lg["text"], lg["text"])
+                    check("%s: inside the screen" % tag, lg["right"] <= lg["vw"] and lg["sw"] <= lg["vw"], lg)
+                    pg.close()
+            pg = new_page(CLAUDE_STUB.replace("pct: 42", "pct: 39"), viewport={"width": 390, "height": 844}, has_touch=True)
+            pg.goto(PAGE)
+            pg.wait_for_timeout(600)
+            pg.tap("#acct-btn")
+            pg.tap('label:has(input[name="sb-lang"][value="zh-TW"])')
+            pg.keyboard.press("Escape")
+            pg.tap("#usage")
+            pg.wait_for_timeout(100)
+            lg = pg.evaluate(LEGEND_JS)
+            check("zh-TW legend: 提醒門檻：80% · 提醒 / 90% · 規劃切換 / 95% · 切換帳號", lg["label"] == "提醒門檻："
+                  and [c["text"] for c in lg["chips"]] == ["80% · 提醒", "90% · 規劃切換", "95% · 切換帳號"], lg)
+            pg.close()
+
             print("claude adapter: no email on the Artifact page:")
             pg = new_page(CLAUDE_STUB)
             pg.goto(PAGE)

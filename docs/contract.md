@@ -976,8 +976,14 @@ ever stops a process**.
      "teammates_n": 0, "teammates_rss_mb": 0, "idle_teammates_n": 0} ],
   "orphan_teammates": [ teammate rows whose parent session is not live ],
   "heavy_running": 1, "teammate_idle_minutes": 30, "operator": {"watch": true|false|null},
-  "unavailable": ["psi", "swap", "disk"], "interval": 15, "config_errors": [] }
+  "unavailable": ["psi", "swap", "disk"], "interval": 15, "config_errors": [],
+  "thresholds": {"load_per_cpu": [1.5, 3.0], ...} }
 ```
+
+- **`thresholds`** are the `[warn, high]` pairs in use (`resources.thresholds` after defaults and
+  validation). They go to `/api/state` and `meta/resources`, so the System tile can say why its
+  level is what it is ("Load 27.7 / 4 cpu = 6.93 per cpu (high ≥ 3.0)"). A board without them uses
+  the defaults.
 
 - **Sources.** Linux/WSL: `/proc/{stat,loadavg,meminfo,vmstat,pressure/memory,uptime}` and
   `/proc/<pid>/{stat,cmdline}`. Elsewhere: `os.getloadavg()`, `statvfs` and `ps -axo

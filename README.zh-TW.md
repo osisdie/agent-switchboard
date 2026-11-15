@@ -749,6 +749,12 @@ Claude Code 會把 `rate_limits.five_hour` 和 `rate_limits.seven_day`（`used_p
 其他人，以及 Artifact 看板的所有檢視者，都只會看到「帳號：已隱藏」。用 `BOARD_SHOW_ACCOUNT=0`
 或 `fleet.yaml` 的 `usage: {show_account: false}` 關閉。
 
+頁首其他的方塊、計數和標籤也用同樣的方式說明自己（滑鼠移上、聚焦或點一下；按 Escape 或點別處關閉）：
+**Needs you** 列出在等的事，等最久的在前，並附上前往最久那一項和決策區的連結；**Working**、**Done / idle** 和
+**Offline** 列出各 session 以及在這個狀態多久；**System** 顯示記憶體、swap、負載和磁碟的等級、OOM kill、
+重度工作、閒置 teammate 和取樣時間，並附上前往資源區的連結；operator 標籤顯示最後心跳、operator watch 是否執行，以及這是哪一種看板；
+**主人不在**和通知標籤顯示從何時開始、由誰設定、待決共識，以及每個管道的靜音或最低等級。
+
 門檻可以設定（`alerting.thresholds`）。每個門檻在每個重設週期只觸發一次。頁面會同時顯示兩個用量計
 （5h 和 7d）以及重設倒數。用量計反映的是最後一次繪製 statusline 的那個 session。同一台機器上有兩個帳號時，
 它可能顯示其中任何一個。
@@ -1065,7 +1071,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `lib/cards.py` | board-serve 用的卡片補充資訊（`cards.json`）：teammate 與其任務、session 用量、最近的工具呼叫、最後一則訊息與指示（僅核可者）、領先／落後、狀態持續時間 |
 | `lib/resources.py` | 資源取樣器（記憶體、磁碟、OOM、每個 session 的程序與 teammate），產生 `resources.json`、snapshot 摘要和 `board resources` |
 | `docs/design/` | 設計文件，例如 `resources-and-scheduling.md`（資源、排程器、經驗） |
-| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`）、資源取樣器（`test_resources.py`，fixture `/proc`）、機密防護（`test_guard.py`）、卡片補充資訊（`test_cards.py`）、Remote Control（`test_rc.py`，用 `fake_tmux.py` 模擬 tmux 畫面），以及選用的頁面告警連結、通知控制、個人選單與主題、主畫面 app、session 卡片、用量提示框、語言切換與按鍵面板 headless 檢查（`test_page_links.py`、`test_page_notify.py`、`test_page_profile.py`、`test_page_pwa.py`、`test_page_cards.py`、`test_page_guard.py`（被攔下的訊息卡片）、`test_page_usage.py`、`test_page_i18n.py`、`test_page_deck.py`、`test_page_rc.py`（Remote Control 標籤與開關），以及截圖和 Pages 網站的 `test_site.py`：需要 python playwright，沒有就略過；CI 不執行） |
+| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`）、資源取樣器（`test_resources.py`，fixture `/proc`）、機密防護（`test_guard.py`）、卡片補充資訊（`test_cards.py`）、Remote Control（`test_rc.py`，用 `fake_tmux.py` 模擬 tmux 畫面），以及選用的頁面告警連結、通知控制、個人選單與主題、主畫面 app、session 卡片、用量提示框、頁首提示框、語言切換與按鍵面板 headless 檢查（`test_page_links.py`、`test_page_notify.py`、`test_page_profile.py`、`test_page_pwa.py`、`test_page_cards.py`、`test_page_guard.py`（被攔下的訊息卡片）、`test_page_usage.py`、`test_page_header_tips.py`、`test_page_i18n.py`、`test_page_deck.py`、`test_page_rc.py`（Remote Control 標籤與開關），以及截圖和 Pages 網站的 `test_site.py`：需要 python playwright，沒有就略過；CI 不執行） |
 | `CONTRIBUTING.md` | 開發環境設定、測試，以及讓 `README.zh-TW.md` 保持同步的規則 |
 | `fleet.example.yaml`、`.env.example` | 設定範例 |
 
