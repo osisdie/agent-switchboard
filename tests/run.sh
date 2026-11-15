@@ -938,7 +938,14 @@ case("buffer: within 20 s replaces the last sample", buf["samples"], [{"t": NOW 
 buf = c.add_usage_sample(buf, u(NOW + M, 12))
 case("buffer: 20 s later appends", len(buf["samples"]), 2)
 case("buffer: an older reading is ignored", len(c.add_usage_sample(buf, u(NOW - M, 99))["samples"]), 2)
-case("buffer: a 0-1 fraction becomes a percentage", c.add_usage_sample({}, u(NOW, 0.25))["samples"][0]["pct"], 25.0)
+case("buffer: pct is 0-100 (0.25 stays 0.25%)", c.add_usage_sample({}, u(NOW, 0.25))["samples"][0]["pct"], 0.25)
+probe = {}
+for i, p in enumerate((0.3, 0.6, 0.9)):
+    probe = c.add_usage_sample(probe, u(NOW - (2 - i) * 3 * M, p))
+b = c.burn_rate(probe["samples"], NOW, RESET)
+case("probe: sub-1% readings (0.3/0.6/0.9 over 6 min) are not danger", (b["status"], b["pct_per_hour"]), ("ok", 6.0))
+case("NaN / Infinity readings are ignored", [len(c.add_usage_sample({}, u(NOW, v))["samples"]) for v in (float("nan"), float("inf"), float("-inf"))], [0, 0, 0])
+case("a NaN sample is left out of the fit", c.burn_rate(line(40, 0, 20) + [{"t": NOW - M, "pct": float("nan")}], NOW, RESET)["status"], "ok")
 case("buffer: no 5h reading leaves it as it is", c.add_usage_sample(buf, {"updated_at": NOW + 2 * M})["samples"], buf["samples"])
 case("buffer: a new window (resets_at moved) starts over", c.add_usage_sample(buf, u(NOW + 2 * M, 1, RESET + 5 * 3600 * 1000))["samples"], [{"t": NOW + 2 * M, "pct": 1.0}])
 case("buffer: a few seconds of resets_at jitter is the same window", len(c.add_usage_sample(buf, u(NOW + 2 * M, 13, RESET + 3000))["samples"]), 3)

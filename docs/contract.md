@@ -783,7 +783,7 @@ The collector feeds the 5-hour reading of `usage.json` into a small ring buffer 
   newer than the last sample is ignored; one within 20 s of the last sample replaces it (several
   sessions report the same account-wide number). Samples older than an hour are dropped, at most 180
   are kept. When `five_hour.resets_at` moves by more than 5 minutes, the window reset: the buffer
-  starts over. A 0–1 fraction is read as a percentage.
+  starts over. `pct` is read as 0–100, as the tap writes it (a reading under 1 is under 1%).
 - `burn` is a least-squares line through the samples of the **last 30 minutes**, projected to 100%:
   - `unknown`: fewer than 3 samples, or under 5 minutes between the first and the last;
   - `stale`: the newest sample is over 15 minutes old (no session reported usage since);

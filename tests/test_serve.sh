@@ -187,6 +187,9 @@ eq "  an unknown burn status is dropped" "$(req GET /api/state >/dev/null; body 
 jq -n '{samples: [], burn: {status: "ok", pct_per_hour: "fast", hit_at: null, n: 4}}' > "$BOARD_HOME/usage-samples.json"
 sleep 1.3
 eq "  a non-number field becomes null" "$(req GET /api/state >/dev/null; body '.operator.usage.burn | "\(.status)/\(.pct_per_hour)/\(.n)"')" "ok/null/4"
+printf '{"samples": [], "burn": {"status": "danger", "pct_per_hour": NaN, "hit_at": Infinity, "n": 3}}' > "$BOARD_HOME/usage-samples.json"
+sleep 1.3
+eq "  NaN / Infinity become null (the state stays valid JSON)" "$(req GET /api/state >/dev/null; body '.operator.usage.burn | "\(.status)/\(.pct_per_hour)/\(.hit_at)/\(.n)"')" "danger/null/null/3"
 eq "approver_ids from fleet.yaml" "$(body '.operator.approver_ids | join(",")')" "local,boss@example.com"
 eq "limit null when none" "$(body '.operator.limit')" "null"
 

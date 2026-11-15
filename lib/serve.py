@@ -42,6 +42,7 @@ import glob
 import hashlib
 import http.server
 import json
+import math
 import os
 import re
 import secrets
@@ -117,7 +118,7 @@ def burn_view(samples_file):
     b = samples_file.get("burn") if isinstance(samples_file, dict) else None
     if not isinstance(b, dict) or b.get("status") not in BURN_STATUS:
         return None
-    num = lambda v: v if isinstance(v, (int, float)) and not isinstance(v, bool) else None  # noqa: E731
+    num = lambda v: v if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) else None  # noqa: E731
     return {"status": b["status"], "pct_per_hour": num(b.get("pct_per_hour")), "hit_at": num(b.get("hit_at")),
             "n": num(b.get("n"))}
 

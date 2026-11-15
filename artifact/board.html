@@ -1180,7 +1180,6 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     if (!u || typeof u !== 'object') return null;
     let pct = Number(u.pct != null ? u.pct : u.used_percentage);
     if (!isFinite(pct)) return null;
-    if (pct > 0 && pct <= 1 && !Number.isInteger(pct)) pct *= 100;
     return { pct: Math.max(0, Math.min(100, Math.round(pct))), resets: ts(u.resets_at) };
   }
   const usageLevel = (p) => (p >= 95 ? 'red' : p >= 90 ? 'orange' : p >= 80 ? 'amber' : 'ok');

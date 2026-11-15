@@ -35,6 +35,7 @@ Usage: collect.py [--no-notify] [--baseline] [--verbose]
 import getpass
 import glob
 import json
+import math
 import os
 import re
 import socket
@@ -515,7 +516,8 @@ RESET_SHIFT_MS = 5 * 60 * 1000       # resets_at moved further than this: a new 
 
 
 def _num(v):
-    return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+    """A finite int or float (json.load accepts NaN and Infinity), else None."""
+    return v if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) else None
 
 
 def burn_rate(samples, now, resets_at=None):
@@ -568,8 +570,6 @@ def add_usage_sample(buf, usage):
     pct = _num((w or {}).get("pct")) if isinstance(w, dict) else None
     if t is None or pct is None:
         return {"resets_at": resets, "samples": samples}
-    if 0 < pct <= 1 and not float(pct).is_integer():
-        pct *= 100  # a 0-1 fraction
     pct = max(0.0, min(100.0, float(pct)))
     new_resets = _num(w.get("resets_at"))
     if new_resets is not None and resets is not None and abs(new_resets - resets) > RESET_SHIFT_MS:
