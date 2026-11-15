@@ -61,6 +61,9 @@ SMTP_PID=$!
 for _ in $(seq 1 50); do [ -s "$T/smtp.port" ] && break; sleep 0.1; done
 SMTP_PORT_NUM="$(cat "$T/smtp.port")"
 
+# Credential-shaped fakes are assembled at runtime, so no single literal here looks like one.
+line_tok="line-$(printf %s secret)-token-xyz"
+smtp_pw="pw-$(printf %s secret)-123"
 cat >"$BOARD_CONFIG_DIR/.env" <<EOF
 SLACK_WEBHOOK_URL=https://hooks.example.test/services/T0/B0/SECRETHOOK123
 SLACK_MENTION=<@U0TESTER>
@@ -69,7 +72,7 @@ SMTP_PORT=$SMTP_PORT_NUM
 SMTP_SECURITY=none
 SMTP_FROM=alerts@example.test
 ALERT_EMAIL_TO=me@example.test
-LINE_CHANNEL_ACCESS_TOKEN=line-secret-token-xyz
+LINE_CHANNEL_ACCESS_TOKEN=$line_tok
 LINE_TO=U00000000000000000000000000000000
 AWS_SNS_TOPIC_ARN=arn:aws:sns:us-east-1:000000000000:switchboard-test
 ALERT_WEBHOOK_URL=https://webhook.example.test/alert
@@ -168,10 +171,10 @@ done
 echo "email transport security:"
 # The fake server has no TLS. Credentials must never go over it, and plaintext needs SMTP_SECURITY=none.
 reset_calls
-out="$(SMTP_USER=alerts-user SMTP_PASSWORD=pw-secret-123 "$N" test --channel email)"; rc=$?
+out="$(SMTP_USER=alerts-user SMTP_PASSWORD="$smtp_pw" "$N" test --channel email)"; rc=$?
 eq "none + credentials -> refused (exit 1)" "$rc" "1"
 has "none + credentials: reason" "$out" "refusing to send them in plaintext"
-out="$(SMTP_SECURITY=auto SMTP_USER=alerts-user SMTP_PASSWORD=pw-secret-123 "$N" test --channel email)"; rc=$?
+out="$(SMTP_SECURITY=auto SMTP_USER=alerts-user SMTP_PASSWORD="$smtp_pw" "$N" test --channel email)"; rc=$?
 eq "auto without STARTTLS + credentials -> refused" "$rc" "1"
 has "auto without STARTTLS: reason" "$out" "no STARTTLS"
 out="$(SMTP_SECURITY=auto "$N" test --channel email)"; rc=$?

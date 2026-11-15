@@ -1402,11 +1402,12 @@ last_tu=tu_last
 
 # Redaction and private files. Token-shaped values are assembled at runtime, so this file never
 # contains one (the gitleaks pre-commit hook scans it).
+k_bearer="abcdef""0123456789xyz"; k_tok="s3cr3t""value"; k_pw="hunter2""xyz"
 k_aws="AKIA""ABCDEFGHIJKLMNOP"; k_gh="ghp""_abcdefghijklmnopqrstuvwxyz0123456789"; k_sl="xoxb""-1234567890-abcdefghij"
-hook "$(jq -cn --arg s "$SID" --arg c "curl -H \"Authorization: Bearer abcdef0123456789xyz\" https://api.example.test?token=s3cr3tvalue -u u:p --data password=hunter2xyz $k_aws $k_gh $k_sl" \
+hook "$(jq -cn --arg s "$SID" --arg c "curl -H \"Authorization: Bearer $k_bearer\" https://api.example.test?token=$k_tok -u u:p --data password=$k_pw $k_aws $k_gh $k_sl" \
   '{session_id: $s, hook_event_name: "PreToolUse", tool_name: "Bash", tool_use_id: "tu_sec", tool_input: {command: $c}}')"
 summ="$(st '.recent_pre | last | .summary')"
-for s in abcdef0123456789xyz s3cr3tvalue hunter2xyz "$k_aws" "${k_gh:0:10}" "${k_sl:0:9}"; do
+for s in "$k_bearer" "$k_tok" "$k_pw" "$k_aws" "${k_gh:0:10}" "${k_sl:0:9}"; do
   case "$summ" in *"$s"*) bad "summary redacts ${s:0:4}…" "$summ" ;; *) ok "summary redacts ${s:0:4}…" ;; esac
 done
 case "$summ" in *"curl -H"*"https://api.example.test?token=[REDACTED]"*) ok "summary keeps the readable parts" ;; *) bad "summary keeps the readable parts" "$summ" ;; esac
@@ -1759,7 +1760,7 @@ commit "add g"; eq "commit-msg: clean message passes" "$?" "0"
 echo "z2" > "$R/g.txt"
 commit "redact password=/token=/secret= values"; eq "commit-msg: naming the keys is not a secret" "$?" "0"
 echo "z3" > "$R/g.txt"
-commit "set password=hunter2xyz for now"; eq "commit-msg: password=value blocks" "$?" "1"
+commit "set password=hunter2""xyz for now"; eq "commit-msg: password=value blocks" "$?" "1"
 git -C "$R" reset -q
 if command -v gitleaks >/dev/null 2>&1; then
   # Build a webhook-shaped value at runtime so this file itself never contains one.
