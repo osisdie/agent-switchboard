@@ -22,7 +22,7 @@ export BOARD_HOME="$T/home"
 export BOARD_CONFIG_DIR="$T/config"
 export CLAUDE_SESSIONS_DIR="$T/sessions"
 export CLAUDE_SETTINGS="$T/settings.json"
-unset TMUX_PANE TMUX
+unset TMUX_PANE TMUX BOARD_PUBLIC_URL
 while IFS= read -r v; do unset "$v"; done < <(compgen -e | grep -E '^(SLACK_|SMTP_|ALERT_|LINE_|AWS_)')
 export ALERT_DESKTOP=0
 mkdir -p "$BOARD_HOME"/{state,decisions,tasks,messages/m-1-a/replies} "$BOARD_CONFIG_DIR" "$CLAUDE_SESSIONS_DIR" "$T/bin"

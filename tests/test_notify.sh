@@ -18,7 +18,7 @@ trap cleanup EXIT
 export TZ=UTC
 export BOARD_HOME="$T/home"
 export BOARD_CONFIG_DIR="$T/config"
-unset BOARD_NOW_MS BOARD_STATUSLINE_NEXT
+unset BOARD_NOW_MS BOARD_STATUSLINE_NEXT BOARD_PUBLIC_URL
 while IFS='=' read -r k _; do
   case "$k" in SLACK_*|SMTP_*|ALERT_*|LINE_*|AWS_*) unset "$k" ;; esac
 done < <(env)
@@ -339,6 +339,137 @@ usage 92 $(( R5 - 3600 )); "$N" tick >/dev/null
 eq "stale reading (reset already passed) ignored" "$(calls)" "0/0/0/0/0/0"
 usage 10 "$R5B" 95; "$N" tick >/dev/null
 eq "weekly 95% message" "$(alert usage:7d:95 .title)" "weekly usage 95% — resets Mon 09:00 — switch account now"
+
+echo "board links:"
+# Alerts carry <board>/?d=<id> (c=, m=, or the root) when a public board URL is set; none when not.
+rm -f "$BOARD_HOME/alerts.json" "$BOARD_HOME/snapshot.json"
+: >"$BOARD_CONFIG_DIR/fleet.yaml"
+payload_of() {  # payload_of HOST_PATTERN — the JSON body of the (first) curl call to that host
+  local f; f="$(grep -l -- "$1" "$T"/curl/*.cfg 2>/dev/null | head -n 1)"
+  [ -n "$f" ] || return 0
+  sed -n 's/^data-binary = //p' "$f" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read()))'
+}
+slack_text() { payload_of hooks.example.test | jq -r .text; }
+line_text() { payload_of api.line.me | jq -r '.messages[0].text'; }
+BL=https://board.example.com
+DID=d-1794650400-ab12
+L0=$((T0 + 4 * 24 * 60 * MIN))
+
+at "$L0"; reset_calls
+"$N" send --level urgent --key "decision:$DID" --title "API asks: ship?" --url https://example.test/pr/1 >/dev/null
+wait_mail 1; wait_calls "1/1/1/1/1/1"
+st="$(slack_text)"
+hasnt "unset: no board link in slack" "$st" "board.example.com"
+has "unset: url kept as before" "$st" "<https://example.test/pr/1>"
+hasnt "unset: no ref line" "$st" "ref:"
+hook="$(payload_of webhook.example.test)"
+eq "unset: webhook url unchanged" "$(jq -r .url <<<"$hook")" "https://example.test/pr/1"
+eq "unset: webhook has no ref" "$(jq -r 'has("ref")' <<<"$hook")" "false"
+hasnt "unset: no board link in email" "$(cat "$T"/mail/*.eml)" "board.example.com"
+
+export BOARD_PUBLIC_URL="$BL/"
+at $((L0 + MIN)); reset_calls
+"$N" send --level urgent --key "decision:d-1794650400-cd34" --title "API asks: ship?" --url https://example.test/pr/2 >/dev/null
+wait_mail 1; wait_calls "1/1/1/1/1/1"
+st="$(slack_text)"
+has "slack: board link is a <link>" "$st" "<$BL/?d=d-1794650400-cd34>"
+has "slack: original url kept as ref" "$st" "ref: <https://example.test/pr/2>"
+m="$(cat "$T"/mail/*.eml)"
+has "email: board link on its own line" "$m" $'\n'"$BL/?d=d-1794650400-cd34"$'\n'
+has "email: ref line" "$m" "ref: https://example.test/pr/2"
+hasnt "email: plain text, no html" "$m" "<a "
+has "line: board link in text" "$(line_text)" "$BL/?d=d-1794650400-cd34"
+hook="$(payload_of webhook.example.test)"
+eq "webhook: url is the board link" "$(jq -r .url <<<"$hook")" "$BL/?d=d-1794650400-cd34"
+eq "webhook: ref is the original url" "$(jq -r .ref <<<"$hook")" "https://example.test/pr/2"
+has "sns: board link in message" "$(cat "$T"/aws/*)" "$BL/?d=d-1794650400-cd34"
+eq "stored url stays the caller's" "$(alert decision:d-1794650400-cd34 .url)" "https://example.test/pr/2"
+
+reset_calls
+"$N" send --level info --key "consensus:c-1794650400-ef56" --title "parked" >/dev/null
+has "consensus key -> ?c=" "$(slack_text)" "<$BL/?c=c-1794650400-ef56>"
+hasnt "no url -> no ref line" "$(slack_text)" "ref:"
+reset_calls
+"$N" send --level info --key "message:m-1794650400-0a1b" --title "reply" >/dev/null
+has "message key -> ?m=" "$(slack_text)" "<$BL/?m=m-1794650400-0a1b>"
+reset_calls
+"$N" send --level info --key operator:local-only --title "BOARD local-only" >/dev/null
+has "operator alert -> board root" "$(slack_text)" "<$BL/>"
+reset_calls
+"$N" send --level info --key operator:x --board "$DID" --title "gate not relayed" >/dev/null
+has "--board ID -> that card" "$(slack_text)" "<$BL/?d=$DID>"
+reset_calls
+"$N" send --level info --key 'decision:d-1-AB"><x' --title "odd id" >/dev/null
+st="$(slack_text)"
+has "id failing the strict pattern -> root link" "$st" "<$BL/>"
+hasnt "odd id never in the link" "$st" "?d="
+
+for bad_url in http://board.example.com https://user:pw@board.example.com "$BL/?x=1" "$BL/#top" "javascript:alert(1)" "$BL/a b"; do
+  export BOARD_PUBLIC_URL="$bad_url"
+  reset_calls
+  "$N" send --level info --key "decision:$DID-x" --title "bad base" >/dev/null
+  hasnt "invalid base '$bad_url' -> no link" "$(slack_text)" "board.example.com"
+  out="$(python3 "$REPO/lib/fleet.py" board-url-check)"; rc=$?
+  eq "board-url-check rejects '$bad_url'" "$rc" "1"
+done
+has "board-url-check says why" "$out" "env BOARD_PUBLIC_URL rejected"
+export BOARD_PUBLIC_URL=http://127.0.0.1:39410
+eq "http allowed for 127.0.0.1" "$(python3 "$REPO/lib/fleet.py" board-link "$DID")" "http://127.0.0.1:39410/?d=$DID"
+unset BOARD_PUBLIC_URL
+eq "unset: board-link prints nothing" "$(python3 "$REPO/lib/fleet.py" board-link "$DID")" ""
+printf 'board_url: https://yaml.example.com\n' >"$BOARD_CONFIG_DIR/fleet.yaml"
+eq "fleet.yaml board_url" "$(python3 "$REPO/lib/fleet.py" board-link "$DID")" "https://yaml.example.com/?d=$DID"
+printf 'BOARD_PUBLIC_URL=https://dotenv.example.com\n' >>"$BOARD_CONFIG_DIR/.env"
+eq ".env BOARD_PUBLIC_URL overrides fleet.yaml" "$(python3 "$REPO/lib/fleet.py" board-link)" "https://dotenv.example.com/"
+eq "env BOARD_PUBLIC_URL overrides both" "$(BOARD_PUBLIC_URL=$BL python3 "$REPO/lib/fleet.py" board-link)" "$BL/"
+sed -i '/^BOARD_PUBLIC_URL=/d' "$BOARD_CONFIG_DIR/.env"
+printf 'board_url: http://board.example.com\n' >"$BOARD_CONFIG_DIR/fleet.yaml"
+out="$(python3 "$REPO/lib/fleet.py" board-url-check)"; rc=$?
+eq "invalid fleet.yaml board_url rejected" "$rc" "1"
+has "names the source" "$out" "fleet.yaml board_url rejected: must use https"
+: >"$BOARD_CONFIG_DIR/fleet.yaml"
+
+echo "board links on collector alerts (tick):"
+export BOARD_PUBLIC_URL="$BL"
+rm -f "$BOARD_HOME/alerts.json"
+jq -n '{generated_at: 0,
+  sessions: [ {code: "AP", session_id: "s-ap", state: "needs-you", remote_url: "https://example.test/ap",
+               pending: {tool_name: "Bash", summary: "make deploy", tool_use_id: "tu9"}},
+              {code: "CP", state: "needs-you", pending: null} ],
+  decisions: [ {id: "d-1794650400-aa11", kind: "permission", from: "AP", session_id: "s-ap", tool_use_id: "tu9", status: "pending"},
+               {id: "d-1794650400-bb22", kind: "permission", from: "AP", tool_use_id: "tu-old", status: "pending"},
+               {id: "d-1794650400-cc33", kind: "question", from: "CP", question: "Deploy?", gate: "production", status: "pending"} ],
+  limit: {hit_at: 7, kind: "5h", resets_at: null}}' >"$BOARD_HOME/snapshot.json"
+at $((L0 + 60 * MIN)); reset_calls
+"$N" tick >/dev/null
+wait_calls "3/3/1/2/2/2"
+all="$(for f in "$T"/curl/*.cfg; do sed -n 's/^data-binary = //p' "$f" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read()))' | jq -r '.text // .messages[0].text // .url'; done)"
+has "permission prompt -> its decision card" "$all" "<$BL/?d=d-1794650400-aa11>"
+hasnt "not an older prompt's card" "$all" "bb22"
+has "permission alert keeps the session link as ref" "$all" "ref: <https://example.test/ap>"
+cp_cfg="$(grep -l 'CP needs you' "$T"/curl/*.cfg | head -n 1)"
+has "needs-you without a prompt -> board root" "$(cat "${cp_cfg:-/dev/null}")" "<$BL/>"
+has "production gate -> its card" "$all" "<$BL/?d=d-1794650400-cc33>"
+lim_cfg="$(grep -l 'usage limit hit' "$T"/curl/*.cfg | xargs grep -l hooks.example.test | head -n 1)"
+has "limit hit -> board root" "$(cat "${lim_cfg:-/dev/null}")" "<$BL/>"
+eq "needs-you entry remembers the card" "$(alert session:AP:needs-you .board)" "d-1794650400-aa11"
+# Escalation re-send (10 min: permission prompt -> urgent) still carries the link.
+reset_calls
+at $((L0 + 70 * MIN)); "$N" tick >/dev/null
+wait_mail 1
+eq "escalated to urgent" "$(alert session:AP:needs-you .level)" "urgent"
+has "escalation e-mail carries the link" "$(cat "$T"/mail/*.eml)" "$BL/?d=d-1794650400-aa11"
+# The session moves to its next prompt (same needs-you episode): the link follows.
+jq '.sessions[0].pending.tool_use_id = "tu-old"' "$BOARD_HOME/snapshot.json" >"$T/s" && mv "$T/s" "$BOARD_HOME/snapshot.json"
+"$N" tick >/dev/null
+eq "next prompt -> link follows" "$(alert session:AP:needs-you .board)" "d-1794650400-bb22"
+unset BOARD_PUBLIC_URL
+reset_calls
+at $((L0 + 200 * MIN)); "$N" tick >/dev/null
+[ "$(n_slack)" -ge 1 ] && ok "unset again: repeats still go out" || bad "unset again: repeats still go out" "no slack call"
+hasnt "unset again: repeats carry no board link" "$(cat "$T"/curl/*.cfg 2>/dev/null)" "board.example.com"
+
+rm -f "$BOARD_HOME/alerts.json" "$BOARD_HOME/snapshot.json"
 
 echo "statusline tap:"
 TAP="$REPO/hooks/board-statusline-tap.sh"
