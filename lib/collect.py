@@ -27,10 +27,15 @@ Usage: collect.py [--no-notify] [--baseline] [--verbose]
   branch, cached 30 s in $BOARD_HOME/gitinfo.json), `last_event`, `notification_type` and `recent`
   (the tool calls in flight: tool name + the hook's redacted summary). All of it is untrusted text:
   control characters removed, paths cut to their last component, clipped. Never a full path.
+- Usage burn rate: feeds the 5-hour reading of usage.json into a small ring buffer
+  ($BOARD_HOME/usage-samples.json: one sample per 20 s, an hour kept, emptied when the window
+  resets) and stores the burn rate there (a least-squares line through the last 30 min, projected
+  to 100%). board-serve shows it as operator.usage.burn on the Deck panel.
 """
 import getpass
 import glob
 import json
+import math
 import os
 import re
 import socket
@@ -495,6 +500,108 @@ def resources_digest(cfg, home, sessions, verbose=False):
         return None
 
 
+# ------------------------------------------------------------------ usage burn rate
+# A small ring buffer of 5-hour usage samples ($BOARD_HOME/usage-samples.json), fed from
+# usage.json (the statusline tap), and the burn rate the Deck panel shows: a least-squares line
+# through the last 30 min of samples, projected to 100%.
+SAMPLES_FILE = "usage-samples.json"
+SAMPLE_MIN_GAP_MS = 20 * 1000        # several sessions report the same number: one sample per 20 s
+SAMPLE_KEEP_MS = 60 * 60 * 1000      # keep an hour; the fit uses the last 30 min
+SAMPLE_MAX = 180
+BURN_WINDOW_MS = 30 * 60 * 1000
+BURN_MIN_SAMPLES = 3
+BURN_MIN_SPAN_MS = 5 * 60 * 1000
+BURN_STALE_MS = 15 * 60 * 1000       # no report for 15 min: the projection is not shown
+RESET_SHIFT_MS = 5 * 60 * 1000       # resets_at moved further than this: a new window
+
+
+def _num(v):
+    """A finite int or float (json.load accepts NaN and Infinity), else None."""
+    return v if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) else None
+
+
+def burn_rate(samples, now, resets_at=None):
+    """Burn rate of the 5-hour window from [{t, pct}] (t in epoch ms, pct 0-100).
+
+    status: "danger" when the line reaches 100% before the window resets, "ok" when it doesn't
+    (flat or falling, or the reset comes first), "unknown" with fewer than 3 samples or under
+    5 min of data in the last 30 min, "stale" when the newest sample is over 15 min old.
+    hit_at is the projected time of 100% (epoch ms), or None."""
+    pts = sorted((s for s in samples or [] if _num(s.get("t")) is not None and _num(s.get("pct")) is not None),
+                 key=lambda s: s["t"])
+    out = {"status": "unknown", "pct_per_hour": None, "hit_at": None, "n": 0}
+    if pts and now - pts[-1]["t"] > BURN_STALE_MS:
+        out["status"] = "stale"
+        return out
+    recent = [s for s in pts if now - s["t"] <= BURN_WINDOW_MS]
+    out["n"] = len(recent)
+    if len(recent) < BURN_MIN_SAMPLES or recent[-1]["t"] - recent[0]["t"] < BURN_MIN_SPAN_MS:
+        return out
+    n = len(recent)
+    mx = sum(s["t"] for s in recent) / n
+    my = sum(s["pct"] for s in recent) / n
+    num = sum((s["t"] - mx) * (s["pct"] - my) for s in recent)
+    den = sum((s["t"] - mx) ** 2 for s in recent)
+    per_ms = num / den if den else 0.0
+    out["pct_per_hour"] = round(per_ms * 3600 * 1000, 2)
+    last = recent[-1]
+    if last["pct"] >= 100:
+        out.update(status="danger", hit_at=int(last["t"]))
+        return out
+    if per_ms <= 0:
+        out["status"] = "ok"
+        return out
+    hit_at = int(last["t"] + (100 - last["pct"]) / per_ms)
+    out["hit_at"] = hit_at
+    out["status"] = "danger" if not resets_at or hit_at < resets_at else "ok"
+    return out
+
+
+def add_usage_sample(buf, usage):
+    """Adds the 5-hour reading of usage.json to the buffer {resets_at, samples}; returns the new
+    buffer. A reading is taken at its own updated_at; an older or repeated one is ignored, one
+    within 20 s of the last sample replaces it, and a moved resets_at starts a new window."""
+    buf = buf if isinstance(buf, dict) else {}
+    samples = [s for s in buf.get("samples") or [] if isinstance(s, dict)
+               and _num(s.get("t")) is not None and _num(s.get("pct")) is not None]
+    resets = _num(buf.get("resets_at"))
+    w = (usage or {}).get("five_hour") if isinstance(usage, dict) else None
+    t = _num((usage or {}).get("updated_at")) if isinstance(usage, dict) else None
+    pct = _num((w or {}).get("pct")) if isinstance(w, dict) else None
+    if t is None or pct is None:
+        return {"resets_at": resets, "samples": samples}
+    pct = max(0.0, min(100.0, float(pct)))
+    new_resets = _num(w.get("resets_at"))
+    if new_resets is not None and resets is not None and abs(new_resets - resets) > RESET_SHIFT_MS:
+        samples = []
+    if new_resets is not None:
+        resets = new_resets
+    if samples and t <= samples[-1]["t"]:
+        return {"resets_at": resets, "samples": samples}
+    if samples and t - samples[-1]["t"] < SAMPLE_MIN_GAP_MS:
+        samples.pop()
+    samples.append({"t": int(t), "pct": pct})
+    samples = [s for s in samples if t - s["t"] <= SAMPLE_KEEP_MS][-SAMPLE_MAX:]
+    return {"resets_at": resets, "samples": samples}
+
+
+def usage_samples(home, now):
+    """Feeds usage.json into usage-samples.json and stores the burn rate there. Written only when
+    the samples or the burn rate changed. Returns the burn rate (or None)."""
+    path = os.path.join(home, SAMPLES_FILE)
+    old = read_json(path)
+    old = old if isinstance(old, dict) else {}
+    buf = add_usage_sample(old, read_json(os.path.join(home, "usage.json")))
+    if not buf["samples"] and not old:
+        return None
+    burn = burn_rate(buf["samples"], now, buf["resets_at"])
+    new = {"resets_at": buf["resets_at"], "samples": buf["samples"], "burn": burn}
+    if {k: old.get(k) for k in new} != new:
+        new["computed_at"] = now
+        write_json_atomic(path, new)
+    return burn
+
+
 def alert(prev, snap, verbose):
     """Per-event alerts (board-notify), so the first alert does not wait for the next tick().
     tick() is the safety net: it opens alerts for anything these calls miss."""
@@ -538,6 +645,11 @@ def main(argv):
     except (OSError, ValueError) as exc:  # never breaks the collector
         if verbose:
             print("account: %s" % exc)
+    try:
+        usage_samples(home, now)
+    except (OSError, ValueError, TypeError) as exc:  # never breaks the collector
+        if verbose:
+            print("usage samples: %s" % exc)
     decisions = process_decisions(cfg, home, sessions, now)
     tasks = load_tasks(home)
     attach_tasks(sessions, tasks)

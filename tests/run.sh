@@ -895,6 +895,85 @@ avg_ms=$(( (t1 - t0) / 10000 ))
 echo "  hook avg ${avg_ms}ms"
 [ "$avg_ms" -lt 200 ] && ok "hook speed" || bad "hook speed" "${avg_ms}ms"
 
+# ---- usage samples and burn rate
+echo "usage burn rate:"
+while IFS=$'\t' read -r verdict name detail; do
+  if [ "$verdict" = ok ]; then ok "$name"; else bad "$name" "$detail"; fi
+done < <(python3 - "$REPO/lib" "$T" <<'PY'
+import json, os, sys
+sys.path.insert(0, sys.argv[1])
+import collect as c
+M = 60 * 1000
+NOW = 1_800_000_000_000
+RESET = NOW + 200 * M
+line = lambda pct0, rate_per_min, mins: [{"t": NOW - (mins - i) * M, "pct": pct0 + rate_per_min * i} for i in range(mins + 1)]
+cases = []
+def case(name, got, want):
+    cases.append((name, got, want))
+
+b = c.burn_rate(line(40, 0.5, 20), NOW, RESET)   # 30%/h at 50%: 100% in 100 min, reset in 200
+case("pace: rate per hour", b["pct_per_hour"], 30.0)
+case("will hit the limit: danger", b["status"], "danger")
+case("  projected time of 100%", round((b["hit_at"] - NOW) / M), 100)
+b = c.burn_rate(line(40, 0.1, 20), NOW, RESET)   # 6%/h at 42%: 580 min, after the reset
+case("pace OK: the reset comes first", (b["status"], b["hit_at"] > RESET), ("ok", True))
+case("pace OK: flat usage", c.burn_rate(line(40, 0, 20), NOW, RESET)["status"], "ok")
+case("pace OK: falling usage (no projection)", c.burn_rate(line(60, -0.5, 20), NOW, RESET)["hit_at"], None)
+case("no reset time: a rising line is danger", c.burn_rate(line(40, 0.1, 20), NOW, None)["status"], "danger")
+case("already at 100%: danger now", c.burn_rate(line(90, 0.5, 20), NOW, RESET)["hit_at"], NOW)
+case("too few samples: unknown", c.burn_rate(line(40, 0.5, 1), NOW, RESET)["status"], "unknown")
+case("under 5 min of data: unknown", c.burn_rate(line(40, 0.5, 4), NOW, RESET)["status"], "unknown")
+case("empty: unknown", c.burn_rate([], NOW, RESET)["status"], "unknown")
+case("only the last 30 min count", c.burn_rate([dict(s, t=s["t"] - 30 * M) for s in line(0, 2, 30)[:5]] + line(40, 0, 20), NOW, RESET)["status"], "ok")
+old = [dict(s, t=s["t"] - 20 * M) for s in line(40, 0.5, 20)]
+case("newest sample over 15 min old: stale", c.burn_rate(old, NOW, RESET)["status"], "stale")
+
+u = lambda t, pct, r=RESET: {"five_hour": {"pct": pct, "resets_at": r}, "seven_day": {"pct": 3, "resets_at": r}, "updated_at": t}
+buf = c.add_usage_sample({}, u(NOW, 10))
+case("buffer: first sample", buf["samples"], [{"t": NOW, "pct": 10.0}])
+buf = c.add_usage_sample(buf, u(NOW, 10))
+case("buffer: the same reading is not added twice", len(buf["samples"]), 1)
+buf = c.add_usage_sample(buf, u(NOW + 5000, 11))
+case("buffer: within 20 s replaces the last sample", buf["samples"], [{"t": NOW + 5000, "pct": 11.0}])
+buf = c.add_usage_sample(buf, u(NOW + M, 12))
+case("buffer: 20 s later appends", len(buf["samples"]), 2)
+case("buffer: an older reading is ignored", len(c.add_usage_sample(buf, u(NOW - M, 99))["samples"]), 2)
+case("buffer: pct is 0-100 (0.25 stays 0.25%)", c.add_usage_sample({}, u(NOW, 0.25))["samples"][0]["pct"], 0.25)
+probe = {}
+for i, p in enumerate((0.3, 0.6, 0.9)):
+    probe = c.add_usage_sample(probe, u(NOW - (2 - i) * 3 * M, p))
+b = c.burn_rate(probe["samples"], NOW, RESET)
+case("probe: sub-1% readings (0.3/0.6/0.9 over 6 min) are not danger", (b["status"], b["pct_per_hour"]), ("ok", 6.0))
+case("NaN / Infinity readings are ignored", [len(c.add_usage_sample({}, u(NOW, v))["samples"]) for v in (float("nan"), float("inf"), float("-inf"))], [0, 0, 0])
+case("a NaN sample is left out of the fit", c.burn_rate(line(40, 0, 20) + [{"t": NOW - M, "pct": float("nan")}], NOW, RESET)["status"], "ok")
+case("buffer: no 5h reading leaves it as it is", c.add_usage_sample(buf, {"updated_at": NOW + 2 * M})["samples"], buf["samples"])
+case("buffer: a new window (resets_at moved) starts over", c.add_usage_sample(buf, u(NOW + 2 * M, 1, RESET + 5 * 3600 * 1000))["samples"], [{"t": NOW + 2 * M, "pct": 1.0}])
+case("buffer: a few seconds of resets_at jitter is the same window", len(c.add_usage_sample(buf, u(NOW + 2 * M, 13, RESET + 3000))["samples"]), 3)
+big = {"resets_at": RESET, "samples": []}
+for i in range(400):
+    big = c.add_usage_sample(big, u(NOW + i * 30 * 1000, 10 + i * 0.01))
+case("buffer: capped, only the last hour kept", (len(big["samples"]) <= c.SAMPLE_MAX, big["samples"][-1]["t"] - big["samples"][0]["t"] <= c.SAMPLE_KEEP_MS), (True, True))
+
+home = os.path.join(sys.argv[2], "burnhome")
+os.makedirs(home)
+case("file: nothing written without usage.json", (c.usage_samples(home, NOW), os.path.exists(os.path.join(home, c.SAMPLES_FILE))), (None, False))
+for i in range(11):
+    with open(os.path.join(home, "usage.json"), "w") as fh:
+        json.dump(u(NOW - (10 - i) * M, 50 + i), fh)
+    burn = c.usage_samples(home, NOW - (10 - i) * M)
+f = json.load(open(os.path.join(home, c.SAMPLES_FILE)))
+case("file: 11 samples, burn stored", (len(f["samples"]), f["burn"]["status"], f["burn"]["pct_per_hour"]), (11, "danger", 60.0))
+mt = os.stat(os.path.join(home, c.SAMPLES_FILE)).st_mtime_ns
+os.utime(os.path.join(home, c.SAMPLES_FILE), ns=(mt - 10**9, mt - 10**9))
+c.usage_samples(home, NOW + 1000)
+case("file: not rewritten when nothing changed", os.stat(os.path.join(home, c.SAMPLES_FILE)).st_mtime_ns, mt - 10**9)
+c.usage_samples(home, NOW + 16 * M)
+case("file: rewritten when it goes stale", json.load(open(os.path.join(home, c.SAMPLES_FILE)))["burn"]["status"], "stale")
+for name, got, want in cases:
+    print(("ok\t%s\t" if got == want else "FAIL\t%s\tgot %r, want %r") % ((name,) if got == want else (name, got, want)))
+PY
+)
+
 # ---- usage limits
 echo "limit:"
 export BOARD_LIMIT_GRACE_MS=0

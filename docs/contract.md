@@ -23,6 +23,7 @@ $BOARD_HOME/
   consensus.lock            # flock held by `board away on|off` and `board consensus propose|vote`
   resources.json            # system resources, sampled by the collector (see "Resources")
   resources-state.json      # the sampler's memory: previous counters, dwell state, teammate activity
+  usage-samples.json        # the collector's 5h usage samples and burn rate (see "Usage meter")
 ```
 
 ### state/<session_id>.json
@@ -275,6 +276,7 @@ $BOARD_HOME/
 | `POST /api/messages/<id>/release` `{confirm: "release"}` | releases a `held` message. Approvers only (empty `approvers` → 403 `no_approvers`; else 403 `not_approver`, audited). Without the confirm body → 400 `confirm_required`; unknown id → 404; not held → 409 `not_held`. A channel other than the two verified listeners (a future API key) → 403 `release_refused`; with more than one approver, the message's own sender → 403 `self_release` (except `local`: on the loopback listener the identity is always `local`, the owner at this machine). Sets `status: "new"`, `released_by`, `released_at` → 200 `{id, status: "new"}`, audited (`message-release`) |
 | `POST /api/notify-prefs` `{op, ...}` | Notification controls. `op` is `mute` `{channel, for?\|until?, include_urgent?}`, `unmute` `{channel}`, `level` `{channel, level}` or `presence` `{reduce, level?}`. `channel` is `slack`, `desktop`, `email`, `line`, `sns`, `webhook` or `all`; `for` matches `^[1-9][0-9]{0,4}[mhd]$` (at most 30 days); `until` is `HH:MM` or an ISO time in the next 30 days (a string of at most 64 characters); `include_urgent` and `reduce` are booleans; `level` is `info\|warn\|high\|urgent\|default` (`presence`: `warn\|high\|urgent`). Anything else → 400 `bad_op` / `bad_channel` / `bad_duration` / `bad_level` / `bad_body`, nothing run. Empty `approvers` → 403 `no_approvers`; identity not in `approvers` → 403 `not_approver`, audited. Otherwise `board mute\|unmute\|notify-level\|notify-presence … --by board:<identity>` (argv, no shell) → 200 `{status: "ok", notify}` (the new `notify` state). Failure → 500 `prefs_failed`. |
 | `POST /api/presence` `{visible, idle_ms?}` | The page's presence heartbeat. `visible` boolean; `idle_ms` integer ms since the viewer last clicked, tapped, scrolled or typed, at most 86400000 (a day), or null (else 400 `bad_body`). The server records `interaction_at = <server now> − max(0, idle_ms)`, so a page clock that runs fast changes nothing. Any time the page sends (`interaction_at` in the body) is ignored: without `idle_ms` the last interaction is unknown, so the viewer does not count as watching. Same approver rule as `/api/notify-prefs`. Recorded in `presence.json` under the listener's verified identity, never one from the body → 200 `{status: "ok", visible}`. Audited only when the identity's `visible` changes. |
+| `POST /api/alerts/ack` `{scope: "all"}` | The Deck panel's "acknowledge all". `scope` other than `"all"` → 400 `bad_scope`. Same approver rule as `/api/notify-prefs` (empty `approvers` → 403 `no_approvers`; not an approver → 403 `not_approver`, audited, nothing acked). Otherwise `board ack --by board:<identity> '*'` (argv, no shell): every unacked key in `alerts.json` gets `acked_at` and `acked_by: board:<identity>`, the same as `board ack '*'` in a terminal → 200 `{status: "ok", acked: <n>}` (`0` when nothing was open). Escalation stops; nothing leaves the board, and a condition that opens again alerts again. Failure → 500 `ack_failed`. |
 | `POST /api/away` `{state: "on"\|"off", said?}` | `state` other than `on`/`off` → 400 `bad_state`; `said` not a string or over 500 chars → 400 `bad_said`. Empty `approvers` → 403 `no_approvers`; identity not in `approvers` → 403 `not_approver`, audited, nothing written. Otherwise `board away on\|off --by board:<identity> [--said <said>]` (argv, no shell; `on` without `said` records "away (set on the board)") → 200 `{away: true\|false, status: "on"\|"off"\|"unchanged"}`. `on` while already away keeps the existing record (`unchanged`). Failure → 500 `away_failed`. |
 
 Every request: `Host` from the listener's allowlist, else 421. Per listener, at most 64
@@ -286,7 +288,7 @@ from the listener's allowlist (`http://127.0.0.1:<port>`, `http://localhost:<por
 `https://<hostname>`; missing or `null` → 403 `csrf`), `Content-Type: application/json` (else
 415), at most 16 KiB (else 413). `OPTIONS` and every other method → 405, and no
 `Access-Control-*` header is ever sent. Every write appends `{type: "serve", action:
-"answer"|"press"|"message"|"message-release"|"away"|"notify-prefs"|"presence", by, via: "loopback"|"cf-jwt", id, result}` to
+"answer"|"press"|"message"|"message-release"|"away"|"notify-prefs"|"presence"|"alerts-ack", by, via: "loopback"|"cf-jwt", id, result}` to
 `events.jsonl` (`presence` only when visibility changes).
 
 State (`/api/state` and every SSE frame):
@@ -300,7 +302,8 @@ State (`/api/state` and every SSE frame):
   "approvals": [ events.jsonl type:"approval" rows (+ relayed_at from the decision), newest 100 ],
   "messages":  [ newest 20 ], "replies": { "<msgId>": [ ... ] },
   "operator":  { heartbeat_at, version, operator_session, account_hint, approver_ids,
-                 release_manager_ids, usage: {five_hour, seven_day, updated_at}, limit|null },
+                 release_manager_ids, usage: {five_hour, seven_day, updated_at,
+                 burn?: {status, pct_per_hour, hit_at, n}}, limit|null },
   "ledger": {...}|null,
   "owner_away": {since, by, said, legacy?}|null,
   "consensus": [ snapshot.consensus items, newest 50 ],
@@ -763,6 +766,69 @@ Claude Code's statusline input JSON carries `rate_limits.five_hour` and `rate_li
   - "5h usage 90% — resets ~14:20 — prepare to switch account"
   - "weekly usage 95% — resets Mon 09:00 — switch account now"
 - The operator mirrors usage into `meta/operator.usage`. The page shows two meters (5h and 7d) with reset countdowns. At ≥90% it shows an amber "Prepare to switch account" banner, and at ≥95% or on limit-hit a red one, with a link to the failover section in Info.
+
+### Burn rate (`usage-samples.json`)
+
+The collector feeds the 5-hour reading of `usage.json` into a small ring buffer on every run
+(`lib/collect.py`, `add_usage_sample` / `burn_rate`):
+
+```json
+{ "resets_at": 1731500000000,
+  "samples": [ {"t": 1731490000000, "pct": 61.0}, ... ],
+  "burn": {"status": "danger|ok|unknown|stale", "pct_per_hour": 6.0, "hit_at": 1731498000000, "n": 58},
+  "computed_at": 1731490001000 }
+```
+
+- A sample is taken at the reading's own `updated_at`, never the collector's clock. A reading no
+  newer than the last sample is ignored; one within 20 s of the last sample replaces it (several
+  sessions report the same account-wide number). Samples older than an hour are dropped, at most 180
+  are kept. When `five_hour.resets_at` moves by more than 5 minutes, the window reset: the buffer
+  starts over. `pct` is read as 0–100, as the tap writes it (a reading under 1 is under 1%).
+- `burn` is a least-squares line through the samples of the **last 30 minutes**, projected to 100%:
+  - `unknown`: fewer than 3 samples, or under 5 minutes between the first and the last;
+  - `stale`: the newest sample is over 15 minutes old (no session reported usage since);
+  - `danger`: the line reaches 100% (`hit_at`, epoch ms) before `resets_at` (or there is no reset
+    time and the line rises; already at 100% → `hit_at` is that sample);
+  - `ok`: the line is flat or falling (`hit_at` null), or the reset comes first.
+  - `pct_per_hour` is the slope, rounded to 0.01; `n` the number of samples in the fit.
+- The file is rewritten only when the samples or `burn` changed. `board-serve` adds `burn` (those
+  four fields only) to `operator.usage`. The operator does not mirror it, so the Artifact page shows
+  no burn rate. Nothing alerts on it: it is a glance on the Deck panel, the 80/90/95% alerts stay
+  as they are.
+
+## Deck panel
+
+A key-deck panel near the top of the board (`artifact/board.html`, `#deck`): 5 × 3 keys and a wide
+strip (3 columns on a phone), every key a `<button>` with an `aria-label`, every label through
+`tr()`. It shows only data the page already has, and adds **no new power**: a key navigates (scroll
+and focus a card, open a dialog, a Remote Control link) or, for approvers on the self-hosted board,
+calls an existing approver-only route after a confirm step.
+
+| key | shows | press | second action (approvers, board-serve and demo only, after a confirm) |
+|---|---|---|---|
+| HITL | sessions waiting and the longest wait (open decisions, then needs-you sessions without one); a green ✓ when nothing waits | scroll to the longest-waiting decision card and focus it (its answer field, else the card; never an option button), like `?d=`. Again within 5 s: the next one, oldest first | ✓✓ in the corner, or a long press (≥ 0.8 s): acknowledge all open alerts (`POST /api/alerts/ack`) |
+| S1–S8 | the first eight sessions in board order, offline ones last: code, state colour, time since the last update, title. A waiting key blinks: purple for a question, orange for a plan (`ExitPlanMode` or a lifecycle gate), red for a permission | the decision of the prompt the pane shows, else the session's oldest pending decision, else its card (opened) | ↗ the Remote Control link (everyone who sees the link on the card) |
+| 5h, 7d | usage rings with the reset countdown; dimmed when `usage.updated_at` is over 15 min old | focus the usage meter (opens its popover) | — |
+| 5h burn | `⚠ 1h 29m to the 5h limit`, `pace OK`, `pace …` (too few samples) or stale, with the slope in %/h | as 5h | — |
+| System | the resources level, mem and swap bars, the OOM badge | scroll to Resources | — |
+| Quiet | the notification mute state | open the Notifications dialog | mute all push for 1 h / unmute all (`POST /api/notify-prefs`) |
+| Owner | owner-away on or off, since when | scroll to Consensus | away on / off (`POST /api/away`) |
+| Fleet (wide) | up to 4 sessions with state pills (waiting first), the 5h and 7d bars and the burn rate | scroll to Board | — |
+
+- **Alert wave:** when a session newly enters needs-you (not on the first render), a ring in its
+  waiting colour spreads across the deck from its key (from HITL when it has no key), once.
+- **Reduced motion** (`prefers-reduced-motion: reduce`): no blink (the colour stays), no wave.
+- **Adapters:** the Artifact page (claude.ai db) shows a read-only deck: no acknowledge, mute or
+  away actions, for anyone. The demo is an approver whose actions change the page only.
+  `board-serve` shows the actions to approvers only (`approver_ids` contains the viewer) and checks
+  again on every POST.
+- **Collapse:** the Hide deck button or Account menu → Deck panel; kept in `localStorage`
+  (`switchboard.deck` = `collapsed`).
+- Out of scope on purpose: keys that type into a session (prompts, Enter, `/compact`, Esc). A
+  session's prompt is answered on its decision card, by the existing rules.
+- Related project: a hardware key-deck dashboard (5 × 3 keys) that shows the same HITL and usage
+  signals from the same hooks. The two run side by side (independent hooks, separate state; its hub listens on
+  `127.0.0.1:39300`). The board never calls it.
 
 ## Resources
 
