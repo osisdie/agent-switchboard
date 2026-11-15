@@ -56,6 +56,23 @@ hook "{\"session_id\":\"$SID\",\"hook_event_name\":\"PreToolUse\",\"tool_name\":
 eq "PreToolUse -> working" "$(st .state)" "working"
 eq "PreToolUse cached" "$(st '.recent_pre | last | .tool_use_id')" "tu_1"
 eq "recent_pre drops finished tools" "$(st '[.recent_pre[].tool_use_id] | join(",")')" "tu_1"
+eq "recent_done keeps the finished tool" "$(st '.recent_done | last | "\(.tool) \(.summary) \(.ok)"')" "Read /w/a.txt true"
+eq "recent_done has a duration and time" "$(st '.recent_done | last | [(.ms | type), (.at | type)] | join(",")')" "number,number"
+# A failed tool, a summary over 120 chars and a token in it (redacted like the summary), and the ring
+# stays at 8.
+tok="ghp_$(printf 'Z%.0s' $(seq 1 30))"
+hook "{\"session_id\":\"$SID\",\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Bash\",\"tool_use_id\":\"tu_f\",\"tool_input\":{\"command\":\"curl -H 'Authorization: token $tok' $long\"}}"
+hook "{\"session_id\":\"$SID\",\"hook_event_name\":\"PostToolUseFailure\",\"tool_name\":\"Bash\",\"tool_use_id\":\"tu_f\",\"tool_input\":{\"command\":\"curl -H 'Authorization: token $tok' $long\"}}"
+eq "recent_done failed tool" "$(st '.recent_done | last | .ok')" "false"
+eq "recent_done summary <= 120" "$(st '.recent_done | last | .summary | length <= 120')" "true"
+grep -q "$tok" "$BOARD_HOME/state/$SID.json" && bad "recent_done token redacted" || ok "recent_done token redacted"
+for i in 1 2 3 4 5 6 7 8 9; do
+  hook "{\"session_id\":\"$SID\",\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Grep\",\"tool_use_id\":\"tu_r$i\",\"tool_input\":{\"pattern\":\"p$i\"}}"
+  hook "{\"session_id\":\"$SID\",\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Grep\",\"tool_use_id\":\"tu_r$i\",\"tool_input\":{\"pattern\":\"p$i\"}}"
+done
+eq "recent_done ring holds 8" "$(st '.recent_done | length')" "8"
+eq "recent_done newest last" "$(st '.recent_done | last | .summary')" "p9"
+eq "recent_pre still tu_1" "$(st '[.recent_pre[].tool_use_id] | join(",")')" "tu_1"
 eq "no pending yet" "$(st .pending)" "null"
 
 hook "{\"session_id\":\"$SID\",\"hook_event_name\":\"PermissionRequest\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"rm -rf build $long\"}}"
