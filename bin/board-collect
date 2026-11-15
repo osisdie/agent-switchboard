@@ -8,6 +8,9 @@
 #                  (no alerts sent), and exit. Done automatically when alerts.json is missing.
 #   --no-notify    never alert (no board-notify calls, no tick)
 #   --verbose      print what changed
+#                  (looping, not --once: also applies a pending Remote Control choice to a
+#                  session that went idle, lib/rc.py; off with BOARD_RC_AUTO=0 or
+#                  fleet.yaml rc.auto_apply: false)
 #   --interval N   poll interval in seconds (default: poll_interval in fleet.yaml, else 3)
 #
 # Uses inotifywait as a fast path when installed, otherwise plain polling.
@@ -44,6 +47,7 @@ if [ "$once" = 1 ]; then
   collect
   exit $?
 fi
+pyargs+=(--apply-rc)
 
 exec 9>>"$BOARD_HOME/collect.lock"
 if ! flock -n 9; then

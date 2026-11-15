@@ -2,7 +2,7 @@
 """Build $BOARD_HOME/snapshot.json from the Claude Code session registry, the hook state
 files and the decision files (see docs/contract.md).
 
-Usage: collect.py [--no-notify] [--baseline] [--verbose]
+Usage: collect.py [--no-notify] [--baseline] [--verbose] [--apply-rc]
 
 - Writes snapshot.json atomically, and only when its content (excluding generated_at) changed.
 - Marks pending decisions `timeout` after decision_timeout_hours, and permission decisions and
@@ -34,6 +34,10 @@ Usage: collect.py [--no-notify] [--baseline] [--verbose]
 - Card extras (teammates and their tasks, the statusline meter, recent tool calls, the last
   assistant text and prompt, ahead/behind, time in state) go to $BOARD_HOME/cards.json through
   lib/cards.py, never into the snapshot.
+- Remote Control per session (`rc`: {on, want, source, pending, last}, lib/rc.py). With
+  --apply-rc (the looping board-collect passes it) a session whose stored choice
+  (`board rc`) it does not follow yet gets it once it is idle: `rc.py apply --pending --auto`
+  runs in the background, under its own lock and retry rules.
 """
 import getpass
 import glob
@@ -53,6 +57,7 @@ import cards  # noqa: E402
 import fleet  # noqa: E402
 import limit  # noqa: E402
 import notify  # noqa: E402
+import rc  # noqa: E402
 import resources  # noqa: E402
 
 FINAL = ("relayed", "stale", "timeout", "unauthorized")
@@ -666,6 +671,11 @@ def main(argv):
     decisions = process_decisions(cfg, home, sessions, now)
     tasks = load_tasks(home)
     attach_tasks(sessions, tasks)
+    try:
+        rc.annotate(sessions, cfg, home, now)
+    except (OSError, ValueError) as exc:  # never breaks the collector
+        if verbose:
+            print("rc: %s" % exc)
     snap = {"generated_at": now, "sessions": sessions, "decisions": decisions, "tasks": tasks,
             "limit": limit.active(), "owner_away": away.away_record(home),
             "consensus": away.consensus_items(home, now),
@@ -700,6 +710,10 @@ def main(argv):
             return 0
     elif "--no-notify" not in argv and changed and isinstance(prev, dict):
         alert(prev, snap, verbose)
+    if "--apply-rc" in argv:
+        todo = rc.auto_candidates(sessions, cfg, home, now)
+        if todo and rc.spawn_auto(home) and verbose:
+            print("rc: applying in the background for %s" % ", ".join(todo))
     if "--no-notify" not in argv:
         for r in notify.tick():
             if verbose and r.get("status") not in (None, "deduped"):
