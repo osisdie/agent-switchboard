@@ -389,11 +389,21 @@ echo "$*" >> "$FAKE_TMUX_LOG"
 case "$1" in
   display-message) echo "${FAKE_TMUX_SESSION:-CP}" ;;
   capture-pane)
-    # Optional side effect: the prompt changes while board press is checking.
-    if [ -n "${FAKE_TMUX_MUTATE:-}" ]; then
+    # FAKE_TMUX_SEQ: a directory of screens 1, 2, ... shown one per capture (the last one repeats).
+    n=0
+    if [ -n "${FAKE_TMUX_SEQ:-}" ]; then
+      n=$(( $(cat "$FAKE_TMUX_SEQ/n" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FAKE_TMUX_SEQ/n"
+    fi
+    # Optional side effect: the prompt changes while board press is checking (at capture N).
+    if [ -n "${FAKE_TMUX_MUTATE:-}" ] && { [ -z "${FAKE_TMUX_MUTATE_AT:-}" ] || [ "$n" = "$FAKE_TMUX_MUTATE_AT" ]; }; then
       jq '.pending.tool_use_id = "tu_other"' "$FAKE_TMUX_MUTATE" > "$FAKE_TMUX_MUTATE.x" && mv "$FAKE_TMUX_MUTATE.x" "$FAKE_TMUX_MUTATE"
     fi
-    printf '%s\n' "${FAKE_TMUX_SCREEN:-}" ;;
+    if [ -n "${FAKE_TMUX_SEQ:-}" ]; then
+      f="$FAKE_TMUX_SEQ/$n"; [ -f "$f" ] || f="$(find "$FAKE_TMUX_SEQ" -name '[0-9]*' | sort -n | tail -1)"
+      cat "$f"
+    else
+      printf '%s\n' "${FAKE_TMUX_SCREEN:-}"
+    fi ;;
   send-keys) exit 0 ;;
 esac
 EOF
@@ -551,9 +561,10 @@ eq "multi-line free text -> relay operator" "$(dj "$d" .relay)" "operator"
 "$B" answer "$d" "$(printf 'y%.0s' $(seq 1 201))" --by user-1 >/dev/null
 eq "free text over 200 chars -> relay operator" "$(dj "$d" .relay)" "operator"
 
-qscreen() {  # qscreen [FOCUS_ROW_TEXT] — the picker as Claude Code draws it
-  printf ' ☐ Color\n\nWhich color do you prefer for the test?\n\n%s 1. Red\n     warm\n  2. Blue\n     cool\n  3. Green\n     natural\n%s\n───\n  5. Chat about this\n\nEnter to select · ↑/↓ to navigate · Esc to cancel\n' \
-    "$( [ -n "${1:-}" ] && echo ' ' || echo '❯')" "$( [ -n "${1:-}" ] && echo "❯ 4. $1" || echo '  4. Type something.')"
+qscreen() {  # qscreen [focus ROW4_TEXT] — the picker as Claude Code draws it (focus on row 1, or on row 4)
+  local c1='❯' r4='  4. Type something.'
+  [ "${1:-}" = focus ] && { c1=' '; r4="❯ 4. $2"; }
+  printf ' ☐ Color\n\nWhich color do you prefer for the test?\n\n%s 1. Red\n     warm\n  2. Blue\n     cool\n  3. Green\n     natural\n%s\n───\n  5. Chat about this\n\nEnter to select · ↑/↓ to navigate · Esc to cancel\n' "$c1" "$r4"
 }
 "$B" answer "$d" "Purple, please" --by user-1 >/dev/null
 : > "$FAKE_TMUX_LOG"
@@ -591,18 +602,81 @@ eq "...one send-keys" "$(sent_keys)" "1"
 eq "...decision relayed" "$(dj "$d" .status)" "relayed"
 qdone tu_q4
 
+# Free text runs three screen checks: before any key, after the "Type something" key, after typing.
+# seqpress TOOL_USE_ID SCREEN1 SCREEN2 SCREEN3 — one fake-tmux screen per capture, in order.
+seqpress() {
+  local tu="$1"; shift
+  rm -rf "$T/seq"; mkdir -p "$T/seq"
+  local i=0 sc
+  for sc in "$@"; do i=$((i + 1)); printf '%s\n' "$sc" > "$T/seq/$i"; done
+  : > "$FAKE_TMUX_LOG"
+  BOARD_PRESS_SETTLE=0 FAKE_TMUX_SEQ="$T/seq" press CP answer --expect "$tu"
+}
+keys_sent() { grep '^send-keys' "$FAKE_TMUX_LOG" | tr '\n' '|'; }
+junk() { printf 'scrolled output line %s\n' $(seq 1 40); }
+U="$(qscreen)"; F="$(qscreen focus "Type something.")"
+
 d="$(askq tu_q5 "$Q1")"; "$B" answer "$d" "purple; echo hi" --by user-1 >/dev/null
-: > "$FAKE_TMUX_LOG"
-BOARD_PRESS_SETTLE=0 FAKE_TMUX_SCREEN="$(qscreen "purple; echo hi")" press CP answer --expect tu_q5
+seqpress tu_q5 "$U" "$F" "$(qscreen focus "purple; echo hi")"
 eq "free text -> press ok" "$?" "0"
-eq "...Type something, literal text, Enter" "$(grep '^send-keys' "$FAKE_TMUX_LOG" | tr '\n' '|')" "send-keys -t %42 4|send-keys -t %42 -l -- purple; echo hi|send-keys -t %42 Enter|"
+eq "...Type something, literal text, Enter" "$(keys_sent)" "send-keys -t %42 4|send-keys -t %42 -l -- purple; echo hi|send-keys -t %42 Enter|"
 qdone tu_q5
 d="$(askq tu_q6 "$Q1")"; "$B" answer "$d" "purple" --by user-1 >/dev/null
-: > "$FAKE_TMUX_LOG"
-BOARD_PRESS_SETTLE=0 FAKE_TMUX_SCREEN="$(qscreen)" press CP answer --expect tu_q6
-eq "free text, picker did not focus Type something -> exit 3" "$?" "3"
-eq "...nothing typed (only the row key)" "$(grep '^send-keys' "$FAKE_TMUX_LOG" | tr '\n' '|')" "send-keys -t %42 4|"
+seqpress tu_q6 "$U" "$U"
+eq "picker did not focus Type something -> exit 5 (partial)" "$?" "5"
+eq "...nothing typed (only the row key)" "$(keys_sent)" "send-keys -t %42 4|"
+eq "...decision stale" "$(dj "$d" .status)" "stale"
+eq "...logged as partial" "$(jq -s -r '[.[] | select(.type=="press")] | last | .result' "$BOARD_HOME/events.jsonl")" "partial"
 qdone tu_q6
+d="$(askq tu_q6b "$Q1")"; "$B" answer "$d" "purple" --by user-1 >/dev/null
+seqpress tu_q6b "$U" "$F
+$(junk)"
+eq "stale '❯ 4.' line above the last lines does not pass -> exit 5" "$?" "5"
+eq "...nothing typed" "$(keys_sent)" "send-keys -t %42 4|"
+qdone tu_q6b
+d="$(askq tu_q6c "$Q1")"; "$B" answer "$d" "warm" --by user-1 >/dev/null
+seqpress tu_q6c "$U" "$F" "$F"
+eq "typed text visible only elsewhere (a description) -> exit 5, no Enter" "$?/$(keys_sent)" "5/send-keys -t %42 4|send-keys -t %42 -l -- warm|"
+qdone tu_q6c
+d="$(askq tu_q6d "$Q1")"; "$B" answer "$d" "purple" --by user-1 >/dev/null
+seqpress tu_q6d "$U" "$F" "$(qscreen focus purple)
+$(junk)
+\$ "
+eq "picker gone after typing (text only in history) -> exit 5, no Enter" "$?/$(keys_sent)" "5/send-keys -t %42 4|send-keys -t %42 -l -- purple|"
+qdone tu_q6d
+d="$(askq tu_q6e "$Q1")"; "$B" answer "$d" "purple" --by user-1 >/dev/null
+FAKE_TMUX_MUTATE_AT=3 FAKE_TMUX_MUTATE="$BOARD_HOME/state/$SID.json" seqpress tu_q6e "$U" "$F" "$(qscreen focus purple)"
+eq "prompt changed after typing -> exit 5, no Enter" "$?/$(keys_sent)" "5/send-keys -t %42 4|send-keys -t %42 -l -- purple|"
+qdone tu_q6e
+d="$(askq tu_q6f "$Q1")"; "$B" answer "$d" "purple" --by user-1 >/dev/null
+seqpress tu_q6f "$(qscreen | sed 's/4\. Type something\./4. Chat about this/')"
+eq "row 4 is not Type something -> exit 3, nothing sent" "$?/$(keys_sent)" "3/"
+qdone tu_q6f
+d="$(askq tu_q6g "$Q1")"; "$B" answer "$d" "purple;" --by user-1 >/dev/null
+seqpress tu_q6g "$U" "$F" "$(qscreen focus "purple;")"
+eq "trailing ';' is escaped for tmux" "$?/$(keys_sent)" '0/send-keys -t %42 4|send-keys -t %42 -l -- purple\;|send-keys -t %42 Enter|'
+qdone tu_q6g
+d="$(askq tu_q6h "$Q1")"; "$B" answer "$d" 'purple\;' --by user-1 >/dev/null
+eq "text ending in a backslash and ';' -> relay operator" "$(dj "$d" .relay)" "operator"
+qdone tu_q6h
+
+# --option: the clicked button's number must match the label.
+d="$(askq tu_q6i "$Q1")"
+"$B" answer "$d" "Blue" --by user-1 --option 1 >/dev/null 2>&1
+eq "--option 1 with 'Blue' -> exit 2" "$?" "2"
+eq "...nothing recorded" "$(dj "$d" .status)" "pending"
+"$B" answer "$d" "Blue" --by user-1 --option 2 >/dev/null
+eq "--option 2 with 'Blue' -> option 2" "$(dj "$d" '"\(.status)/\(.answer_index)"')" "answered/2"
+qdone tu_q6i
+"$B" answer d-nope "x" --by user-1 --option 1 >/dev/null 2>&1; eq "--option on a missing decision fails" "$?" "1"
+
+# Labels: trimmed, and repeats (case-insensitive) make the card read-only.
+d="$(askq tu_q6j '[{"question":"Which one do you want?","header":"Pick","options":[{"label":"  Same  ","description":"a"},{"label":"same","description":"b"}],"multiSelect":false}]')"
+eq "labels stored trimmed" "$(dj "$d" '.questions[0].options[0].label')" "Same"
+eq "repeated labels -> not pressable" "$(dj "$d" .pressable)" "false"
+"$B" answer "$d" "Same" --by user-1 >/dev/null
+eq "...an answer relays by message" "$(dj "$d" .relay)" "operator"
+qdone tu_q6j
 
 # Read-only cards: several questions, multi-select, clipped text.
 QM='[{"question":"Which color?","header":"Color","options":[{"label":"Red","description":""},{"label":"Blue","description":""}],"multiSelect":false},{"question":"Which size?","header":"Size","options":[{"label":"S","description":""},{"label":"L","description":""}],"multiSelect":false}]'

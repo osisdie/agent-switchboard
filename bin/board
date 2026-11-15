@@ -9,7 +9,8 @@
 #             [--task ID] [--stage S] [--gate G] [--artifact REF]
 #                                              create a question (or gate) decision, print its id
 #   board decisions [--status S] [--json]      list decisions
-#   board answer ID ANSWER --by WHO            mark a decision answered (mirrors the board db);
+#   board answer ID ANSWER --by WHO [--option N]
+#                                              mark a decision answered (mirrors the board db);
 #                                              WHO must be in approvers (release_managers for
 #                                              gate:production), else it is marked unauthorized
 #   board mark ID relayed|stale|timeout|unauthorized
@@ -56,6 +57,7 @@
 #
 # Exit codes: 0 ok, 1 error (`away status`: the owner is not away), 2 usage (also an unknown
 #             option to `away status`), 3 press refused: screen/state mismatch (no keys sent),
+#             5 press stopped part-way (free text: some keys sent, Enter not pressed),
 #             4 refused: not authorized (answer: not an approver; press: no approver's answer;
 #             consensus: not a participant, or --from is not this tmux session).
 set -u
@@ -102,20 +104,25 @@ snapshot_file() {
 
 # Pane questions (AskUserQuestion pickers): an answer equal to an option label (exact, else a
 # unique case-insensitive match) is that option's number; any other answer is free text, typed
-# into "Type something" only when it is one line of at most FREE_TEXT_MAX printable characters.
-# relay: "press" (board press answers the picker) or "operator" (sent as a [BOARD decision] message).
+# into "Type something" only when it is one line of at most FREE_TEXT_MAX printable characters
+# (not ending in a backslash and ";", which tmux would read as an escape). Labels are compared
+# trimmed, like the hook stores them; a question whose labels repeat (case-insensitive) is never
+# pressed. relay: "press" (board press answers the picker) or "operator" (a [BOARD decision] message).
 FREE_TEXT_MAX=200
 JQ_PANE_ANSWER='
   def trim: gsub("^\\s+|\\s+$"; "");
-  def labels: [ (.questions // [])[0].options[]?.label ];
+  def labels: [ (.questions // [])[0].options[]?.label | tostring | trim ];
+  def labels_unique: labels as $l | ($l | map(ascii_downcase) | unique | length) == ($l | length);
   def pane_index: (.answer // "" | trim) as $a | labels as $l
     | ([ range(0; $l | length) | select($l[.] == $a) ] | first) as $i
     | if $i != null then $i + 1
       else [ range(0; $l | length) | select(($l[.] | ascii_downcase) == ($a | ascii_downcase)) ] as $ci
       | if ($ci | length) == 1 then $ci[0] + 1 else null end end;
   def typeable: (.answer // "" | trim) as $a
-    | ($a | length) > 0 and ($a | length) <= $max and ($a | test("[\u0000-\u001f\u007f-\u009f]") | not);
-  def pane_relay: if (.pressable == true) and (pane_index != null or typeable) then "press" else "operator" end;
+    | ($a | length) > 0 and ($a | length) <= $max and ($a | test("[\u0000-\u001f\u007f-\u009f]") | not)
+    and ($a | test("\\\\;$") | not);
+  def pane_relay: if (.pressable == true) and labels_unique and (pane_index != null or typeable)
+    then "press" else "operator" end;
 '
 
 # Table cells: control characters (terminal escapes, CR, ...) become "?".
@@ -134,7 +141,8 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
         echo "  (defaults: stage = the task's stage, gate = owner, options = approve / request changes)."
         echo "  stages: $STAGES" ;;
     decisions) echo "usage: board decisions [--status pending|answered|relayed|stale|timeout|unauthorized] [--json]" ;;
-    answer) echo "usage: board answer ID ANSWER --by WHO"
+    answer) echo "usage: board answer ID ANSWER --by WHO [--option N]"
+        echo "  --option N (pane question): the clicked option; refused (exit 2) unless its label is ANSWER." 
         echo "  mark a decision answered. WHO must be in approvers (production gate or stage:"
         echo "  release_managers, falling back to approvers). Otherwise the decision is marked"
         echo "  unauthorized and the command exits 4. No approvers configured = refused (fails closed)."
@@ -154,7 +162,8 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
         echo "  answer: a pane question (AskUserQuestion, one question, single-select) answered by an"
         echo "  approver. An option label sends its number key; other text (one line, <= $FREE_TEXT_MAX"
         echo "  chars) picks \"Type something\", types it literally and presses Enter. The pane must show"
-        echo "  the picker (press.question_regex) with the start of the question (or every option label)." ;;
+        echo "  the picker (press.question_regex) with the start of the question (or every option label)."
+        echo "  Exit 5: free text stopped part-way (keys sent, Enter not pressed; finish in the session)." ;;
     task) echo "usage: board task new|stage|ls|show ..."
         echo "  board task new --owner CODE \"title\" [--stage S]"
         echo "  board task stage ID STAGE [--artifact key=ref]..."
@@ -413,11 +422,12 @@ allowed_by() {
 
 cmd_answer() {
   need_jq
-  local id="${1:-}" answer="${2:-}" by=""
+  local id="${1:-}" answer="${2:-}" by="" option=""
   if [ $# -ge 2 ]; then shift 2; else set --; fi
   while [ $# -gt 0 ]; do
     case "$1" in
       --by) shift; by="${1:-}" ;;
+      --option) shift; option="${1:-}" ;;
       *) die "answer: unknown option $1" ;;
     esac
     shift
@@ -431,6 +441,14 @@ cmd_answer() {
     *) die "decision $id is already $cur" ;;
   esac
   local now; now="$(now_ms)"
+  # --option N (the button the human clicked): only for a pane question, and only when option N's
+  # label is this answer (both trimmed). Checked before anything is written.
+  if [ -n "$option" ]; then
+    [[ $option =~ ^[1-9][0-9]?$ ]] || { echo "board answer: --option must be an option number" >&2; exit 2; }
+    [ "$(jq -r '.source // empty' "$f")" = pane ] || { echo "board answer: --option is only for a pane question" >&2; exit 2; }
+    [ "$(jq -r --argjson n "$option" --arg a "$answer" "$JQ_PANE_ANSWER"'labels[$n - 1] != null and labels[$n - 1] == ($a | trim)' "$f")" = true ] \
+      || { echo "board answer: option $option is not '$answer' on $id; nothing recorded" >&2; exit 2; }
+  fi
 
   local allowed
   if ! allowed="$(allowed_ids "$f")"; then
@@ -680,6 +698,13 @@ cmd_press() {
     [ -n "$dec_id" ] && mark_status "$dec_id" stale "press refused: $1" >/dev/null 2>&1
     exit 3
   }
+  # Stopped after some keys were sent (free text: Enter not pressed): exit 5, decision stale.
+  partial() {
+    echo "board press: stopped — $1; keys sent, Enter not pressed: finish in the session" >&2
+    attempt partial "$1" "${2:-}"
+    [ -n "$dec_id" ] && mark_status "$dec_id" stale "press partial: $1" >/dev/null 2>&1
+    exit 5
+  }
 
   # 1. A human approver must have answered this exact decision with this exact action.
   [ -n "$dec_id" ] || refuse_auth "no local $( [ "$want" = pane ] && echo "pane question" || echo permission) decision for tool_use_id $expect"
@@ -709,11 +734,11 @@ cmd_press() {
     # Recompute from the decision (never trust a stored relay/answer_index alone).
     local pa
     pa="$(jq -c --argjson max "$FREE_TEXT_MAX" "$JQ_PANE_ANSWER"'
-      {pressable: (.pressable == true), n: ((.questions // [])[0].options // [] | length),
+      {pressable: (.pressable == true and labels_unique), n: ((.questions // [])[0].options // [] | length),
        idx: pane_index, typeable: typeable, relay: pane_relay,
        text: (.answer // "" | trim), stored: (.answer_index // null)}' "$df")"
     [ "$(jq -r .pressable <<<"$pa")" = true ] \
-      || refuse_auth "$dec_id is not pressable from the board (several questions, multi-select or clipped): answer it in the session"
+      || refuse_auth "$dec_id is not pressable from the board (several questions, multi-select, clipped or repeated labels): answer it in the session"
     [ "$(jq -r .relay <<<"$pa")" = press ] \
       || refuse_auth "the answer to $dec_id is not an option and not one line of <= $FREE_TEXT_MAX characters: relay it as a message"
     q_n="$(jq -r .n <<<"$pa")"
@@ -776,8 +801,16 @@ cmd_press() {
   case "$lines" in ''|*[!0-9]*) lines=30 ;; esac
   full="$(tmux capture-pane -p -t "$pane" 2>/dev/null)" || refuse "capture-pane failed for $pane" "$pane"
   screen="$(sed -e :a -e '/^[[:space:]]*$/{$d;N;ba' -e '}' <<<"$full" | tail -n "$lines")"
+  local ft_label=""
   if [ "$action" = answer ]; then
     grep -Eq -- "$regex" <<<"$screen" || refuse "no question picker visible in pane $pane" "$pane"
+    if [ -n "$q_text" ]; then
+      # The row the free-text key goes to must be the picker's "Type something" row.
+      ft_label="$(cfg_get press.free_text_label)"
+      [ -n "$ft_label" ] || refuse "no press.free_text_label configured" "$pane"
+      grep -Eq -- "^[[:space:]]*(❯|>|›)?[[:space:]]*${keys[0]}\.[[:space:]]*($ft_label)" <<<"$screen" \
+        || refuse "row ${keys[0]} of the picker is not \"Type something\"" "$pane"
+    fi
   else
     grep -Eq -- "$regex" <<<"$screen" || refuse "no permission prompt visible in pane $pane" "$pane"
   fi
@@ -827,7 +860,7 @@ cmd_press() {
   fi
 
   if [ "$action" = answer ] && [ -n "$q_text" ]; then
-    press_free_text "$pane" "$sf" "${keys[0]}" "$q_text" "$st_sha"
+    press_free_text "$pane" "$sf" "${keys[0]}" "$q_text" "$st_sha" "$lines" "$ft_label"
     attempt sent "ok" "$pane"
     mark_status "$dec_id" relayed >/dev/null 2>&1
     echo "pressed answer (${keys[0]}, free text, Enter) in $code pane $pane"
@@ -839,26 +872,43 @@ cmd_press() {
   echo "pressed $action (${keys[*]}) in $code pane $pane"
 }
 
-# press_free_text PANE STATE_FILE KEY TEXT SHA — runs inside cmd_press (uses its refuse/attempt):
-# the "Type something" number key moves the picker onto its text field (it does not submit). Only
-# when the pane then shows that row focused is the text typed, literally (-l: no key names), and
-# only when the typed text is visible on screen is Enter pressed. Anything else stops there.
+# press_free_text PANE STATE_FILE KEY TEXT SHA LINES LABEL — runs inside cmd_press (uses its
+# attempt/partial). The "Type something" number key moves the picker onto its text field (it does
+# not submit). The text is typed only when the last LINES lines show that row focused (❯ N.) with
+# LABEL, and Enter only when the focused row N now holds the typed text and the hook state still
+# shows the same prompt. A check that fails after the first key exits 5: never Enter on a guess,
+# since Enter outside the picker would send the text to the session as a prompt.
 press_free_text() {
-  local pane="$1" sf="$2" key="$3" text="$4" sha="$5" scr flat want
+  local pane="$1" sf="$2" key="$3" text="$4" sha="$5" lines="$6" label="$7" scr send want row ok
+  local focus="^[[:space:]]*(❯|>|›)[[:space:]]*$key\\."
+  same_prompt() {
+    [ "$(jq -r '[.state, (.pending.tool_use_id // ""), (.pending.summary_sha256 // "")] | join(" ")' "$sf")" \
+      = "needs-you $expect $sha" ]
+  }
+  last_lines() {
+    tmux capture-pane -p -t "$pane" 2>/dev/null | sed -e :a -e '/^[[:space:]]*$/{$d;N;ba' -e '}' | tail -n "$lines"
+  }
   tmux send-keys -t "$pane" "$key" || { attempt failed "send-keys failed" "$pane"; exit 1; }
   sleep "${BOARD_PRESS_SETTLE:-0.3}"
-  scr="$(tmux capture-pane -p -t "$pane" 2>/dev/null)" || refuse "capture-pane failed for $pane" "$pane"
-  grep -Eq -- "^[[:space:]]*(❯|>|›)[[:space:]]*$key\." <<<"$scr" \
-    || refuse "the picker did not move to \"Type something\" ($key); nothing typed" "$pane"
-  [ "$(jq -r '[.state, (.pending.tool_use_id // ""), (.pending.summary_sha256 // "")] | join(" ")' "$sf")" \
-    = "needs-you $expect $sha" ] || refuse "pending prompt changed while typing; nothing typed" "$pane"
-  tmux send-keys -t "$pane" -l -- "$text" || { attempt failed "send-keys failed" "$pane"; exit 1; }
+  scr="$(last_lines)"
+  grep -Eq -- "${focus}[[:space:]]*(${label})" <<<"$scr" \
+    || partial "the picker did not move to \"Type something\" ($key); nothing typed" "$pane"
+  same_prompt || partial "pending prompt changed; nothing typed" "$pane"
+  # tmux reads a trailing ";" as a command separator: escape it (the text never ends in "\;").
+  send="$text"
+  [[ $send == *";" ]] && send="${send%;}\\;"
+  tmux send-keys -t "$pane" -l -- "$send" || { attempt failed "send-keys failed" "$pane"; exit 1; }
   sleep "${BOARD_PRESS_SETTLE:-0.3}"
-  scr="$(tmux capture-pane -p -t "$pane" 2>/dev/null)" || refuse "capture-pane failed for $pane" "$pane"
-  flat="$(tr -d '[:space:]' <<<"$scr")"
+  scr="$(last_lines)"
   want="$(tr -d '[:space:]' <<<"$text")"
   want="${want:0:20}"
-  [[ $flat == *"$want"* ]] || refuse "the typed text is not visible in pane $pane; Enter not pressed" "$pane"
+  ok=0
+  while IFS= read -r row; do
+    row="$(tr -d '[:space:]' <<<"$row")"
+    [[ $row == *"$want"* ]] && { ok=1; break; }
+  done < <(grep -E -- "$focus" <<<"$scr")
+  [ "$ok" = 1 ] || partial "the focused row $key does not show the typed text" "$pane"
+  same_prompt || partial "pending prompt changed while typing" "$pane"
   tmux send-keys -t "$pane" Enter || { attempt failed "send-keys failed" "$pane"; exit 1; }
 }
 

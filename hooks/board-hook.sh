@@ -134,7 +134,7 @@ def qinfo:
     else [ $qs[0:6][] | select(type == "object")
            | (.question | qtext(300)) as $q | (.header | qtext(40)) as $h
            | [ (.options // [])[0:10][]? | (if type == "object" then . else {label: .} end)
-               | {l: (.label | qtext(80)), d: (.description | qtext(160))} ] as $os
+               | {l: (.label | qtext(80) | .t |= gsub("^\\s+|\\s+$"; "")), d: (.description | qtext(160))} ] as $os
            | { question: $q.t, header: $h.t, multiSelect: (.multiSelect == true),
                options: [ $os[] | {label: .l.t, description: .d.t} ],
                c: ($q.c or any($os[]; .l.c) or (((.options // []) | length) > 10)) } ] as $out
@@ -245,7 +245,10 @@ update() {
         elif $pending.tool_name == "AskUserQuestion" then
           ($pending.questions // []) as $qs
           | ($qs | length == 1 and ($qs[0].multiSelect | not) and ($pending.questions_clipped // false | not)
-             and ($qs[0].options | length) >= 1 and ($qs[0].options | length) <= 8) as $pressable
+             and ($qs[0].options | length) >= 1 and ($qs[0].options | length) <= 8
+             # repeated labels (case-insensitive) would make a label answer ambiguous
+             and ([ $qs[0].options[].label | ascii_downcase ] | unique | length) == ($qs[0].options | length)
+            ) as $pressable
           | { id: $new_dec, kind: "question", source: "pane", from: null,
               question: (if ($qs | length) > 0 then $qs[0].question else ($pending.summary // "") end),
               options: (if ($qs | length) == 1 then [ $qs[0].options[].label ] else [] end),

@@ -69,6 +69,7 @@ serve:
 press:
   prompt_regex: 'Do you want to (proceed|make this edit|create|overwrite|allow)'
   question_regex: 'Enter to select.*navigate'
+  free_text_label: 'Type something'
   lines: 30
   allow_keys: ["1"]
   deny_keys: ["Escape"]

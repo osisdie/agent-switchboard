@@ -36,6 +36,8 @@ DEFAULTS = {
         "deny_keys": ["Escape"],
         # AskUserQuestion picker footer ("Enter to select · ↑/↓ to navigate · Esc to cancel").
         "question_regex": r"Enter to select.*navigate",
+        # The picker row that takes free text ("4. Type something.").
+        "free_text_label": r"Type something",
     },
 }
 
