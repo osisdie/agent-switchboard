@@ -107,7 +107,8 @@ operator 把卡片寫到看板 → 你按下 **Allow** → operator 執行 `boar
 
 - 支援 **Remote Control**（`--remote-control`）的 Claude Code CLI，並登入一個可以發布 Artifact 的
   claude.ai 帳號
-- `tmux`、`jq`、裝了 `pyyaml` 的 `python3`，`inotify-tools` 可有可無（沒有的話，收集器每 5 秒輪詢一次）
+- `tmux`、`jq`、裝了 `pyyaml` 的 `python3` 3.9+；只有 tunnel 監聽器需要 `cryptography` 模組；
+  `inotify-tools` 可有可無（沒有的話，收集器每 5 秒輪詢一次）
 - Linux 或 WSL2（macOS 未經測試）
 
 **安裝**
@@ -127,7 +128,8 @@ scripts/setup-dev.sh           # only if you'll commit to this repo: pre-commit 
   `hooks/board-hook.sh`，原有的 hook 全部保留；
 - 用用量計的 tap 包住你的 `statusLine` 指令（見[用量計](#usage-meter-see-the-limit-coming)），
   原本的 `statusLine` 存到 `$BOARD_HOME/statusline.prev.json`；
-- 把 `board`、`board-collect`、`board-notify` 和 `fleet-up` 連結到 `~/.local/bin`。
+- 把 `bin/` 裡的每個指令（`board`、`board-collect`、`board-notify`、`board-serve` 和 `fleet-up`）
+  連結到 `~/.local/bin`。
 
 重複執行不會有任何變動。`scripts/install.sh --uninstall` 會移除 hook 項目、還原你的 `statusLine`，
 並移除這些符號連結。

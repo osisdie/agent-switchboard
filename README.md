@@ -107,8 +107,8 @@ the operator runs `board press` → the key is sent to that pane only if both gu
 
 - Claude Code CLI with **Remote Control** (`--remote-control`), logged in to a claude.ai account
   that can publish Artifacts
-- `tmux`, `jq`, `python3` with `pyyaml`, optionally `inotify-tools` (the collector polls every 5 s
-  without it)
+- `tmux`, `jq`, `python3` 3.9+ with `pyyaml`; the `cryptography` module only for the tunnel
+  listener; optionally `inotify-tools` (the collector polls every 5 s without it)
 - Linux or WSL2 (macOS is untested)
 
 **Install**
@@ -129,7 +129,8 @@ scripts/setup-dev.sh           # only if you'll commit to this repo: pre-commit 
 - wraps your `statusLine` command with the usage-meter tap (see
   [Usage meter](#usage-meter-see-the-limit-coming)), saving the previous `statusLine` to
   `$BOARD_HOME/statusline.prev.json`;
-- links `board`, `board-collect`, `board-notify` and `fleet-up` into `~/.local/bin`.
+- links every command in `bin/` (`board`, `board-collect`, `board-notify`, `board-serve` and
+  `fleet-up`) into `~/.local/bin`.
 
 Re-running it changes nothing. `scripts/install.sh --uninstall` removes the hook entries, restores
 your `statusLine` and removes the symlinks.
