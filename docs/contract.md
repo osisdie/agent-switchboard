@@ -1171,9 +1171,10 @@ first key sends nothing:
 1. The session must be idle: registry status `idle`, and the hook state, corrected as in the
    snapshot, `done` or `rest`. A `working` or `needs-you` session → `deferred` ("will run when
    idle"), nothing sent.
-2. The process must still be the session: the registry's `procStart` equals the start time in
-   `/proc/<pid>/stat` (or, without it, `startedAt` is within 5 minutes of it), and it is not a
-   zombie. A reused pid → `offline`. The pane must be this session's: `display-message '#{session_name}\t#{pane_pid}'` must answer,
+2. The process must still be the session: it is not a zombie, and the registry's `procStart`
+   (Claude Code 2.1.x writes it) equals the start time in `/proc/<pid>/stat`. A registry without
+   `procStart` gets only the zombie check: `startedAt` is wall-clock time and drifts against the
+   boot clock after the host sleeps, so it is never compared. A reused pid → `offline`. The pane must be this session's: `display-message '#{session_name}\t#{pane_pid}'` must answer,
    name the registry's tmux session when the registry has one, and `#{pane_pid}` must be the
    session process or one of its ancestors (the `/proc/<pid>/stat` parent chain). This is checked
    whether or not the registry has `tmux`. The last `session_actions.lines` (30) lines of
@@ -1273,16 +1274,23 @@ flag for a running session; the `/remote-control` slash command (alias `/rc`) to
   Disconnect dialog: the board presses Escape → `refused`. If it says on while Claude is off and
   never consented, the consent dialog opens: Escape → `consent`.
 - **When the board presses Escape.** Only into one of Claude's Remote Control dialogs, recognized
-  on screen: no input box anywhere, nothing running (`busy_regex`), and below the last echoed
-  command a dialog footer (`dialog_regex`, "Enter to select|confirm") with the dialog's own rows
-  above it (the whole row "Disconnect this session", or the consent dialog's title
-  `rc_consent_title_regex` and "Never mind"). In those dialogs Escape is "Continue" / "Never
+  on screen: no input box anywhere, nothing running (`busy_regex`), a dialog footer
+  (`dialog_regex`, "Enter to select|confirm") and above it the dialog's own rows, each a whole
+  row of its own: "Disconnect this session", "Show QR code" and "Continue", or "Enable Remote
+  Control" (`rc_consent_title_regex`) and "Never mind" (`rc_consent_regex`). Only the lines
+  between the last echoed command and the footer count; when the echo has scrolled away, only the
+  block right above the footer (up to 8 lines, to the first blank line). In those dialogs Escape is "Continue" / "Never
   mind": nothing changes. It never presses Escape into a running turn, text in the box, or any
   other picker (the user's own `/model`, say): the result is then `unconfirmed` and nothing else
   is sent. A consent dialog that does not look as expected is therefore left open, and the owner
-  closes it.
-- **Scrollback never decides.** "Unknown command: /remote-control" counts only when it appears
-  in the few lines right above the input box after Enter, and was not there before Enter. The
+  closes it. So is a dialog that opens only after `rc_confirm_seconds`: until someone presses Esc
+  in the session, that dialog the board opened holds the pane, and the session's other prompts
+  (peer and socket messages included) wait behind it; a later attempt finds no input box and
+  sends nothing.
+- **Scrollback never decides.** "Unknown command: /remote-control" counts only when it shows on
+  more lines of the screen after Enter than right before it (a line already there, or moved up by
+  the redraw, never counts; if an old one scrolls off as a new one appears, the result is
+  `unconfirmed`, the safe side). The
   consent and Disconnect texts count only inside a recognized dialog. The same words higher up
   in the scrollback change nothing.
 - **Not available:** with `DO_NOT_TRACK` set, not signed in to claude.ai, or turned off by
