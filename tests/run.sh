@@ -197,6 +197,11 @@ echo "{\"pid\":$dup_pid2,\"sessionId\":\"s-mate\",\"cwd\":\"/w\",\"tmux\":\"CP:@
 eq "codes: each process once" "$(jq -r '[.sessions[].code] | join(",")' "$snap")" "CP,CP/helper,GONE,INFRA,QA"
 eq "the renamed process is GONE, live" "$(sj GONE '.state + "/" + .name')" "working/GONE"
 eq "CP is still the process named CP" "$(sj CP .session_id)" "$SID"
+# Resources sample now (not after the interval), from `ps` (a missing proc root) so the live test
+# processes are seen: they also list each process once.
+rm -f "${BOARD_HOME:?}/resources-state.json"
+BOARD_PROC_ROOT="$T/no-proc" "$REPO/bin/board-collect" --once --no-notify
+eq "resources list each process once too" "$(jq -r '[.sessions[].code] | sort | join(",")' "$BOARD_HOME/resources.json")" "CP,CP/helper,GONE,INFRA,QA"
 kill "$dup_pid" "$dup_pid2" 2>/dev/null
 rm -f "${CLAUDE_SESSIONS_DIR:?}/${dup_pid:?}.json" "${CLAUDE_SESSIONS_DIR:?}/${dup_pid2:?}.json" "${BOARD_HOME:?}/state/s-qa.json"
 cp "$T/cp-reg.json" "$CLAUDE_SESSIONS_DIR/$live_pid.json"
