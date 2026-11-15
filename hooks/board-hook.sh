@@ -11,6 +11,8 @@
 # Never blocks or changes Claude: prints nothing, always exits 0. Prompt text is never
 # recorded; the only tool input captured is a <=200-char summary of the pending tool's input, and
 # for AskUserQuestion its questions and options (redacted, clipped, control characters removed).
+# recent_done keeps the last 8 completed tool calls (name, that summary clipped to 120, duration,
+# ok/failed, time) inside the same state file write: no extra process per event.
 #
 # Env: BOARD_HOME (default ~/.agent-switchboard)
 set -u
@@ -232,11 +234,21 @@ update() {
         then $dec_id else null end ) as $new_dec
     | ( if $new_dec != null then $t.pending + {decision_id: $new_dec} else $t.pending end ) as $pending
     | ( if $ev == "PreToolUse" and $tu != "" then
-          ($recent + [{tool_use_id: $tu, tool_name: $tn} + $si]) | .[-8:]
+          ($recent + [{tool_use_id: $tu, tool_name: $tn, at: $now} + $si]) | .[-8:]
         elif ($ev == "PostToolUse" or $ev == "PostToolUseFailure") and $tu != "" then
           [ $recent[] | select(.tool_use_id != $tu) ]
         elif $ev == "SessionEnd" or $ev == "Stop" or $ev == "StopFailure" then []
         else $recent end ) as $recent2
+    # The last 8 completed tool calls ("Recent" on a card): name, the redacted summary clipped to
+    # 120, how long it ran (from its PreToolUse), ok or failed, and when it ended.
+    | ( if ($ev == "PostToolUse" or $ev == "PostToolUseFailure") and $tu != "" then
+          ([ $recent[] | select(.tool_use_id == $tu) ] | .[0]) as $pre
+          | (($o.recent_done // []) + [{
+              tool: ($tn | if . == "" then ($pre.tool_name // "") else . end | .[0:40]),
+              summary: (($pre.summary // $si.summary // "") | .[0:120]),
+              ms: (if ($pre.at | type) == "number" and $now >= $pre.at then $now - $pre.at else null end),
+              ok: ($ev == "PostToolUse"), at: $now }]) | .[-8:]
+        else ($o.recent_done // []) end ) as $done
     | ( { session_id: $in.session_id,
           pid: (if $pid > 0 then $pid else ($o.pid // null) end),
           cwd: ($in.cwd // $o.cwd // null),
@@ -246,6 +258,7 @@ update() {
           notification_type: (if $ev == "Notification" then $nt else ($o.notification_type // null) end),
           pending: $pending,
           recent_pre: $recent2,
+          recent_done: $done,
           updated_at: $now } ),
       ( { ts: $now, type: "hook", session_id: $in.session_id, event: $ev,
           notification_type: $nt, tool_name: $tn, tool_use_id: $tu, state: $t.state } | clean ),

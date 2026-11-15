@@ -52,7 +52,7 @@ SHOTS = {
     "overview-light": ("The board in light mode: the needs-you count, usage and system meters, and the Deck panel", DESKTOP, "light", 1),
     "overview-dark": ("The board in dark mode", DESKTOP, "dark", 1),
     "deck": ("The Deck panel: the HITL count, session keys coloured by what they wait for, usage rings, the burn rate and the fleet strip", DESKTOP, "dark", 1),
-    "session-card": ("Session cards by state, one expanded with its title, pending decisions, running tool and tmux target", DESKTOP, "light", 1),
+    "session-card": ("Session cards by state with badges, meters and teammates; one expanded into Doing, Recent, Meter, Branch, Pending and Where", DESKTOP, "light", 1),
     "decisions": ("Decision cards: a permission prompt with Allow / Deny and a question with its options", DESKTOP, "light", 1),
     "notifications": ("The Notifications dialog: mutes, triage floor and presence", {"width": 1280, "height": 1100}, "light", 1),
     "resources": ("The Resources section: memory, swap, disks and per-session processes", DESKTOP, "light", 1),

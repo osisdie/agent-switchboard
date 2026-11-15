@@ -65,3 +65,5 @@ jobs:
         run: python3 tests/test_resources.py -v
       - name: secret guard tests
         run: python3 tests/test_guard.py -v
+      - name: card extras tests
+        run: python3 tests/test_cards.py -v

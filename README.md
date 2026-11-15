@@ -28,7 +28,7 @@ All from the built-in demo data (`scripts/screenshots.py`). Try the [live demo](
 | | |
 |---|---|
 | <a href="docs/assets/screenshots/overview-light.webp"><img src="docs/assets/screenshots/overview-light.webp" width="420" alt="The board in light mode: the needs-you count, usage and system meters, and the Deck panel"></a><br>Overview, light | <a href="docs/assets/screenshots/overview-dark.webp"><img src="docs/assets/screenshots/overview-dark.webp" width="420" alt="The board in dark mode"></a><br>Overview, dark |
-| <a href="docs/assets/screenshots/deck.webp"><img src="docs/assets/screenshots/deck.webp" width="420" alt="The Deck panel: the HITL count, session keys coloured by what they wait for, usage rings, the burn rate and the fleet strip"></a><br>Deck panel: waiting keys, usage, burn rate | <a href="docs/assets/screenshots/session-card.webp"><img src="docs/assets/screenshots/session-card.webp" width="420" alt="Session cards by state, one expanded with its title, pending decisions, running tool and tmux target"></a><br>Session cards, one expanded |
+| <a href="docs/assets/screenshots/deck.webp"><img src="docs/assets/screenshots/deck.webp" width="420" alt="The Deck panel: the HITL count, session keys coloured by what they wait for, usage rings, the burn rate and the fleet strip"></a><br>Deck panel: waiting keys, usage, burn rate | <a href="docs/assets/screenshots/session-card.webp"><img src="docs/assets/screenshots/session-card.webp" width="420" alt="Session cards by state with badges, meters and teammates; one expanded into Doing, Recent, Meter, Branch, Pending and Where"></a><br>Session cards, one expanded |
 | <a href="docs/assets/screenshots/decisions.webp"><img src="docs/assets/screenshots/decisions.webp" width="420" alt="Decision cards: a permission prompt with Allow / Deny and a question with its options"></a><br>Decisions: permission prompts, questions, gates | <a href="docs/assets/screenshots/notifications.webp"><img src="docs/assets/screenshots/notifications.webp" width="420" alt="The Notifications dialog: mutes, triage floor and presence"></a><br>Notifications: mutes and triage |
 | <a href="docs/assets/screenshots/resources.webp"><img src="docs/assets/screenshots/resources.webp" width="420" alt="The Resources section: memory, swap, disks and per-session processes"></a><br>Resources: memory, disks, processes | <a href="docs/assets/screenshots/usage-popover.webp"><img src="docs/assets/screenshots/usage-popover.webp" width="420" alt="The usage popover: both windows with reset times, the threshold reached and the account"></a><br>Usage popover: resets, threshold, account |
 | <a href="docs/assets/screenshots/profile-menu.webp"><img src="docs/assets/screenshots/profile-menu.webp" width="420" alt="The profile menu: identity, roles, theme and language switchers, API keys"></a><br>Profile menu: theme and language | <a href="docs/assets/screenshots/phone-dark.webp"><img src="docs/assets/screenshots/phone-dark.webp" width="420" alt="The board on a phone, dark mode"></a><br>Phone, dark mode |
@@ -359,6 +359,17 @@ live updates.
 All of this is treated as untrusted text: control characters are removed, paths are cut to their
 last part, and long text is clipped. The tool call summaries can hold command text, so they appear
 only on the self-hosted board; the Artifact board gets the title and `repo · branch`.
+
+On the self-hosted board a card also shows how long it has been in its state, a badge with the
+number of decisions and questions waiting for you, its teammates (each with the task in its pane
+title, working or idle, and memory), context used and cost so far (from the statusline tap), and
+the branch's ahead/behind count against `origin/<default>` with the last commit subject. The open
+card is split into Doing, Recent (the last 8 completed tool calls, with duration and ok/failed),
+Teammates, Meter, Branch, Pending and Where. Doing quotes the session's last message and the first
+line of its last prompt, read from the tail of its transcript and run through the secret guard.
+Those two are for **approvers only**: anyone else sees a note instead, and they are never mirrored
+to the Artifact or put in an alert. Turn the prompt off with `cards: {show_prompt: false}` in
+`fleet.yaml`.
 
 ### Decisions
 
@@ -1114,9 +1125,10 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `.gitleaks.toml` | gitleaks default rules plus a narrow allowlist for test fixtures |
 | `lib/away.py` | Reads owner-away mode and consensus items for the snapshot and `board-serve` |
 | `lib/guard.py`, `lib/messages.py` | Secret guardrails: the outbound scrubber and the inbound secret-request screen; board messages and replies through them (held, release, reply) |
+| `lib/cards.py` | Card extras for board-serve (`cards.json`): teammates and their tasks, the session meter, recent tool calls, the last message and prompt (approvers only), ahead/behind, time in state |
 | `lib/resources.py` | Resources sampler (memory, disks, OOM, per-session processes and teammates) for `resources.json`, the snapshot digest and `board resources` |
 | `docs/design/` | Design notes, e.g. `resources-and-scheduling.md` (resources, scheduler, lessons) |
-| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), the resources sampler (`test_resources.py`, fixture `/proc`), the secret guardrails (`test_guard.py`), and the optional headless checks of the page's alert links, notifications control, profile menu and theme, home-screen app, session cards, usage popover, language toggle and Deck panel (`test_page_links.py`, `test_page_notify.py`, `test_page_profile.py`, `test_page_pwa.py`, `test_page_cards.py`, `test_page_guard.py` (held-message cards), `test_page_usage.py`, `test_page_i18n.py`, `test_page_deck.py`, plus `test_site.py` for the screenshots and the Pages site: need python playwright, skip without it; not run in CI) |
+| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), the resources sampler (`test_resources.py`, fixture `/proc`), the secret guardrails (`test_guard.py`), the card extras (`test_cards.py`), and the optional headless checks of the page's alert links, notifications control, profile menu and theme, home-screen app, session cards, usage popover, language toggle and Deck panel (`test_page_links.py`, `test_page_notify.py`, `test_page_profile.py`, `test_page_pwa.py`, `test_page_cards.py`, `test_page_guard.py` (held-message cards), `test_page_usage.py`, `test_page_i18n.py`, `test_page_deck.py`, plus `test_site.py` for the screenshots and the Pages site: need python playwright, skip without it; not run in CI) |
 | `CONTRIBUTING.md` | Dev setup, tests, and the rule for keeping `README.zh-TW.md` in sync |
 | `fleet.example.yaml`, `.env.example` | Example config |
 

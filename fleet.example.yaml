@@ -63,6 +63,11 @@ serve:
 # schedule:
 #   operator_stale_minutes: 10
 
+# Session cards on the self-hosted board (lib/cards.py). The last message and prompt are shown to
+# approvers only; show_prompt: false stops the collector from keeping the prompt at all.
+# cards:
+#   show_prompt: true
+
 # `board press` safety settings: a key is only sent when the last `lines` lines of the pane
 # match `prompt_regex` (permission prompts) or `question_regex` (an AskUserQuestion picker; its
 # option is chosen with its number key, free text through "Type something").

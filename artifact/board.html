@@ -338,6 +338,19 @@ dialog.notif { width: min(720px, calc(100vw - 24px)); }
 .rc-link:hover { background: var(--cord-soft); }
 .scard.has-rc .scard-top time { margin-right: 28px; }
 .sdetail[hidden] { display: none; }
+.sbadge { flex: none; min-width: 18px; box-sizing: border-box; text-align: center; font-size: 11px; font-weight: 700; padding: 1px 5px; border-radius: 9px; background: var(--lamp); color: var(--panel); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.scard-top .code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scard-top time { flex: none; white-space: nowrap; }
+.smeta { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.sd-sec { display: grid; gap: 6px; min-width: 0; }
+.sd-sec + .sd-sec { padding-top: 8px; border-top: 1px dashed var(--rule); }
+.sd-sec h4 { margin: 0; font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.sdetail q.says { quotes: none; display: block; color: var(--ink); overflow-wrap: anywhere; }
+.sdetail ul.done li, .sdetail ul.tms-list li { min-width: 0; overflow-wrap: anywhere; }
+.sdetail .okm { font-weight: 700; color: var(--ok); }
+.sdetail li.failed .okm { color: var(--deny); }
+.sdetail .when { display: block; font-size: 12px; color: var(--muted); }
+.sdetail .tmt.none { color: var(--muted); font-style: italic; }
 .sdetail { display: grid; gap: 10px; padding: 10px 12px 12px; border-top: 1px solid var(--rule); font-size: 13px; min-width: 0; }
 .sdetail .sd-title { margin: 0; font-weight: 600; font-size: 14px; overflow-wrap: anywhere; }
 .sdetail dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 12px; margin: 0; }
@@ -1822,6 +1835,33 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   function cardSig(s) {
     return JSON.stringify(s) + '|' + openCards.has(s.code) + '|' + sessionDecisions(s).map((d) => d.id + (d.question || '')).join(',');
   }
+  // Card extras from board-serve (cards.json, lib/cards.py): teammates, meter, recent tool calls,
+  // what it says (approvers only), branch, time in state. Absent in Artifact mode.
+  const cardOf = (s) => (s.card && typeof s.card === 'object' ? s.card : null);
+  const num = (v) => (typeof v === 'number' && isFinite(v) ? v : null);
+  function pendingCount(s) {
+    const decs = sessionDecisions(s);
+    const p = s.pending && typeof s.pending === 'object' ? s.pending : null;
+    return decs.length + (p && p.decision_id && !decs.some((d) => d.id === p.decision_id) ? 1 : 0);
+  }
+  function meterText(m) {
+    if (!m || typeof m !== 'object') return '';
+    const parts = [];
+    if (num(m.ctx_pct) != null) parts.push(tr('ctx {n}%', { n: Math.round(m.ctx_pct) }));
+    if (num(m.cost_usd) != null) parts.push('$' + m.cost_usd.toFixed(2));
+    if (str(m.model)) parts.push(str(m.model));
+    return parts.join(' · ');
+  }
+  function toolDur(ms) {
+    ms = num(ms);
+    if (ms == null) return '';
+    if (ms < 1000) return tr('{n} ms', { n: Math.round(ms) });
+    if (ms < 60000) return tr('{n} s', { n: (ms / 1000).toFixed(ms < 10000 ? 1 : 0) });
+    return dur(ms);
+  }
+  // "for 12m": kept current by the 30 s ticker ([data-since]).
+  const sinceText = (t) => tr('for {d}', { d: dur(Date.now() - t) });
+  const sinceEl = (t) => h('span', { class: 'sm-since', dataset: { since: String(t) }, text: sinceText(t) });
   function buildSession(s) {
     const col = colOf(s);
     const lampCls = { needs: 'needs', working: 'working', done: 'done', offline: 'offline' }[col];
@@ -1830,59 +1870,127 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     const title = str(s.title), task = str(s.task);
     const where = [str(s.repo), str(s.branch)].filter(Boolean).join(' · ');
     const now = doingNow(s);
+    const card = cardOf(s);
+    const says = card ? str(card.doing) : '';
+    const tms = card ? objs(card.teammates) : [];
+    const since = card ? ts(card.state_since) : 0;
+    const npend = pendingCount(s);
     const chev = document.createElementNS(SVGNS, 'svg');
     chev.setAttribute('viewBox', '0 0 10 10'); chev.setAttribute('class', 'chev'); chev.setAttribute('aria-hidden', 'true');
     chev.innerHTML = '<path d="M3 1.5 7 5 3 8.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>';
-    const card = h('article', { class: 'scard exp', 'aria-label': tr('Session {code}', { code: s.code }) });
+    // Collapsed: teammates, ctx % and cost (the model is in the Meter section), time in state.
+    const meta = [];
+    if (tms.length) meta.push(h('span', { class: 'sm-tm', text: tms.length === 1 ? tr('1 teammate') : tr('{n} teammates', { n: tms.length }) }));
+    const mt = card && card.meter ? meterText({ ctx_pct: card.meter.ctx_pct, cost_usd: card.meter.cost_usd }) : '';
+    if (mt) meta.push(h('span', { class: 'sm-meter', text: mt }));
+    if (since && col !== 'offline') meta.push(sinceEl(since));
+    const art = h('article', { class: 'scard exp', 'aria-label': tr('Session {code}', { code: s.code }) });
     const btn = h('button', { class: 'scard-toggle', type: 'button', 'aria-expanded': open ? 'true' : 'false', 'aria-controls': pid, dataset: { focus: 'toggle' },
       onclick: () => { if (openCards.has(s.code)) openCards.delete(s.code); else openCards.add(s.code); renderBoard(); } },
       h('span', { class: 'scard-top' }, chev,
         h('span', { class: 'lamp ' + lampCls, 'aria-hidden': 'true' }),
         h('span', { class: 'code', text: s.code }),
         h('span', { class: 'schip ' + col, text: tr(STATE_LABEL[col]) }),
+        npend ? h('span', { class: 'sbadge', title: tr('Waiting for you: {n}', { n: npend }), 'aria-label': tr('Waiting for you: {n}', { n: npend }), text: String(npend) }) : null,
         timeEl(s.updated_at)),
-      h('span', { class: 'stitle' + (title || task ? '' : ' none'), text: title || task || tr('No title yet') }),
+      h('span', { class: 'stitle' + (title || task || says ? '' : ' none'), text: title || task || says || tr('No title yet') }),
       where ? h('span', { class: 'swhere', text: where }) : null,
-      h('span', { class: 'snow' + (now.waiting ? ' waiting' : ''), text: now.text }));
-    card.append(btn);
+      h('span', { class: 'snow' + (now.waiting ? ' waiting' : ''), text: now.text }),
+      meta.length ? h('span', { class: 'smeta' }, meta.flatMap((m, i) => [i ? ' · ' : null, m])) : null);
+    art.append(btn);
     // Remote Control, one tap from the collapsed card: a small link next to the summary button.
     const rc = safeUrl(s.remote_url);
     if (rc) {
-      card.classList.add('has-rc');
+      art.classList.add('has-rc');
       const ic = document.createElementNS(SVGNS, 'svg');
       ic.setAttribute('viewBox', '0 0 16 16'); ic.setAttribute('width', '14'); ic.setAttribute('height', '14'); ic.setAttribute('aria-hidden', 'true');
       ic.innerHTML = '<path d="M6 3H3.5A1.5 1.5 0 0 0 2 4.5v8A1.5 1.5 0 0 0 3.5 14h8a1.5 1.5 0 0 0 1.5-1.5V10M9 2h5v5M14 2 7 9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>';
-      card.append(h('a', { class: 'rc-link', href: rc, target: rc.startsWith('#') ? null : '_blank', rel: 'noopener noreferrer',
+      art.append(h('a', { class: 'rc-link', href: rc, target: rc.startsWith('#') ? null : '_blank', rel: 'noopener noreferrer',
         'aria-label': tr('Open {code} in Remote Control', { code: s.code }), title: tr('Open in Remote Control') }, ic));
     }
     const panel = h('div', { class: 'sdetail', id: pid, hidden: !open });
     if (open) {
       if (title) panel.append(h('p', { class: 'sd-title', text: title }));
-      const rows = [];
-      const row = (label, ...val) => rows.push(h('dt', { text: tr(label) }), h('dd', null, ...val));
-      if (task && task !== title) row('Task', task);
-      row('Now', now.text);
+      // One section per topic; each holds a <dl> of label / value rows.
+      const section = (name, key) => {
+        const rows = [];
+        const row = (label, ...val) => rows.push(h('dt', { text: tr(label) }), h('dd', null, ...val));
+        return { row, add: (...extra) => { if (rows.length || extra.length) panel.append(h('section', { class: 'sd-sec', dataset: { sec: key } }, h('h4', { text: tr(name) }), rows.length ? h('dl', null, rows) : null, ...extra)); } };
+      };
+      // Doing
+      const doing = section('Doing', 'doing');
+      if (task && task !== title) doing.row('Task', task);
+      doing.row('Now', now.text);
+      if (since && col !== 'offline') doing.row('In state', tr(STATE_LABEL[col]) + ' ', sinceEl(since));
+      if (card && card.private === 'hidden') doing.row('Says', h('span', { class: 'note', text: tr('Only approvers see what the session says.') }));
+      else {
+        if (says) doing.row('Says', h('q', { class: 'says', text: says }));
+        if (str(card && card.prompt)) doing.row('Asked', h('q', { class: 'says', text: str(card.prompt) }));
+      }
+      doing.add();
+      // Recent: tools in flight, then the completed ones, newest first
+      const recent = section('Recent', 'recent');
+      if (!Array.isArray(s.recent)) recent.row('Tools', h('span', { class: 'note', text: tr('Shown on the self-hosted board only.') }));
+      else if (s.recent.length) recent.row('Running', h('ul', null, objs(s.recent).map((r) => h('li', null, h('span', { class: 'tool', text: str(r.tool) }), r.summary ? ' ' : null, r.summary ? h('code', { text: str(r.summary) }) : null))));
+      const done = card ? objs(card.done).slice().reverse() : [];
+      if (done.length) {
+        recent.row('Done', h('ul', { class: 'done' }, done.map((r) => h('li', { class: r.ok === false ? 'failed' : null },
+          h('span', { class: 'okm', 'aria-label': r.ok === false ? tr('failed') : tr('succeeded'), text: r.ok === false ? '✕' : '✓' }), ' ',
+          h('span', { class: 'tool', text: str(r.tool) }), r.summary ? ' ' : null, r.summary ? h('code', { text: str(r.summary) }) : null,
+          h('span', { class: 'when' }, [toolDur(r.ms), ts(r.at) ? timeEl(r.at) : null].filter(Boolean).flatMap((x, i) => [i ? ' · ' : null, x]))))));
+      } else if (Array.isArray(s.recent) && !s.recent.length) recent.row('Tools', h('span', { class: 'note', text: tr('Nothing running.') }));
+      recent.add();
+      // Teammates
+      if (tms.length) {
+        const tm = section('Teammates', 'teammates');
+        tm.add(h('ul', { class: 'tms-list' }, tms.map((t) => h('li', null,
+          h('span', { class: 'tool', text: str(t.name) || '?' }), ' ',
+          h('span', { class: 'tmt' + (str(t.title) ? '' : ' none'), text: str(t.title) || tr('No task title') }),
+          h('span', { class: 'when' }, [
+            t.busy === true ? tr('working') : t.busy === false ? tr('idle') : '',
+            t.idle && num(t.idle_s) != null ? tr('quiet {d}', { d: dur(t.idle_s * 1000) }) : '',
+            num(t.rss_mb) != null ? fmtMb(t.rss_mb) : ''].filter(Boolean).join(' · '))))));
+      }
+      // Meter
+      if (card && card.meter && meterText(card.meter)) {
+        const me = section('Meter', 'meter');
+        me.row('Usage', meterText(card.meter));
+        if (ts(card.meter.at)) me.row('As of', timeEl(card.meter.at));
+        me.add();
+      }
+      // Branch
+      const br = card && card.branch && typeof card.branch === 'object' ? card.branch : null;
+      if (br) {
+        const b = section('Branch', 'branch');
+        if (num(br.ahead) != null && num(br.behind) != null) b.row('Vs base', tr('{a} ahead, {b} behind {base}', { a: br.ahead, b: br.behind, base: str(br.base) || 'origin' }));
+        if (str(br.subject)) b.row('Last commit', h('code', { text: str(br.subject) }));
+        b.add();
+      }
+      // Pending
       const decs = sessionDecisions(s);
       const p = s.pending && typeof s.pending === 'object' ? s.pending : null;
       if (p && p.decision_id && !decs.some((d) => d.id === p.decision_id)) decs.push({ id: str(p.decision_id), kind: 'permission', tool_name: p.tool_name });
       if (decs.length) {
-        row('Pending', h('ul', null, decs.map((d) => h('li', null, h('a', { href: '#dec-' + str(d.id), text: d.kind === 'permission' ? tr('Permission: {tool}', { tool: str(d.tool_name) || tr('a tool') }) : clip(d.question, 100) || tr('A question') })))));
+        const pe = section('Pending', 'pending');
+        const nq = decs.filter((d) => d.kind !== 'permission').length;
+        pe.row('Waiting', tr('{d} decisions, {q} questions', { d: decs.length - nq, q: nq }));
+        pe.row('Open', h('ul', null, decs.map((d) => h('li', null, h('a', { href: '#dec-' + str(d.id), text: d.kind === 'permission' ? tr('Permission: {tool}', { tool: str(d.tool_name) || tr('a tool') }) : clip(d.question, 100) || tr('A question') })))));
+        pe.add();
       }
-      if (!Array.isArray(s.recent)) row('Tools', h('span', { class: 'note', text: tr('Shown on the self-hosted board only.') }));
-      else if (!s.recent.length) row('Tools', h('span', { class: 'note', text: tr('Nothing running.') }));
-      else row('Running', h('ul', null, objs(s.recent).map((r) => h('li', null, h('span', { class: 'tool', text: str(r.tool) }), r.summary ? ' ' : null, r.summary ? h('code', { text: str(r.summary) }) : null))));
-      if (where) row('Repo', where);
-      if (s.tmux) row('tmux', h('code', { text: str(s.tmux) }));
+      // Where
+      const wh = section('Where', 'where');
+      if (where) wh.row('Repo', where);
+      if (s.tmux) wh.row('tmux', h('code', { text: str(s.tmux) }));
       const link = sessionLink(s.code, tr('Remote Control'));
-      if (link) row('Session', link);
+      if (link) wh.row('Session', link);
       const aliases = (Array.isArray(s.aliases) ? s.aliases : []).map(str).filter((a) => a && lc(a) !== lc(s.code));
-      if (aliases.length) row('Also', aliases.join(', '));
+      if (aliases.length) wh.row('Also', aliases.join(', '));
       const t = ts(s.updated_at);
-      if (t) row('Updated', new Date(t).toLocaleString(locale()) + ' (' + rel(t) + ')');
-      panel.append(h('dl', null, rows));
+      if (t) wh.row('Updated', new Date(t).toLocaleString(locale()) + ' (' + rel(t) + ')');
+      wh.add();
     }
-    card.append(panel);
-    return card;
+    art.append(panel);
+    return art;
   }
 
   function renderBoard() {
@@ -3465,11 +3573,11 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       usage: { five_hour: { pct: frozen ? 100 : 91, resets_at: now + 95 * min }, seven_day: { pct: 63, resets_at: now + (3 * 24 * 60 + 260) * min }, updated_at: now - 1 * min,
         burn: frozen ? { status: 'stale', pct_per_hour: null, hit_at: null, n: 0 } : { status: 'danger', pct_per_hour: 6, hit_at: now + 90 * min, n: 58 } } };
     S.sessions = [
-      { code: 'API', aliases: ['API', 'backend'], state: 'needs-you', status: 'busy', task: 'Adding pagination to the orders endpoint', title: 'Paginate the orders endpoint', repo: 'orders-api', branch: 'feat/pagination', last_event: 'PermissionRequest', notification_type: 'permission_prompt', recent: [{ tool: 'Bash', summary: 'npm run migrate -- --env staging' }], tmux: 'API:@1.%3', remote_url: '#demo-session-api', pending: { tool_name: 'Bash', summary: 'npm run migrate -- --env staging', tool_use_id: 'toolu_demo1', decision_id: 'd-1-demo' }, updated_at: now - 4 * min },
+      { code: 'API', aliases: ['API', 'backend'], state: 'needs-you', status: 'busy', task: 'Adding pagination to the orders endpoint', title: 'Paginate the orders endpoint', repo: 'orders-api', branch: 'feat/pagination', last_event: 'PermissionRequest', notification_type: 'permission_prompt', recent: [{ tool: 'Bash', summary: 'npm run migrate -- --env staging' }], tmux: 'API:@1.%3', remote_url: '#demo-session-api', pending: { tool_name: 'Bash', summary: 'npm run migrate -- --env staging', tool_use_id: 'toolu_demo1', decision_id: 'd-1-demo' }, card: { state_since: now - 4 * min, doing: 'The migration is ready; asking before it runs against staging.', prompt: 'Add cursor pagination to GET /orders', meter: { ctx_pct: 62, cost_usd: 3.41, model: 'Demo Model', at: now - min }, teammates: [], done: [{ tool: 'Bash', summary: 'npm test -- orders', ms: 18400, ok: true, at: now - 6 * min }, { tool: 'Edit', summary: '…/orders.ts', ms: 120, ok: true, at: now - 5 * min }], branch: { base: 'origin/main', ahead: 3, behind: 0, subject: 'feat: cursor pagination for orders' } }, updated_at: now - 4 * min },
       { code: 'WEB', aliases: ['WEB', 'frontend'], state: 'needs-you', status: 'idle', task: 'Redesigning the settings page layout', title: 'Settings page redesign', repo: 'web-app', branch: 'settings-layout', last_event: 'Stop', notification_type: null, recent: [], tmux: 'WEB:@2.%5', remote_url: '#demo-session-web', pending: null, updated_at: now - 9 * min },
       { code: 'CP', aliases: ['CP', 'pipeline'], state: 'needs-you', status: 'idle', task: 'Splitting the deploy pipeline into stages', title: 'Deploy pipeline split', repo: 'ci-config', branch: 'split-deploy', last_event: 'PreToolUse', notification_type: null, recent: [], tmux: 'CP:@1.%6', remote_url: '#demo-session-cp', pending: { tool_name: 'ExitPlanMode', summary: 'build first, then staging, then production', tool_use_id: 'toolu_demo11' }, updated_at: now - 1 * min },
-      { code: 'DOCS', aliases: ['DOCS'], state: 'working', status: 'busy', task: 'Writing the upgrade guide for v2', title: 'Upgrade guide for v2', repo: 'docs-site', branch: 'main', last_event: 'PreToolUse', notification_type: null, recent: [{ tool: 'Read', summary: '…/upgrade-v2.md' }, { tool: 'Edit', summary: '…/configuration.md' }], tmux: 'DOCS:@1.%8', remote_url: null, pending: null, updated_at: now - 1 * min },
-      { code: 'OPS', aliases: ['OPS', 'infra'], state: 'working', status: 'busy', task: 'Rotating staging certificates', title: 'Rotate staging certificates', repo: 'infra', branch: 'cert-rotation', last_event: 'PreToolUse', notification_type: null, recent: [{ tool: 'Bash', summary: 'kubectl -n staging get certificates' }], tmux: 'OPS:@4.%11', remote_url: '#demo-session-ops', pending: null, updated_at: now - 3 * min },
+      { code: 'DOCS', aliases: ['DOCS'], state: 'working', status: 'busy', task: 'Writing the upgrade guide for v2', title: 'Upgrade guide for v2', repo: 'docs-site', branch: 'main', last_event: 'PreToolUse', notification_type: null, recent: [{ tool: 'Read', summary: '…/upgrade-v2.md' }, { tool: 'Edit', summary: '…/configuration.md' }], tmux: 'DOCS:@1.%8', remote_url: null, pending: null, card: { state_since: now - 22 * min, doing: 'Two teammates are drafting the configuration and migration chapters; I am merging their notes.', prompt: 'Write the v2 upgrade guide', meter: { ctx_pct: 34, cost_usd: 2.1, model: 'Demo Model', at: now - min }, teammates: [{ name: 'writer', title: 'Draft the configuration chapter', busy: true, idle: false, idle_s: 20, rss_mb: 310 }, { name: 'checker', title: 'Check every code sample builds', busy: false, idle: true, idle_s: 2400, rss_mb: 280 }], done: [{ tool: 'Bash', summary: 'npm run build:docs', ms: 52000, ok: false, at: now - 9 * min }, { tool: 'Read', summary: '…/upgrade-v2.md', ms: 40, ok: true, at: now - 2 * min }], branch: { base: 'origin/main', ahead: 1, behind: 4, subject: 'docs: upgrade guide outline' } }, updated_at: now - 1 * min },
+      { code: 'OPS', aliases: ['OPS', 'infra'], state: 'working', status: 'busy', task: 'Rotating staging certificates', title: 'Rotate staging certificates', repo: 'infra', branch: 'cert-rotation', last_event: 'PreToolUse', notification_type: null, recent: [{ tool: 'Bash', summary: 'kubectl -n staging get certificates' }], tmux: 'OPS:@4.%11', remote_url: '#demo-session-ops', pending: null, card: { state_since: now - 3 * min, doing: 'Listing the certificates that expire this month.', meter: { ctx_pct: 18, cost_usd: 0.42, model: 'Demo Model', at: now - min }, teammates: [], done: [], branch: { base: 'origin/main', ahead: 0, behind: 0, subject: 'chore: bump cert-manager' } }, updated_at: now - 3 * min },
       { code: 'QA', aliases: ['QA'], state: 'done', status: 'idle', task: 'Flaky test triage finished: 3 fixed, 1 quarantined', title: 'Flaky test triage', repo: 'web-app', branch: 'fix/flaky-upload', last_event: 'Stop', notification_type: 'idle_prompt', recent: [], tmux: 'QA:@1.%2', remote_url: null, pending: null, updated_at: now - 26 * min },
       { code: 'DATA', aliases: ['DATA'], state: 'rest', status: 'idle', task: '', title: null, repo: 'warehouse', branch: 'main', last_event: 'SessionStart', notification_type: null, recent: [], tmux: 'DATA:@1.%14', remote_url: null, pending: null, updated_at: now - 70 * min },
       { code: 'MOBILE', aliases: ['MOBILE', 'app'], state: 'offline', status: 'idle', task: 'Release notes draft', title: null, repo: null, branch: null, last_event: null, notification_type: null, recent: [], tmux: null, remote_url: null, pending: null, updated_at: now - 5 * 60 * min },
@@ -3552,6 +3660,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   let wasOffline = false;
   setInterval(() => {
     for (const t of document.querySelectorAll('time[data-ts]')) t.textContent = rel(Number(t.dataset.ts));
+    for (const e of document.querySelectorAll('[data-since]')) e.textContent = sinceText(Number(e.dataset.since));
     const off = operatorOffline();
     if (off !== wasOffline) { wasOffline = off; renderAll(); } else { renderHeader(); renderBanners(); }
   }, 30000);
@@ -3837,6 +3946,35 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       "No idle sessions.": "沒有閒置的 session。",
       "Every known session is running.": "所有已知的 session 都在執行。",
       "Now": "現在",
+      "ctx {n}%": "上下文 {n}%",
+      "{n} ms": "{n} 毫秒",
+      "{n} s": "{n} 秒",
+      "for {d}": "已 {d}",
+      "1 teammate": "1 個 teammate",
+      "{n} teammates": "{n} 個 teammate",
+      "Waiting for you: {n}": "等你處理：{n} 項",
+      "Doing": "在做什麼",
+      "In state": "目前狀態",
+      "Says": "它說",
+      "Asked": "收到的指示",
+      "Only approvers see what the session says.": "只有核可者看得到 session 說了什麼。",
+      "Recent": "最近",
+      "Done": "已完成",
+      "failed": "失敗",
+      "succeeded": "成功",
+      "No task title": "沒有任務標題",
+      "quiet {d}": "靜止 {d}",
+      "Meter": "用量",
+      "Usage": "用量",
+      "As of": "更新於",
+      "Branch": "分支",
+      "Vs base": "與基準相比",
+      "{a} ahead, {b} behind {base}": "領先 {a}、落後 {b}（{base}）",
+      "Last commit": "最新 commit",
+      "Waiting": "等待中",
+      "Open": "待處理項目",
+      "{d} decisions, {q} questions": "{d} 個決定、{q} 個問題",
+      "Where": "位置",
       "Pending": "待處理",
       "Tools": "工具",
       "Running": "執行中",

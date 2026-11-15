@@ -157,6 +157,22 @@ eq "account: the local approver sees the email" "$(req GET /api/state >/dev/null
 printf 'usage:\n  show_account: false\n' >> "$BOARD_CONFIG_DIR/fleet.yaml"
 eq "account: usage.show_account: false hides a stale account.json" "$([ -e "$BOARD_HOME/account.json" ] && echo file-there)/$(req GET /api/state >/dev/null; body '.account')" "file-there/null"
 write_cfg ""
+# Card extras (cards.json): the last assistant text and prompt reach approvers only.
+mkdir -p "$T/projects/-secret-path"  # the registry cwd /secret/path, as Claude Code names it
+printf '%s\n' '{"type":"user","message":{"role":"user","content":"Clean the build"}}' \
+  '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Cleaning the build now."}]}}' \
+  > "$T/projects/-secret-path/$SID.jsonl"
+"$REPO/bin/board-collect" --once --no-notify >/dev/null 2>&1
+card_q='.sessions[] | select(.code=="CP") | .card'
+for _ in $(seq 1 30); do req GET /api/state >/dev/null; [ "$(body "$card_q.doing")" != null ] && break; sleep 0.1; done
+eq "card: the approver sees doing and prompt" "$(body "$card_q | .doing + \"|\" + .prompt")" "Cleaning the build now.|Clean the build"
+eq "card: keys" "$(body "$card_q | keys | join(\",\")")" "branch,doing,done,meter,prompt,state_since,teammates"
+write_cfg "" "[boss@example.com]"
+eq "card: a non-approver gets neither" "$(req GET /api/state >/dev/null; body "$card_q | [has(\"doing\"), has(\"prompt\"), .private] | tojson")" '[false,false,"hidden"]'
+grep -q 'Cleaning the build' "$T/body" && bad "card: no doing text anywhere for a non-approver" || ok "card: no doing text anywhere for a non-approver"
+write_cfg ""
+eq "card: the approver again" "$(req GET /api/state >/dev/null; body "$card_q.doing")" "Cleaning the build now."
+req GET /api/state >/dev/null
 eq "me is local on loopback" "$(body .me)" "local"
 eq "mode local" "$(body .mode)" "local"
 eq "session CP needs-you" "$(body '.sessions[] | select(.code=="CP") | .state')" "needs-you"
@@ -844,6 +860,7 @@ EOF
   eq "  can_message false" "$(body .can_message)" "false"
   eq "  a viewer sees account: hidden" "$(body '.account | tojson')" '{"hidden":true}'
   grep -q 'owner@example.com' "$T/body" && bad "  no email for the viewer" || ok "  no email for the viewer"
+  eq "  a viewer gets no doing / prompt on a card" "$(body '[.sessions[] | .card // {} | has("doing") or has("prompt")] | any')" "false"
   eq "tunnel me: a listed viewer (not an approver)" "$(treq GET /api/me "${TUNNEL_HDRS[@]}" -H "$(jwt nobody)")" "200"
   eq "  viewer role only" "$(body '.identity + "/" + .via + "/" + (.roles | join(",")) + "/" + (.is_approver | tostring) + "/" + (.is_release_manager | tostring)')" "intruder@example.com/access/viewer/false/false"
   dec d-1-q8 question

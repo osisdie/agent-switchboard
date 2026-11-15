@@ -31,6 +31,9 @@ Usage: collect.py [--no-notify] [--baseline] [--verbose]
   ($BOARD_HOME/usage-samples.json: one sample per 20 s, an hour kept, emptied when the window
   resets) and stores the burn rate there (a least-squares line through the last 30 min, projected
   to 100%). board-serve shows it as operator.usage.burn on the Deck panel.
+- Card extras (teammates and their tasks, the statusline meter, recent tool calls, the last
+  assistant text and prompt, ahead/behind, time in state) go to $BOARD_HOME/cards.json through
+  lib/cards.py, never into the snapshot.
 """
 import getpass
 import glob
@@ -46,6 +49,7 @@ import unicodedata
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import away  # noqa: E402
+import cards  # noqa: E402
 import fleet  # noqa: E402
 import limit  # noqa: E402
 import notify  # noqa: E402
@@ -186,10 +190,10 @@ def clean_title(raw, hosts, user=None, names=()):
     return clean_text(t, TITLE_MAX)
 
 
-def pane_titles():
-    """{pane_id: raw title} for every tmux pane, in one call. {} without tmux."""
+def pane_list():
+    """{pane_id: (raw title, pane pid or None)} for every tmux pane, in one call. {} without tmux."""
     try:
-        r = subprocess.run(["tmux", "list-panes", "-a", "-F", "#{pane_id}\t#{pane_title}"],
+        r = subprocess.run(["tmux", "list-panes", "-a", "-F", "#{pane_id}\t#{pane_title}\t#{pane_pid}"],
                            capture_output=True, text=True, timeout=5, check=False)
     except (OSError, subprocess.SubprocessError):
         return {}
@@ -197,10 +201,18 @@ def pane_titles():
         return {}
     out = {}
     for line in r.stdout.splitlines():
-        pane, _, title = line.partition("\t")
+        pane, _, rest = line.partition("\t")
+        title, tab, pid = rest.rpartition("\t")
+        if not tab or not pid.isdigit():  # no pid column (a title with no tab): all of it is the title
+            title, pid = rest, None
         if pane.startswith("%"):
-            out[pane] = title
+            out[pane] = (title, int(pid) if pid else None)
     return out
+
+
+def pane_titles():
+    """{pane_id: raw title} for every tmux pane, in one call. {} without tmux."""
+    return {k: v[0] for k, v in pane_list().items()}
 
 
 def git_where(cwd):
@@ -639,7 +651,8 @@ def main(argv):
     cfg = fleet.load_fleet()
     now = now_ms()
     sessions = build_sessions(cfg, home, str(cfg.get("remote_url_prefix") or ""))
-    card_details(sessions, home, now)
+    panes, hosts = pane_list(), hostnames()
+    card_details(sessions, home, now, titles={k: v[0] for k, v in panes.items()}, hosts=hosts)
     try:
         account_info(cfg, home)
     except (OSError, ValueError) as exc:  # never breaks the collector
@@ -657,6 +670,11 @@ def main(argv):
             "limit": limit.active(), "owner_away": away.away_record(home),
             "consensus": away.consensus_items(home, now),
             "resources": resources_digest(cfg, home, sessions, verbose)}
+    try:  # card extras (lib/cards.py): cards.json, read by board-serve only, never in the snapshot
+        cards.step(cfg, home, sessions, now, panes, clean_text, clean_title, hosts)
+    except Exception as exc:  # noqa: BLE001 - never breaks the collector
+        if verbose:
+            print("cards: %s: %s" % (type(exc).__name__, exc))
 
     spath = os.path.join(home, "snapshot.json")
     prev = read_json(spath)
