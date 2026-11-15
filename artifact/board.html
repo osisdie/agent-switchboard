@@ -269,6 +269,14 @@ dialog.notif { width: min(720px, calc(100vw - 24px)); }
 .cmd b { color: var(--cord); font-weight: 600; }
 .opts { display: flex; flex-wrap: wrap; gap: 8px; }
 .free { display: flex; gap: 8px; flex-wrap: wrap; }
+/* Pane questions: an AskUserQuestion picker waiting in a session (source "pane"). */
+.panecard .pq-asks { color: var(--muted); font-weight: 600; margin-right: 4px; }
+.panecard .pq-q { margin: 0 0 8px; }
+.panecard .pq-head { font-family: var(--f-mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.panecard .pq-opts { display: grid; gap: 6px; margin: 4px 0 8px; padding: 0; list-style: none; }
+.panecard .pq-opt { display: flex; flex-direction: column; align-items: flex-start; text-align: left; gap: 2px; width: 100%; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.panecard .pq-opt small, .panecard .pq-ro small { color: var(--muted); font-weight: 400; }
+.panecard .pq-ro { border: 1px solid var(--rule); border-radius: 6px; padding: 6px 10px; overflow-wrap: anywhere; }
 .free input { flex: 1 1 200px; min-width: 0; font: inherit; font-size: 14px; padding: 7px 10px; border-radius: 5px; border: 1px solid var(--rule); background: var(--paper); color: var(--ink); }
 .confirm-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .confirm-row .q { font-size: 14px; font-weight: 600; flex-basis: 100%; }
@@ -1233,7 +1241,70 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     if (/^(request changes|reject|deny|no|block)/.test(v)) return 'deny';
     return 'option';
   }
+  // A pane question: the AskUserQuestion picker a session shows. One single-select question can be
+  // answered here (board-serve presses the option's number key, or types the text into "Type
+  // something"); several questions or multi-select are shown read-only, to answer in the session.
+  function buildPaneQuestion(d) {
+    const qs = (Array.isArray(d.questions) ? d.questions : []).filter((q) => q && typeof q === 'object');
+    const pressable = d.pressable === true && qs.length === 1 && !qs[0].multiSelect;
+    const busy = S.busy.has(d.id), offline = operatorOffline(), appr = approverState();
+    const who = str(d.from) || 'A session';
+    const card = h('article', { id: 'dec-' + d.id, class: 'dcard question panecard' + (offline ? ' queued' : ''), 'aria-label': 'Question from ' + who });
+    card.append(h('div', { class: 'dmeta' },
+      h('span', { class: 'lamp needs', 'aria-hidden': 'true' }),
+      h('span', { class: 'kind', text: 'Question' }),
+      h('span', { class: 'code-chip', text: str(d.from) || '?' }),
+      d.status === 'unauthorized' ? h('span', { class: 'status unauthorized', text: 'unauthorized' }) : null,
+      escChip(d),
+      timeEl(d.created_at)));
+    const live = pressable && !busy && canAnswer();
+    const list = qs.length ? qs : [{ question: str(d.question) || 'Question', options: [] }];
+    card.append(h('h3', null, h('span', { class: 'pq-asks', text: who + ' asks:' }), list.length === 1 ? str(list[0].question) : list.length + ' questions'));
+    list.forEach((q, qi) => {
+      const opts = (Array.isArray(q.options) ? q.options : []).map((o) => (o && typeof o === 'object' ? o : { label: str(o) }));
+      const box = h('section', { class: 'pq-q', 'aria-label': 'Question ' + (qi + 1) });
+      if (q.header) box.append(h('div', { class: 'pq-head', text: str(q.header) + (q.multiSelect ? ' · choose any' : '') }));
+      if (list.length > 1) box.append(h('p', { class: 'ctx', text: str(q.question) }));
+      if (live) {
+        box.append(h('div', { class: 'pq-opts', role: 'group', 'aria-label': 'Options' },
+          opts.map((o, i) => h('button', { class: 'btn option pq-opt', type: 'button', dataset: { option: String(i + 1) },
+            onclick: () => answerDecision(d, str(o.label)) },
+            h('span', { text: (i + 1) + '. ' + str(o.label) }), o.description ? h('small', { text: str(o.description) }) : null))));
+      } else {
+        box.append(h('ol', { class: 'pq-opts' }, opts.map((o) => h('li', { class: 'pq-ro' },
+          h('span', { text: str(o.label) }), o.description ? h('small', { text: ' — ' + str(o.description) }) : null))));
+      }
+      card.append(box);
+    });
+    if (d.status === 'unauthorized') {
+      card.append(h('p', { class: 'note unauth', text: 'Answered by someone who is not an approver, so it was not sent. An approver can still answer.' }));
+    }
+    if (!pressable) {
+      const why = qs.length > 1 ? 'multi-question form' : qs.some((q) => q.multiSelect) ? 'multi-select' : 'shown only in part here';
+      card.append(h('p', { class: 'note queue', text: 'Answer in the session (' + why + ').' }));
+    } else if (busy) {
+      card.append(h('p', { class: 'saving', text: 'Sending your answer…' }));
+    } else if (live) {
+      if (appr === false) card.append(h('p', { class: 'note noappr', text: 'You are not an approver — your answer won\'t be sent.' }));
+      if (offline && !isLocal()) card.append(h('p', { class: 'note queue', text: 'Operator offline — answers are saved and queued until the operator returns.' }));
+      const input = h('input', { id: 'ans-' + d.id, type: 'text', maxlength: '200', placeholder: 'Type something', 'aria-label': 'Type something for ' + who, dataset: { focus: 'answer' } });
+      input.value = S.drafts[d.id] || '';
+      input.addEventListener('input', () => { S.drafts[d.id] = input.value; });
+      const submit = () => { const v = input.value.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim(); if (!v) { input.focus(); return; } answerDecision(d, v); };
+      input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } });
+      card.append(h('div', { class: 'free' }, input, h('button', { class: 'btn primary', type: 'button', onclick: submit, text: 'Send' })));
+    }
+    const sess = findSession(d.from);
+    const link = sessionLink(d.from, pressable ? 'Open session' : 'Answer in session');
+    const tmux = !link && sess && sess.tmux ? h('span', { class: 'mono', text: 'tmux ' + str(sess.tmux) }) : null;
+    card.append(h('div', { class: 'dfoot' },
+      h('span', { text: pressable ? (isLocal() ? 'Your choice is picked in ' + who + '\'s question right away.' : 'Your choice is picked in ' + who + '\'s question by the operator.') : 'This question waits in ' + who + '\'s session.' }),
+      link || tmux));
+    return card;
+  }
+
   function buildDecision(d) {
+    if (d.source === 'pane') return buildPaneQuestion(d);
     const isPerm = d.kind === 'permission';
     const isGate = isGateDecision(d);
     const busy = S.busy.has(d.id);
@@ -2692,6 +2763,8 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       { code: 'MOBILE', aliases: ['MOBILE', 'app'], state: 'offline', status: 'idle', task: 'Release notes draft', title: null, repo: null, branch: null, last_event: null, notification_type: null, recent: [], tmux: null, remote_url: null, pending: null, updated_at: now - 5 * 60 * min },
     ];
     S.decisions = [
+      { id: 'd-9-demo', kind: 'question', source: 'pane', from: 'CP', question: 'Approve running these steps in this order?', options: ['Approve, run in order', 'Only steps 1–3', 'Not yet'], questions: [{ question: 'Approve running these steps in this order?', header: 'Plan', multiSelect: false, options: [{ label: 'Approve, run in order', description: 'Run all steps one after another' }, { label: 'Only steps 1–3', description: 'Stop before the deploy step' }, { label: 'Not yet', description: 'Wait for more review' }] }], pressable: true, tool_use_id: 'toolu_demo9', tool_name: 'AskUserQuestion', status: 'pending', answer: null, created_at: now - 1 * min },
+      { id: 'd-10-demo', kind: 'question', source: 'pane', from: 'WEB', question: 'Which color?', options: [], questions: [{ question: 'Which color?', header: 'Color', multiSelect: false, options: [{ label: 'Red', description: 'warm' }, { label: 'Blue', description: 'cool' }] }, { question: 'Which sizes?', header: 'Size', multiSelect: true, options: [{ label: 'S', description: '' }, { label: 'L', description: '' }] }], pressable: false, tool_use_id: 'toolu_demo10', tool_name: 'AskUserQuestion', status: 'pending', answer: null, created_at: now - 5 * min },
       { id: 'd-1-demo', kind: 'permission', from: 'API', question: 'Run the staging migration?', tool_use_id: 'toolu_demo1', tool_name: 'Bash', summary: 'npm run migrate -- --env staging', status: 'pending', answer: null, created_at: now - 4 * min, escalation_level: 'warn', notified_via: ['slack', 'desktop'] },
       { id: 'd-2-demo', kind: 'question', from: 'WEB', question: 'Keep the old settings URL as a redirect, or remove it?', options: ['Keep redirect', 'Remove it'], context: 'Two external links still point at /settings/legacy.', status: 'pending', answer: null, created_at: now - 9 * min },
       { id: 'd-3-demo', kind: 'question', from: 'QA', question: 'Quarantine the flaky upload test?', options: ['Yes', 'No'], status: 'relayed', answer: 'Yes', answered_by: 'u_demo_you', answered_at: now - 30 * min, relayed_at: now - 29 * min, created_at: now - 34 * min },
