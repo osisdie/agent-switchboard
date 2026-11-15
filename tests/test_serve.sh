@@ -137,6 +137,35 @@ eq "page_version is the hash of artifact/board.html" "$(body .page_version)" "$(
 pv="$(body .page_version)"
 req GET / >/dev/null
 grep -q "<meta name=\"board-version\" content=\"$pv\">" "$T/body" && ok "  the served page carries the same version" || bad "  the served page carries the same version"
+eq "  one charset declaration, in the first 1024 bytes (board.html's own line is dropped)" "$(grep -o '<meta charset=' "$T/body" | wc -l | tr -d ' ')/$(head -c 1024 "$T/body" | grep -c '<meta charset="utf-8">')" "1/1"
+# The strip is exact: only board.html's own first line (meta + comment) at the very start; absent,
+# nothing is removed; the same text further down is kept. board-serve and build-site alike.
+eq "  charset strip: exact first line only, both builders" "$(python3 - "$REPO" "$T" <<'PY'
+import importlib.util, os, sys
+repo, tmp = sys.argv[1], sys.argv[2]
+sys.path.insert(0, os.path.join(repo, "lib"))
+import serve
+spec = importlib.util.spec_from_file_location("build_site", os.path.join(repo, "scripts", "build-site.py"))
+site = importlib.util.module_from_spec(spec); spec.loader.exec_module(site)
+line = '<meta charset="utf-8"><!-- own line -->\n'
+rest = '<title>T</title>\n<p>body · text</p>\n<p>later: <meta charset="utf-8"><!-- not first --></p>\n'
+out = []
+for name, page in (("present", line + rest), ("absent", rest), ("indented", " " + line + rest)):
+    root = os.path.join(tmp, "strip-" + name)
+    os.makedirs(os.path.join(root, "artifact"), exist_ok=True)
+    with open(os.path.join(root, "artifact", "board.html"), "w", encoding="utf-8") as fh:
+        fh.write(page)
+    serve.PAGE = os.path.join(root, "artifact", "board.html")
+    served = serve.render_page("n").decode("utf-8")
+    site.REPO = root
+    demo = site.demo_html()
+    want = rest if name != "indented" else page
+    ok_served = served.count('<meta charset="utf-8">') == 1 + want.count('<meta charset="utf-8">') and want in served
+    ok_demo = demo.count('<meta charset="utf-8">') == 1 + want.count('<meta charset="utf-8">') and want in demo
+    out.append("%s:%s/%s" % (name, ok_served, ok_demo))
+print(" ".join(out))
+PY
+)" "present:True/True absent:True/True indented:True/True"
 req GET /api/state >/dev/null
 eq "a CRLF board.html: the page's version equals page_version (no false reload banner)" "$(python3 - "$REPO" "$T" <<'PY'
 import os, re, sys

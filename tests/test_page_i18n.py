@@ -160,6 +160,7 @@ def main():
         pg.goto(PAGE)
         pg.wait_for_timeout(500)
         check("<html lang=en> by default", pg.evaluate("() => document.documentElement.lang") == "en")
+        check("decoded as UTF-8 when opened from disk (its own charset line)", pg.evaluate("() => document.characterSet") == "UTF-8")
         open_everything(pg)
         texts = collect(pg)
         check("walked a real page", len(texts) > 300, len(texts))

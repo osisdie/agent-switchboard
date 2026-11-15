@@ -79,6 +79,9 @@ import resources  # noqa: E402
 REPO = fleet.REPO
 BOARD = os.path.join(REPO, "bin", "board")
 PAGE = os.path.join(REPO, "artifact", "board.html")
+# board.html opens with its own charset line (for a page opened from disk); the served head
+# declares the charset itself, so that line is dropped instead of repeated.
+OWN_CHARSET_RE = re.compile(r"\A<meta charset=\"utf-8\">[^\n]*\n")
 # Static files: a fixed map from URL path to (file under artifact/, content type). Nothing else
 # under artifact/ is served, and a request path is never joined onto a directory.
 STATIC = {
@@ -711,7 +714,7 @@ def render_page(nonce):
     with open(PAGE, "rb") as fh:
         raw = fh.read()
     version = file_version(raw)
-    body = raw.decode("utf-8")
+    body = OWN_CHARSET_RE.sub("", raw.decode("utf-8"), count=1)
     # Every inline <script> (the pre-paint theme script and the app) gets the CSP nonce;
     # nothing else in the page is executable.
     body = body.replace("<script>", '<script nonce="%s">' % nonce)

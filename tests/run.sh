@@ -141,6 +141,13 @@ EOF
 chmod +x "$T/fakebin/tmux"
 export PATH="$T/fakebin:$PATH"
 
+echo "page:"
+# artifact/board.html declares its charset in its first 1024 bytes (the HTML prescan window), so a
+# page opened from disk (file://) never falls back to windows-1252; the <title> stays in the first
+# 8 KB (the Artifact title scan).
+head -c 1024 "$REPO/artifact/board.html" | grep -q '<meta charset="utf-8">' && ok "board.html: charset in the first 1024 bytes" || bad "board.html: charset in the first 1024 bytes"
+head -c 8192 "$REPO/artifact/board.html" | grep -q '<title>' && ok "board.html: <title> in the first 8 KB" || bad "board.html: <title> in the first 8 KB"
+
 echo "collector:"
 "$REPO/bin/board-collect" --once --no-notify
 snap="$BOARD_HOME/snapshot.json"
