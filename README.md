@@ -155,7 +155,7 @@ your `statusLine` and removes the symlinks.
   | `remote_url_prefix` | `https://claude.ai/code/` | prefix for each session's Remote Control link |
   | `serve.enabled`, `serve.port` | `false`, `39410` | self-hosted board: `fleet-up` starts `board-serve`; the local listener (identity `local`) |
   | `serve.tunnel.*` | off | `enabled`, `port` (port + 1), `hostname`, `team_domain`, `aud`: the listener cloudflared points at; identity = the email of a verified Cloudflare Access token |
-  | `press.prompt_regex`, `press.question_regex`, `press.lines`, `press.allow_keys`, `press.deny_keys` | see example | the screen checks and keys used by `board press` (`question_regex`: the AskUserQuestion picker) |
+  | `press.prompt_regex`, `press.question_regex`, `press.free_text_label`, `press.lines`, `press.allow_keys`, `press.deny_keys` | see example | the screen checks and keys used by `board press` (`question_regex`: the AskUserQuestion picker) |
 
 - `.env`: alert channels (Slack, email, LINE, SNS, webhook; all optional, see
   [Alerting & escalation](#alerting--escalation)). Start from `.env.example`.
@@ -393,7 +393,10 @@ only on the self-hosted board; the Artifact board gets the title and `repo · br
   (`press.question_regex`) on screen with the start of the question (or every option label). An
   option sends its number key, which picks it at once. Free text (one line, ≤200 characters) picks
   **Type something**, is typed literally (`send-keys -l`), and Enter is pressed only when the text
-  shows on screen. A longer answer goes to the session as a `[BOARD decision <id>]` message instead.
+  shows on the picker's focused **Type something** row (`press.free_text_label`). If a check fails
+  after a key was sent, Enter is not pressed and the card says to finish in the session (exit 5).
+  A longer answer goes to the session as a `[BOARD decision <id>]` message instead. Option buttons
+  also send the option number, which must match the label; repeated labels make the card read-only.
   Several questions, multi-select or clipped text make a read-only card: answer it in the session.
   When the session moves on, the card goes stale.
 

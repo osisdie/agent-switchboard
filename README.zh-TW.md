@@ -154,7 +154,7 @@ scripts/setup-dev.sh           # only if you'll commit to this repo: pre-commit 
   | `remote_url_prefix` | `https://claude.ai/code/` | 每個 session 的 Remote Control 連結前綴 |
   | `serve.enabled`、`serve.port` | `false`、`39410` | 自架看板：由 `fleet-up` 啟動 `board-serve`；本機監聽器（身分為 `local`） |
   | `serve.tunnel.*` | 關閉 | `enabled`、`port`（port + 1）、`hostname`、`team_domain`、`aud`：cloudflared 指向的監聽器；身分 = 經過驗證的 Cloudflare Access token 裡的 email |
-  | `press.prompt_regex`、`press.question_regex`、`press.lines`、`press.allow_keys`、`press.deny_keys` | 見範例 | `board press` 用的畫面檢查與按鍵（`question_regex`：AskUserQuestion 選單） |
+  | `press.prompt_regex`、`press.question_regex`、`press.free_text_label`、`press.lines`、`press.allow_keys`、`press.deny_keys` | 見範例 | `board press` 用的畫面檢查與按鍵（`question_regex`：AskUserQuestion 選單） |
 
 - `.env`：告警管道（Slack、email、LINE、SNS、webhook，全部選用，見
   [告警與升級](#alerting--escalation)）。從 `.env.example` 開始改。
@@ -369,7 +369,9 @@ toplevel 的名稱和目前的分支，絕不顯示路徑），以及它現在�
   `board answer`（把標籤對應到選項編號）和 `board press <CODE> answer --expect <tool_use_id>`，檢查與
   permission 按鍵相同：approver 的回答、同一個 pending `tool_use_id` 與雜湊、畫面上有選單
   （`press.question_regex`）而且看得到問題開頭（或每一個選項標籤）。選項會送出它的數字鍵，立即選定。
-  自由文字（一行、≤200 字元）會先選 **Type something**，用 `send-keys -l` 原樣輸入，畫面上看到文字才按 Enter。
+  自由文字（一行、≤200 字元）會先選 **Type something**，用 `send-keys -l` 原樣輸入，只有選單上被選取的 **Type something**
+  那一列（`press.free_text_label`）出現這段文字才按 Enter。送出部分按鍵後檢查失敗，就不按 Enter，卡片會請你到 session
+  裡完成（exit 5）。選項按鈕也會送出選項編號，必須和標籤一致；標籤重複的卡片只能看。
   更長的回答改用 `[BOARD decision <id>]` 訊息送給 session。多題、複選或被截短的卡片只能看，請到 session 裡回答。
   session 往下走之後，卡片會變成 stale。
 

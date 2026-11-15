@@ -213,10 +213,19 @@ db.
   board press <CODE> answer --expect <tool_use_id>
   ```
   and handle the exits like a permission press (0 → `relayed`; 3 → `stale`, no retry; other → note
-  it in `context`). With `relay: "operator"`, or on exit 4, relay it like any question with
-  `SendMessage` (`[BOARD decision <id>] <answer> (by owner on board)`); the picker stays for the
-  human. Never type into the pane yourself. A pane question with `pressable: false` is answered in
-  the session; the page does not offer answers for it.
+  it in `context`).
+  - **exit 5** (partial: text was typed into the picker, Enter was not pressed) → `status: "stale"`
+    in the db with `context: "keys sent, Enter not pressed — finish in the session"`. `board press`
+    has already marked the local file. Never retry, never send a message for it.
+  - **Message fallback**, only when the local file is `answered`, its `answered_by` is an approver
+    (`board answer` above exited 0 for this very answer) and it says `relay: "operator"` (also
+    after an exit 4 from `board press`, once you have re-read the file and it says so): relay it
+    like any question with `SendMessage` (`[BOARD decision <id>] <answer> (by owner on board)`);
+    the picker stays for the human. In any other case (the file is not `answered`, or
+    `answered_by` is not an approver, or `relay` is `"press"` and `board press` exited 4), set
+    `status: "unauthorized"` in the db and relay nothing.
+  - Never type into the pane yourself. A pane question with `pressable: false` is answered in the
+    session; the page does not offer answers for it.
 - If the target session is offline or missing from `ListAgents`, leave the decision `answered`. It is
   relayed when the session returns.
 
