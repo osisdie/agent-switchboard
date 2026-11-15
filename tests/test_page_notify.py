@@ -206,6 +206,8 @@ def main():
                                      document.dispatchEvent(new Event('visibilitychange')); }""")
             hidden = wait_for(lambda: read(os.path.join(home, "presence.json")).get("local", {}).get("visible") is False)
             check("tab hidden → heartbeat says not visible", hidden, read(os.path.join(home, "presence.json")))
+            page.goto("about:blank")  # the pagehide heartbeat goes out while the server still runs
+            page.wait_for_timeout(300)
             srv.terminate()
             srv.wait()
 
