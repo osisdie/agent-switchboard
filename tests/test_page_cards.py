@@ -62,6 +62,7 @@ CARD_JS = """(code) => {
     tmux: (() => { const dt = [...card.querySelectorAll('.sdetail dt')].find((e) => e.textContent === 'tmux'); return dt ? dt.nextElementSibling.textContent : null; })(),
     remote: !!card.querySelector('.sdetail a.linkout'),
     note: txt('.sdetail .note'), focused: document.activeElement === b,
+    rc: (() => { const a = card.querySelector(':scope > a.rc-link'); return a ? [a.getAttribute('href'), a.getAttribute('aria-label'), !b.contains(a)] : null; })(),
     right: r.right, vw: innerWidth, scrollW: document.scrollingElement.scrollWidth,
   };
 }"""
@@ -128,6 +129,9 @@ def main():
                   and c["now"].startswith("Waiting: permission for Bash"), c)
             d = card(pg, "DOCS")
             check("collapsed: a working card says what is running", d["now"] == "Running Edit: …/configuration.md", d)
+            check("collapsed: a Remote Control icon link beside the toggle, not inside it",
+                  c["rc"] == ["#demo-session-api", "Open API in Remote Control", True], c["rc"])
+            check("  no link without a Remote Control URL", card(pg, "DOCS")["rc"] is None, card(pg, "DOCS")["rc"])
             check("collapsed: an idle card says since when", card(pg, "QA")["now"].startswith("Idle since "), card(pg, "QA"))
             check("collapsed: no title yet", card(pg, "DATA")["title"] == "No title yet")
             pg.click('article[aria-label="Session API"] .scard-toggle')
@@ -193,6 +197,13 @@ def main():
                 os.replace(os.path.join(home, "snapshot.json.tmp"), os.path.join(home, "snapshot.json"))
 
             write_snap("First title")
+            # Codes that a plain character swap would map to one DOM id.
+            snap_path = os.path.join(home, "snapshot.json")
+            doc = json.load(open(snap_path, encoding="utf-8"))
+            base_row = doc["sessions"][0]
+            doc["sessions"] += [dict(base_row, code=c, aliases=[c], session_id="s-" + c) for c in ("A.B", "A_B", "CP/x", "CP_x")]
+            with open(snap_path, "w", encoding="utf-8") as fh:
+                json.dump(doc, fh)
             env = dict(os.environ, BOARD_HOME=home, BOARD_CONFIG_DIR=cfg, CLAUDE_SESSIONS_DIR=sess)
             env.pop("TMUX", None)
             srv = subprocess.Popen([os.path.join(REPO, "bin", "board-serve"), "--quiet"], env=env,
@@ -209,6 +220,9 @@ def main():
             pg.focus('article[aria-label="Session CP"] .scard-toggle')
             pg.keyboard.press("Enter")
             pg.wait_for_timeout(150)
+            ids = pg.evaluate("() => [...document.querySelectorAll('.scard-toggle')].map((b) => b.getAttribute('aria-controls'))")
+            check("panel ids are unique, also for A.B / A_B and CP/x / CP_x", len(ids) == 5 and len(set(ids)) == 5
+                  and all(pg.evaluate("(id) => !!document.getElementById(id)", i) for i in ids), ids)
             c = card(pg, "CP")
             check("local: expanded with the running tool", c["expanded"] == "true" and c["running"] == ["Bash"], c)
             write_snap("Second title")

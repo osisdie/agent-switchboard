@@ -316,6 +316,10 @@ dialog.notif { width: min(720px, calc(100vw - 24px)); }
 .swhere { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--f-mono); font-size: 12px; color: var(--muted); }
 .snow { font-size: 13px; color: var(--muted); }
 .snow.waiting { color: var(--lamp-ink); }
+.scard.exp { position: relative; }
+.rc-link { position: absolute; top: 9px; right: 8px; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 5px; color: var(--cord); }
+.rc-link:hover { background: var(--cord-soft); }
+.scard.has-rc .scard-top time { margin-right: 28px; }
 .sdetail[hidden] { display: none; }
 .sdetail { display: grid; gap: 10px; padding: 10px 12px 12px; border-top: 1px solid var(--rule); font-size: 13px; min-width: 0; }
 .sdetail .sd-title { margin: 0; font-weight: 600; font-size: 14px; overflow-wrap: anywhere; }
@@ -1470,6 +1474,12 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     const t = ts(s.updated_at);
     return { text: t ? 'Idle since ' + hhmm(t) + ' (' + rel(t) + ')' : 'Idle' };
   }
+  // A DOM id per code: readable part + a short hash, so A.B / A_B or CODE/x / CODE_x never collide.
+  function panelId(code) {
+    let hsh = 5381;
+    for (const ch of str(code)) hsh = ((hsh * 33) ^ ch.codePointAt(0)) >>> 0;
+    return 'sd-' + str(code).replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 40) + '-' + hsh.toString(36);
+  }
   function cardSig(s) {
     return JSON.stringify(s) + '|' + openCards.has(s.code) + '|' + sessionDecisions(s).map((d) => d.id + (d.question || '')).join(',');
   }
@@ -1477,7 +1487,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     const col = colOf(s);
     const lampCls = { needs: 'needs', working: 'working', done: 'done', offline: 'offline' }[col];
     const open = openCards.has(s.code);
-    const pid = 'sd-' + str(s.code).replace(/[^A-Za-z0-9_-]/g, '_');
+    const pid = panelId(s.code);
     const title = str(s.title), task = str(s.task);
     const where = [str(s.repo), str(s.branch)].filter(Boolean).join(' · ');
     const now = doingNow(s);
@@ -1496,6 +1506,16 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       where ? h('span', { class: 'swhere', text: where }) : null,
       h('span', { class: 'snow' + (now.waiting ? ' waiting' : ''), text: now.text }));
     card.append(btn);
+    // Remote Control, one tap from the collapsed card: a small link next to the summary button.
+    const rc = safeUrl(s.remote_url);
+    if (rc) {
+      card.classList.add('has-rc');
+      const ic = document.createElementNS(SVGNS, 'svg');
+      ic.setAttribute('viewBox', '0 0 16 16'); ic.setAttribute('width', '14'); ic.setAttribute('height', '14'); ic.setAttribute('aria-hidden', 'true');
+      ic.innerHTML = '<path d="M6 3H3.5A1.5 1.5 0 0 0 2 4.5v8A1.5 1.5 0 0 0 3.5 14h8a1.5 1.5 0 0 0 1.5-1.5V10M9 2h5v5M14 2 7 9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>';
+      card.append(h('a', { class: 'rc-link', href: rc, target: rc.startsWith('#') ? null : '_blank', rel: 'noopener noreferrer',
+        'aria-label': 'Open ' + s.code + ' in Remote Control', title: 'Open in Remote Control' }, ic));
+    }
     const panel = h('div', { class: 'sdetail', id: pid, hidden: !open });
     if (open) {
       if (title) panel.append(h('p', { class: 'sd-title', text: title }));
