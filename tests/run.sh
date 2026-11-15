@@ -197,7 +197,7 @@ eq "  a repo with no commits yet: one git call still names it" \
 echo "collector: untrusted text"
 while IFS=$'\t' read -r verdict name detail; do
   if [ "$verdict" = ok ]; then ok "$name"; else bad "$name" "$detail"; fi
-done < <(python3 - "$REPO/lib" <<'PY'
+done < <(python3 - "$REPO/lib" "$T" <<'PY'
 import sys
 sys.path.insert(0, sys.argv[1])
 import collect as c
@@ -226,6 +226,13 @@ cases = [
     ("title: a word containing the user name kept", c.clean_title("Fix bobcat parser", H, user="bob"), "Fix bobcat parser"),
     ("title: tokens and paths redacted too", c.clean_title("⠂ Rotate ghp_" + "b" * 24 + " in /etc/app/key.pem", H, user="bob"),
      "Rotate [REDACTED] in …/key.pem"),
+    ("title: the session's own code dropped (a /renamed session)", c.clean_title("✳ AI", H, user="bob", names=["AI", "ai-old"]), ""),
+    ("title: an alias dropped, any case", c.clean_title("⠂ Ai-Old", H, user="bob", names=["AI", "ai-old"]), ""),
+    ("title: a title that only mentions the code kept", c.clean_title("Fix the AI build", H, user="bob", names=["AI"]), "Fix the AI build"),
+    ("card_details passes the code, name and aliases",
+     (lambda rows: (c.card_details(rows, sys.argv[2], 0, titles={"%1": "✳ CP", "%2": "✳ Fix it"}, hosts=set()), [r["title"] for r in rows])[1])(
+         [{"code": "CP", "name": "CP", "aliases": ["CP", "cp-old"], "pid": 1, "tmux_pane": "%1", "cwd": None},
+          {"code": "QA", "name": "QA", "aliases": ["QA"], "pid": 2, "tmux_pane": "%2", "cwd": None}]), [None, "Fix it"]),
     ("host names include <short>.local", sorted(n for n in c.hostnames() if n.endswith(".local"))[:1] != [], True),
 ]
 for name, got, want in cases:

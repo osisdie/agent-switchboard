@@ -159,16 +159,19 @@ def local_user():
         return ""
 
 
-def clean_title(raw, hosts, user=None):
+def clean_title(raw, hosts, user=None, names=()):
     """A pane title as the session sets it ("✳ Fix the login form"): the leading status glyph
     (spinner, ✳, ...) dropped. Never published: tmux's default (the host name), a shell's own
-    title (user@host: ~/dir), or any title naming this host or the local user as a word."""
+    title (user@host: ~/dir), any title naming this host or the local user as a word, or a title
+    that is just the session's own code or alias (a /renamed session: the card shows the task)."""
     if not isinstance(raw, str):
         return ""
     t = raw.strip()
     while t and unicodedata.category(t[0])[0] not in "LN":
         t = t[1:]
     if not t or t.lower() == "claude code" or SHELL_TITLE_RE.search(t):
+        return ""
+    if t.strip().lower() in {str(n).strip().lower() for n in names if n}:
         return ""
     words = set(re.findall(r"[\w.-]+", t.lower()))
     words |= {w.strip(".-") for w in words}
@@ -256,7 +259,8 @@ def card_details(rows, home, now, titles=None, hosts=None):
     hosts = hostnames() if hosts is None else hosts
     info = git_info(home, [r.get("cwd") for r in rows if r.get("pid")], now)
     for r in rows:
-        r["title"] = clean_title(titles.get(r.get("tmux_pane") or ""), hosts) or None if r.get("pid") else None
+        names = [r.get("code"), r.get("name")] + list(r.get("aliases") or [])
+        r["title"] = clean_title(titles.get(r.get("tmux_pane") or ""), hosts, names=names) or None if r.get("pid") else None
         g = info.get(r.get("cwd")) if r.get("pid") else None
         r["repo"] = (g or {}).get("repo")
         r["branch"] = (g or {}).get("branch")
