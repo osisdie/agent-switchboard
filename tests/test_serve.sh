@@ -223,7 +223,7 @@ print(" ".join(out))
 PY
 )" "favicon.png=32x32a apple-touch-icon.png=180x180 icon-192.png=192x192 icon-512.png=512x512"
 req GET / -D "$T/hdr" >/dev/null
-for tag in '<link rel="manifest" href="/manifest.webmanifest">' '<link rel="apple-touch-icon" href="/apple-touch-icon.png">' \
+for tag in '<link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">' '<link rel="apple-touch-icon" href="/apple-touch-icon.png">' \
            '<link rel="icon" href="/favicon.png" sizes="32x32" type="image/png">' '<meta name="apple-mobile-web-app-capable" content="yes">' \
            '<meta name="mobile-web-app-capable" content="yes">' '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">' \
            '<meta name="apple-mobile-web-app-title" content="Switchboard">' \

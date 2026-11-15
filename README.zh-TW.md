@@ -786,8 +786,9 @@ release_managers: [you@example.com, <your claude.ai user id>]
 `/`），並在頁面加上對應的 head 標籤。這些檔案和頁面走同樣的 Host 與身分檢查：透過 tunnel 時，
 它們和其他內容一樣在 Cloudflare Access 後面。
 
-1. 在 Safari 開啟看板的 tunnel 網址，並且**先登入 Cloudflare Access**。iOS 會帶著 Access cookie
-   抓圖示和 manifest，所以登入前就加入的話，存到的會是 Access 登入頁，不是看板。
+1. 在 Safari 開啟看板的 tunnel 網址，並且**先登入 Cloudflare Access**。Safari 抓圖示時會帶
+   Access cookie；manifest 連結加了 `crossorigin="use-credentials"`（不加的話 manifest 會在沒有
+   cookie 的情況下抓取），所以登入前就加入的話，存到的會是 Access 登入頁，不是看板。
 2. 分享 → **加入主畫面**。app 會以全螢幕開啟。狀態列是 `black-translucent`，所以頁面在它底下
    放一條深色帶，標題和頁面底部也會避開瀏海和 Home 指示條。
 3. Access 工作階段過期時，app 會再顯示 Access 登入頁，在那裡登入即可。

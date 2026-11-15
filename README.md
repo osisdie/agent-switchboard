@@ -848,9 +848,10 @@ The self-hosted board installs as a home-screen app. `board-serve` serves the ic
 These files go through the same Host and identity checks as the page: through the tunnel they sit
 behind Cloudflare Access like everything else.
 
-1. Open the board's tunnel address in Safari and **log in to Cloudflare Access first**. iOS fetches
-   the icon and the manifest with your Access cookie, so adding the board before you log in saves
-   the Access login page instead of the board.
+1. Open the board's tunnel address in Safari and **log in to Cloudflare Access first**. Safari sends
+   the Access cookie with the icon fetches, and the manifest link carries
+   `crossorigin="use-credentials"` (manifests are fetched without cookies otherwise), so adding the
+   board before you log in saves the Access login page instead of the board.
 2. Share → **Add to Home Screen**. The app opens full screen. The status bar is
    `black-translucent`, so the page puts a dark band under it, and the header and the bottom of the
    page stay clear of the notch and the home indicator.

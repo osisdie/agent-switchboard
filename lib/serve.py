@@ -547,7 +547,7 @@ def render_page(nonce):
             # Home-screen app (local mode only: the Artifact page cannot serve these files).
             '<link rel="icon" href="/favicon.png" sizes="32x32" type="image/png">'
             '<link rel="apple-touch-icon" href="/apple-touch-icon.png">'
-            '<link rel="manifest" href="/manifest.webmanifest">'
+            '<link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">'
             '<meta name="theme-color" content="#edf0f4" media="(prefers-color-scheme: light)">'
             '<meta name="theme-color" content="#0f141a" media="(prefers-color-scheme: dark)">'
             '<meta name="mobile-web-app-capable" content="yes">'
