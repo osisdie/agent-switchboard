@@ -139,6 +139,23 @@ sleep 0.05
 "$REPO/bin/board-collect" --once --no-notify
 eq "unchanged snapshot not rewritten" "$(jq .generated_at "$snap")" "$gen1"
 
+echo "collector: one process, one card"
+sj() { jq -r --arg c "$1" ".sessions[] | select(.code==\$c) | $2" "$snap"; }
+sleep 600 & dup_pid=$!
+sleep 600 & dup_pid2=$!
+# Started inside CP's tmux, registered as GONE (renamed): it is GONE, not CP/GONE + an offline GONE.
+echo "{\"pid\":$dup_pid,\"sessionId\":\"s-dup\",\"cwd\":\"/w\",\"tmux\":\"CP:@5.%75\",\"name\":\"GONE\",\"status\":\"busy\",\"startedAt\":9}" > "$CLAUDE_SESSIONS_DIR/$dup_pid.json"
+# A teammate pane in CP's tmux whose name is no fleet code keeps the CP/<name> form.
+echo "{\"pid\":$dup_pid2,\"sessionId\":\"s-mate\",\"cwd\":\"/w\",\"tmux\":\"CP:@6.%76\",\"name\":\"helper\",\"status\":\"idle\",\"startedAt\":10}" > "$CLAUDE_SESSIONS_DIR/$dup_pid2.json"
+"$REPO/bin/board-collect" --once --no-notify
+eq "codes: each process once" "$(jq -r '[.sessions[].code] | join(",")' "$snap")" "CP,CP/helper,GONE,INFRA,QA"
+eq "the renamed process is GONE, live" "$(sj GONE '.state + "/" + .name')" "working/GONE"
+eq "CP is still the process named CP" "$(sj CP .session_id)" "$SID"
+kill "$dup_pid" "$dup_pid2" 2>/dev/null
+rm -f "${CLAUDE_SESSIONS_DIR:?}/${dup_pid:?}.json" "${CLAUDE_SESSIONS_DIR:?}/${dup_pid2:?}.json"
+cp "$T/cp-reg.json" "$CLAUDE_SESSIONS_DIR/$live_pid.json"
+"$REPO/bin/board-collect" --once --no-notify
+
 out="$("$REPO/bin/board" ls)"
 if grep -q "needs-you" <<<"$out" && grep -q "Bash: rm -rf build" <<<"$out"; then ok "board ls"; else bad "board ls" "$out"; fi
 

@@ -143,13 +143,27 @@ def build_sessions(cfg, home, prefix):
         })
     # Several live processes may share one code (e.g. teammate panes inside a session's tmux).
     # The one whose registered name is the code (or an alias) and that started first keeps it.
+    # A process that loses takes the fleet code its own registered name maps to, when no live
+    # process holds that code (a session renamed or started inside another session's tmux), so
+    # it does not show twice: once as CODE/name and once as its offline fleet entry.
     rows.sort(key=lambda r: (r["code"], r["_pref"], r["_started"]))
-    seen = set()
+    seen, losers = set(), []
     for r in rows:
         if r["code"] in seen:
+            losers.append(r)
+        seen.add(r["code"])
+    for r in losers:
+        own = amap.get(r["name"]) if r["name"] else None
+        if own and own not in seen:
+            r["code"] = own
+            r["aliases"] = [own] + [a for a in (fleet_by_code.get(own) or {}).get("aliases", []) if a != own]
+            if r["name"] not in r["aliases"]:
+                r["aliases"].append(r["name"])
+        else:
             r["code"] = "%s/%s" % (r["code"], r["name"] or r["pid"])
             r["aliases"] = [r["code"]]
         seen.add(r["code"])
+    for r in rows:
         r.pop("_started", None)
         r.pop("_pref", None)
     for s in cfg["sessions"]:

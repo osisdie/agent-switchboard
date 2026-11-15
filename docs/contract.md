@@ -66,6 +66,11 @@ Map hook events to states like this:
 
 - **Where sessions come from:** live entries in `~/.claude/sessions/<pid>.json`, where `/proc/<pid>` exists. Each is merged with `state/<session_id>.json`.
 - **`code`:** the tmux session name (the part before `:` in `tmux`). If there is no tmux, use the registered `name`. `fleet.yaml` may map aliases to codes.
+- **One process, one card.** When several live processes resolve to the same code (teammate panes
+  inside a session's tmux, a session started or renamed inside another session's tmux), the one
+  whose registered name is the code or an alias and that started first keeps it. Each other one
+  takes the fleet code its own registered name maps to, if no live process holds that code;
+  otherwise it becomes `CODE/<name>`.
 - **Sessions in `fleet.yaml` that aren't running** appear with state `offline`.
 - **`owner_away`** is `null` when `$BOARD_HOME/owner-away` does not exist, else its record. A file
   that is not a JSON object (free text, empty) still means away: `{since: <mtime ms>, by: null,
