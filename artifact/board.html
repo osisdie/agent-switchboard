@@ -3270,9 +3270,11 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
   /* ------------------------------------------------------------- pomodoro */
   // Each session runs its own pomodoro while it works (lib/pomodoro.py, docs/contract.md
   // "Pomodoro"): board-serve's state.pomodoro, or meta/pomodoro mirrored by the operator in the
-  // Artifact (daily totals only, no running clock). The page only shows it: a working session's
-  // clock runs on from `at` between collector writes, and stops when the data is older than
-  // POMO_STALE_MS. A finished pomodoro gets a short celebration, never under reduced motion.
+  // Artifact (daily totals only, no running clock). The page only shows it. board-serve's view only
+  // changes when something visible does (never with the collector's heartbeat): a running pomodoro
+  // carries started_at, today's focus_ms leaves out the running stretches, and `seen` (the last
+  // collector run, floored to seen_step_ms) stops the clocks once it is POMO_STALE_MS past its
+  // bucket. A finished pomodoro gets a short celebration, never under reduced motion.
   const POMO_STALE_MS = 3 * 60 * 1000;
   const POMO_DEFAULT_MS = 25 * 60 * 1000;
   let pomoSeen = null;             // code -> today's count at the last render (null before the first data)
@@ -3287,13 +3289,23 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
     const r = all && Object.prototype.hasOwnProperty.call(all, code) ? all[code] : null;
     return r && typeof r === 'object' ? r : null;
   }
-  // The current pomodoro: { ms, full, live, clock } — clock false for the Artifact mirror (no progress).
+  // The current pomodoro: { ms, full, live, clock, today } — clock false for the Artifact mirror (no
+  // progress); today = the running stretch that counts for today (added to the view's focus_ms).
   function pomoNow(p, r, now) {
-    const full = pomoFull(p), clock = num(r.progress_ms) != null;
-    const at = ts(p.at), age = now - at;
-    const live = clock && r.running === true && !!at && age >= 0 && age < POMO_STALE_MS;
-    const ms = Math.max(0, Math.min(full, (num(r.progress_ms) || 0) + (live ? age : 0)));
-    return { ms, full, live, clock };
+    const full = pomoFull(p), start = num(r.started_at), seen = num(p.seen), step = num(p.seen_step_ms) || 300000;
+    const running = r.running === true && start != null;
+    const live = running && seen != null && now - seen < step + POMO_STALE_MS;
+    // a stopped collector: the clock holds at the end of its last freshness bucket
+    const t = live || !running ? now : Math.max(start, Math.min(now, (seen != null ? seen : start) + step));
+    const ms = Math.max(0, Math.min(full, running ? t - start : (num(r.progress_ms) || 0)));
+    const today = running ? Math.max(0, Math.min(t, start + full) - Math.max(start, num(p.day_start) || 0)) : 0;
+    return { ms, full, live, clock: running || num(r.progress_ms) != null, today };
+  }
+  const pomoFocus = (p, r, now) => Math.max(0, (num(r.focus_ms) || 0) + pomoNow(p, r, now).today);
+  function pomoFleetFocus(p, now) {
+    let f = num(p.fleet.focus_ms) || 0;
+    for (const r of Object.values(p.sessions || {})) if (r && typeof r === 'object') f += pomoNow(p, r, now).today;
+    return Math.max(0, f);
   }
   function mmss(ms) { const s = Math.floor(ms / 1000); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
   function pomoDur(ms) {
@@ -3327,13 +3339,14 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
       showClock ? h('span', { class: 'pm-t', 'aria-hidden': 'true', text: mmss(cur.ms) + ' / ' + mmss(cur.full) }) : null,
       h('span', { class: 'pm-n', 'aria-hidden': 'true', text: tr('🍅×{n} today', { n: done }) }));
   }
-  const pomoSig = (code) => { const p = pomoView(), r = p && pomoOf(code); return r ? JSON.stringify(r) + (p.at || '') + LANG : ''; };
+  const pomoSig = (code) => { const r = pomoOf(code); return r ? JSON.stringify(r) + LANG : ''; };
+  let pomoKeyFocus = null;         // the focus text the Deck key shows (re-rendered when the minute changes)
   // Every second: the running clocks only (no re-render).
   function pomoTick() {
     const p = pomoView();
     if (!p || document.hidden) return;
     const now = Date.now();
-    if (S.demo) pomoDemoStep(p, now);
+    if (S.demo) { p.seen = now; pomoDemoStep(p, now); }
     for (const el of document.querySelectorAll('.spomo.live[data-pomo]')) {
       const r = pomoOf(el.dataset.pomo);
       if (!r) continue;
@@ -3348,32 +3361,30 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
       const r = pomoOf(el.dataset.pomoT);
       if (r) { const cur = pomoNow(p, r, now); if (cur.live) el.textContent = mmss(cur.ms); }
     }
+    if (pomoKeyFocus !== null && pomoDur(pomoFleetFocus(p, now)) !== pomoKeyFocus) renderDeck();
   }
   setInterval(pomoTick, 1000);
   // The demo has no collector: a running clock that reaches the end completes there and then.
   function pomoDemoStep(p, now) {
-    const run = Object.values(p.sessions || {}).filter((r) => r && r.running === true), age = now - ts(p.at);
-    const hit = run.filter((r) => (num(r.progress_ms) || 0) + age >= pomoFull(p));
+    const full = pomoFull(p), last = p.days[p.days.length - 1];
+    const hit = Object.values(p.sessions || {}).filter((r) => r && r.running === true && num(r.started_at) != null && now - r.started_at >= full);
     if (!hit.length) return;
-    for (const r of run) {
-      const full = (num(r.progress_ms) || 0) + age >= pomoFull(p);
-      r.focus_ms = (num(r.focus_ms) || 0) + (full ? pomoFull(p) - (num(r.progress_ms) || 0) : age);
-      if (full) r.done = (num(r.done) || 0) + 1;
-      r.progress_ms = full ? 0 : (num(r.progress_ms) || 0) + age;
+    for (const r of hit) {
+      const end = r.started_at + full, counted = end - Math.max(r.started_at, num(p.day_start) || 0);
+      r.focus_ms = (num(r.focus_ms) || 0) + counted; p.fleet.focus_ms += counted; last.focus_ms += counted;
+      r.done = (num(r.done) || 0) + 1; p.fleet.done += 1; last.done += 1;
+      r.started_at = end; r.done_at = end;
     }
-    p.at = now;
-    const total = Object.values(p.sessions).reduce((a, r) => a + (num(r.done) || 0), 0);
-    p.fleet.done = total; p.days[p.days.length - 1].done = total;
-    p.fleet.focus_ms = Object.values(p.sessions).reduce((a, r) => a + (num(r.focus_ms) || 0), 0); p.days[p.days.length - 1].focus_ms = p.fleet.focus_ms;
     renderAll();
   }
   // The Deck key "🍅 Today": the fleet total, focus time and a 7-day sparkline.
   function pomoModel() {
     const p = pomoView();
     const live = S.mode === 'live' || S.mode === 'demo';
-    if (!p || !live) return { key: 'pomo', known: false };
+    if (!p || !live) { pomoKeyFocus = null; return { key: 'pomo', known: false }; }
     const week = p.days.slice(-7).map((d) => (d && num(d.done)) || 0);
-    return { key: 'pomo', known: true, n: num(p.fleet.done) || 0, focus: pomoDur(p.fleet.focus_ms), week, top: Math.max(1, ...week) };
+    pomoKeyFocus = pomoDur(pomoFleetFocus(p, Date.now()));
+    return { key: 'pomo', known: true, n: num(p.fleet.done) || 0, focus: pomoKeyFocus, week, top: Math.max(1, ...week) };
   }
   function buildPomoKey(m) {
     const cell = h('div', { class: 'dcell', dataset: { deck: 'pomo' } });
@@ -3428,7 +3439,7 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
       return;
     }
     const now = Date.now();
-    box.append(h('p', { class: 'pm-total' }, h('strong', { text: tr('AI fleet: {n} 🍅', { n: num(p.fleet.done) || 0 }) }), ' · ', tr('{focus} focus', { focus: pomoDur(p.fleet.focus_ms) })),
+    box.append(h('p', { class: 'pm-total' }, h('strong', { text: tr('AI fleet: {n} 🍅', { n: num(p.fleet.done) || 0 }) }), ' · ', tr('{focus} focus', { focus: pomoDur(pomoFleetFocus(p, now)) })),
       h('p', { class: 'note', text: tr('Today is {day} ({tz}).', { day: str(p.today), tz: str(p.tz) || tr('system time') }) }));
     const rows = Object.entries(p.sessions || {}).filter(([, r]) => r && typeof r === 'object')
       .sort((a, b) => (num(b[1].done) || 0) - (num(a[1].done) || 0) || (num(b[1].focus_ms) || 0) - (num(a[1].focus_ms) || 0) || a[0].localeCompare(b[0]));
@@ -3440,14 +3451,15 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
         h('span', { class: 'pm-code', text: code }),
         h('span', { class: 'pm-tom', 'aria-hidden': 'true', text: done ? '🍅'.repeat(Math.min(done, 8)) + (done > 8 ? '+' : '') : '·' }),
         h('span', { class: 'pm-cnt', text: '×' + done }),
-        h('span', { class: 'pm-f', text: pomoDur(r.focus_ms) }),
+        h('span', { class: 'pm-f', text: pomoDur(pomoFocus(p, r, now)) }),
         h('span', { class: 'pm-cur' + (cur.live ? ' live' : ''), dataset: cur.live ? { pomoT: code } : null, text: cur.clock && (cur.ms || cur.live) ? mmss(cur.ms) : '' }));
     })));
     box.append(h('h3', { text: tr('Last 14 days') }));
     const top = Math.max(1, ...p.days.map((d) => (d && num(d.done)) || 0));
     box.append(h('div', { class: 'pm-hist', role: 'list', 'aria-label': tr('Pomodoros per day, last 14 days') }, p.days.slice(-14).map((d, i, a) => {
       const n = (d && num(d.done)) || 0, day = str(d && d.date);
-      return h('div', { class: 'pm-day' + (i === a.length - 1 ? ' today' : ''), role: 'listitem', 'aria-label': tr('{day}: {n} 🍅, {focus} focus', { day, n, focus: pomoDur(d && d.focus_ms) }), title: tr('{day}: {n} 🍅, {focus} focus', { day, n, focus: pomoDur(d && d.focus_ms) }) },
+      const focus = pomoDur(i === a.length - 1 && day === str(p.today) ? pomoFleetFocus(p, now) : d && d.focus_ms);
+      return h('div', { class: 'pm-day' + (i === a.length - 1 ? ' today' : ''), role: 'listitem', 'aria-label': tr('{day}: {n} 🍅, {focus} focus', { day, n, focus }), title: tr('{day}: {n} 🍅, {focus} focus', { day, n, focus }) },
         h('span', { class: 'pm-n', 'aria-hidden': 'true', text: n ? String(n) : '' }),
         h('span', { class: 'pm-bar', 'aria-hidden': 'true' }, h('i', { style: 'height:' + (n ? Math.max(6, Math.round(n / top * 100)) : 0) + '%' })),
         h('span', { class: 'pm-d', 'aria-hidden': 'true', text: day.slice(8) }));
@@ -4414,18 +4426,29 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
     ];
     S.pomodoro = (() => {
       const ymd = (t) => { const d = new Date(t); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+      const d0 = new Date(now); d0.setHours(0, 0, 0, 0);
+      const dayStart = d0.getTime();
+      // focus: today's total; a running session's started_at is fixed, and the view's focus_ms leaves
+      // out its running stretch (the page adds it back), as board-serve's view does.
+      const run = (done, focus, into, doneAgo) => ({ done, focus, running: true, state: 'working', started_at: now - into, progress_ms: null, done_at: now - doneAgo });
+      const rest = (done, focus, progress, state, doneAgo) => ({ done, focus, running: false, state, started_at: null, progress_ms: progress, done_at: doneAgo == null ? null : now - doneAgo });
       const sessions = {
-        DOCS: { done: 5, focus_ms: 142 * min, progress_ms: 17 * min, running: true, state: 'working', done_at: now - 18 * min },
-        OPS: { done: 2, focus_ms: 74 * min, progress_ms: 25 * min - 9000, running: true, state: 'working', done_at: now - 26 * min },
-        API: { done: 3, focus_ms: 84 * min, progress_ms: 9 * min, running: false, state: 'needs-you', done_at: now - 40 * min },
-        QA: { done: 3, focus_ms: 80 * min, progress_ms: 0, running: false, state: 'done', done_at: now - 70 * min },
-        WEB: { done: 1, focus_ms: 31 * min, progress_ms: 6 * min, running: false, state: 'needs-you', done_at: now - 95 * min },
-        DATA: { done: 0, focus_ms: 12 * min, progress_ms: 0, running: false, state: 'rest', done_at: null } };
+        DOCS: run(5, 142 * min, 17 * min, 18 * min),
+        OPS: run(2, 74 * min, 25 * min - 9000, 26 * min),
+        API: rest(3, 84 * min, 9 * min, 'needs-you', 40 * min),
+        QA: rest(3, 80 * min, 0, 'done', 70 * min),
+        WEB: rest(1, 31 * min, 6 * min, 'needs-you', 95 * min),
+        DATA: rest(0, 12 * min, 0, 'rest', null) };
+      let shift = 0, total = 0, focus = 0;
+      for (const r of Object.values(sessions)) {
+        const live = r.running ? Math.max(0, now - Math.max(r.started_at, dayStart)) : 0;
+        r.focus_ms = r.focus - live; shift += live; total += r.done; focus += r.focus; delete r.focus;
+      }
       const past = [9, 12, 0, 4, 15, 11, 13, 10, 8, 16, 14, 7, 12];
-      const total = Object.values(sessions).reduce((a, r) => a + r.done, 0), focus = Object.values(sessions).reduce((a, r) => a + r.focus_ms, 0);
       const days = past.map((n, i) => ({ date: ymd(now - (past.length - i) * 86400000), done: n, focus_ms: n * 27 * min, sessions: {} }));
-      days.push({ date: ymd(now), done: total, focus_ms: focus, sessions: {} });
-      return { enabled: true, focus_ms: 25 * min, grace_ms: 2 * min, tz: '', at: now, today: ymd(now), fleet: { done: total, focus_ms: focus }, sessions, days };
+      days.push({ date: ymd(now), done: total, focus_ms: focus - shift, sessions: {} });
+      return { enabled: true, focus_ms: 25 * min, grace_ms: 2 * min, tz: '', today: ymd(now), day_start: dayStart, seen: now, seen_step_ms: 5 * min,
+        fleet: { done: total, focus_ms: focus - shift }, sessions, days };
     })();
     S.ledger = { rows: [
       { version: 'v1', date: '2026-01-05', what: 'Demo row: first version', review: '2 rounds · LGTM', lead: { input: 1200, cache_read: 480000, cache_write: 52000, output: 21000, total: 554200 }, teammate: 310000, note: 'demo' },

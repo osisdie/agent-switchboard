@@ -14,12 +14,14 @@ pomodoro.grace_minutes, default 2):
   needs-you  the clock stops and the progress is kept, however long the human takes: the session
              is in the middle of its work, waiting on the owner.
   offline    resets the current pomodoro (the session ended).
-  no data    when no collector run was recorded for longer than GRACE (at least NODATA_MIN_MS: the
-             collector was stopped, the machine slept), that gap counts as a break: every current
-             pomodoro resets. A collector restarted within that time carries on.
+  no data    when no collector run was recorded for longer than nodata_ms() (GRACE, at least 60 s
+             and at least HEARTBEAT_MS + 2 poll intervals: the collector was stopped, the machine
+             slept), that gap counts as a break: every current pomodoro resets. A collector
+             restarted within that time (less the HEARTBEAT_MS a write may lag) carries on.
 Time between two collector runs counts for the state seen at the first of them. Focused minutes
 are split at local midnight (pomodoro.timezone, an IANA name; empty = the system's), and a
-pomodoro is counted on the day it completes. 14 days of tallies are kept.
+pomodoro is counted on the day it completes. 14 days of tallies are kept (a day later than today,
+after the clock moved back, is kept too).
 
 pomodoro.json (0600) is rewritten when something a viewer sees changed (a state, a tally, a reset)
 and at least every HEARTBEAT_MS while a pomodoro runs or is paused, so a restarted collector
@@ -33,7 +35,7 @@ Usage:
   pomodoro.py show [today|week] [--json|--mirror]
       today      the fleet total, each session's count, focus and the current pomodoro
       week       the last 7 days
-      --json     the board view (week: just those days)
+      --json     today's tallies as of the last collector run (week: just those days)
       --mirror   what the operator may write to meta/pomodoro (daily totals only)
 """
 import datetime as dt
@@ -50,6 +52,7 @@ VERSION = 1
 HISTORY_DAYS = 14
 HEARTBEAT_MS = 20 * 1000
 NODATA_MIN_MS = 60 * 1000  # a gap shorter than this is never "no data" (> HEARTBEAT_MS + a run)
+SEEN_STEP_MS = 5 * 60 * 1000  # the board view's freshness bucket (see board_view)
 FOCUS = "working"
 BREAK = ("done", "rest")
 PAUSE = ("needs-you",)
@@ -77,7 +80,15 @@ def settings(cfg):
         "tz": tzname.strip() if tzinfo(tzname.strip()) is not None else "",
         "notify": c.get("notify") is True,
         "notify_every": int(_num(c.get("notify_every"), DEFAULTS["notify_every"], 1, 1000)),
+        # fleet.yaml poll_interval (s): a gap is "no data" only beyond a heartbeat plus two runs
+        "poll_ms": int(_num(cfg.get("poll_interval") if isinstance(cfg, dict) else None, 3, 1, 3600) * 1000),
     }
+
+
+def nodata_ms(st):
+    """How long without a collector run counts as a break: GRACE, at least NODATA_MIN_MS, and at
+    least one heartbeat plus two poll intervals (a slow poll_interval never looks like a gap)."""
+    return max(st["grace_ms"], NODATA_MIN_MS, HEARTBEAT_MS + 2 * st.get("poll_ms", 3000))
 
 
 def tzinfo(name):
@@ -186,7 +197,7 @@ def step(doc, states, now, st):
     for code in sorted(set(doc["sessions"]) | {c for c in states if CODE_RE.match(str(c))}):
         rec = doc["sessions"].get(code) or {"state": "offline", "acc": 0, "away_since": None, "done_at": None}
         prev, new = rec["state"], states.get(code) or "offline"
-        if gap is not None and gap > max(grace, NODATA_MIN_MS):
+        if gap is not None and gap > nodata_ms(st):
             _reset(rec, code, seen, events)             # nothing was seen for longer than the grace
             rec["away_since"] = None
         elif gap is not None:
@@ -201,6 +212,7 @@ def step(doc, states, now, st):
         if new in BREAK:
             if not (prev in BREAK and rec["away_since"] is not None):
                 rec["away_since"] = now
+            rec["away_since"] = min(rec["away_since"], now)  # the clock may have moved back
         else:
             rec["away_since"] = None
         if new not in (FOCUS,) + BREAK + PAUSE:
@@ -212,8 +224,10 @@ def step(doc, states, now, st):
             doc["sessions"][code] = rec
     doc["at"] = now
     today = day_of(now, tz)
-    keep = set(days_back(today, HISTORY_DAYS))
-    doc["days"] = {d: v for d, v in doc["days"].items() if d in keep}
+    # Only days older than the window go: a later day stays (the clock moved back across midnight,
+    # or pomodoro.timezone moved west) and is dropped once it, too, is out of the window.
+    oldest = days_back(today, HISTORY_DAYS)[0]
+    doc["days"] = {d: v for d, v in doc["days"].items() if d >= oldest}
     return doc, events
 
 
@@ -309,9 +323,15 @@ def run(cfg, home, rows, now, notify_ok=True, send=None):
 
 # ------------------------------------------------------------------ views (board-serve, CLI)
 
-def board_view(doc, now):
-    """What board-serve gives the page (state.pomodoro): numbers and session codes only. The
-    current pomodoro is as of `at`; the page runs the clock on for a `running` one."""
+def day_start(ms, tz):
+    """Epoch ms of the local midnight that starts the day of `ms`."""
+    d = dt.datetime.fromtimestamp(ms / 1000.0, tz).date()
+    return int(dt.datetime(d.year, d.month, d.day, tzinfo=tz).timestamp() * 1000)
+
+
+def raw_view(doc, now):
+    """Today's tallies and each session's current pomodoro, as of the document's `at` (for the CLI
+    and the Artifact mirror)."""
     if not isinstance(doc, dict):
         return None
     s = doc.get("settings") if isinstance(doc.get("settings"), dict) else {}
@@ -342,8 +362,44 @@ def board_view(doc, now):
             "sessions": sessions, "days": days}
 
 
+def board_view(doc, now):
+    """What board-serve gives the page (state.pomodoro): numbers and session codes only. It changes
+    only when something a viewer sees changes, never with the collector's heartbeat, so it costs no
+    SSE frame while sessions simply keep working or keep waiting:
+
+      - a running pomodoro carries `started_at` (= at - progress: fixed while the session works)
+        and `progress_ms: null`; a paused one carries `progress_ms` and `started_at: null`;
+      - every focus_ms of today leaves out the running stretches; the page adds
+        now - max(started_at, day_start) for each running session;
+      - `seen` is the last collector run floored to SEEN_STEP_MS (null when nothing runs): the page
+        stops the clocks once it is older than seen_step_ms plus a few minutes.
+    """
+    v = raw_view(doc, now)
+    if not v:
+        return None
+    at = v.pop("at")
+    ds = day_start(now, tzinfo(v["tz"]))
+    shift, running = 0, False
+    for r in v["sessions"].values():
+        if r["running"] and at is not None:
+            running = True
+            r["started_at"] = at - r["progress_ms"]
+            r["progress_ms"] = None
+            live = max(0, at - max(r["started_at"], ds))  # the running stretch that counts for today
+            r["focus_ms"] -= live
+            shift += live
+        else:
+            r["running"] = False if at is None else r["running"]
+            r["started_at"] = None
+    v["fleet"]["focus_ms"] -= shift
+    v["days"][-1]["focus_ms"] -= shift
+    v.update({"day_start": ds, "seen": (at // SEEN_STEP_MS) * SEEN_STEP_MS if running else None,
+              "seen_step_ms": SEEN_STEP_MS})
+    return v
+
+
 def mirror_view(view):
-    """meta/pomodoro for the Artifact: the daily totals, no running clock."""
+    """meta/pomodoro for the Artifact: the daily totals (from raw_view), no running clock."""
     if not view:
         return None
     return {"today": view["today"], "tz": view["tz"], "focus_ms": view["focus_ms"], "fleet": view["fleet"],
@@ -371,7 +427,7 @@ def show(argv, home=None, now=None, out=sys.stdout):
             sys.stderr.write("usage: board pomodoro [today|week] [--json|--mirror]\n")
             return 2
     st = settings(fleet.load_fleet())
-    view = board_view(read_doc(home), now) if st["enabled"] else None
+    view = raw_view(read_doc(home), now) if st["enabled"] else None
     if fmt == "mirror":
         out.write(json.dumps(mirror_view(view), ensure_ascii=False, sort_keys=True) + "\n")
         return 0

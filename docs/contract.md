@@ -969,13 +969,16 @@ GRACE = `pomodoro.grace_minutes`, default 2):
 | `done`, `rest` | paused. A done/rest run longer than GRACE resets it to 0:00; a shorter one keeps its progress |
 | `needs-you` | paused, progress kept, however long the human takes |
 | `offline` (or a code no longer in the snapshot) | reset |
-| no collector run for longer than GRACE (at least 60 s) | that gap is a break: every current pomodoro resets |
+| no collector run for longer than NODATA = max(GRACE, 60 s, 20 s + 2 × `poll_interval`) | that gap is a break: every current pomodoro resets |
 
 - The time between two collector runs counts for the state seen at the first of them; nothing is
   extrapolated past the last run.
 - Focused minutes are split at local midnight in `pomodoro.timezone` (an IANA name; empty = the
   system's local time, DST-aware). A pomodoro counts on the day it completes, even if it started the
-  day before. 14 days are kept; older days are dropped on the next run.
+  day before. 14 days are kept: only days older than that window are dropped. A day later than
+  today stays (the clock moved back across midnight, or `pomodoro.timezone` moved west).
+- A clock that moves back credits nothing for that run, and a done/rest run never starts after
+  `now`.
 - No short-break counting: a break is just a pause (or a reset after GRACE).
 
 **`$BOARD_HOME/pomodoro.json`** (0600, written by the collector only):
@@ -993,23 +996,40 @@ GRACE = `pomodoro.grace_minutes`, default 2):
 
 It is rewritten when something a viewer sees changes (a state, a tally, a reset, a milestone) and
 at least every 20 s while a pomodoro runs or is paused. A run that skips the write loses nothing:
-the next run integrates again from the stored `at`. So a restarted collector carries on (a restart
-shorter than GRACE − 20 s keeps every pomodoro). `pomodoro.enabled: false` removes the file.
+the next run integrates again from the stored `at`. So a restarted collector carries on: the stored
+`at` can lag the last run by up to 20 s, so a restart shorter than NODATA − 20 s (100 s with the
+defaults) keeps every pomodoro. `pomodoro.enabled: false` removes the file.
 
 **`/api/state` `pomodoro`** (`board_view`, numbers and session codes only; null when there is no
 file):
 
 ```json
-{ "enabled": true, "focus_ms": 1500000, "grace_ms": 120000, "tz": "", "at": 1763193600000,
-  "today": "2026-11-15", "fleet": { "done": 14, "focus_ms": 21000000 },
-  "sessions": { "API": { "done": 3, "focus_ms": 5400000, "progress_ms": 600000, "running": true,
-                         "state": "working", "done_at": 1763192000000 } },
+{ "enabled": true, "focus_ms": 1500000, "grace_ms": 120000, "tz": "",
+  "today": "2026-11-15", "day_start": 1763164800000,      // today's local midnight
+  "seen": 1763193600000, "seen_step_ms": 300000,          // the last run, floored to 5 min (null: nothing runs)
+  "fleet": { "done": 14, "focus_ms": 20400000 },
+  "sessions": {
+    "API": { "done": 3, "focus_ms": 4800000, "running": true, "state": "working",
+             "started_at": 1763193000000, "progress_ms": null, "done_at": 1763192000000 },
+    "WEB": { "done": 1, "focus_ms": 1800000, "running": false, "state": "needs-you",
+             "started_at": null, "progress_ms": 360000, "done_at": 1763180000000 } },
   "days": [ { "date": "2026-11-02", "done": 9, "focus_ms": 14580000, "sessions": { "API": 2 } },
             … 14 entries, oldest first, today last … ] }
 ```
 
-`progress_ms` is as of `at`; the page runs a `running` clock on from `at` and stops it when `at`
-is more than 3 minutes old. **Artifact:** the operator may mirror `board pomodoro --mirror` to
+The view changes only when something a viewer sees changes, never with the collector's heartbeat,
+so a fleet that keeps working (or keeps waiting) costs no SSE frame beyond one per 5-minute `seen`
+bucket (none while nothing runs):
+- A running pomodoro has a fixed `started_at` (= `at` − progress) and `progress_ms: null`; a paused
+  one has `progress_ms` and `started_at: null`.
+- Today's `focus_ms` (per session, `fleet`, the last `days` entry) leaves out the running stretches.
+  The page adds `min(now, started_at + FOCUS) − max(started_at, day_start)` for each running
+  session.
+- The page runs the clocks while `now − seen` < `seen_step_ms` + 3 minutes, and otherwise holds them
+  at `seen + seen_step_ms` and shows them as paused (the collector stopped).
+- No `at`: `board pomodoro --json` (and `--mirror`) give the numbers as of the last run instead.
+
+**Artifact:** the operator may mirror `board pomodoro --mirror` to
 `meta/pomodoro` (`today, tz, focus_ms, fleet, sessions: {code: {done, focus_ms}}, days,
 updated_at`): daily totals only, no running clock, nothing sensitive. The page reads it read-only.
 

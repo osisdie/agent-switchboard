@@ -183,6 +183,47 @@ class Engine(unittest.TestCase):
         self.assertTrue(view["sessions"]["OPS"]["running"])
         self.assertEqual(view["days"][-1]["sessions"], {"API": 1, "OPS": 1, "WEB": 2})
 
+    def test_clock_back_across_midnight_keeps_the_later_day(self):
+        start = int(dt.datetime(2026, 11, 16, 0, 10, tzinfo=dt.timezone.utc).timestamp() * 1000)
+        doc, _, t = play([(26, W)], start=start)
+        self.assertEqual(done_on(doc, "2026-11-16", "API"), 1)
+        doc, _ = pomodoro.step(doc, W, start - 30 * MIN, ST)   # the clock jumps back to 23:40 the day before
+        self.assertEqual(done_on(doc, "2026-11-16", "API"), 1)
+        doc, _, _ = play([(5, W)], doc=doc, start=start - 30 * MIN)
+        self.assertEqual(done_on(doc, "2026-11-16", "API"), 1)
+
+    def test_timezone_moving_west_keeps_today(self):
+        # 2026-11-16 03:00 in Asia/Taipei is still 2026-11-15 in UTC
+        tpe = pomodoro.settings({"pomodoro": {"timezone": "Asia/Taipei"}})
+        start = int(dt.datetime(2026, 11, 15, 19, 0, tzinfo=dt.timezone.utc).timestamp() * 1000)
+        doc, _, t = play([(25, W)], start=start, st=tpe)
+        self.assertEqual(done_on(doc, "2026-11-16", "API"), 1)
+        doc, _ = pomodoro.step(doc, W, t + 3 * SEC, ST)        # pomodoro.timezone: UTC from now on
+        self.assertEqual(done_on(doc, "2026-11-16", "API"), 1)
+
+    def test_old_days_still_go(self):
+        doc = {"days": {"2026-10-01": {"API": {"done": 1, "focus_ms": 1}}, "2026-11-02": {"API": {"done": 1, "focus_ms": 1}},
+                        "2026-11-01": {"API": {"done": 1, "focus_ms": 1}}}}
+        doc, _ = pomodoro.step(doc, W, T0, ST)
+        self.assertEqual(sorted(doc["days"]), ["2026-11-02"])
+
+    def test_away_since_never_after_now(self):
+        doc, _, t = play([(10, W), (1, {"API": "done"})])
+        doc, _ = pomodoro.step(doc, {"API": "done"}, t - 5 * MIN, ST)   # the clock moved back
+        self.assertLessEqual(doc["sessions"]["API"]["away_since"], t - 5 * MIN)
+        doc, _ = pomodoro.step(doc, W, t - 5 * MIN + 30 * SEC, ST)
+        self.assertEqual(doc["sessions"]["API"]["acc"], 10 * MIN)        # a 30 s break: kept
+
+    def test_no_data_threshold_follows_poll_interval(self):
+        st = pomodoro.settings({"poll_interval": 60, "pomodoro": {"timezone": "UTC"}})
+        self.assertEqual(pomodoro.nodata_ms(st), 140 * SEC)
+        self.assertEqual(pomodoro.nodata_ms(ST), 2 * MIN)
+        doc, _, t = play([(10, W)], st=st, tick=60 * SEC)
+        doc, ev = pomodoro.step(doc, W, t + 100 * SEC, st)              # one slow run: not a gap
+        self.assertEqual(doc["sessions"]["API"]["acc"], 10 * MIN + 100 * SEC)
+        doc, ev = pomodoro.step(doc, W, t + 100 * SEC + 150 * SEC, st)  # longer: a gap
+        self.assertEqual(doc["sessions"]["API"]["acc"], 0)
+
     def test_bad_input_is_ignored(self):
         doc, _ = pomodoro.step({"sessions": {"../x": {"acc": 5}, "OK": "nope"}, "days": {"x": {}}, "at": "1"},
                                {"bad code!": "working", "API": "working"}, T0, ST)
@@ -325,6 +366,62 @@ class Collector(unittest.TestCase):
         doc, _ = pomodoro.run({"pomodoro": {"enabled": False}}, HOME, [], T0 + SEC, send=self.send)
         self.assertIsNone(doc)
         self.assertFalse(os.path.exists(os.path.join(HOME, "pomodoro.json")))
+
+
+class StableView(unittest.TestCase):
+    """The board view changes only when something a viewer sees changes, never with a heartbeat."""
+
+    def setUp(self):
+        for f in os.listdir(HOME):
+            os.remove(os.path.join(HOME, f))
+        self.cfg = {"pomodoro": {"timezone": "UTC"}}
+
+    def views(self, minutes, states, start, tick=3 * SEC):
+        rows = [{"code": c, "state": s} for c, s in states.items()]
+        t, end, out = start, start + int(minutes * MIN), []
+        while t < end:
+            t += tick
+            pomodoro.run(self.cfg, HOME, rows, t)
+            out.append((t, pomodoro.board_view(pomodoro.read_doc(HOME), t)))
+        return out
+
+    def test_working_changes_only_with_the_seen_bucket(self):
+        pomodoro.run(self.cfg, HOME, [{"code": "API", "state": "working"}], T0 + 30 * SEC)
+        vs = self.views(12, W, T0 + 30 * SEC)
+        changes = [(a, b) for (_, a), (_, b) in zip(vs, vs[1:]) if a != b]
+        self.assertTrue(changes)
+        for a, b in changes:   # each change is the 5-minute freshness bucket, nothing else
+            self.assertNotEqual(a["seen"], b["seen"])
+            self.assertEqual(dict(a, seen=None), dict(b, seen=None))
+        self.assertLessEqual(len(changes), 3)
+        r = vs[-1][1]["sessions"]["API"]
+        self.assertEqual((r["running"], r["progress_ms"], r["started_at"]), (True, None, T0 + 30 * SEC))
+        self.assertNotIn("at", vs[-1][1])
+
+    def test_waiting_does_not_change_at_all(self):
+        pomodoro.run(self.cfg, HOME, [{"code": "API", "state": "working"}], T0)
+        t = self.views(5, W, T0)[-1][0]
+        vs = self.views(12, {"API": "needs-you"}, t)
+        self.assertEqual(len({json.dumps(v, sort_keys=True) for _, v in vs}), 1)
+        r = vs[-1][1]["sessions"]["API"]
+        self.assertEqual((r["running"], r["progress_ms"], r["started_at"], vs[-1][1]["seen"]), (False, 5 * MIN + 3 * SEC, None, None))  # seen 3 s after the change
+
+    def test_a_completion_is_a_change(self):
+        pomodoro.run(self.cfg, HOME, [{"code": "API", "state": "working"}], T0)
+        vs = self.views(26, W, T0, tick=20 * SEC)
+        dones = sorted({v["fleet"]["done"] for _, v in vs})
+        self.assertEqual(dones, [0, 1])
+
+    def test_page_formula_gives_the_focus(self):
+        # base + now - max(started_at, day_start) == the focus the collector counted, across midnight
+        start = int(dt.datetime(2026, 11, 15, 23, 50, tzinfo=dt.timezone.utc).timestamp() * 1000)
+        doc, _, t = play([(10, W), (20, {"API": "needs-you"}), (15, W)], start=start)
+        v = pomodoro.board_view(dict(doc, settings={"tz": "UTC"}), t)
+        r = v["sessions"]["API"]
+        live = t - max(r["started_at"], v["day_start"])
+        self.assertEqual(r["focus_ms"] + live, doc["days"]["2026-11-16"]["API"]["focus_ms"])
+        self.assertEqual(v["fleet"]["focus_ms"] + live, 15 * MIN)
+        self.assertEqual(t - r["started_at"], doc["sessions"]["API"]["acc"])
 
 
 class Cli(unittest.TestCase):

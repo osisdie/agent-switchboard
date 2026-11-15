@@ -246,6 +246,27 @@ def main():
             pn = pg.evaluate(PANEL_JS)
             check("  the panel says it is a mirror", "Mirrored by the operator" in pn["text"] and pn["rows"] == ["API×3", "WEB×1"], (pn["rows"], pn["text"][-120:]))
             pg.close()
+            print("the clock stops when the collector's data is stale")
+            now_ms = int(time.time() * 1000)
+            for label, seen, want_live in (("fresh", now_ms - now_ms % 300000, True), ("stale", now_ms - 20 * 60000, False)):
+                view = {"enabled": True, "focus_ms": 1500000, "grace_ms": 120000, "tz": "", "today": "2026-11-15", "day_start": now_ms - 3600000,
+                        "seen": seen, "seen_step_ms": 300000, "fleet": {"done": 0, "focus_ms": 0},
+                        "sessions": {"API": {"done": 0, "focus_ms": 0, "running": True, "state": "working", "started_at": now_ms - (600000 if want_live else 18 * 60000),
+                                             "progress_ms": None, "done_at": None}},
+                        "days": [{"date": "2026-11-15", "done": 0, "focus_ms": 0, "sessions": {}}]}
+                pg = new_page(claude_stub(view))
+                pg.goto(PAGE)
+                pg.wait_for_timeout(800)
+                a1 = pg.evaluate(ROWS_JS).get("API") or {}
+                pg.wait_for_timeout(1300)
+                a2 = pg.evaluate(ROWS_JS).get("API") or {}
+                if want_live:
+                    check("  fresh: the clock runs from started_at", a1.get("live") and re.search(r"\b10:0\d / 25:00", a1.get("text", "")) and a2.get("text") != a1.get("text"), (a1, a2))
+                else:
+                    check("  stale: the clock holds at the end of the last bucket, marked paused", not a1.get("live") and a1.get("text") == a2.get("text")
+                          and a1.get("text", "").startswith("3:00 / 25:00") and "(paused)" in a1.get("label", ""), (a1, a2))
+                pg.close()
+
             pg = new_page(claude_stub(None))
             pg.goto(PAGE)
             pg.wait_for_timeout(800)
