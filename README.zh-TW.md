@@ -327,7 +327,8 @@ flowchart LR
   永遠不是核准，每個 session 每小時最多 4 則。`schedule.advise: false` 只顯示不送出；
   `board schedule off` 暫停排程。花了時間的卡關會成為**經驗**（`board lesson ls`）：出現兩次就生效，
   它的規則（固定詞彙、只能收緊：暫緩重型工作、同時少跑幾個、一個 repo 一次一件⋯）會影響排程。
-  核可者可以用 `board lesson …` 或 `/api/lessons` 新增、編輯、停用和刪除經驗。
+  核可者可以用 `board lesson …`、`/api/lessons` 或看板的**經驗**區塊（搜尋、規則編輯器、
+  刪除前會再確認；其他人唯讀）新增、編輯、停用和刪除經驗。
   ```bash
   board task set <task-id> --repo shop --branch feat/export --size M --heavy yes --priority 2
   board task dep <task-id> --on <other-task> --kind merge
