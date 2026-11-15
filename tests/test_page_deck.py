@@ -134,8 +134,8 @@ def main():
             pg.wait_for_timeout(500)
             keys = pg.evaluate(KEYS_JS)
             k = by_key(keys)
-            check("5 x 3 keys and the wide strip, in order",
-                  [x["key"] for x in keys] == ["hitl", "s1", "s2", "s3", "s4", "u-5h", "s5", "s6", "s7", "s8", "u-7d", "burn", "sys", "quiet", "away", "wide"],
+            check("5 x 3 keys, the 🍅 key and the wide strip, in order",
+                  [x["key"] for x in keys] == ["hitl", "s1", "s2", "s3", "s4", "u-5h", "s5", "s6", "s7", "s8", "u-7d", "burn", "sys", "quiet", "away", "pomo", "wide"],
                   [x["key"] for x in keys])
             check("every key is a real button with a label", all(x["tag"] == "BUTTON" and x["type"] == "button" and x["label"] for x in keys),
                   [(x["key"], x["tag"], x["label"][:30]) for x in keys if x["tag"] != "BUTTON" or not x["label"]])
@@ -286,7 +286,7 @@ def main():
             pg.goto(PAGE)
             pg.wait_for_timeout(700)
             k = by_key(pg.evaluate(KEYS_JS))
-            check("keys render from the db", len(k) == 16 and "API" in k["s1"]["text"] and "WEB" in k["s2"]["text"] and "42%" in k["u-5h"]["text"], [x["text"][:20] for x in k.values()])
+            check("keys render from the db", len(k) == 17 and "API" in k["s1"]["text"] and "WEB" in k["s2"]["text"] and "42%" in k["u-5h"]["text"], [x["text"][:20] for x in k.values()])
             check("  HITL counts the pending permission", " 1 " in " " + k["hitl"]["text"] + " " and "w-permission" in k["hitl"]["cls"], k["hitl"])
             check("  quiet and away from meta/notify and meta/away", "All muted" in k["quiet"]["text"] and "Away" in k["away"]["text"], (k["quiet"]["text"], k["away"]["text"]))
             check("  no burn rate on the Artifact page", "no burn data" in k["burn"]["text"], k["burn"]["text"])
@@ -394,7 +394,7 @@ def main():
             pg = new_page()
             pg.goto(base)
             pg.wait_for_timeout(1000)
-            check("a non-approver sees the keys but no actions", pg.evaluate("() => document.querySelectorAll('#deck-grid .dkey').length") == 16
+            check("a non-approver sees the keys but no actions", pg.evaluate("() => document.querySelectorAll('#deck-grid .dkey').length") == 17
                   and not pg.query_selector("#deck-grid button.dsec"))
             pg.mouse.move(*(lambda b: (b["x"] + 20, b["y"] + 20))(pg.locator("#deck-grid .dkey.hitl").bounding_box()))
             pg.mouse.down()

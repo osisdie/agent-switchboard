@@ -786,6 +786,57 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   .dkey .k-ring .pct { font-size: 18px; }
   .dkey.wide { grid-template-columns: minmax(0, 1fr); }
 }
+/* ---------- pomodoro: the card ring, the Deck key "🍅 Today", its panel, the celebration ---------- */
+:root { --pomo: #c23b26; --pomo-soft: #fbe4de; --pomo-leaf: #2f8a4c; --dk-pomo: #ff7558; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --pomo: #ff8a70; --pomo-soft: #3a1c15; --pomo-leaf: #63cf8d; } }
+:root[data-theme="dark"] { --pomo: #ff8a70; --pomo-soft: #3a1c15; --pomo-leaf: #63cf8d; }
+.spomo { position: relative; display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.spomo .pring { flex: none; }
+.spomo .pm-t { color: var(--ink); font-family: var(--f-mono); }
+.spomo .pm-n { overflow: hidden; text-overflow: ellipsis; }
+.spomo .pm-t + .pm-n::before { content: "·"; margin-right: 6px; color: var(--muted); }
+.pring .pr-trk { stroke: var(--rule); }
+.pring .pr-val { stroke: var(--pomo); }
+.pring .pr-leaf { fill: var(--pomo-leaf); }
+.spomo:not(.live) .pring .pr-val { opacity: .55; }
+.dkey .k-pomo { display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; min-width: 0; }
+.dkey .k-spark { display: flex; align-items: flex-end; gap: 2px; height: 26px; flex: 0 1 58px; min-width: 0; }
+.dkey .k-spark i { flex: 1 1 0; min-width: 2px; border-radius: 2px 2px 0 0; background: color-mix(in srgb, var(--dk-pomo) 45%, var(--dk-edge)); }
+.dkey .k-spark i.today { background: var(--dk-pomo); }
+.dkey.pomo.on .k-big { color: var(--dk-pomo); }
+/* the wide strip shares the last row with the 🍅 key */
+.dcell.wide { grid-column: span 4; }
+.pomo-pop { animation: pomo-pop .5s ease-out 1; }
+@keyframes pomo-pop { 0% { transform: scale(1); } 40% { transform: scale(1.08); } 100% { transform: scale(1); } }
+.pomo-burst { position: absolute; left: 50%; top: 50%; width: 0; height: 0; pointer-events: none; z-index: 3; }
+.pomo-burst i { position: absolute; left: -.5em; top: -.6em; font-style: normal; font-size: 18px; opacity: 0; animation: pomo-fly 1.3s ease-out 1 forwards; animation-delay: calc(var(--i) * 90ms); --dx: calc((var(--i) - 1) * 26px); }
+@keyframes pomo-fly { 0% { transform: translate(0, 0) scale(.4); opacity: 0; } 20% { opacity: 1; } 100% { transform: translate(var(--dx), -42px) scale(1.15) rotate(calc((var(--i) - 1) * 25deg)); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .pomo-pop { animation: none; } .pomo-burst { display: none; } }
+dialog.pomo { width: min(560px, calc(100vw - 24px)); }
+.pm-total { font-size: 17px; margin: 0; }
+.pm-total strong { color: var(--pomo); }
+#pomo-body h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 18px 0 6px; }
+.pm-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.pm-list li { display: grid; grid-template-columns: minmax(0, 7em) minmax(0, 1fr) auto auto 3.4em; align-items: center; gap: 4px 10px; padding: 5px 0; border-bottom: 1px solid var(--rule); font-variant-numeric: tabular-nums; }
+.pm-code { font-family: var(--f-mono); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pm-tom { overflow: hidden; white-space: nowrap; letter-spacing: -2px; }
+.pm-cnt { font-weight: 650; }
+.pm-f, .pm-cur { color: var(--muted); font-size: 13px; text-align: right; }
+.pm-cur.live { color: var(--pomo); font-family: var(--f-mono); }
+.pm-hist { display: grid; grid-template-columns: repeat(14, minmax(0, 1fr)); gap: 3px; align-items: end; height: 120px; }
+.pm-day { display: grid; grid-template-rows: 16px 1fr 16px; height: 100%; min-width: 0; text-align: center; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.pm-bar { display: flex; align-items: flex-end; min-height: 0; }
+.pm-bar i { display: block; width: 100%; border-radius: 3px 3px 0 0; background: color-mix(in srgb, var(--pomo) 45%, var(--rule)); }
+.pm-day.today .pm-bar i { background: var(--pomo); }
+.pm-day.today .pm-d { color: var(--ink); font-weight: 650; }
+.pm-rules { margin-top: 14px; }
+@media (max-width: 620px) {
+  .dcell.wide { grid-column: span 2; }
+  .pm-list li { grid-template-columns: minmax(0, 6em) minmax(0, 1fr) auto 3.2em; }
+  .pm-list .pm-f { display: none; }
+  .pm-hist { gap: 2px; height: 100px; }
+  .pm-day { font-size: 10px; }
+}
 </style>
 
 <div class="wrap">
@@ -1059,6 +1110,16 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   </div>
 </dialog>
 
+<dialog class="info pomo" id="pomo" aria-labelledby="pomo-title">
+  <div class="info-in">
+    <div class="info-head">
+      <h2 id="pomo-title"><span aria-hidden="true">🍅 </span><span data-i18n>Pomodoro</span></h2>
+      <button class="icon-btn" id="pomo-close" type="button" data-i18n>Close</button>
+    </div>
+    <div id="pomo-body"></div>
+  </div>
+</dialog>
+
 <div class="toasts" id="toasts" aria-live="polite"></div>
 
 <script>
@@ -1080,6 +1141,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     notify: null,                // notification controls (board-serve state.notify / meta/notify) | null
     rc: null,                    // Remote Control choices (board-serve state.rc: {all, sessions}) | null
     resources: null,             // resources.json board view (local) | meta/resources (Artifact) | null
+    pomodoro: null,              // pomodoro tallies (board-serve state.pomodoro) | meta/pomodoro (Artifact) | null
     replies: new Map(),
     got: { sessions: false, decisions: false, messages: false, tasks: false, approvals: false, operator: false, consensus: false },
     slow: false, feedError: null, offlineDetail: null,
@@ -2090,7 +2152,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     return 'sd-' + str(code).replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 40) + '-' + hsh.toString(36);
   }
   function cardSig(s) {
-    return JSON.stringify(s) + '|' + JSON.stringify(rcView(s)) + '|' + S.busy.has('rc:' + s.code) + S.busy.has('compact:' + s.code) + (S.drafts.compactAsk === s.code) + rcEditor() + '|' + openCards.has(s.code) + '|' + sessionDecisions(s).map((d) => d.id + (d.question || '')).join(',');
+    return JSON.stringify(s) + '|' + JSON.stringify(rcView(s)) + '|' + S.busy.has('rc:' + s.code) + S.busy.has('compact:' + s.code) + (S.drafts.compactAsk === s.code) + rcEditor() + '|' + openCards.has(s.code) + '|' + sessionDecisions(s).map((d) => d.id + (d.question || '')).join(',') + '|' + pomoSig(s.code);
   }
   // Card extras from board-serve (cards.json, lib/cards.py): teammates, meter, recent tool calls,
   // what it says (approvers only), branch, time in state. Absent in Artifact mode.
@@ -2154,7 +2216,8 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       h('span', { class: 'stitle' + (title || task || says ? '' : ' none'), text: title || task || says || tr('No title yet') }),
       where ? h('span', { class: 'swhere', text: where }) : null,
       h('span', { class: 'snow' + (now.waiting ? ' waiting' : ''), text: now.text }),
-      meta.length ? h('span', { class: 'smeta' }, meta.flatMap((m, i) => [i ? ' · ' : null, m])) : null);
+      meta.length ? h('span', { class: 'smeta' }, meta.flatMap((m, i) => [i ? ' · ' : null, m])) : null,
+      pomoRow(s));
     art.append(btn);
     // Remote Control, one tap from the collapsed card: a small link next to the summary button.
     const rc = safeUrl(s.remote_url);
@@ -3071,6 +3134,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       const rank = (s) => ({ needs: 0, working: 1, done: 2, offline: 3 }[colOf(s)]);
       return rank(a) - rank(b) || (colOf(a) === 'needs' ? ts(a.updated_at) - ts(b.updated_at) : ts(b.updated_at) - ts(a.updated_at));
     }).slice(0, 4).map((s) => ({ code: str(s.code), col: colOf(s), kind: colOf(s) === 'needs' ? waitKind(s) : null })) : [];
+    out.push(pomoModel());
     out.push({ key: 'wide', fleet, more: Math.max(0, (live ? S.sessions.length : 0) - 4), u5: ring(WINDOWS[0]), u7: ring(WINDOWS[1]), burn: burnView() });
     return out;
   }
@@ -3093,6 +3157,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     return h('button', { class: 'dsec', type: 'button', 'aria-label': label, title: label, dataset: { focus: 'sec' }, onclick, text });
   }
   function buildDeckKey(m) {
+    if (m.key === 'pomo') return buildPomoKey(m);
     const cell = h('div', { class: 'dcell' + (m.key === 'wide' ? ' wide' : ''), dataset: { deck: m.key } });
     let key = null, sec = null;
     if (m.key === 'hitl') {
@@ -3189,6 +3254,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     if (!canDeckAct() && S.deckConfirm) S.deckConfirm = null;
     renderDeckConfirm();
     waveCheck(models);
+    renderPomo();
     if (deckCollapsed) return;
     reconcile($('#deck-grid'), models, (m) => m.key, (m) => JSON.stringify(m) + '|' + (S.busy.has('ack') || S.busy.has('notify') || S.busy.has('away') ? 'b' : ''), buildDeckKey);
   }
@@ -3200,6 +3266,197 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   }
   $('#deck-toggle').addEventListener('click', () => setDeckCollapsed(!deckCollapsed));
   window.addEventListener('storage', (e) => { if (e.key === DECK_KEY) { deckCollapsed = e.newValue === 'collapsed'; renderDeck(); } });
+
+  /* ------------------------------------------------------------- pomodoro */
+  // Each session runs its own pomodoro while it works (lib/pomodoro.py, docs/contract.md
+  // "Pomodoro"): board-serve's state.pomodoro, or meta/pomodoro mirrored by the operator in the
+  // Artifact (daily totals only, no running clock). The page only shows it: a working session's
+  // clock runs on from `at` between collector writes, and stops when the data is older than
+  // POMO_STALE_MS. A finished pomodoro gets a short celebration, never under reduced motion.
+  const POMO_STALE_MS = 3 * 60 * 1000;
+  const POMO_DEFAULT_MS = 25 * 60 * 1000;
+  let pomoSeen = null;             // code -> today's count at the last render (null before the first data)
+  let pomoDay = '';
+  function pomoView() {
+    const p = S.pomodoro;
+    return p && typeof p === 'object' && Array.isArray(p.days) && p.fleet && typeof p.fleet === 'object' ? p : null;
+  }
+  const pomoFull = (p) => (num(p.focus_ms) > 0 ? p.focus_ms : POMO_DEFAULT_MS);
+  function pomoOf(code) {
+    const p = pomoView(), all = p && p.sessions && typeof p.sessions === 'object' ? p.sessions : null;
+    const r = all && Object.prototype.hasOwnProperty.call(all, code) ? all[code] : null;
+    return r && typeof r === 'object' ? r : null;
+  }
+  // The current pomodoro: { ms, full, live, clock } — clock false for the Artifact mirror (no progress).
+  function pomoNow(p, r, now) {
+    const full = pomoFull(p), clock = num(r.progress_ms) != null;
+    const at = ts(p.at), age = now - at;
+    const live = clock && r.running === true && !!at && age >= 0 && age < POMO_STALE_MS;
+    const ms = Math.max(0, Math.min(full, (num(r.progress_ms) || 0) + (live ? age : 0)));
+    return { ms, full, live, clock };
+  }
+  function mmss(ms) { const s = Math.floor(ms / 1000); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
+  function pomoDur(ms) {
+    const m = Math.floor((num(ms) || 0) / 60000);
+    return m < 60 ? tr('{m}m', { m }) : tr('{h}h {m}m', { h: Math.floor(m / 60), m: m % 60 });
+  }
+  function pomoRing(frac, size, cls) {
+    const r = 15, c = 2 * Math.PI * r, svg = document.createElementNS(SVGNS, 'svg');
+    svg.setAttribute('viewBox', '0 0 40 40'); svg.setAttribute('width', String(size)); svg.setAttribute('height', String(size));
+    svg.setAttribute('aria-hidden', 'true'); svg.setAttribute('class', cls);
+    const v = Math.max(0, Math.min(1, frac)) * c;
+    svg.innerHTML = '<circle class="pr-trk" cx="20" cy="22" r="' + r + '" fill="none" stroke-width="5"/>'
+      + '<circle class="pr-val" cx="20" cy="22" r="' + r + '" fill="none" stroke-width="5" stroke-linecap="round" transform="rotate(-90 20 22)" stroke-dasharray="' + v.toFixed(1) + ' ' + c.toFixed(1) + '"/>'
+      + '<path class="pr-leaf" d="M20 3c-2 2-5 3-7 3 2 1 4 2 5 4 1-2 1-4 2-7zm0 0c2 2 5 3 7 3-2 1-4 2-5 4-1-2-1-4-2-7z"/>';
+    return svg;
+  }
+  function pomoLabel(code, done, cur) {
+    const parts = [tr('{n} 🍅 today', { n: done })];
+    if (cur && cur.clock && (cur.ms || cur.live)) parts.unshift(tr('Pomodoro {t} of {full}', { t: mmss(cur.ms), full: mmss(cur.full) }) + (cur.live ? '' : ' (' + tr('paused') + ')'));
+    return [code].concat(parts).join(' · ');
+  }
+  // The row on a session card: a small tomato ring with mm:ss of 25:00 and "🍅×N today".
+  function pomoRow(s) {
+    const p = pomoView(), r = p && pomoOf(s.code);
+    if (!r) return null;
+    const done = num(r.done) || 0, cur = pomoNow(p, r, Date.now());
+    const showClock = cur.clock && (cur.ms > 0 || cur.live);
+    if (!done && !showClock) return null;
+    return h('span', { class: 'spomo' + (cur.live ? ' live' : ''), dataset: { pomo: s.code }, title: pomoLabel(s.code, done, cur), 'aria-label': pomoLabel(s.code, done, cur), role: 'img' },
+      showClock ? pomoRing(cur.ms / cur.full, 18, 'pring') : null,
+      showClock ? h('span', { class: 'pm-t', 'aria-hidden': 'true', text: mmss(cur.ms) + ' / ' + mmss(cur.full) }) : null,
+      h('span', { class: 'pm-n', 'aria-hidden': 'true', text: tr('🍅×{n} today', { n: done }) }));
+  }
+  const pomoSig = (code) => { const p = pomoView(), r = p && pomoOf(code); return r ? JSON.stringify(r) + (p.at || '') + LANG : ''; };
+  // Every second: the running clocks only (no re-render).
+  function pomoTick() {
+    const p = pomoView();
+    if (!p || document.hidden) return;
+    const now = Date.now();
+    if (S.demo) pomoDemoStep(p, now);
+    for (const el of document.querySelectorAll('.spomo.live[data-pomo]')) {
+      const r = pomoOf(el.dataset.pomo);
+      if (!r) continue;
+      const cur = pomoNow(p, r, now), c = 2 * Math.PI * 15;
+      const val = el.querySelector('.pr-val'), t = el.querySelector('.pm-t');
+      if (val) val.setAttribute('stroke-dasharray', (cur.ms / cur.full * c).toFixed(1) + ' ' + c.toFixed(1));
+      if (t) t.textContent = mmss(cur.ms) + ' / ' + mmss(cur.full);
+      if (!cur.live) el.classList.remove('live');
+    }
+    const dlg = $('#pomo');
+    if (dlg && dlg.open) for (const el of dlg.querySelectorAll('[data-pomo-t]')) {
+      const r = pomoOf(el.dataset.pomoT);
+      if (r) { const cur = pomoNow(p, r, now); if (cur.live) el.textContent = mmss(cur.ms); }
+    }
+  }
+  setInterval(pomoTick, 1000);
+  // The demo has no collector: a running clock that reaches the end completes there and then.
+  function pomoDemoStep(p, now) {
+    const run = Object.values(p.sessions || {}).filter((r) => r && r.running === true), age = now - ts(p.at);
+    const hit = run.filter((r) => (num(r.progress_ms) || 0) + age >= pomoFull(p));
+    if (!hit.length) return;
+    for (const r of run) {
+      const full = (num(r.progress_ms) || 0) + age >= pomoFull(p);
+      r.focus_ms = (num(r.focus_ms) || 0) + (full ? pomoFull(p) - (num(r.progress_ms) || 0) : age);
+      if (full) r.done = (num(r.done) || 0) + 1;
+      r.progress_ms = full ? 0 : (num(r.progress_ms) || 0) + age;
+    }
+    p.at = now;
+    const total = Object.values(p.sessions).reduce((a, r) => a + (num(r.done) || 0), 0);
+    p.fleet.done = total; p.days[p.days.length - 1].done = total;
+    p.fleet.focus_ms = Object.values(p.sessions).reduce((a, r) => a + (num(r.focus_ms) || 0), 0); p.days[p.days.length - 1].focus_ms = p.fleet.focus_ms;
+    renderAll();
+  }
+  // The Deck key "🍅 Today": the fleet total, focus time and a 7-day sparkline.
+  function pomoModel() {
+    const p = pomoView();
+    const live = S.mode === 'live' || S.mode === 'demo';
+    if (!p || !live) return { key: 'pomo', known: false };
+    const week = p.days.slice(-7).map((d) => (d && num(d.done)) || 0);
+    return { key: 'pomo', known: true, n: num(p.fleet.done) || 0, focus: pomoDur(p.fleet.focus_ms), week, top: Math.max(1, ...week) };
+  }
+  function buildPomoKey(m) {
+    const cell = h('div', { class: 'dcell', dataset: { deck: 'pomo' } });
+    const label = m.known ? tr('AI fleet: {n} 🍅 · {focus} focus. Press for the pomodoro tally.', { n: m.n, focus: m.focus }) : tr('Pomodoros: no data yet. Press for the pomodoro tally.');
+    const spark = h('span', { class: 'k-spark', 'aria-hidden': 'true' },
+      (m.known ? m.week : [0, 0, 0, 0, 0, 0, 0]).map((v, i, a) => h('i', { class: i === a.length - 1 ? 'today' : null, style: 'height:' + (m.known ? Math.max(8, Math.round(v / m.top * 100)) : 8) + '%' })));
+    cell.append(keyBtn('pomo' + (m.known && m.n ? ' on' : ''), label, () => openPomo(),
+      h('span', { class: 'k-lab', text: tr('🍅 Today') }),
+      h('span', { class: 'k-pomo' }, h('span', { class: 'k-big', text: m.known ? String(m.n) : '—' }), spark),
+      h('span', { class: 'k-sub', text: m.known ? tr('{focus} focus', { focus: m.focus }) : tr('no data yet') })));
+    return cell;
+  }
+  // After each render: celebrate the sessions whose count went up (not on the first data, not on a
+  // new day), and keep the panel current.
+  function renderPomo() {
+    const p = pomoView();
+    if (!p) { pomoSeen = null; if ($('#pomo').open) renderPomoPanel(); return; }
+    const counts = {};
+    for (const [code, r] of Object.entries(p.sessions || {})) counts[code] = (r && num(r.done)) || 0;
+    const fresh = [];
+    if (pomoSeen && pomoDay === str(p.today)) for (const [code, n] of Object.entries(counts)) if (n > (pomoSeen[code] || 0)) fresh.push(code);
+    pomoSeen = counts; pomoDay = str(p.today);
+    if (fresh.length) setTimeout(() => pomoCelebrate(fresh), 0);  // after the cards are built
+    if ($('#pomo').open) renderPomoPanel();
+  }
+  function pomoCelebrate(codes) {
+    if (reducedMotion()) return;
+    const targets = [];
+    for (const code of codes) {
+      const row = document.querySelector('.spomo[data-pomo="' + CSS.escape(code) + '"]');
+      if (row) targets.push(row);
+    }
+    const key = $('#deck-grid .dkey.pomo');
+    if (key && !deckCollapsed) targets.push(key);
+    for (const el of targets) {
+      el.classList.remove('pomo-pop'); void el.offsetWidth; el.classList.add('pomo-pop');
+      const burst = h('span', { class: 'pomo-burst', 'aria-hidden': 'true' }, ['🍅', '✨', '🍅'].map((c, i) => h('i', { style: '--i:' + i, text: c })));
+      el.append(burst);
+      setTimeout(() => { burst.remove(); el.classList.remove('pomo-pop'); }, 1600);
+    }
+  }
+  function openPomo() {
+    const d = $('#pomo');
+    renderPomoPanel();
+    if (!d.open) { if (typeof d.showModal === 'function') d.showModal(); else d.setAttribute('open', ''); }
+  }
+  function renderPomoPanel() {
+    const box = $('#pomo-body'), p = pomoView();
+    box.textContent = '';
+    if (!p) {
+      box.append(h('p', { class: 'note', text: tr(isLocal() || S.demo ? 'No pomodoro data yet. The collector starts counting when a session works.' : 'The operator has not mirrored the pomodoro tally to this board yet (meta/pomodoro). Use board pomodoro in a terminal.') }));
+      return;
+    }
+    const now = Date.now();
+    box.append(h('p', { class: 'pm-total' }, h('strong', { text: tr('AI fleet: {n} 🍅', { n: num(p.fleet.done) || 0 }) }), ' · ', tr('{focus} focus', { focus: pomoDur(p.fleet.focus_ms) })),
+      h('p', { class: 'note', text: tr('Today is {day} ({tz}).', { day: str(p.today), tz: str(p.tz) || tr('system time') }) }));
+    const rows = Object.entries(p.sessions || {}).filter(([, r]) => r && typeof r === 'object')
+      .sort((a, b) => (num(b[1].done) || 0) - (num(a[1].done) || 0) || (num(b[1].focus_ms) || 0) - (num(a[1].focus_ms) || 0) || a[0].localeCompare(b[0]));
+    box.append(h('h3', { text: tr('Sessions today') }));
+    if (!rows.length) box.append(h('p', { class: 'note', text: tr('No pomodoros yet today.') }));
+    else box.append(h('ul', { class: 'pm-list' }, rows.map(([code, r]) => {
+      const cur = pomoNow(p, r, now), done = num(r.done) || 0;
+      return h('li', { 'aria-label': pomoLabel(code, done, cur) },
+        h('span', { class: 'pm-code', text: code }),
+        h('span', { class: 'pm-tom', 'aria-hidden': 'true', text: done ? '🍅'.repeat(Math.min(done, 8)) + (done > 8 ? '+' : '') : '·' }),
+        h('span', { class: 'pm-cnt', text: '×' + done }),
+        h('span', { class: 'pm-f', text: pomoDur(r.focus_ms) }),
+        h('span', { class: 'pm-cur' + (cur.live ? ' live' : ''), dataset: cur.live ? { pomoT: code } : null, text: cur.clock && (cur.ms || cur.live) ? mmss(cur.ms) : '' }));
+    })));
+    box.append(h('h3', { text: tr('Last 14 days') }));
+    const top = Math.max(1, ...p.days.map((d) => (d && num(d.done)) || 0));
+    box.append(h('div', { class: 'pm-hist', role: 'list', 'aria-label': tr('Pomodoros per day, last 14 days') }, p.days.slice(-14).map((d, i, a) => {
+      const n = (d && num(d.done)) || 0, day = str(d && d.date);
+      return h('div', { class: 'pm-day' + (i === a.length - 1 ? ' today' : ''), role: 'listitem', 'aria-label': tr('{day}: {n} 🍅, {focus} focus', { day, n, focus: pomoDur(d && d.focus_ms) }), title: tr('{day}: {n} 🍅, {focus} focus', { day, n, focus: pomoDur(d && d.focus_ms) }) },
+        h('span', { class: 'pm-n', 'aria-hidden': 'true', text: n ? String(n) : '' }),
+        h('span', { class: 'pm-bar', 'aria-hidden': 'true' }, h('i', { style: 'height:' + (n ? Math.max(6, Math.round(n / top * 100)) : 0) + '%' })),
+        h('span', { class: 'pm-d', 'aria-hidden': 'true', text: day.slice(8) }));
+    })));
+    box.append(h('p', { class: 'note pm-rules', text: tr('A pomodoro is {m} minutes of a session working. A short pause (up to {g}) keeps it, a longer break or going offline resets it, and waiting for you pauses it.', { m: Math.round(pomoFull(p) / 60000), g: pomoDur(num(p.grace_ms) != null ? p.grace_ms : 120000) }) }));
+    if (!isLocal() && !S.demo) box.append(h('p', { class: 'note', text: tr('Mirrored by the operator: daily totals only, no running clock.') }));
+  }
+  $('#pomo-close').addEventListener('click', () => { const d = $('#pomo'); if (typeof d.close === 'function') d.close(); else d.removeAttribute('open'); });
+  $('#pomo').addEventListener('click', (e) => { if (e.target === e.currentTarget) e.currentTarget.close(); });
 
   /* navigation */
   function revealCard(card, focusEl) {
@@ -3712,6 +3969,8 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       }, () => {});
       // System resources: mirrored by the operator when the level changes; the page never writes it.
       db.doc('meta/resources').onSnapshot((snap) => { S.resources = snap.exists ? snap.data() : null; renderBanners(); renderResources(); renderDeck(); }, () => {});
+      // Pomodoro tallies: daily totals mirrored by the operator (board pomodoro --mirror); read-only here.
+      db.doc('meta/pomodoro').onSnapshot((snap) => { const d = snap.exists ? snap.data() : null; S.pomodoro = d && typeof d === 'object' ? d : null; renderDeck(); renderBoard(); }, () => {});
     } catch (e) {
       feedFailed('the board')(e);
     }
@@ -3793,6 +4052,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       S.notify = st.notify && typeof st.notify === 'object' ? st.notify : null;
       S.rc = st.rc && typeof st.rc === 'object' ? st.rc : null;
       S.resources = st.resources && typeof st.resources === 'object' ? st.resources : null;
+      S.pomodoro = st.pomodoro && typeof st.pomodoro === 'object' ? st.pomodoro : null;
       S.replies = new Map(Object.entries(st.replies && typeof st.replies === 'object' ? st.replies : {}).map(([k, v]) => [k, arr(v)]));
       S.me = str(st.me) || null; S.writable = st.writable !== false; S.userReady = true;
       S.canMessageLocal = st.can_message === true;
@@ -4152,6 +4412,21 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       { id: 'c-1-demo', from: 'DATA', participants: ['DATA', 'OPS'], ref: null, proposal: 'Rename the staging queue to match the new naming scheme.', status: 'objected', created_at: now - 70 * min, decided_at: now - 61 * min,
         votes: [{ by: 'DATA', vote: 'agree', note: 'proposer', at: now - 70 * min }, { by: 'OPS', vote: 'object', note: 'A consumer still reads the old name.', at: now - 61 * min }] },
     ];
+    S.pomodoro = (() => {
+      const ymd = (t) => { const d = new Date(t); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+      const sessions = {
+        DOCS: { done: 5, focus_ms: 142 * min, progress_ms: 17 * min, running: true, state: 'working', done_at: now - 18 * min },
+        OPS: { done: 2, focus_ms: 74 * min, progress_ms: 25 * min - 9000, running: true, state: 'working', done_at: now - 26 * min },
+        API: { done: 3, focus_ms: 84 * min, progress_ms: 9 * min, running: false, state: 'needs-you', done_at: now - 40 * min },
+        QA: { done: 3, focus_ms: 80 * min, progress_ms: 0, running: false, state: 'done', done_at: now - 70 * min },
+        WEB: { done: 1, focus_ms: 31 * min, progress_ms: 6 * min, running: false, state: 'needs-you', done_at: now - 95 * min },
+        DATA: { done: 0, focus_ms: 12 * min, progress_ms: 0, running: false, state: 'rest', done_at: null } };
+      const past = [9, 12, 0, 4, 15, 11, 13, 10, 8, 16, 14, 7, 12];
+      const total = Object.values(sessions).reduce((a, r) => a + r.done, 0), focus = Object.values(sessions).reduce((a, r) => a + r.focus_ms, 0);
+      const days = past.map((n, i) => ({ date: ymd(now - (past.length - i) * 86400000), done: n, focus_ms: n * 27 * min, sessions: {} }));
+      days.push({ date: ymd(now), done: total, focus_ms: focus, sessions: {} });
+      return { enabled: true, focus_ms: 25 * min, grace_ms: 2 * min, tz: '', at: now, today: ymd(now), fleet: { done: total, focus_ms: focus }, sessions, days };
+    })();
     S.ledger = { rows: [
       { version: 'v1', date: '2026-01-05', what: 'Demo row: first version', review: '2 rounds · LGTM', lead: { input: 1200, cache_read: 480000, cache_write: 52000, output: 21000, total: 554200 }, teammate: 310000, note: 'demo' },
     ] };
@@ -5055,6 +5330,28 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       "{lvl} ≥ {t}": "{lvl}，門檻 ≥ {t}",
       "{lvl} from ≤ {t}, easing": "{lvl}，門檻 ≤ {t}，正在回落",
       "{lvl} from ≥ {t}, easing": "{lvl}，門檻 ≥ {t}，正在回落",
+      "Pomodoro": "番茄鐘",
+      "🍅 Today": "🍅 今日",
+      "{focus} focus": "專注 {focus}",
+      "no data yet": "還沒有資料",
+      "AI fleet: {n} 🍅 · {focus} focus. Press for the pomodoro tally.": "AI 團隊：{n} 🍅 · 專注 {focus}。按下查看番茄鐘統計。",
+      "Pomodoros: no data yet. Press for the pomodoro tally.": "番茄鐘：還沒有資料。按下查看番茄鐘統計。",
+      "{n} 🍅 today": "今日 {n} 🍅",
+      "🍅×{n} today": "今日 🍅×{n}",
+      "Pomodoro {t} of {full}": "番茄鐘 {t} / {full}",
+      "paused": "暫停中",
+      "AI fleet: {n} 🍅": "AI 團隊：{n} 🍅",
+      "Today is {day} ({tz}).": "今天是 {day}（{tz}）。",
+      "system time": "系統時區",
+      "Sessions today": "今日各 session",
+      "No pomodoros yet today.": "今天還沒有番茄鐘。",
+      "Last 14 days": "最近 14 天",
+      "Pomodoros per day, last 14 days": "最近 14 天每天的番茄鐘",
+      "{day}: {n} 🍅, {focus} focus": "{day}：{n} 🍅，專注 {focus}",
+      "A pomodoro is {m} minutes of a session working. A short pause (up to {g}) keeps it, a longer break or going offline resets it, and waiting for you pauses it.": "一個番茄鐘是 session 工作 {m} 分鐘。短暫停頓（{g} 以內）會接著算；休息更久或離線就重新計算；等你回覆時暫停計時。",
+      "Mirrored by the operator: daily totals only, no running clock.": "由 operator 同步：只有每日總數，沒有即時計時。",
+      "No pomodoro data yet. The collector starts counting when a session works.": "還沒有番茄鐘資料。session 開始工作後，collector 就會開始計算。",
+      "The operator has not mirrored the pomodoro tally to this board yet (meta/pomodoro). Use board pomodoro in a terminal.": "operator 還沒有把番茄鐘統計同步到這個看板（meta/pomodoro）。請在終端機用 board pomodoro。",
     };
   }
 })();
