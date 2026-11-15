@@ -33,7 +33,9 @@
 #   board task done|pause|resume|drop|block|progress ID
 #                                              scheduling fields (lib/tasks.py), all optional
 #   board schedule [--json]                    the scheduler's decision (scheduler.json): what may
-#                                              start now, the queue, stuck tasks, advisories
+#                                              start now, the queue, stuck tasks, advisories, jams
+#   board schedule outbox [CODE] [--json] | sent ID... | reply ID --from CODE ack|done|cannot [--note-file F]
+#   board schedule off|on --by WHO             deliver advisories (operator) / pause the scheduler
 #   board limit [--json|--clear]               show (or end) the current usage-limit episode
 #   board resources [--json|--mirror] [--refresh]
 #                                              system resources, per-session processes and
@@ -297,7 +299,13 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
     schedule) echo "usage: board schedule [--json]"
         echo "  the scheduler's last decision (\$BOARD_HOME/scheduler.json, written by the collector when it"
         echo "  changes): mode, resources level, heavy slots, the tasks that may start now, the ranked queue"
-        echo "  (run ready queued deferred blocked paused), stuck tasks and advisories. Read-only." ;;
+        echo "  (run ready queued deferred blocked paused), stuck tasks, advisories, jams. Read-only."
+        echo "       board schedule outbox [CODE] [--json]   the [BOARD schedule <id>] lines due per session"
+        echo "       board schedule sent ID [ID...]          the operator sent them (one batch per session)"
+        echo "       board schedule reply ID --from CODE ack|done|cannot [--note-file F]"
+        echo "       board schedule off|on --by WHO          pause / resume the scheduler (schedule-off)"
+        echo "  an advisory is for ordering and pacing only, never an approval. Exit 8: the schedule"
+        echo "  state was busy; run the same command again." ;;
     limit) echo "usage: board limit [--json|--clear]"
         echo "  show (or end) the current usage-limit episode (\$BOARD_HOME/limit.json)" ;;
     resources) echo "usage: board resources [--json|--mirror] [--refresh]"
@@ -2380,7 +2388,12 @@ case "$sub" in
   limit) cmd_limit "$@" ;;
   resources) cmd_resources "$@" ;;
   pomodoro) guarded cmd_pomodoro "$@" ;;
-  schedule) guarded python3 "$REPO/lib/scheduler.py" show "$@" ;;
+  schedule)
+    case "${1:-}" in
+      outbox) shift; guarded python3 "$REPO/lib/advisories.py" outbox "$@" ;;
+      sent|reply|off|on) python3 "$REPO/lib/advisories.py" "$@" ;;
+      *) guarded python3 "$REPO/lib/scheduler.py" show "$@" ;;
+    esac ;;
   notify) cmd_notify "$@" ;;
   ack) [ $# -gt 0 ] || { sub_usage ack >&2; exit 2; }; exec "$REPO/bin/board-notify" ack "$@" ;;
   doctor) cmd_doctor "$@" ;;

@@ -329,8 +329,12 @@ flowchart LR
   states and the resources level to a deterministic scheduler (`lib/scheduler.py`, zero tokens). It
   writes `scheduler.json` only when its decision changes: which tasks may start now, a ranked queue,
   stuck tasks, and advisories. Heavy tasks wait at high memory. At critical, a session is asked to
-  stop a heavy process it started itself; the board never stops one. Advisories are only shown for
-  now (`board schedule`); sending them to sessions comes next.
+  stop a heavy process it started itself; the board never stops one. It also tracks usage
+  (`conserve` and `wait-reset` modes) and jams: everyone waiting on you (it names the decision to
+  answer first), dependency cycles, two sessions on one branch, two open PRs in a repo, stalled
+  work, and more, alerting as `jam:*`. The operator delivers the advisories as
+  `[BOARD schedule <id>]` messages: ordering and pacing only, never an approval, at most 4 an hour
+  per session. `schedule.advise: false` shows them without sending; `board schedule off` pauses it.
   ```bash
   board task set <task-id> --repo shop --branch feat/export --size M --heavy yes --priority 2
   board task dep <task-id> --on <other-task> --kind merge

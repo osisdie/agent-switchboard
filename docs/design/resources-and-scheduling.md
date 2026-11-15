@@ -76,7 +76,7 @@ CLI:
 **Gates** (hard, applied before scoring; any hit removes the task from `run`):
 1. **Red line.** Stage `production`, or `waiting_on` a gate:production, gives `blocked{redline}`. The scheduler never emits resume, run or "go" past it, and no advisory text ever contains approve, deploy or `[BOARD decision`. A test enforces this.
 2. **Human.** A pending decision or gate from the owner, or a session in needs-you, gives `blocked{human}`. While the owner is away, the task becomes `deferred{owner-return}` and the session is advised to switch to work that needs no human.
-3. **Dependency.** If any `depends_on` is unmet, the task is `blocked{task}`. `deploy` means the dep task reached `maintain` or its production gate was approved; `merge` means `pr.state=merged`.
+3. **Dependency.** If any `depends_on` is unmet, the task is `blocked{task}`. `deploy` means the dep task reached `maintain` or is done (owner decision 2026-11-15: an approved production gate alone does not count); `merge` means `pr.state=merged`.
 4. **Repo.** Another active task in the same `git-common-dir` has an open PR, and `one_pr_per_repo` is on. The lower-ranked task gets `ready` plus a `finish-first` advisory: keep committing locally, don't push or open a PR.
 5. **Resource.** If the task is heavy and the level is ≥ high, or `heavy_running ≥ max_heavy_concurrent`, it is `deferred{resource}`. At critical or after an OOM kill, `free-resources` names the largest heavy children, and `stop-own-heavy` asks their owning session to stop its own heavy process.
 6. **Reset.** In wait-reset mode, new starts become `deferred{reset}` with the `resets_at` time.
@@ -312,3 +312,31 @@ The scheduler ships in three steps instead of section 7's PRs 2–4: (1) task mo
   there are no git facts yet), cycle and self-dependency refusal at `board task dep`, a per-session
   "one current task" rule, and heavy-slot fairness (sessions holding fewer heavy processes first).
 - **Stuck** is a queue flag plus a `stuck` list (J4's input), not an advisory.
+
+## Implementation notes (scheduler 2a: delivery, jams, usage modes)
+- **Files.** Jam episodes and delivery live in `schedule-state.json` (`lib/advisories.py`), next to
+  `scheduler.json`; both are written under `schedule.lock`. The pause file is `schedule-off`
+  (`board schedule off|on --by WHO`, not `board plan off|on`).
+- **Delivery.** The operator wakes on `schedule <CODE> due` (`--watch`) or `snapshot.schedule.due`,
+  sends `board schedule outbox <CODE>` as one message and records it with `board schedule sent`;
+  replies go to `board schedule reply` (not `board plan ack`). `to` must be a fleet.yaml or live
+  session code. `advise: false` and `board schedule off` mark advisories `shadow`.
+- **Snapshot.** `schedule: {mode, due, jams}` instead of `{digest, mode, jams[], advisories_n}`:
+  it changes only on what the operator acts on.
+- **Jams.** J3a uses the collector's per-session repo basename and branch (no git calls), so two
+  different repos with the same basename count as one. J5 and J6 raise no `jam:*` alert (`res:*` and
+  `operator:stale` already do); J4's idle case and J8 stay on the board. No `--watch` jam lines:
+  nothing for the operator to do until lessons (2b).
+- **Modes** follow section 2. While the owner is away J1 is info; tasks are not moved to
+  `deferred{owner-return}`. A limit episode stops holding starts 10 minutes after its `resets_at`.
+- **Review fixes.** J3a is board-only (the collector's branch is the start cwd's, not the
+  worktree's) and skips default, detached and commit-less branches. J5 needs 2 samples at critical
+  (an OOM opens it at once). Jam alerts never escalate; J4 alerts at the level it opens with. J1
+  does not count a session that has another ready task. Advice to an offline session is held; an
+  unanswered advisory is sent at most 3 times. `board schedule off` stops the outbox, `sent` and
+  the `--watch` line at once.
+- **Deploy dependencies** (owner decision): met only when the task reached `maintain` or is
+  `done`; an approved production gate alone no longer counts (section 2's gate 3 said it did).
+- **Not yet:** lessons (2b), git facts for stacked branches (rebase-needed still follows `base` ==
+  the merged task's `branch`).
+
