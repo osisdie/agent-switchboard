@@ -336,7 +336,16 @@ The full workflow (roles, TDD in worktrees, local review before push, pinned mer
 | **Done / idle** | finished its turn, waiting for input | `Stop`, Notification `idle_prompt` |
 | **Offline** | listed in `fleet.yaml` but not running | collector (no live process) |
 
-Each card links to the session's Remote Control URL and shows its tmux target, so you can jump in.
+Each card shows the session's code and state, the task title Claude Code puts in the pane title,
+`repo · branch` (the git toplevel's name and the current branch, never a path) and what it is doing
+now: "Running Bash: npm test", "Waiting: permission for Edit", "Idle since 14:05". Click it or press
+Enter to open the details: the full title, the decisions it waits on (each links to its card), the
+tool calls in flight, the tmux target and the Remote Control link. Open cards stay open through
+live updates.
+
+All of this is treated as untrusted text: control characters are removed, paths are cut to their
+last part, and long text is clipped. The tool call summaries can hold command text, so they appear
+only on the self-hosted board; the Artifact board gets the title and `repo · branch`.
 
 ### Decisions
 
@@ -985,7 +994,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `lib/away.py` | Reads owner-away mode and consensus items for the snapshot and `board-serve` |
 | `lib/resources.py` | Resources sampler (memory, disks, OOM, per-session processes and teammates) for `resources.json`, the snapshot digest and `board resources` |
 | `docs/design/` | Design notes, e.g. `resources-and-scheduling.md` (resources, scheduler, lessons) |
-| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), the resources sampler (`test_resources.py`, fixture `/proc`), and the optional headless checks of the page's alert links, notifications control, profile menu and theme, and home-screen app (`test_page_links.py`, `test_page_notify.py`, `test_page_profile.py`, `test_page_pwa.py`: need python playwright, skip without it; not run in CI) |
+| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), the resources sampler (`test_resources.py`, fixture `/proc`), and the optional headless checks of the page's alert links, notifications control, profile menu and theme, home-screen app, and session cards (`test_page_links.py`, `test_page_notify.py`, `test_page_profile.py`, `test_page_pwa.py`, `test_page_cards.py`: need python playwright, skip without it; not run in CI) |
 | `CONTRIBUTING.md` | Dev setup, tests, and the rule for keeping `README.zh-TW.md` in sync |
 | `fleet.example.yaml`, `.env.example` | Example config |
 

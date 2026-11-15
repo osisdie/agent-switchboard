@@ -111,6 +111,17 @@ cat > "$CLAUDE_SESSIONS_DIR/999999999.json" <<'EOF'
 {"pid":999999999,"sessionId":"dead","cwd":"/w","tmux":"DEAD:@1.%1","name":"DEAD","status":"idle"}
 EOF
 
+# The collector reads pane titles with `tmux list-panes -a`: a fake, so a real tmux server on this
+# machine never leaks into the tests. Everything else fails, as tmux does without a server.
+mkdir -p "$T/fakebin"
+cat > "$T/fakebin/tmux" <<'EOF'
+#!/usr/bin/env bash
+[ "$1" = "list-panes" ] && [ -n "${FAKE_PANES:-}" ] && { cat "$FAKE_PANES"; exit 0; }
+exit 1
+EOF
+chmod +x "$T/fakebin/tmux"
+export PATH="$T/fakebin:$PATH"
+
 echo "collector:"
 "$REPO/bin/board-collect" --once --no-notify
 snap="$BOARD_HOME/snapshot.json"
@@ -138,6 +149,125 @@ gen1="$(jq .generated_at "$snap")"
 sleep 0.05
 "$REPO/bin/board-collect" --once --no-notify
 eq "unchanged snapshot not rewritten" "$(jq .generated_at "$snap")" "$gen1"
+
+echo "collector: card details"
+export FAKE_PANES="$T/panes.txt"
+HOST="$(python3 -c 'import socket; print(socket.gethostname())')"
+printf '%%42\t✳ Fix the login form in /home/someone/private/app/login.py\n%%9\t%s\n' "$HOST" > "$FAKE_PANES"
+mkdir -p "$T/repos/web-app/src"
+git -C "$T/repos/web-app" init -q -b feature/cards
+git -C "$T/repos/web-app" -c user.name=t -c user.email=t@example.com commit -q --allow-empty -m init
+jq --arg cwd "$T/repos/web-app/src" '.cwd = $cwd' "$T/cp-reg.json" > "$CLAUDE_SESSIONS_DIR/$live_pid.json"
+cat > "$BOARD_HOME/state/s-qa.json" <<EOF
+{"session_id":"s-qa","state":"working","last_event":"PreToolUse","notification_type":null,"updated_at":1,
+ "recent_pre":[{"tool_use_id":"t1","tool_name":"Read","summary":"old"},
+               {"tool_use_id":"t2","tool_name":"Grep","summary":"needle in C:\\\\Users\\\\someone\\\\notes.txt"},
+               {"tool_use_id":"t3","tool_name":"Edit","summary":"~/secret/dir/app.py"},
+               {"tool_use_id":"t4","tool_name":"Bash","summary":"cd /home/someone/repo && npm test \u001b[31m$(printf 'x%.0s' $(seq 1 300))"}]}
+EOF
+"$REPO/bin/board-collect" --once --no-notify
+sj() { jq -r --arg c "$1" ".sessions[] | select(.code==\$c) | $2" "$snap"; }
+eq "title from the pane, glyph dropped, path cut" "$(sj CP .title)" "Fix the login form in …/login.py"
+eq "tmux's default title (the host name) is not published" "$(sj QA .title)" "null"
+eq "repo is the basename of the git toplevel" "$(sj CP .repo)" "web-app"
+eq "branch" "$(sj CP .branch)" "feature/cards"
+eq "no repo outside git" "$(sj INFRA '.repo, .branch' | tr '\n' ' ')" "null null "
+eq "last_event / notification_type" "$(sj QA '.last_event + "/" + (.notification_type | tostring)')" "PreToolUse/null"
+eq "recent: the last 3 tool calls" "$(sj QA '[.recent[].tool] | join(",")')" "Grep,Edit,Bash"
+eq "recent: Windows and home paths cut" "$(sj QA '.recent[0].summary + " | " + .recent[1].summary')" "needle in …/notes.txt | …/app.py"
+eq "recent: control characters gone, clipped to 160" "$(sj QA '.recent[2].summary | ([explode[] | select(. < 32 or . == 127)] | length | tostring) + "/" + (length | tostring) + "/" + .[0:24]')" "0/160/cd …/repo && npm test xx"
+eq "offline fleet rows carry empty details" "$(sj GONE '([.title, .repo, .branch, .last_event] | map(tostring) | join(",")) + "/" + (.recent | length | tostring)')" "null,null,null,null/0"
+eq "no path in any session's card fields" "$(jq -r '[.sessions[] | .title, .repo, .branch, (.recent[]? | .summary)] | map(select(. != null)) | map(select(test("/home|/tmp|someone/|Users"))) | length' "$snap")" "0"
+grep -q "$T/repos" "$BOARD_HOME/gitinfo.json" && ok "git info cached per cwd" || bad "git info cached per cwd"
+git -C "$T/repos/web-app" checkout -q -b other
+"$REPO/bin/board-collect" --once --no-notify
+eq "git info reused within 30 s" "$(sj CP .branch)" "feature/cards"
+jq 'map_values(.at = 0)' "$BOARD_HOME/gitinfo.json" > "$T/gi.json" && mv "$T/gi.json" "$BOARD_HOME/gitinfo.json"
+"$REPO/bin/board-collect" --once --no-notify
+eq "  and refreshed after" "$(sj CP .branch)" "other"
+git -C "$T/repos/web-app" checkout -q --detach
+jq 'map_values(.at = 0)' "$BOARD_HOME/gitinfo.json" > "$T/gi.json" && mv "$T/gi.json" "$BOARD_HOME/gitinfo.json"
+"$REPO/bin/board-collect" --once --no-notify
+eq "  detached HEAD" "$(sj CP .branch)" "detached"
+git init -q -b fresh "$T/repos/unborn"
+eq "  a repo with no commits yet: one git call still names it" \
+  "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import collect; print("/".join(map(str, collect.git_where(sys.argv[2]))))' "$REPO/lib" "$T/repos/unborn")" "unborn/no commits"
+
+echo "collector: untrusted text"
+while IFS=$'\t' read -r verdict name detail; do
+  if [ "$verdict" = ok ]; then ok "$name"; else bad "$name" "$detail"; fi
+done < <(python3 - "$REPO/lib" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import collect as c
+T = lambda t: c.clean_text(t, 200)
+H = {"devbox", "devbox.local", "devbox.example.com"}
+cases = [
+    ("file:// URL cut", T("open file:///home/u/x/report.html now"), "open …/report.html now"),
+    ("UNC path cut", T("copy \\\\server\\share\\dir\\a.txt"), "copy …/a.txt"),
+    ("C:/ path cut", T("C:/Users/me/proj/a.txt"), "…/a.txt"),
+    ("C:\\ path cut", T("edit C:\\Users\\me\\a.txt"), "edit …/a.txt"),
+    ("~user and ~/ paths cut", T("~bob/notes/x.md and ~/y.md"), "…/x.md and …/y.md"),
+    ("quoted path with spaces: no middle parts", T("cat '/home/a b/c d.txt' x"), "cat '…/c d.txt' x"),
+    ("double-quoted path with spaces", T('see "/srv/my dir/f.log"'), 'see "…/f.log"'),
+    ("URL credentials dropped", T("https://user:pw@example.com/a and ssh://git@example.com/r.git"),
+     "https://example.com/a and ssh://example.com/r.git"),
+    ("tokens redacted", T("hdr " + "Bear" + "er " + "k7" * 7 + " --pass" + "word " + "hun" + "ter" + "2 " + "gh" + "p_" + "a" * 24),
+     "hdr Bearer [REDACTED] --password [REDACTED] [REDACTED]"),
+    ("URLs and a lone slash untouched", T("see https://example.com/a/b ok, a / b"), "see https://example.com/a/b ok, a / b"),
+    ("title: glyph dropped", c.clean_title("✳ Fix the login form", H, user="bob"), "Fix the login form"),
+    ("title: a shell's user@host: title dropped", c.clean_title("bob@devbox: ~/x", H, user="bob"), ""),
+    ("title: any user@host: dropped", c.clean_title("deploy@build-7: /srv", H, user="bob"), ""),
+    ("title: <host>.local dropped", c.clean_title("Deploy on devbox.local today", H, user="bob"), ""),
+    ("title: the host name as a word dropped", c.clean_title("Fix DevBox build", H, user="bob"), ""),
+    ("title: the FQDN dropped", c.clean_title("ping devbox.example.com", H, user="bob"), ""),
+    ("title: the user name as a word dropped", c.clean_title("Talk to bob about it", H, user="bob"), ""),
+    ("title: a word containing the user name kept", c.clean_title("Fix bobcat parser", H, user="bob"), "Fix bobcat parser"),
+    ("title: tokens and paths redacted too", c.clean_title("⠂ Rotate ghp_" + "b" * 24 + " in /etc/app/key.pem", H, user="bob"),
+     "Rotate [REDACTED] in …/key.pem"),
+    ("host names include <short>.local", sorted(n for n in c.hostnames() if n.endswith(".local"))[:1] != [], True),
+]
+for name, got, want in cases:
+    print(("ok\t%s\t" if got == want else "FAIL\t%s\tgot %r, want %r") % ((name,) if got == want else (name, got, want)))
+PY
+)
+unset FAKE_PANES
+
+echo "collector: one process, one card"
+sleep 600 & dup_pid=$!
+sleep 600 & dup_pid2=$!
+# Started inside CP's tmux, registered as GONE (renamed): it is GONE, not CP/GONE + an offline GONE.
+echo "{\"pid\":$dup_pid,\"sessionId\":\"s-dup\",\"cwd\":\"/w\",\"tmux\":\"CP:@5.%75\",\"name\":\"GONE\",\"status\":\"busy\",\"startedAt\":9}" > "$CLAUDE_SESSIONS_DIR/$dup_pid.json"
+# A teammate pane in CP's tmux whose name is no fleet code keeps the CP/<name> form.
+echo "{\"pid\":$dup_pid2,\"sessionId\":\"s-mate\",\"cwd\":\"/w\",\"tmux\":\"CP:@6.%76\",\"name\":\"helper\",\"status\":\"idle\",\"startedAt\":10}" > "$CLAUDE_SESSIONS_DIR/$dup_pid2.json"
+"$REPO/bin/board-collect" --once --no-notify
+eq "codes: each process once" "$(jq -r '[.sessions[].code] | join(",")' "$snap")" "CP,CP/helper,GONE,INFRA,QA"
+eq "the renamed process is GONE, live" "$(sj GONE '.state + "/" + .name')" "working/GONE"
+eq "CP is still the process named CP" "$(sj CP .session_id)" "$SID"
+# Resources sample now (not after the interval), from `ps` (a missing proc root) so the live test
+# processes are seen: they also list each process once.
+rm -f "${BOARD_HOME:?}/resources-state.json"
+BOARD_PROC_ROOT="$T/no-proc" "$REPO/bin/board-collect" --once --no-notify
+eq "resources list each process once too" "$(jq -r '[.sessions[].code] | sort | join(",")' "$BOARD_HOME/resources.json")" "CP,CP/helper,GONE,INFRA,QA"
+kill "$dup_pid" "$dup_pid2" 2>/dev/null
+rm -f "${CLAUDE_SESSIONS_DIR:?}/${dup_pid:?}.json" "${CLAUDE_SESSIONS_DIR:?}/${dup_pid2:?}.json" "${BOARD_HOME:?}/state/s-qa.json"
+cp "$T/cp-reg.json" "$CLAUDE_SESSIONS_DIR/$live_pid.json"
+"$REPO/bin/board-collect" --once --no-notify
+
+echo "collector: a session alone in another session's tmux"
+cp "$BOARD_CONFIG_DIR/fleet.yaml" "$T/fleet.yaml.bak"
+printf '  - code: SOLO\n    cwd: /w/solo\n' >> "$BOARD_CONFIG_DIR/fleet.yaml"
+sleep 600 & solo_pid=$!
+# Registered as SOLO, running in GONE's tmux while GONE's own process is not running: it is SOLO.
+echo "{\"pid\":$solo_pid,\"sessionId\":\"s-solo\",\"cwd\":\"/w\",\"tmux\":\"GONE:@7.%81\",\"name\":\"SOLO\",\"status\":\"busy\",\"startedAt\":11}" > "$CLAUDE_SESSIONS_DIR/$solo_pid.json"
+"$REPO/bin/board-collect" --once --no-notify
+eq "its registered name wins over the tmux session" "$(sj SOLO '.state + "/" + .name')" "working/SOLO"
+eq "  GONE stays offline" "$(sj GONE .state)" "offline"
+eq "  one card each" "$(jq -r '[.sessions[].code] | join(",")' "$snap")" "CP,GONE,INFRA,QA,SOLO"
+kill "$solo_pid" 2>/dev/null
+rm -f "${CLAUDE_SESSIONS_DIR:?}/${solo_pid:?}.json"
+cp "$T/fleet.yaml.bak" "$BOARD_CONFIG_DIR/fleet.yaml"
+"$REPO/bin/board-collect" --once --no-notify
 
 out="$("$REPO/bin/board" ls)"
 if grep -q "needs-you" <<<"$out" && grep -q "Bash: rm -rf build" <<<"$out"; then ok "board ls"; else bad "board ls" "$out"; fi

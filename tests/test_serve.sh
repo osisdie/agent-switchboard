@@ -73,6 +73,7 @@ cat > "$T/bin/tmux" <<'EOF'
 echo "$*" >> "$FAKE_TMUX_LOG"
 case "$1" in
   display-message) echo CP ;;
+  list-panes) printf '%%42\t✳ Clean the build in /secret/path/build\n' ;;
   capture-pane) cat "$FAKE_TMUX_SCREEN" ;;
   send-keys) exit 0 ;;
 esac
@@ -135,6 +136,9 @@ eq "me is local on loopback" "$(body .me)" "local"
 eq "mode local" "$(body .mode)" "local"
 eq "session CP needs-you" "$(body '.sessions[] | select(.code=="CP") | .state')" "needs-you"
 eq "session fields are an allowlist (no cwd/pid)" "$(body '[.sessions[] | has("cwd") or has("pid") or has("session_id")] | any')" "false"
+eq "session card fields" "$(body '.sessions[] | select(.code=="CP") | [has("title"), has("repo"), has("branch"), has("last_event"), has("notification_type"), has("recent")] | all')" "true"
+eq "session title from the pane, path cut" "$(body '.sessions[] | select(.code=="CP") | .title')" "Clean the build in …/build"
+eq "no path from the machine anywhere in the state" "$(grep -c '/secret' "$T/body")" "0"
 eq "permission decision gets its from" "$(body '.decisions[] | select(.id=="d-1-perm") | .from')" "CP"
 eq "decisions omit session_id" "$(body '[.decisions[] | has("session_id")] | any')" "false"
 eq "tasks" "$(body '.tasks[0].title')" "Ship it"

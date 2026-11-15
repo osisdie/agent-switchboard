@@ -18,13 +18,22 @@ Usage: collect.py [--no-notify] [--baseline] [--verbose]
 - Samples system resources every resources.interval seconds into resources.json (lib/resources.py)
   and adds only their digest (`resources`: null or {level, worst}) to the snapshot, so raw numbers
   never change snapshot.json.
+- Card details per session: `title` (the pane title Claude Code sets, from one batched
+  `tmux list-panes -a`), `repo` / `branch` (basename of the git toplevel of cwd and the current
+  branch, cached 30 s in $BOARD_HOME/gitinfo.json), `last_event`, `notification_type` and `recent`
+  (the tool calls in flight: tool name + the hook's redacted summary). All of it is untrusted text:
+  control characters removed, paths cut to their last component, clipped. Never a full path.
 """
+import getpass
 import glob
 import json
 import os
+import re
+import socket
 import subprocess
 import sys
 import time
+import unicodedata
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import away  # noqa: E402
@@ -34,6 +43,52 @@ import notify  # noqa: E402
 import resources  # noqa: E402
 
 FINAL = ("relayed", "stale", "timeout", "unauthorized")
+TITLE_MAX = 120
+SUMMARY_MAX = 160
+NAME_MAX = 80
+RECENT_MAX = 3
+GIT_TTL_MS = 30 * 1000
+# A path, not part of a URL or a word: replaced by "…/<last part>". file:// URLs, UNC
+# (\\server\share), Windows (C:\ or C:/), home (~/x, ~user/x) and absolute Unix paths; a quoted
+# path may contain spaces.
+_PATH_START = r"(?:file://|\\\\|[A-Za-z]:[\\/]|~[\w.-]*/|/)"
+QUOTED_PATH_RE = re.compile(r"""(?<![\w.:/~\\…-])(["'])(%s[^"'\n]*)\1""" % _PATH_START)
+PATH_RE = re.compile(r"""(?<![\w.:/~\\…-])%s[^\s'"`<>|;&()]+""" % _PATH_START)
+ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?)")
+# scheme://user:password@ or scheme://user@ in a URL: the credentials are dropped.
+URL_CREDS_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s@'\"]+@")
+# The hook's redaction (hooks/board-hook.sh, def redact), for text that never went through it.
+REDACT = [
+    (re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{6,}"), r"\1 [REDACTED]"),
+    (re.compile(r"xox[abposr]-[A-Za-z0-9-]+"), "[REDACTED]"),
+    (re.compile(r"(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})"), "[REDACTED]"),
+    (re.compile(r"\b(sk|pk|rk)_(live|test)_[A-Za-z0-9]{16,}"), "[REDACTED]"),
+    (re.compile(r"glpat-[A-Za-z0-9_-]{20,}"), "[REDACTED]"),
+    (re.compile(r"AIza[A-Za-z0-9_-]{35}"), "[REDACTED]"),
+    (re.compile(r"npm_[A-Za-z0-9]{36}"), "[REDACTED]"),
+    (re.compile(r"A[KS]IA[0-9A-Z]{16}"), "[REDACTED]"),
+    (re.compile(r"""(?i)((?<![\w-])--(?:password|passwd|pass|token|secret|api[_-]?key)(?:\s+|=))("[^"]*"|'[^']*'|[^\s"';|&]+)"""),
+     r"\1[REDACTED]"),
+    (re.compile(r"""((?<![\w-])-p\s+)([^\s"'/.~0-9;|&-][^\s"';|&]*)"""), r"\1[REDACTED]"),
+    (re.compile(r"""((?<![\w-])(?:-u|--user)(?:\s+|=))([^\s:"']+:[^\s"']+)"""), r"\1[REDACTED]"),
+    (re.compile(r"""(?i)(password|passwd|token|secret|api[_-]?key|access[_-]?key|client[_-]?secret)(["']?)(\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s&'",}]+)"""),
+     r"\1\2\3[REDACTED]"),
+]
+LONG_HEX_RE = re.compile(r"\b[0-9a-fA-F]{32,}\b")
+LONG_B64_RE = re.compile(r"[A-Za-z0-9+/_-]{40,}={0,2}")
+SHELL_TITLE_RE = re.compile(r"\S+@\S+:")  # an OSC title a shell sets: user@host: ~/dir
+
+
+def redact(text):
+    for rx, sub in REDACT:
+        text = rx.sub(sub, text)
+    text = LONG_HEX_RE.sub(lambda m: m.group(0) if len(m.group(0)) == 40 and re.fullmatch(r"[0-9a-f]+", m.group(0)) else "[REDACTED]", text)
+
+    def b64(m):
+        b = m.group(0)
+        mixed = re.search(r"[0-9]", b) and re.search(r"[a-z]", b) and re.search(r"[A-Z]", b)
+        return "[REDACTED]" if mixed and max(len(x) for x in b.split("/")) >= 24 else b
+    return LONG_B64_RE.sub(b64, text)
 
 
 def now_ms():
@@ -62,6 +117,145 @@ def append_event(home, ev):
             fh.write(json.dumps(ev, ensure_ascii=False) + "\n")
     except OSError:
         pass
+
+
+def clean_text(value, limit):
+    """Untrusted text for a card: no control characters, no paths (only their last component),
+    single spaces, at most `limit` characters. "" when nothing is left."""
+    if not isinstance(value, str):
+        return ""
+    text = "".join(" " if unicodedata.category(c)[0] == "C" else c for c in ANSI_RE.sub("", value))
+    text = redact(URL_CREDS_RE.sub(r"\1", text))
+
+    def last(path):
+        tail = re.split(r"[/\\]", path.rstrip("/\\"))[-1]
+        return "…/" + tail if tail and not tail.startswith("~") and not tail.endswith(":") else "…"
+    text = QUOTED_PATH_RE.sub(lambda m: m.group(1) + last(m.group(2)) + m.group(1), text)
+    text = " ".join(PATH_RE.sub(lambda m: last(m.group(0)), text).split())
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
+
+
+def hostnames():
+    """This machine's names, lowercased: the full name, the short name and <short>.local."""
+    names = set()
+    try:
+        full = socket.gethostname().lower()
+        short = full.split(".")[0]
+        names.update({full, short, short + ".local"})
+        names.update(n.lower() for n in [socket.getfqdn()] if n)
+    except OSError:
+        pass
+    return {n for n in names if n}
+
+
+def local_user():
+    try:
+        return getpass.getuser()
+    except Exception:  # noqa: BLE001 - no user name known
+        return ""
+
+
+def clean_title(raw, hosts, user=None):
+    """A pane title as the session sets it ("✳ Fix the login form"): the leading status glyph
+    (spinner, ✳, ...) dropped. Never published: tmux's default (the host name), a shell's own
+    title (user@host: ~/dir), or any title naming this host or the local user as a word."""
+    if not isinstance(raw, str):
+        return ""
+    t = raw.strip()
+    while t and unicodedata.category(t[0])[0] not in "LN":
+        t = t[1:]
+    if not t or t.lower() == "claude code" or SHELL_TITLE_RE.search(t):
+        return ""
+    words = set(re.findall(r"[\w.-]+", t.lower()))
+    words |= {w.strip(".-") for w in words}
+    user = local_user() if user is None else user
+    if words & hosts or (user and re.search(r"(?<![\w.-])%s(?![\w-])" % re.escape(user.lower()), t.lower())):
+        return ""
+    return clean_text(t, TITLE_MAX)
+
+
+def pane_titles():
+    """{pane_id: raw title} for every tmux pane, in one call. {} without tmux."""
+    try:
+        r = subprocess.run(["tmux", "list-panes", "-a", "-F", "#{pane_id}\t#{pane_title}"],
+                           capture_output=True, text=True, timeout=5, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    if r.returncode != 0:
+        return {}
+    out = {}
+    for line in r.stdout.splitlines():
+        pane, _, title = line.partition("\t")
+        if pane.startswith("%"):
+            out[pane] = title
+    return out
+
+
+def git_where(cwd):
+    """(repo, branch) for a working directory: the basename of its git toplevel and the current
+    branch ("detached" for a detached HEAD). (None, None) outside a repo."""
+    if not isinstance(cwd, str) or not cwd or not os.path.isdir(cwd):
+        return None, None
+    env = dict(os.environ, GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0")
+
+    # One call. Its exit code is not 0 on a branch with no commits yet, but the top level still
+    # prints first; "HEAD" for the branch then means no commits (exit != 0) or detached (exit 0).
+    try:
+        r = subprocess.run(["git", "-C", cwd, "rev-parse", "--show-toplevel", "--abbrev-ref", "HEAD"],
+                           capture_output=True, text=True, timeout=3, check=False, env=env,
+                           stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None, None
+    lines = r.stdout.splitlines()
+    top = lines[0].strip() if lines and lines[0].startswith("/") else None
+    if not top:
+        return None, None
+    branch = lines[1].strip() if len(lines) > 1 else ""
+    if branch in ("", "HEAD"):
+        branch = "detached" if r.returncode == 0 else "no commits"
+    return clean_text(os.path.basename(top.rstrip("/")), NAME_MAX) or None, clean_text(branch, NAME_MAX) or None
+
+
+def git_info(home, cwds, now):
+    """repo / branch per cwd, cached in $BOARD_HOME/gitinfo.json for GIT_TTL_MS."""
+    path = os.path.join(home, "gitinfo.json")
+    cache = read_json(path)
+    cache = cache if isinstance(cache, dict) else {}
+    out, changed = {}, False
+    for cwd in sorted({c for c in cwds if isinstance(c, str) and c}):
+        hit = cache.get(cwd)
+        if not (isinstance(hit, dict) and isinstance(hit.get("at"), int) and 0 <= now - hit["at"] < GIT_TTL_MS):
+            repo, branch = git_where(cwd)
+            hit = {"at": now, "repo": repo, "branch": branch}
+            changed = True
+        out[cwd] = hit
+    if changed or set(cache) != set(out):
+        try:
+            write_json_atomic(path, out)
+        except OSError:
+            pass
+    return out
+
+
+def recent_tools(st):
+    """The tool calls in flight (the hook's recent_pre), newest last: tool name + clipped summary."""
+    out = []
+    for r in (st.get("recent_pre") or [])[-RECENT_MAX:]:
+        if isinstance(r, dict) and r.get("tool_name"):
+            out.append({"tool": clean_text(r["tool_name"], 40), "summary": clean_text(r.get("summary"), SUMMARY_MAX)})
+    return out
+
+
+def card_details(rows, home, now, titles=None, hosts=None):
+    """Adds title, repo, branch to each session row (cwd and tmux_pane stay internal)."""
+    titles = pane_titles() if titles is None else titles
+    hosts = hostnames() if hosts is None else hosts
+    info = git_info(home, [r.get("cwd") for r in rows if r.get("pid")], now)
+    for r in rows:
+        r["title"] = clean_title(titles.get(r.get("tmux_pane") or ""), hosts) or None if r.get("pid") else None
+        g = info.get(r.get("cwd")) if r.get("pid") else None
+        r["repo"] = (g or {}).get("repo")
+        r["branch"] = (g or {}).get("branch")
 
 
 def live_registry():
@@ -115,6 +309,11 @@ def build_sessions(cfg, home, prefix):
         name = reg.get("name") or None
         raw = tsess or name or str(reg.get("pid"))
         code = amap.get(raw) or (amap.get(name) if not tsess and name else None) or raw
+        # A session started or renamed inside another session's tmux: its own registered name, when
+        # it maps to a fleet code, says which card it is, not the tmux session it runs in.
+        own = amap.get(name) if name else None
+        if own and own != code and own in fleet_by_code:
+            code = own
         sid = reg.get("sessionId")
         st = read_json(os.path.join(home, "state", "%s.json" % sid)) if sid else None
         st = st if isinstance(st, dict) else {}
@@ -136,6 +335,9 @@ def build_sessions(cfg, home, prefix):
             "status": status,
             "state": state,
             "pending": st.get("pending") if state == "needs-you" else None,
+            "last_event": clean_text(st.get("last_event"), 40) or None,
+            "notification_type": clean_text(st.get("notification_type"), 40) or None,
+            "recent": recent_tools(st) if state not in ("offline",) else [],
             "remote_url": (prefix + bridge) if bridge else None,
             "updated_at": max(int(st.get("updated_at") or 0), int(reg.get("updatedAt") or 0)),
             "_started": reg.get("startedAt") or 0,
@@ -143,13 +345,27 @@ def build_sessions(cfg, home, prefix):
         })
     # Several live processes may share one code (e.g. teammate panes inside a session's tmux).
     # The one whose registered name is the code (or an alias) and that started first keeps it.
+    # A process that loses takes the fleet code its own registered name maps to, when no live
+    # process holds that code (a session renamed or started inside another session's tmux), so
+    # it does not show twice: once as CODE/name and once as its offline fleet entry.
     rows.sort(key=lambda r: (r["code"], r["_pref"], r["_started"]))
-    seen = set()
+    seen, losers = set(), []
     for r in rows:
         if r["code"] in seen:
+            losers.append(r)
+        seen.add(r["code"])
+    for r in losers:
+        own = amap.get(r["name"]) if r["name"] else None
+        if own and own not in seen:
+            r["code"] = own
+            r["aliases"] = [own] + [a for a in (fleet_by_code.get(own) or {}).get("aliases", []) if a != own]
+            if r["name"] not in r["aliases"]:
+                r["aliases"].append(r["name"])
+        else:
             r["code"] = "%s/%s" % (r["code"], r["name"] or r["pid"])
             r["aliases"] = [r["code"]]
         seen.add(r["code"])
+    for r in rows:
         r.pop("_started", None)
         r.pop("_pref", None)
     for s in cfg["sessions"]:
@@ -158,6 +374,7 @@ def build_sessions(cfg, home, prefix):
                 "code": s["code"], "aliases": [s["code"]] + s["aliases"], "name": None, "pid": None,
                 "session_id": None, "cwd": s.get("cwd"), "tmux": None, "tmux_pane": None,
                 "status": None, "state": "offline", "pending": None, "remote_url": None, "updated_at": 0,
+                "last_event": None, "notification_type": None, "recent": [],
             })
     rows.sort(key=lambda r: r["code"])
     return rows
@@ -264,6 +481,7 @@ def main(argv):
     cfg = fleet.load_fleet()
     now = now_ms()
     sessions = build_sessions(cfg, home, str(cfg.get("remote_url_prefix") or ""))
+    card_details(sessions, home, now)
     decisions = process_decisions(cfg, home, sessions, now)
     tasks = load_tasks(home)
     attach_tasks(sessions, tasks)

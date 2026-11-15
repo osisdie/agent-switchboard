@@ -54,7 +54,10 @@ Map hook events to states like this:
                   "cwd": "...", "tmux": "CP:@3.%7", "tmux_pane": "%7",
                   "status": "busy|idle", "state": "working|needs-you|done|rest|offline",
                   "pending": {...}|null, "remote_url": "https://claude.ai/code/<bridgeSessionId>"|null,
-                  "updated_at": 0 } ],
+                  "updated_at": 0,
+                  "title": "Fix the login form"|null, "repo": "web-app"|null, "branch": "main"|null,
+                  "last_event": "PreToolUse"|null, "notification_type": "permission_prompt"|null,
+                  "recent": [ {"tool": "Bash", "summary": "npm test -- …/login.spec.ts"} ] } ],
   "decisions": [ { ...decision file... } ],
   "tasks": [ ... ], "limit": {...}|null,
   "owner_away": { "since": 0, "by": "CP", "said": "..." } | null,
@@ -66,7 +69,29 @@ Map hook events to states like this:
 
 - **Where sessions come from:** live entries in `~/.claude/sessions/<pid>.json`, where `/proc/<pid>` exists. Each is merged with `state/<session_id>.json`.
 - **`code`:** the tmux session name (the part before `:` in `tmux`). If there is no tmux, use the registered `name`. `fleet.yaml` may map aliases to codes.
+- **The registered name wins over the tmux session.** A process whose registered `name` maps to a
+  fleet code (code or alias) gets that code, even when it runs inside another session's tmux.
+- **One process, one card.** When several live processes resolve to the same code (teammate panes
+  inside a session's tmux, a session started or renamed inside another session's tmux), the one
+  whose registered name is the code or an alias and that started first keeps it. Each other one
+  takes the fleet code its own registered name maps to, if no live process holds that code;
+  otherwise it becomes `CODE/<name>`.
 - **Sessions in `fleet.yaml` that aren't running** appear with state `offline`.
+- **Card details** (all untrusted text: control characters and ANSI escapes removed; URL
+  credentials (`scheme://user:pass@`) dropped; tokens redacted with the hook's patterns; any path
+  (absolute, `~/`, `~user/`, `C:\` or `C:/`, UNC `\\server\share`, `file://`, quoted with spaces)
+  cut to `…/<last part>`; clipped):
+  - `title`: the pane title Claude Code sets (`✳ <summary>`), from one `tmux list-panes -a` per run,
+    leading status glyph dropped, at most 120 chars. Dropped entirely when it is tmux's default (the
+    host name), a shell's own title (`user@host: dir`), or names this host (short name, FQDN,
+    `<short>.local`) or the local user as a word.
+  - `repo` / `branch`: from one `git rev-parse --show-toplevel --abbrev-ref HEAD` in `cwd`: the
+    basename of the top level and the current branch (`detached` for a detached HEAD, `no commits`
+    on a new branch), cached per cwd for 30 s in `$BOARD_HOME/gitinfo.json`.
+    Never the path itself.
+  - `last_event`, `notification_type`: from the hook state file.
+  - `recent`: the last 3 tool calls in flight (the hook's `recent_pre`): tool name and the hook's
+    redacted summary, at most 160 chars. Self-hosted board only: the operator never mirrors it.
 - **`owner_away`** is `null` when `$BOARD_HOME/owner-away` does not exist, else its record. A file
   that is not a JSON object (free text, empty) still means away: `{since: <mtime ms>, by: null,
   said: <first 300 chars>, legacy: true}`.
@@ -123,7 +148,7 @@ Rules:
 
 | Collection / doc | Writer | Fields |
 |---|---|---|
-| `sessions/{code}` | operator | `code, aliases[], state, status, task` (short summary, never raw prompt), `tmux, remote_url, pending{tool_name,summary,tool_use_id}, updated_at` |
+| `sessions/{code}` | operator | `code, aliases[], state, status, task` (short summary, never raw prompt), `tmux, remote_url, pending{tool_name,summary,tool_use_id}, updated_at, title, repo, branch, last_event, notification_type`. **Never `recent`**: tool summaries can hold command text, so they stay on the self-hosted board |
 | `decisions/{id}` | operator | fields as in `decisions/<id>.json` above. Only the operator writes `answer, answered_by` (= the path id of the answer it relayed), `answered_at`, `status`, `relayed_at`. An Editor's page may set `status: "answered"` as a display hint. The operator ignores it, and ignores who set it. |
 | `answers/{userId}/d/{decisionId}` | that user (page) | `{answer, answered_at, note}`. For permission cards, `answer` is `"allow"` or `"deny"`; the page never offers `"allow"` when the decision has `summary_truncated: true`. The operator lists `answers/<id>/d` for each id in `approver_ids` ∪ `release_manager_ids`, takes the identity **from the path**, and runs `board answer <decisionId> <answer> --by <id>`. If several approvers answered, the earliest `answered_at` wins. |
 | `messages/{id}` | page (Editors) creates; operator updates | `to` (code or `"all"`), `body`, `by` (user id), `created_at`, `status: "new"\|"relayed"\|"replied"`. The operator adds `relayed_to[]` and `relayed_at`. |
