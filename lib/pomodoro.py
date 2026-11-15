@@ -1,26 +1,36 @@
 #!/usr/bin/env python3
 """Pomodoro tallies for the fleet: $BOARD_HOME/pomodoro.json (docs/contract.md, "Pomodoro").
 
-A session that is focused (state `working`) runs its own pomodoro. The collector feeds every run's
-session states into step(); nothing here reads a transcript or calls a model (zero tokens).
+Every focused stream runs its own pomodoro. A stream is a top-level session (key = its code,
+focused while its state is `working`) or one of its teammates (key "CODE/teammate-name", focused
+while either signal says it works: resources.json reports it active (not idle, idle_s below
+pomodoro.teammate_idle_s, default 60), or its pane title shows the working spinner (cards.json
+`busy`, which stays true through a long model turn at ~0% CPU)). A lead's stream counts only its own state, never its teammates' work. The collector feeds
+every run's states into step(); nothing here reads a transcript or calls a model (zero tokens).
 
-Timer rules (per session code; FOCUS = pomodoro.focus_minutes, default 25; GRACE =
-pomodoro.grace_minutes, default 2):
-  working    the pomodoro runs. At FOCUS minutes of focus it completes (the code's tally for the
-             local day it completed in goes up by one) and the next one starts at once, so 50
-             minutes of work is 2.
-  done/rest  the clock stops (pause). A done/rest run longer than GRACE resets the current
-             pomodoro to 0:00; a shorter one (between tool calls, a quick turn) keeps its progress.
+Timer rules (per stream; FOCUS = pomodoro.focus_minutes, default 25; GRACE =
+pomodoro.grace_minutes, default 2; MODE = pomodoro.mode, "accumulate" (default) or "strict"):
+  working    the pomodoro runs. At FOCUS minutes of focus it completes (the stream's tally for the
+             local day it completed in goes up by one) and the next one starts at once with the
+             remainder, so 50 minutes of work is 2.
+  done/rest  the clock stops (pause). accumulate: the progress is kept, however long the break
+             (agents pause between prompts all the time). strict (human pomodoro): a done/rest run
+             longer than GRACE resets the current pomodoro to 0:00; a shorter one keeps it.
   needs-you  the clock stops and the progress is kept, however long the human takes: the session
              is in the middle of its work, waiting on the owner.
+  gone       a teammate stream with no data (the teammate ended, or resources.json is missing or
+             stale): the clock stops and the progress is kept. A gone stream with no progress is
+             dropped; one with progress is dropped after HISTORY_DAYS.
   offline    resets the current pomodoro (the session ended).
   no data    when no collector run was recorded for longer than nodata_ms() (GRACE, at least 60 s
              and at least HEARTBEAT_MS + 2 poll intervals: the collector was stopped, the machine
-             slept), that gap counts as a break: every current pomodoro resets. A collector
-             restarted within that time (less the HEARTBEAT_MS a write may lag) carries on.
+             slept), that gap counts as a break: strict resets every current pomodoro, accumulate
+             keeps them (the gap itself is never credited). A collector restarted within that time
+             (less the HEARTBEAT_MS a write may lag) carries on.
 Time between two collector runs counts for the state seen at the first of them. Focused minutes
 are split at local midnight (pomodoro.timezone, an IANA name; empty = the system's), and a
-pomodoro is counted on the day it completes. 14 days of tallies are kept (a day later than today,
+pomodoro is counted on the day it completes. Day tallies are per stream; the fleet's day is the
+sum over all streams, teammates included. 14 days of tallies are kept (a day later than today,
 after the clock moved back, is kept too).
 
 pomodoro.json (0600) is rewritten when something a viewer sees changed (a state, a tally, a reset)
@@ -33,7 +43,7 @@ fleet pomodoro of the day sends one info notification ("AI fleet finished its 10
 
 Usage:
   pomodoro.py show [today|week] [--json|--mirror]
-      today      the fleet total, each session's count, focus and the current pomodoro
+      today      the fleet total, each stream's count, focus and the current pomodoro
       week       the last 7 days
       --json     today's tallies as of the last collector run (week: just those days)
       --mirror   what the operator may write to meta/pomodoro (daily totals only)
@@ -48,17 +58,23 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import fleet  # noqa: E402
 
 FILE = "pomodoro.json"
-VERSION = 1
+VERSION = 2  # 2: teammate streams, accumulate mode, seen_at (a v1 document migrates as is)
 HISTORY_DAYS = 14
 HEARTBEAT_MS = 20 * 1000
 NODATA_MIN_MS = 60 * 1000  # a gap shorter than this is never "no data" (> HEARTBEAT_MS + a run)
 SEEN_STEP_MS = 5 * 60 * 1000  # the board view's freshness bucket (see board_view)
 FOCUS = "working"
 BREAK = ("done", "rest")
-PAUSE = ("needs-you",)
+GONE = "gone"
+PAUSE = ("needs-you", GONE)
+MODES = ("accumulate", "strict")
 DEFAULTS = {"enabled": True, "focus_minutes": 25, "grace_minutes": 2, "timezone": "",
-            "notify": False, "notify_every": 10}
-CODE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_./-]{0,127}$")
+            "notify": False, "notify_every": 10, "mode": "accumulate", "teammate_idle_s": 60}
+SEG = r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}"
+NAME_RE = re.compile(r"^%s$" % SEG)
+CODE_RE = re.compile(r"^%s(/%s)?$" % (SEG, SEG))   # a stream: "CODE" or "CODE/teammate-name"
+RES_STALE_MS = 2 * 60 * 1000  # resources.json older than this (plus 2 sample intervals): no teammate data
+DAY_MS = 24 * 3600 * 1000
 
 
 # ------------------------------------------------------------------ settings and time
@@ -80,9 +96,73 @@ def settings(cfg):
         "tz": tzname.strip() if tzinfo(tzname.strip()) is not None else "",
         "notify": c.get("notify") is True,
         "notify_every": int(_num(c.get("notify_every"), DEFAULTS["notify_every"], 1, 1000)),
+        "mode": c.get("mode") if c.get("mode") in MODES else DEFAULTS["mode"],
+        "teammate_idle_ms": int(_num(c.get("teammate_idle_s"), DEFAULTS["teammate_idle_s"], 5, 3600) * 1000),
         # fleet.yaml poll_interval (s): a gap is "no data" only beyond a heartbeat plus two runs
         "poll_ms": int(_num(cfg.get("poll_interval") if isinstance(cfg, dict) else None, 3, 1, 3600) * 1000),
+        # resources.interval (s): how often resources.json can say a teammate is active
+        "res_ms": int(_num((cfg.get("resources") or {}).get("interval") if isinstance(cfg, dict)
+                           and isinstance(cfg.get("resources"), dict) else None, 15, 1, 3600) * 1000),
     }
+
+
+def strict(st):
+    return st.get("mode") == "strict"
+
+
+def is_teammate(key):
+    return "/" in key
+
+
+def parent_of(key):
+    return key.split("/", 1)[0]
+
+
+def safe_name(name):
+    """A teammate name as a stream key segment ("" when nothing usable is left)."""
+    n = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(name or "")).strip("-._")[:64]
+    return n if NAME_RE.match(n) else ""
+
+
+def busy_from_cards(doc):
+    """{(code, safe name)} of the teammates whose pane shows the working spinner, from the document
+    cards.step just built (lib/cards.py teammates(): `busy` true). No extra process or read."""
+    out = set()
+    for code, c in ((doc or {}).get("sessions") or {}).items() if isinstance(doc, dict) else ():
+        for t in (c.get("teammates") or []) if isinstance(c, dict) else ():
+            if isinstance(t, dict) and t.get("busy") is True and safe_name(t.get("name")):
+                out.add((code, safe_name(t.get("name"))))
+    return out
+
+
+def teammate_states(res, now, st, spinning=None):
+    """{"CODE/name": "working" | "rest"} from resources.json, or None when it has no usable teammate
+    data (missing, disabled, or older than RES_STALE_MS plus two sample intervals): every teammate
+    stream then pauses. Focused = either signal: not idle with idle_s known and below
+    teammate_idle_ms (CPU), or (code, name) in `spinning` (the pane's working spinner, see
+    busy_from_cards: a long model turn idles the CPU). Only codes, names and states leave here."""
+    spinning = spinning or set()
+    if not isinstance(res, dict) or res.get("enabled") is False or not isinstance(res.get("sessions"), list):
+        return None
+    at = res.get("at")
+    if not isinstance(at, (int, float)) or isinstance(at, bool) or now - at > RES_STALE_MS + 2 * st.get("res_ms", 15000):
+        return None
+    out = {}
+    for s in res["sessions"]:
+        code = s.get("code") if isinstance(s, dict) else None
+        if not isinstance(code, str) or not NAME_RE.match(code):
+            continue
+        for t in s.get("teammates") or []:
+            name = safe_name(t.get("name")) if isinstance(t, dict) else ""
+            if not name:
+                continue
+            idle_s = t.get("idle_s")
+            busy = (t.get("idle") is not True and isinstance(idle_s, (int, float)) and not isinstance(idle_s, bool)
+                    and idle_s * 1000 < st.get("teammate_idle_ms", 60000)) or (code, name) in spinning
+            key = code + "/" + name
+            if busy or key not in out:    # two teammates with one name: one stream, busy if either is
+                out[key] = FOCUS if busy else "rest"
+    return out
 
 
 def nodata_ms(st):
@@ -130,6 +210,7 @@ def normalize(doc):
         return out
     if isinstance(doc.get("at"), int) and not isinstance(doc.get("at"), bool):
         out["at"] = doc["at"]
+    # v1 -> v2: the same sessions and days (a v1 code is a top-level stream); seen_at starts at `at`
     for code, r in (doc.get("sessions") or {}).items() if isinstance(doc.get("sessions"), dict) else ():
         if not isinstance(r, dict) or not CODE_RE.match(str(code)):
             continue
@@ -139,6 +220,7 @@ def normalize(doc):
             "acc": r["acc"] if ok(r.get("acc")) and r["acc"] >= 0 else 0,
             "away_since": r["away_since"] if ok(r.get("away_since")) else None,
             "done_at": r["done_at"] if ok(r.get("done_at")) else None,
+            "seen_at": r["seen_at"] if ok(r.get("seen_at")) else out["at"],
         }
     for day, per in (doc.get("days") or {}).items() if isinstance(doc.get("days"), dict) else ():
         if not isinstance(per, dict) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(day)):
@@ -186,26 +268,30 @@ def _reset(rec, code, at, events):
 
 
 def step(doc, states, now, st):
-    """Advance the timers to `now`, given each code's state seen now ({code: state}; a code that is
-    missing is offline). Returns (new document, events). Pure: no I/O, `doc` is not changed."""
+    """Advance the timers to `now`, given each stream's state seen now ({key: state}; a missing
+    session code is offline, a missing teammate key is gone). Returns (new document, events).
+    Pure: no I/O, `doc` is not changed."""
     doc = normalize(doc)
     tz = tzinfo(st.get("tz") or "")
     grace = st["grace_ms"]
+    hard = strict(st)
     seen = doc["at"]
     gap = now - seen if seen is not None and now >= seen else None  # None: first run / clock moved back
     events = []
     for code in sorted(set(doc["sessions"]) | {c for c in states if CODE_RE.match(str(c))}):
-        rec = doc["sessions"].get(code) or {"state": "offline", "acc": 0, "away_since": None, "done_at": None}
-        prev, new = rec["state"], states.get(code) or "offline"
+        rec = doc["sessions"].get(code) or {"state": "offline", "acc": 0, "away_since": None, "done_at": None,
+                                            "seen_at": now}
+        prev, new = rec["state"], states.get(code) or (GONE if is_teammate(code) else "offline")
         if gap is not None and gap > nodata_ms(st):
-            _reset(rec, code, seen, events)             # nothing was seen for longer than the grace
-            rec["away_since"] = None
+            if hard:
+                _reset(rec, code, seen, events)         # nothing was seen for longer than the grace
+            rec["away_since"] = None                    # accumulate: a break; the gap is not credited
         elif gap is not None:
             if prev == FOCUS:
                 _focus(doc, code, rec, seen, now, st, tz, events)
             elif prev in BREAK:
                 since = rec["away_since"] if rec["away_since"] is not None else seen
-                if now - since > grace:
+                if hard and now - since > grace:
                     _reset(rec, code, since + grace, events)
             elif prev not in PAUSE:
                 _reset(rec, code, seen, events)         # offline (or an unknown state)
@@ -218,8 +304,12 @@ def step(doc, states, now, st):
         if new not in (FOCUS,) + BREAK + PAUSE:
             _reset(rec, code, now, events)
         rec["state"] = new
-        if new == "offline" and not rec["acc"]:
-            doc["sessions"].pop(code, None)              # nothing to keep for an idle offline code
+        if new not in ("offline", GONE):
+            rec["seen_at"] = now
+        elif rec.get("seen_at") is None or rec["seen_at"] > now:
+            rec["seen_at"] = now                        # the clock moved back: start the wait again
+        if new in ("offline", GONE) and (not rec["acc"] or now - rec["seen_at"] > HISTORY_DAYS * DAY_MS):
+            doc["sessions"].pop(code, None)              # nothing to keep (or gone too long)
         else:
             doc["sessions"][code] = rec
     doc["at"] = now
@@ -287,9 +377,11 @@ def _coarse(doc):
             json.dumps(doc.get("notified"), sort_keys=True), json.dumps(doc.get("settings"), sort_keys=True))
 
 
-def run(cfg, home, rows, now, notify_ok=True, send=None):
-    """The collector's step: read pomodoro.json, advance it with this run's session states, write it
-    when needed, notify a milestone. Returns (doc, events)."""
+def run(cfg, home, rows, now, notify_ok=True, send=None, res=False, busy=None):
+    """The collector's step: read pomodoro.json, advance it with this run's session states and the
+    teammates' activity in resources.json (`res`; False = read it from `home`) and their pane
+    spinners (`busy`, see busy_from_cards), write it when needed, notify a milestone.
+    Returns (doc, events)."""
     st = settings(cfg)
     old = read_doc(home)
     if not st["enabled"]:
@@ -299,14 +391,23 @@ def run(cfg, home, rows, now, notify_ok=True, send=None):
             except OSError:
                 pass
         return None, []
-    states = {r["code"]: r.get("state") for r in rows if isinstance(r, dict) and r.get("code")}
+    states = {r["code"]: r.get("state") for r in rows
+              if isinstance(r, dict) and isinstance(r.get("code"), str) and NAME_RE.match(r["code"])}
+    if res is False:
+        try:
+            with open(os.path.join(home, "resources.json"), encoding="utf-8") as fh:
+                res = json.load(fh)
+        except (OSError, ValueError):
+            res = None
+    states.update(teammate_states(res, now, st, busy) or {})   # no data: every teammate stream is gone (paused)
     doc, events = step(old, states, now, st)
     total, reached = milestone(doc, now, st)
-    doc["settings"] = {"focus_ms": st["focus_ms"], "grace_ms": st["grace_ms"], "tz": st["tz"]}
+    doc["settings"] = {"focus_ms": st["focus_ms"], "grace_ms": st["grace_ms"], "tz": st["tz"], "mode": st["mode"]}
     old_at = old.get("at") if isinstance(old, dict) else None
-    # A running or paused pomodoro needs a fresh `at`, or the next run would take the time since the
-    # last write for a gap with no data. Nothing in progress: nothing a gap could reset.
-    live = any(r["state"] == FOCUS or r["acc"] for r in doc["sessions"].values())
+    # A running pomodoro needs a fresh `at`, or the next run would take the time since the last
+    # write for a gap with no data; in strict mode a paused one does too (a gap would reset it).
+    # Accumulate keeps paused progress across any gap, so only a running clock needs the heartbeat.
+    live = any(r["state"] == FOCUS or (strict(st) and r["acc"]) for r in doc["sessions"].values())
     stale = not isinstance(old_at, int) or (live and not 0 <= now - old_at < HEARTBEAT_MS)
     if _coarse(old) != _coarse(doc) or stale:
         write_doc(home, doc)
@@ -337,14 +438,15 @@ def raw_view(doc, now):
     s = doc.get("settings") if isinstance(doc.get("settings"), dict) else {}
     st = {"focus_ms": int(_num(s.get("focus_ms"), 25 * 60000, 60000, 180 * 60000)),
           "grace_ms": int(_num(s.get("grace_ms"), 2 * 60000, 0, 3600000)),
-          "tz": s.get("tz") if isinstance(s.get("tz"), str) else ""}
+          "tz": s.get("tz") if isinstance(s.get("tz"), str) else "",
+          "mode": s.get("mode") if s.get("mode") in MODES else "strict"}  # a v1 file had no mode: strict
     raw = doc
     doc = normalize(doc)
     tz = tzinfo(st["tz"])
     today = day_of(now, tz)
     per = doc["days"].get(today, {})
     sessions = {}
-    for code in sorted(set(per) | set(doc["sessions"])):
+    for code in sorted(set(per) | set(doc["sessions"]), key=lambda c: (parent_of(c), c)):  # teammates after their lead
         r = doc["sessions"].get(code) or {}
         t = per.get(code) or {"done": 0, "focus_ms": 0}
         sessions[code] = {"done": t["done"], "focus_ms": t["focus_ms"], "progress_ms": r.get("acc", 0),
@@ -356,9 +458,11 @@ def raw_view(doc, now):
         days.append({"date": d, "done": sum(v["done"] for v in row.values()),
                      "focus_ms": sum(v["focus_ms"] for v in row.values()),
                      "sessions": {c: v["done"] for c, v in sorted(row.items()) if v["done"]}})
+    tm = [v for c, v in per.items() if is_teammate(c)]
     return {"enabled": True, "focus_ms": st["focus_ms"], "grace_ms": st["grace_ms"], "tz": st["tz"],
-            "at": raw.get("at") if isinstance(raw.get("at"), int) else None, "today": today,
-            "fleet": {"done": days[-1]["done"], "focus_ms": days[-1]["focus_ms"]},
+            "mode": st["mode"], "at": raw.get("at") if isinstance(raw.get("at"), int) else None, "today": today,
+            "fleet": {"done": days[-1]["done"], "focus_ms": days[-1]["focus_ms"],
+                      "teammates_done": sum(v["done"] for v in tm)},
             "sessions": sessions, "days": days}
 
 
@@ -404,7 +508,7 @@ def mirror_view(view):
     """meta/pomodoro for the Artifact: the daily totals (from raw_view), no running clock."""
     if not view:
         return None
-    return {"today": view["today"], "tz": view["tz"], "focus_ms": view["focus_ms"], "fleet": view["fleet"],
+    return {"today": view["today"], "tz": view["tz"], "focus_ms": view["focus_ms"], "mode": view["mode"], "fleet": view["fleet"],
             "sessions": {c: {"done": v["done"], "focus_ms": v["focus_ms"]} for c, v in view["sessions"].items()
                          if v["done"] or v["focus_ms"]},
             "days": view["days"], "updated_at": view["at"]}
@@ -456,13 +560,16 @@ def show(argv, home=None, now=None, out=sys.stdout):
                                                    fmt_focus(sum(d["focus_ms"] for d in days))))
         return 0
     out.write("Pomodoro %s (%s)\n" % (view["today"], tzlabel))
-    out.write("AI fleet: %d 🍅 · %s focus\n" % (view["fleet"]["done"], fmt_focus(view["fleet"]["focus_ms"])))
+    tm_done = view["fleet"].get("teammates_done", 0)
+    out.write("AI fleet: %d 🍅 · %s focus%s\n" % (view["fleet"]["done"], fmt_focus(view["fleet"]["focus_ms"]),
+                                                  " (teammates %d 🍅)" % tm_done if tm_done else ""))
     for code, v in view["sessions"].items():
         cur = ""
         if v["progress_ms"] or v["running"]:
             cur = "  now %s / %s%s" % (_mmss(v["progress_ms"]), _mmss(view["focus_ms"]),
                                        "" if v["running"] else " (paused)")
-        out.write("  %-16s %3d 🍅  %8s%s\n" % (fleet.safe_text(code)[:16], v["done"], fmt_focus(v["focus_ms"]), cur))
+        label = "  + " + code.split("/", 1)[1] if is_teammate(code) else code
+        out.write("  %-16s %3d 🍅  %8s%s\n" % (fleet.safe_text(label)[:16], v["done"], fmt_focus(v["focus_ms"]), cur))
     return 0
 
 

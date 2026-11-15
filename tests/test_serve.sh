@@ -274,7 +274,7 @@ for _ in $(seq 1 100); do req GET /api/state >/dev/null; [ "$(body '.pomodoro.fl
 # A running pomodoro: started_at = at - acc; today's focus leaves out the running stretch, which the
 # page adds back (now - max(started_at, day_start)); no `at`, so the heartbeat never changes the view.
 eq "pomodoro.json reaches /api/state" "$(body --argjson at "$NOW" '.pomodoro | "\(.fleet.done)/\(.fleet.focus_ms + ($at - ([.sessions.CP.started_at, .day_start] | max)))"')" "3/5400000"
-eq "pomodoro: keys" "$(body '.pomodoro | keys | join(",")')" "day_start,days,enabled,fleet,focus_ms,grace_ms,seen,seen_step_ms,sessions,today,tz"
+eq "pomodoro: keys" "$(body '.pomodoro | keys | join(",")')" "day_start,days,enabled,fleet,focus_ms,grace_ms,mode,seen,seen_step_ms,sessions,today,tz"
 eq "pomodoro: session row" "$(body --argjson at "$NOW" '.pomodoro.sessions.CP | "\(.done)/\(.progress_ms)/\(.running)/\(.state)/\($at - .started_at)"')" "3/null/true/working/600000"
 eq "pomodoro: seen is the last run floored to 5 minutes" "$(body --argjson at "$NOW" '.pomodoro | "\(.seen == ($at - $at % 300000))/\(.seen_step_ms)"')" "true/300000"
 eq "pomodoro: session keys" "$(body '.pomodoro.sessions.CP | keys | join(",")')" "done,done_at,focus_ms,progress_ms,running,started_at,state"

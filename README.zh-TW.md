@@ -511,20 +511,23 @@ board rc clear API               # 忘掉設定：回到 fleet.yaml（預設開�
 ### 番茄鐘（Pomodoro）
 
 一個輕鬆有趣的統計：看 AI 團隊一天完成了多少專注工作。點子來自 [ulanzi-lab](https://github.com/osisdie/ulanzi-lab)
-的 Focus Timer：在那裡是你按下按鍵開始一個番茄鐘；在這裡，每個 session 工作時會自己按下自己的番茄鐘。
+的 Focus Timer：在那裡是你按下按鍵開始一個番茄鐘；在這裡，每個 Claude session（包括 teammate）工作時都會
+自己按下自己的番茄鐘，「今日」把它們全部加起來。
 
-- **一個番茄鐘 = session 工作 25 分鐘。** 時間到，這個 session 的計數加一，下一個馬上開始，所以工作
+- **一個番茄鐘 = 專注 25 分鐘。** session 在工作時算專注；teammate 在資源取樣器看到它活動時（閒置不到
+  一分鐘），或它的 pane 顯示工作中的轉圈圖示時，算專注。lead 只算自己的工作。每 25 分鐘讓這條計時的計數加一，多出來的接著算，所以工作
   50 分鐘算 2 個。
-- **短暫停頓不會中斷。** 完成／閒置的空檔在 2 分鐘以內（工具呼叫之間、一個很快的回合）時暫停計時，
-  進度保留；超過就把目前這個番茄鐘歸零。
-- **等你回覆時暫停**（needs-you），不管你多久才回：session 還在工作中。離線會歸零；收集器沒有資料的空檔
-  超過寬限時間也會歸零。
-- 收集器用它本來就在讀的 session 狀態來計算（不花 token），寫進 `$BOARD_HOME/pomodoro.json`（0600）：
-  依當地日期和 session 記錄計數、專注分鐘數和目前的番茄鐘，保留 14 天。每天在當地午夜換日
+- **休息不會歸零**（`mode: accumulate`，預設）：agent 在提示之間常常停頓，所以專注時間單純累加。
+  `mode: strict` 是給人用的番茄鐘：完成／閒置超過 2 分鐘就把目前這個番茄鐘歸零。
+- **等你回覆時暫停**（needs-you），不管你多久才回：session 還在工作中。離線會歸零。teammate 結束了
+  （或取樣器沒有資料）時，它的番茄鐘暫停。
+- 收集器用它本來就在讀的 session 狀態和 teammate 活動來計算（不花 token），寫進
+  `$BOARD_HOME/pomodoro.json`（0600）：依當地日期和每條計時記錄計數、專注分鐘數和目前的番茄鐘，保留 14 天。每天在當地午夜換日
   （`pomodoro.timezone`，預設是系統時區）。收集器重新啟動後統計會接著算。
-- **看板上**：每張卡片有一個小番茄圓環，顯示 `12:34 / 25:00` 和 `今日 🍅×3`。按鍵面板的 **🍅 今日**
-  顯示全體總數（`14 · 專注 5 小時 50 分`）和 7 天的小長條圖，按下會開啟面板，列出今天每個 session 的
-  計數和最近 14 天。完成一個番茄鐘時會噴出一小串番茄（設定「減少動態效果」時不會）。
+- **看板上**：每張卡片有一個小番茄圓環，顯示 `12:34 / 25:00` 和 `今日 🍅×3`；teammate 有專注時再加上
+  `teammate +5 🍅 · 2 小時 20 分`。按鍵面板的 **🍅 今日** 顯示全體總數（含 teammate，`19 · 專注 9 小時 28 分`）
+  和 7 天的小長條圖，按下會開啟面板，列出 session／teammate 的分計、今天每個 session 的計數（teammate 列在它的
+  session 底下）和最近 14 天。完成一個番茄鐘時會噴出一小串番茄（設定「減少動態效果」時不會）。
 - `board pomodoro [today|week] [--json|--mirror]` 在終端機印出同樣的統計（`--mirror`：給 Artifact 頁面的
   `meta/pomodoro` 文件）。
 - 選用、預設關閉：`pomodoro.notify: true` 時，全體每天每完成第 10 個番茄鐘就送一則 info 通知
@@ -534,7 +537,9 @@ board rc clear API               # 忘掉設定：回到 fleet.yaml（預設開�
 pomodoro:                 # fleet.yaml；全部選填
   enabled: true
   focus_minutes: 25
-  grace_minutes: 2
+  mode: accumulate        # 或 strict：休息超過 grace_minutes 就歸零
+  grace_minutes: 2        # 只用在 strict
+  teammate_idle_s: 60     # teammate 閒置這麼久就算休息
   timezone: ""            # IANA 名稱，例如 Asia/Taipei；空白 = 系統時區
   notify: false
   notify_every: 10

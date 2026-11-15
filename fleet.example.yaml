@@ -127,8 +127,10 @@ sessions:
 # Pomodoro tally (lib/pomodoro.py; README "Pomodoro"): each session runs a pomodoro while it works.
 # pomodoro:
 #   enabled: true
-#   focus_minutes: 25           # one pomodoro
-#   grace_minutes: 2            # a done/idle gap up to this long pauses; longer resets
+#   focus_minutes: 25           # one pomodoro (every session and every teammate runs its own)
+#   mode: accumulate            # focus adds up across breaks; strict: a break longer than grace resets
+#   grace_minutes: 2            # strict: a done/idle gap up to this long pauses; longer resets
+#   teammate_idle_s: 60         # a teammate idle (per the resources sampler) this long is on a break
 #   timezone: ""                # day rollover at local midnight here (IANA name); empty = the system's
 #   notify: false               # info notification at every notify_every-th fleet pomodoro of the day
 #   notify_every: 10
