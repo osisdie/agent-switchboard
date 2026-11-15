@@ -54,19 +54,19 @@ eq "status --json" "$("$B" away status --json | jq -r .by)" "CP"
 eq "on is logged" "$(lastev away '.action + "/" + .by + "/" + .said')" "on/CP/decide among yourselves; I'm back Monday"
 
 since0="$(jq -r .since "$AWF")"
-out="$("$B" away on --by AI --said "something else" 2>&1)"; rc=$?
+out="$("$B" away on --by API --said "something else" 2>&1)"; rc=$?
 eq "on when already away exits 0" "$rc" "0"
 grep -q "already away" <<<"$out" && grep -q "(by CP)" <<<"$out" && ok "  reports the existing record" || bad "  reports the existing record" "$out"
 eq "  does not overwrite" "$(jq -r '.by + "|" + (.since | tostring)' "$AWF")" "CP|$since0"
-"$B" away on --by AI --said "new words" --replace >/dev/null 2>&1
-eq "--replace overwrites" "$(jq -r '.by + "|" + .said' "$AWF")" "AI|new words"
+"$B" away on --by API --said "new words" --replace >/dev/null 2>&1
+eq "--replace overwrites" "$(jq -r '.by + "|" + .said' "$AWF")" "API|new words"
 eq "  the replaced record is logged" "$(lastev away '.replaced.by')" "CP"
 
-out="$("$B" away off --by AI --said "I'm back" 2>&1)"; rc=$?
+out="$("$B" away off --by API --said "I'm back" 2>&1)"; rc=$?
 eq "off exits 0" "$rc" "0"
 [ -e "$AWF" ] && bad "off removes the file" || ok "off removes the file"
-eq "off is logged with the owner's words" "$(lastev away '.action + "/" + .by + "/" + .said')" "off/AI/I'm back"
-out="$("$B" away off --by AI 2>&1)"; rc=$?
+eq "off is logged with the owner's words" "$(lastev away '.action + "/" + .by + "/" + .said')" "off/API/I'm back"
+out="$("$B" away off --by API 2>&1)"; rc=$?
 eq "off when not away exits 0" "$rc" "0"
 grep -q "not away" <<<"$out" && ok "  says so" || bad "  says so" "$out"
 
@@ -109,7 +109,7 @@ rm -f "$BOARD_CONFIG_DIR/.env"
 
 # ---------------------------------------------------------------- consensus
 echo "consensus:"
-"$B" consensus propose --from CP --to AI "x" >/dev/null 2>&1; rc=$?
+"$B" consensus propose --from CP --to API "x" >/dev/null 2>&1; rc=$?
 eq "propose refused when the owner is not away" "$rc" "1"
 [ -n "$(find "$BOARD_HOME/consensus" -name 'c-*.json' 2>/dev/null)" ] && bad "  nothing written" || ok "  nothing written"
 "$B" away on --by CP --said "agree among yourselves" >/dev/null
@@ -117,13 +117,13 @@ eq "propose refused when the owner is not away" "$rc" "1"
 "$B" consensus propose --from CP --to CP "x" >/dev/null 2>&1; eq "propose to oneself only refused" "$?" "1"
 "$B" consensus propose --from CP --to 'A;B' "x" >/dev/null 2>&1; eq "bad session code refused" "$?" "1"
 
-out="$("$B" consensus propose --from CP --to "AI, INFRA,CP" --ref "PR-7" "share the fixture | v2" 2>"$T/err")"; rc=$?
+out="$("$B" consensus propose --from CP --to "API, INFRA,CP" --ref "PR-7" "share the fixture | v2" 2>"$T/err")"; rc=$?
 eq "propose exits 0" "$rc" "0"
 c1="$out"
 [[ $c1 =~ ^c-[0-9]+-[a-z0-9]+$ ]] && ok "prints only the id on stdout ($c1)" || bad "prints only the id on stdout" "$out"
 grep -q "production deploys" "$T/err" && grep -q "publishing externally" "$T/err" && ok "  reminds of the red lines (stderr)" \
   || bad "  reminds of the red lines (stderr)" "$(cat "$T/err")"
-eq "participants: proposer first, deduped, trimmed" "$(cf "$c1" '.participants | join(",")')" "CP,AI,INFRA"
+eq "participants: proposer first, deduped, trimmed" "$(cf "$c1" '.participants | join(",")')" "CP,API,INFRA"
 eq "the proposer counts as agreeing" "$(cf "$c1" '.votes | map(.by + ":" + .vote) | join(",")')" "CP:agree"
 eq "status pending, ref, away episode" "$(cf "$c1" '[.status, .ref, .away.by] | join("|")')" "pending|PR-7|CP"
 eq "consensus file mode 0600" "$(stat -c %a "$BOARD_HOME/consensus/$c1.json")" "600"
@@ -132,16 +132,16 @@ eq "propose logged" "$(lastev consensus '.action + "/" + .id')" "propose/$c1"
 "$B" consensus vote "$c1" agree --from NOPE >/dev/null 2>&1; eq "non-participant vote refused (exit 4)" "$?" "4"
 eq "  no vote recorded" "$(cf "$c1" '.votes | length')" "1"
 eq "  refusal logged" "$(lastev consensus '.result + "/" + .by')" "refused/NOPE"
-"$B" consensus vote "$c1" maybe --from AI >/dev/null 2>&1; eq "vote other than agree|object is a usage error" "$?" "2"
-"$B" consensus vote "c-1-../x" agree --from AI >/dev/null 2>&1; eq "bad id refused" "$?" "1"
-"$B" consensus vote "c-1-nope" agree --from AI >/dev/null 2>&1; eq "unknown id refused" "$?" "1"
+"$B" consensus vote "$c1" maybe --from API >/dev/null 2>&1; eq "vote other than agree|object is a usage error" "$?" "2"
+"$B" consensus vote "c-1-../x" agree --from API >/dev/null 2>&1; eq "bad id refused" "$?" "1"
+"$B" consensus vote "c-1-nope" agree --from API >/dev/null 2>&1; eq "unknown id refused" "$?" "1"
 "$B" consensus vote "$c1" agree --from CP >/dev/null 2>&1; eq "the proposer cannot vote agree twice" "$?" "1"
-out="$("$B" consensus vote "$c1" agree --from AI --note "fine by me" 2>&1)"; rc=$?
+out="$("$B" consensus vote "$c1" agree --from API --note "fine by me" 2>&1)"; rc=$?
 eq "participant vote exits 0" "$rc" "0"
 grep -q "pending (2/3 agreed)" <<<"$out" && ok "  still pending with one silent participant" || bad "  still pending" "$out"
-"$B" consensus vote "$c1" agree --from AI >/dev/null 2>&1; eq "one vote each: a repeated agree refused" "$?" "1"
+"$B" consensus vote "$c1" agree --from API >/dev/null 2>&1; eq "one vote each: a repeated agree refused" "$?" "1"
 out="$("$B" consensus ls)"
-grep -q "$c1 *pending *CP *CP:agree,AI:agree,INFRA:-" <<<"$out" && ok "ls shows who agreed and who is silent" || bad "ls shows votes" "$out"
+grep -q "$c1 *pending *CP *CP:agree,API:agree,INFRA:-" <<<"$out" && ok "ls shows who agreed and who is silent" || bad "ls shows votes" "$out"
 out="$("$B" consensus vote "$c1" agree --from INFRA 2>&1)"
 grep -q "agreed (3/3 agreed)" <<<"$out" && ok "all participants agreed -> agreed" || bad "all agreed -> agreed" "$out"
 eq "  decided_at set" "$(cf "$c1" '.decided_at > 0')" "true"
@@ -152,13 +152,13 @@ md="$("$B" consensus show "$c1" --markdown)"
 grep -q "^#### Owner-away consensus \`$c1\`: agreed" <<<"$md" && ok "markdown: heading with the outcome" || bad "markdown heading" "$md"
 grep -qF -- "- **Ref:** PR-7" <<<"$md" && ok "markdown: ref" || bad "markdown: ref" "$md"
 grep -qF -- "- **Proposal:** share the fixture | v2" <<<"$md" && ok "markdown: proposal" || bad "markdown: proposal" "$md"
-eq "markdown: one row per vote, with timestamps" "$(grep -cE '^\| (CP|AI|INFRA) \| agree \| [0-9]{4}-[0-9]{2}-[0-9]{2}T' <<<"$md")" "3"
-grep -qF "| AI | agree |" <<<"$md" && grep -qF "| fine by me |" <<<"$md" && ok "markdown: notes" || bad "markdown: notes" "$md"
+eq "markdown: one row per vote, with timestamps" "$(grep -cE '^\| (CP|API|INFRA) \| agree \| [0-9]{4}-[0-9]{2}-[0-9]{2}T' <<<"$md")" "3"
+grep -qF "| API | agree |" <<<"$md" && grep -qF "| fine by me |" <<<"$md" && ok "markdown: notes" || bad "markdown: notes" "$md"
 grep -q "^\*\*Outcome:\*\* agreed at" <<<"$md" && ok "markdown: outcome" || bad "markdown: outcome" "$md"
 grep -q "Red lines never pass by consensus" <<<"$md" && ok "markdown: red lines" || bad "markdown: red lines" "$md"
 eq "show prints the JSON" "$("$B" consensus show "$c1" | jq -r .id)" "$c1"
 
-c2="$("$B" consensus propose --from AI --to CP,INFRA "rename the queue" 2>/dev/null)"
+c2="$("$B" consensus propose --from API --to CP,INFRA "rename the queue" 2>/dev/null)"
 out="$("$B" consensus vote "$c2" object --from INFRA --note "breaks a consumer" 2>&1)"
 grep -q "objected" <<<"$out" && ok "an objection parks it (objected)" || bad "an objection parks it" "$out"
 eq "  status objected" "$(cf "$c2" .status)" "objected"
@@ -167,27 +167,27 @@ eq "  status objected" "$(cf "$c2" .status)" "objected"
 grep -q "objected at .*parked for the owner" <<<"$("$B" consensus show "$c2" --markdown)" && ok "  markdown says parked for the owner" \
   || bad "  markdown says parked for the owner"
 # agree -> object by the same session (changes the outcome while pending)
-c3="$("$B" consensus propose --from CP --to AI,INFRA "drop the cache" 2>/dev/null)"
-"$B" consensus vote "$c3" agree --from AI >/dev/null
-"$B" consensus vote "$c3" object --from AI --note "found a reader" >/dev/null 2>&1; eq "agree -> object allowed" "$?" "0"
-eq "  status objected, both votes kept" "$(cf "$c3" '.status + "/" + (.votes | map(.by + ":" + .vote) | join(","))')" "objected/CP:agree,AI:agree,AI:object"
+c3="$("$B" consensus propose --from CP --to API,INFRA "drop the cache" 2>/dev/null)"
+"$B" consensus vote "$c3" agree --from API >/dev/null
+"$B" consensus vote "$c3" object --from API --note "found a reader" >/dev/null 2>&1; eq "agree -> object allowed" "$?" "0"
+eq "  status objected, both votes kept" "$(cf "$c3" '.status + "/" + (.votes | map(.by + ":" + .vote) | join(","))')" "objected/CP:agree,API:agree,API:object"
 grep -q "INFRA | (no vote)" <<<"$("$B" consensus show "$c3" --markdown)" && ok "  markdown lists the silent participant" || bad "  markdown lists the silent participant"
 
 # Owner back: pending items go back to the owner.
-c4="$("$B" consensus propose --from CP --to AI "pending one" 2>/dev/null)"
+c4="$("$B" consensus propose --from CP --to API "pending one" 2>/dev/null)"
 out="$("$B" away off --by CP --said "back" 2>&1)"
 grep -q "1 pending consensus item(s) returned to the owner: $c4" <<<"$out" && ok "away off returns pending items" || bad "away off returns pending items" "$out"
 eq "  status owner_back" "$(cf "$c4" '.status + "/" + .returned_by')" "owner_back/CP"
 eq "  final items keep their outcome" "$(cf "$c1" .status)/$(cf "$c2" .status)" "agreed/objected"
 eq "  off logs the returned ids" "$(lastev away '.returned | join(",")')" "$c4"
-"$B" consensus vote "$c4" agree --from AI >/dev/null 2>&1; eq "  no vote after owner_back" "$?" "1"
+"$B" consensus vote "$c4" agree --from API >/dev/null 2>&1; eq "  no vote after owner_back" "$?" "1"
 grep -q "returned to the owner at" <<<"$("$B" consensus show "$c4" --markdown)" && ok "  markdown says returned to the owner" \
   || bad "  markdown says returned to the owner"
 # Removing the file by hand also returns pending items (on the next board consensus command).
 "$B" away on --by CP --said "again" >/dev/null
-c5="$("$B" consensus propose --from CP --to AI "hand removed" 2>/dev/null)"
+c5="$("$B" consensus propose --from CP --to API "hand removed" 2>/dev/null)"
 rm -f "$AWF"
-"$B" consensus vote "$c5" agree --from AI >/dev/null 2>&1; eq "vote after the file was removed by hand refused" "$?" "1"
+"$B" consensus vote "$c5" agree --from API >/dev/null 2>&1; eq "vote after the file was removed by hand refused" "$?" "1"
 eq "  item went back to the owner" "$(cf "$c5" .status)" "owner_back"
 
 out="$("$B" consensus ls)"
@@ -207,7 +207,7 @@ S="$BOARD_HOME/snapshot.json"
 eq "owner_away null when not away" "$(jq -c .owner_away "$S")" "null"
 eq "consensus: recent items only, oldest first" "$(jq -r '[.consensus[].id] | join(",")' "$S")" "$c2,$c3,$c4,$c5"
 "$B" away on --by CP --said "$(printf 'line one\nline two')" >/dev/null
-c6="$("$B" consensus propose --from CP --to AI "$(printf 'snap\033[2J shot')" 2>/dev/null)"
+c6="$("$B" consensus propose --from CP --to API "$(printf 'snap\033[2J shot')" 2>/dev/null)"
 "$REPO/bin/board-collect" --once --no-notify >/dev/null 2>&1
 eq "owner_away record" "$(jq -r '.owner_away | .by + "|" + .said' "$S")" "CP|line one line two"
 eq "consensus item compact fields" "$(jq -r --arg id "$c6" '.consensus[] | select(.id == $id) | keys | join(",")' "$S")" \

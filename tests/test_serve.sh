@@ -226,8 +226,8 @@ eq "  state shows owner_away" "$(req GET /api/state >/dev/null; body '.owner_awa
 eq "  audited" "$(jq -s -r '[.[] | select(.type=="serve" and .action=="away")] | last | .by + "/" + .state + "/" + .result' "$BOARD_HOME/events.jsonl")" "local/on/on"
 eq "on again: unchanged" "$(post /api/away '{"state":"on","said":"other words"}')" "200"
 eq "  status unchanged, record kept" "$(body .status)/$(jq -r .said "$AWF")" "unchanged/back tomorrow; agree among yourselves"
-cid="$("$REPO/bin/board" consensus propose --from CP --to AI --ref PR-1 "bump the shared fixture" 2>/dev/null)"
-eq "state lists the consensus item" "$(req GET /api/state >/dev/null; body --arg id "$cid" '.consensus[] | select(.id == $id) | .status + "/" + (.participants | join(","))')" "pending/CP,AI"
+cid="$("$REPO/bin/board" consensus propose --from CP --to API --ref PR-1 "bump the shared fixture" 2>/dev/null)"
+eq "state lists the consensus item" "$(req GET /api/state >/dev/null; body --arg id "$cid" '.consensus[] | select(.id == $id) | .status + "/" + (.participants | join(","))')" "pending/CP,API"
 eq "approver turns away off" "$(post /api/away '{"state":"off","said":"I am back"}')" "200"
 eq "  reply" "$(body '"\(.away)/\(.status)"')" "false/off"
 [ -e "$AWF" ] && bad "  file removed" || ok "  file removed"
@@ -574,7 +574,7 @@ grep -q '^message m-1-a ' <<<"$w" && bad "--watch skips replied messages" "$w" |
 sleep 0.5
 echo '{"id":"m-3-late","to":"CP","body":"x","by":"local","created_at":9,"status":"new"}' > "$BOARD_HOME/messages/m-3-late.json"
 "$REPO/bin/board" away on --by CP --said "watch test" >/dev/null
-wcid="$("$REPO/bin/board" consensus propose --from CP --to AI "watch test" 2>/dev/null)"
+wcid="$("$REPO/bin/board" consensus propose --from CP --to API "watch test" 2>/dev/null)"
 sleep 2.2
 kill "$wpid" 2>/dev/null; wait "$wpid" 2>/dev/null
 eq "--watch prints a new message once" "$(grep -c '^message m-3-late new$' "$T/watch.out")" "1"
