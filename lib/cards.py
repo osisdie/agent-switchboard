@@ -23,8 +23,12 @@ goes through guard.scrub and the collector's clean_text (no paths, no control ch
 
 Cost per collector run: one stat per live session for its statusline file and its transcript
 (the path is cached; a lookup is a glob, at most LOOKUPS_PER_RUN), a 64 KB tail read only for a
-transcript whose mtime or size changed (at most TRANSCRIPTS_PER_RUN of them), a few /proc stat reads per teammate, and git only when a
-cwd's cached branch info is older than GIT_TTL_MS. The cache lives in cards-state.json.
+transcript whose mtime or size changed (at most TRANSCRIPTS_PER_RUN of them), a few /proc stat
+reads per teammate, and git only when a cwd's cached branch info is older than GIT_TTL_MS. The
+cache lives in cards-state.json. At most every PRUNE_EVERY_MS it removes statusline/<sid>.json
+and state/<sid>.json (and the hook's lock) of sessions that are gone and were not written for
+PRUNE_AGE_MS. A transcript is read only when its real path (symlinks resolved) is under the
+projects directory.
 
 Test hooks: CLAUDE_PROJECTS_DIR (where transcripts are; default `projects` next to the session
 registry, so a test's CLAUDE_SESSIONS_DIR never lets it read ~/.claude/projects), BOARD_PROC_ROOT
@@ -51,6 +55,8 @@ SUBJECT_MAX = 100
 DONE_SUMMARY_MAX = 120
 DONE_MAX = 8
 METER_MAX_AGE_MS = 24 * 3600 * 1000
+PRUNE_AGE_MS = 24 * 3600 * 1000     # statusline/<sid>.json and state/<sid>.json of gone sessions
+PRUNE_EVERY_MS = 10 * 60 * 1000     # the prune scans two directories at most this often
 SID_RE = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$")
 # A teammate's pane title starts with a status glyph: a braille spinner while it works, ✳ at rest.
 SPINNER_RE = re.compile(r"^[\u2800-\u28ff]")
@@ -199,6 +205,16 @@ def direct_path(sid, cwd):
     return os.path.join(projects_dir(), re.sub(r"[^A-Za-z0-9]", "-", cwd), sid + ".jsonl")
 
 
+def inside_projects(path):
+    """Is this path, symlinks resolved, under the projects directory? A cached or found path that
+    is not (the directory moved, a symlink swapped in) is never read."""
+    try:
+        root = os.path.realpath(projects_dir())
+        return os.path.realpath(path).startswith(root.rstrip(os.sep) + os.sep)
+    except (OSError, TypeError, ValueError):
+        return False
+
+
 def find_transcript(sid):
     """Any project directory: a session whose cwd changed since it started."""
     if not sid or not SID_RE.match(sid):
@@ -278,6 +294,9 @@ def transcript_text(sid, cwd, cache, budget, cfg_cards, clean, now):
     `budget`: {"read": tails, "find": path lookups} this run may still do."""
     ent = cache.get(sid) if isinstance(cache.get(sid), dict) else {}
     path = ent.get("path")
+    if path and not inside_projects(path):
+        cache.pop(sid, None)  # a cached path outside the projects directory: forget it
+        ent, path = {}, None
     try:
         st = os.stat(path) if path else None
     except OSError:
@@ -301,6 +320,8 @@ def transcript_text(sid, cwd, cache, budget, cfg_cards, clean, now):
             st = os.stat(path)
         except OSError:
             return {}
+    if not inside_projects(path):
+        return ent
     key = [st.st_mtime_ns, st.st_size]
     if path == ent.get("path") and ent.get("key") == key:
         return ent
@@ -370,6 +391,32 @@ def branches(rows, cache, now, clean):
     return out
 
 
+# ------------------------------------------------------------------ pruning
+
+def prune(home, live_sids, now):
+    """Remove statusline/<sid>.json and state/<sid>.json (and its .<sid>.lock) of sessions that are
+    not live and were not written for PRUNE_AGE_MS. Returns how many files went."""
+    gone = 0
+    for sub, pat in (("statusline", re.compile(r"^(.+)\.json$")), ("state", re.compile(r"^\.?(.+?)\.(?:json|lock)$"))):
+        d = os.path.join(home, sub)
+        try:
+            names = os.listdir(d)
+        except OSError:
+            continue
+        for name in names:
+            m = pat.match(name)
+            if not m or m.group(1) in live_sids or not SID_RE.match(m.group(1)):
+                continue
+            path = os.path.join(d, name)
+            try:
+                if now - os.stat(path).st_mtime * 1000 > PRUNE_AGE_MS:
+                    os.unlink(path)
+                    gone += 1
+            except OSError:
+                continue
+    return gone
+
+
 # ------------------------------------------------------------------ entry point
 
 def step(cfg, home, rows, now, panes, clean, clean_title, hosts):
@@ -412,8 +459,12 @@ def step(cfg, home, rows, now, panes, clean, clean_title, hosts):
         for v in tcache.values():
             if isinstance(v, dict):
                 v.pop("prompt", None)
+    pruned_at = state.get("pruned_at") if isinstance(state.get("pruned_at"), int) else 0
+    if not 0 <= now - pruned_at < PRUNE_EVERY_MS:
+        prune(home, {x for x in live_sids if x}, now)
+        pruned_at = now
     state = {"transcripts": {k: v for k, v in tcache.items() if k in live_sids},
-             "since": new_since, "git": gcache}
+             "since": new_since, "git": gcache, "pruned_at": pruned_at}
     if state != read_json(spath):  # the same document most runs: no write
         write_private(spath, state)
     doc = {"sessions": cards}

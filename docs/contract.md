@@ -138,6 +138,9 @@ operator never mirrors it to the Artifact, and no alert carries any of it.
 
 - **`state_since`**: when the collector first saw the card in its current `state`. Offline cards
   carry only this.
+- **Pruning**: at most every 10 minutes the collector removes `statusline/<sid>.json` and
+  `state/<sid>.json` (with the hook's `state/.<sid>.lock`) of sessions that are no longer live and
+  whose file was not written for 24 h.
 - **`teammates`**: the teammate processes `resources.json` maps to the session (its `idle`,
   `idle_s`, `rss_mb`). `title` is the teammate's tmux pane title, cleaned like a card `title`: the
   pane is found by walking up to 6 ancestors of the teammate's pid (`<proc>/<pid>/stat`) to a
@@ -155,6 +158,8 @@ operator never mirrors it to the Artifact, and no alert carries any of it.
   system reminders skipped). A value not found in the tail keeps the cached one. Both go through
   `guard.scrub` and clean_text (no paths, no control characters, the hook's redaction).
   `prompt` is only kept with `fleet.yaml` `cards.show_prompt: true` (the default).
+  A transcript is read only when its real path (symlinks resolved) is under `<projects>`; a cached
+  path that is not is dropped.
 - **`branch`**: `git rev-list --left-right --count HEAD...<base>` where `<base>` is `origin/HEAD`
   (else `origin/main`, else `origin/master`) as the local refs know it; never a fetch. `subject`
   is `git log -1 --format=%s`, scrubbed and clipped to 100. Cached per cwd for 60 s.

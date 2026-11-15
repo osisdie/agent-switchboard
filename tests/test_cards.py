@@ -223,6 +223,23 @@ class Transcript(Base):
             cards.find_transcript = orig
         self.assertEqual(globs, [])
 
+    def test_cached_path_outside_projects_is_dropped(self):
+        outside = os.path.join(TMP, "elsewhere", "s-cp.jsonl")
+        write(outside, jl(user("outside prompt"), assistant("outside text")))
+        st = os.stat(outside)
+        write(os.path.join(HOME, "cards-state.json"), json.dumps({"transcripts": {"s-cp": {
+            "path": outside, "key": [st.st_mtime_ns, st.st_size], "doing": "stale", "prompt": None}}}))
+        c = step([row()])["sessions"]["CP"]
+        self.assertIsNone(c["doing"])
+        self.assertNotIn(outside, read(os.path.join(HOME, "cards-state.json")))
+
+    def test_symlink_out_of_projects_is_not_read(self):
+        outside = os.path.join(TMP, "elsewhere2", "x.jsonl")
+        write(outside, jl(user("p"), assistant("followed the link")))
+        os.makedirs(os.path.join(PROJ, "-w"), exist_ok=True)
+        os.symlink(outside, os.path.join(PROJ, "-w", "s-cp.jsonl"))
+        self.assertIsNone(step([row(cwd="/w")])["sessions"]["CP"]["doing"])
+
     def test_unsafe_session_id(self):
         c = step([row(sid="../x")])["sessions"]["CP"]
         self.assertIsNone(c["doing"])
@@ -378,6 +395,27 @@ class Since(Base):
         self.assertEqual(os.stat(os.path.join(HOME, "cards.json")).st_mtime_ns, 1)
         self.assertEqual(os.stat(os.path.join(HOME, "cards-state.json")).st_mtime_ns, 1)
         self.assertTrue(m1 and m2)
+
+
+class Prune(Base):
+    def test_prune_gone_sessions_only(self):
+        old = (NOW - cards.PRUNE_AGE_MS - 60000) / 1000.0
+        files = {"statusline/gone.json": old, "state/gone.json": old, "state/.gone.lock": old,
+                 "statusline/s-cp.json": old, "state/s-cp.json": old,          # live: kept
+                 "statusline/recent.json": NOW / 1000.0, "state/recent.json": NOW / 1000.0}  # fresh: kept
+        for rel, mt in files.items():
+            write(os.path.join(HOME, rel), "{}")
+            os.utime(os.path.join(HOME, rel), (mt, mt))
+        step([row()])
+        left = sorted(rel for rel in files if os.path.exists(os.path.join(HOME, rel)))
+        self.assertEqual(left, ["state/recent.json", "state/s-cp.json", "statusline/recent.json", "statusline/s-cp.json"])
+        # Not again within PRUNE_EVERY_MS.
+        write(os.path.join(HOME, "state", "gone2.json"), "{}")
+        os.utime(os.path.join(HOME, "state", "gone2.json"), (old, old))
+        step([row()], now=NOW + 1000)
+        self.assertTrue(os.path.exists(os.path.join(HOME, "state", "gone2.json")))
+        step([row()], now=NOW + cards.PRUNE_EVERY_MS + 1)
+        self.assertFalse(os.path.exists(os.path.join(HOME, "state", "gone2.json")))
 
 
 class PaneList(unittest.TestCase):
