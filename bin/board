@@ -216,7 +216,8 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
     resolve) echo "usage: board resolve ID --in-pane --from CODE|--by WHO [--note-file F]"
         echo "  close a board ask (kind question, not a pane question, not a gate) that was answered in"
         echo "  the session's pane or another session: status answered_in_pane (final). --from: the"
-        echo "  asking session itself (must equal the ask's from; inside tmux, this tmux session);"
+        echo "  asking session itself: must equal the ask's from, and this command must run inside that"
+        echo "  session (its registered Claude process is an ancestor; fails closed);"
         echo "  --by: an approver. Exit 4 for anyone else. The note (one file, <= 500 chars) goes"
         echo "  through the secret guard: scrubbed, and refused (exit 6) when it asks for a secret value." ;;
     press) echo "usage: board press CODE allow|deny --expect TOOL_USE_ID [--allow-truncated]"
@@ -672,13 +673,48 @@ cmd_answer() {
   fi
 }
 
+# Final statuses are never re-marked to another one (relayed, stale, timeout, answered_in_pane):
+# a decision closed in the pane must not turn "relayed", nor a relayed one "stale". Marking the
+# status it already has is a no-op. Returns 1 (nothing written) when refused.
 mark_status() {  # mark_status ID STATUS [reason]
-  local id="$1" st="$2" reason="${3:-}" now
+  local id="$1" st="$2" reason="${3:-}" now cur
+  cur="$(jq -r '.status // empty' "$(dec_path "$id")" 2>/dev/null)"
+  case "$cur" in
+    relayed|stale|timeout|answered_in_pane)
+      [ "$cur" = "$st" ] && return 0
+      echo "board: decision $id is already $cur; not marked $st" >&2
+      return 1 ;;
+  esac
   now="$(now_ms)"
   update_decision "$id" '.status = $st | .updated_at = $now | (if $st == "relayed" then .relayed_at = $now else . end)' \
     --arg st "$st" --argjson now "$now"
   log_event "$(jq -cn --arg id "$id" --arg st "$st" --arg r "$reason" --argjson now "$now" \
     '{ts: $now, type: "mark", id: $id, status: $st} + (if $r == "" then {} else {reason: $r} end)')"
+}
+
+# caller_session_code — the code of the Claude Code session this command runs in: the first
+# ancestor of $$ (up to 16 levels) that has a registry file <sessions dir>/<pid>.json, by its tmux
+# session name, else its registered name. Empty when there is none (fails closed for --from).
+caller_session_code() {
+  local sd="${CLAUDE_SESSIONS_DIR:-$HOME/.claude/sessions}" p=$$ i reg t n pp
+  for i in $(seq 1 16); do
+    [ -n "$p" ] && [ "$p" -gt 1 ] 2>/dev/null || return 0
+    reg="$sd/$p.json"
+    if [ -f "$reg" ]; then
+      t="$(jq -r '.tmux // empty' "$reg" 2>/dev/null)"; n="$(jq -r '.name // empty' "$reg" 2>/dev/null)"
+      t="${t%%:*}"
+      [ -n "$t" ] && { echo "$t"; return 0; }
+      [ -n "$n" ] && { echo "$n"; return 0; }
+      return 0
+    fi
+    if [ -r "/proc/$p/status" ]; then
+      pp="$(awk '/^PPid:/ { print $2; exit }' "/proc/$p/status" 2>/dev/null)"
+    else
+      pp="$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')"
+    fi
+    p="$pp"
+    : "$i"
+  done
 }
 
 # board resolve ID --in-pane --from CODE|--by WHO [--note-file F] — see sub_usage resolve.
@@ -714,9 +750,15 @@ cmd_resolve() {
     echo "board resolve: refused — $id is not a plain board ask (a permission, pane question or gate); nothing changed" >&2
     exit 2
   fi
+  # Only an ask nobody has answered on the board: an approver's answer that waits for its relay
+  # (answered) is never dropped this way, by the asking session or an approver.
   local cur; cur="$(jq -r '.status' "$f")"
   case "$cur" in
-    pending|answered|unauthorized) ;;
+    pending|unauthorized) ;;
+    answered)
+      audit_resolve refused "already answered on the board"
+      echo "board resolve: refused — $id is already answered: it will be relayed" >&2
+      exit 1 ;;
     *) die "decision $id is already $cur" ;;
   esac
   if [ -n "$from" ]; then
@@ -727,6 +769,15 @@ cmd_resolve() {
       exit 4
     fi
     self_check "$from" resolve "$id" resolve
+    # --from is the caller's own word: it must also be true. The asking session's registered Claude
+    # process must be an ancestor of this command (the command runs inside that session). Fails
+    # closed: no such ancestor, refused.
+    local mine; mine="$(caller_session_code)"
+    if [ -z "$mine" ] || { [ "$mine" != "$owner" ] && [ "$(code_of "$mine")" != "$(code_of "$owner")" ]; }; then
+      audit_resolve refused "--from is not the session this command runs in"
+      echo "board resolve: refused — this command does not run inside $owner's session (found: ${mine:-none}); an approver uses --by" >&2
+      exit 4
+    fi
   elif ! allowed_by "$f" "$by"; then
     audit_resolve refused "not an approver"
     echo "board resolve: refused — $by is not an approver" >&2
@@ -757,7 +808,8 @@ cmd_mark() {
     relayed|stale|timeout|unauthorized) ;;
     *) sub_usage mark >&2; exit 2 ;;
   esac
-  mark_status "$id" "$st"
+  [ -f "$(dec_path "$id")" ] || die "no such decision: $id"
+  mark_status "$id" "$st" || exit 1
   echo "$id $st"
 }
 

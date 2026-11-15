@@ -201,10 +201,23 @@ instead. Everything in `card` also passes the guard's `scrub_tree` like the rest
 `gate` / `task_id`) that was answered in the session's pane, or by the owner in another session,
 is closed with `board resolve <id> --in-pane --from <CODE>|--by <approver> [--note-file F]`:
 
-- `--from` must be the ask's `from` (or an alias of the same fleet code) and, inside tmux, this tmux
-  session; `--by` must be in `approvers`. Anyone else: exit 4, audited (`type: "resolve"`,
-  `result: "refused"`). A permission, pane question or gate: exit 2, nothing changed (a gate is
-  approved by an answer, never closed from the pane). Already final: exit 1.
+- `--from` must be the ask's `from` (or an alias of the same fleet code), inside tmux this tmux
+  session, and the command must run inside that session: the first ancestor of the `board` process
+  with a registry file (`~/.claude/sessions/<pid>.json`) must be that session (its tmux session
+  name, else its registered name). No such ancestor fails closed, so a forged `TMUX` / `TMUX_PANE`
+  or a shell outside the session cannot use `--from`; a teammate (its own registered process) cannot
+  either: the session itself or an approver closes it. `--by` must be in `approvers`. Anyone else:
+  exit 4, audited (`type: "resolve"`, `result: "refused"`). A permission, pane question or gate:
+  exit 2, nothing changed (a gate is approved by an answer, never closed from the pane).
+- Only `pending` or `unauthorized`: an `answered` ask (an approver's board answer waiting for its
+  relay) is refused with exit 1, "already answered: it will be relayed", for `--from` and `--by`
+  alike. Already final: exit 1.
+- **Trust model.** `--from` proves only that the command runs inside a process tree a registered
+  session started; a session can still act as itself. `--by` is a claim the local CLI cannot verify
+  (any local user can type it), like `board answer --by`; on the board the identity comes from
+  board-serve (loopback or a verified Access JWT).
+- `board mark` never re-marks a final status (`relayed`, `stale`, `timeout`, `answered_in_pane`) to
+  another one: exit 1, unchanged. Marking the status it already has is a no-op (exit 0).
 - The note goes through the guard: refused with exit 6 when it asks for a secret value, otherwise
   scrubbed and clipped to 500 characters.
 - The record gets `status: "answered_in_pane"` (final, like `relayed`), `resolved_by`,
@@ -214,7 +227,9 @@ is closed with `board resolve <id> --in-pane --from <CODE>|--by <approver> [--no
   `last_stop_at` (Stop / StopFailure) in the state file. On every run the collector sets
   `hint: "maybe_answered_in_session"` and `hint_at` (that Stop) on a pending plain ask when its
   asking session's `last_prompt_at` is after the ask's `created_at` and its `last_stop_at` is after
-  that prompt: someone may have answered in the pane. It is set once and only shown.
+  that prompt: someone may have answered in the pane. It is set once and only shown. Like every
+  collector write to a decision, it re-reads the file right before writing and skips it when the
+  status moved meanwhile (an answer or a resolve wins).
 - board-serve: `POST /api/decisions/<id>/resolve` `{"confirm": "resolve", "note"?}`, approvers only
   (403 `not_approver`, audited), runs `board resolve <id> --in-pane --by <approver>` (the note by a
   0600 file) → 200 `{status: "answered_in_pane"}`; exit 2 → 409 `not_a_board_ask`; exit 6 → 400

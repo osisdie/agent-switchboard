@@ -1942,7 +1942,7 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
     }
     // A board ask its session may have settled in its own pane (the collector's hint: a new prompt
     // and a finished turn since it was asked). Never closed automatically.
-    const plainAsk = !isPerm && !isGate && !d.task_id;
+    const plainAsk = !isPerm && !isGate && !d.task_id && d.source !== 'pane';
     if (plainAsk && d.hint === 'maybe_answered_in_session') {
       card.append(h('p', { class: 'note maybe', text: tr('Maybe answered in the session: {who} took a new prompt and finished a turn after asking ({ago}).', { who: str(d.from) || tr('the session'), ago: rel(ts(d.hint_at)) }) }));
     }

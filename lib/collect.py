@@ -496,6 +496,7 @@ def process_decisions(cfg, home, sessions, now):
         if not isinstance(d, dict) or not d.get("id"):
             continue
         changed = False
+        status_read = d.get("status")
         # A pane question (an AskUserQuestion picker) goes stale like a permission prompt.
         if d.get("kind") == "permission" or d.get("source") == "pane":
             sess = by_sid.get(d.get("session_id"))
@@ -516,6 +517,12 @@ def process_decisions(cfg, home, sessions, now):
             d["status"] = "timeout"
             changed = True
         if changed:
+            # Not under a lock: `board answer` / `board resolve` may have written the file since it
+            # was read. Re-read it right before the write and keep theirs when its status moved.
+            fresh = read_json(path)
+            if not isinstance(fresh, dict) or fresh.get("status") != status_read:
+                out.append(fresh if isinstance(fresh, dict) else d)
+                continue
             d["updated_at"] = now
             write_json_atomic(path, d)
             append_event(home, {"ts": now, "type": "decision", "id": d["id"], "status": d["status"],
