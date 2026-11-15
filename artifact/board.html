@@ -304,6 +304,10 @@ dialog.notif { width: min(720px, calc(100vw - 24px)); }
 .status.relayed { background: var(--work-soft); color: var(--work); }
 .status.replied { background: var(--ok-soft); color: var(--ok); }
 .status.stale, .status.timeout { background: var(--off-soft); color: var(--muted); }
+.status.answered_in_pane { background: var(--ok-soft); color: var(--ok); }
+.dcard .note.maybe { color: var(--lamp-ink); }
+.dcard .resolve-row { display: flex; justify-content: flex-end; }
+.btn.linkish { min-height: 32px; padding: 4px 10px; font-size: 13px; border-style: dashed; color: var(--muted); }
 .status.pending { background: var(--lamp-soft); color: var(--lamp-ink); }
 
 /* ---------- board ---------- */
@@ -1936,6 +1940,12 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
     if (d.status === 'unauthorized') {
       card.append(h('p', { class: 'note unauth', text: tr('Answered by someone who is not an approver, so the operator did not relay it. An approver can still answer.') }));
     }
+    // A board ask its session may have settled in its own pane (the collector's hint: a new prompt
+    // and a finished turn since it was asked). Never closed automatically.
+    const plainAsk = !isPerm && !isGate && !d.task_id && d.source !== 'pane';
+    if (plainAsk && d.hint === 'maybe_answered_in_session') {
+      card.append(h('p', { class: 'note maybe', text: tr('Maybe answered in the session: {who} took a new prompt and finished a turn after asking ({ago}).', { who: str(d.from) || tr('the session'), ago: rel(ts(d.hint_at)) }) }));
+    }
     const mine = S.myAnswers.get(d.id);
     if (mine && !isLocal() && !S.demo) {
       card.append(h('p', { class: 'note queue', text: tr('Your answer "{answer}" is saved and waits for the operator. Answer again to change it.', { answer: str(mine.answer) }) }));
@@ -1947,6 +1957,14 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
     }
 
     let tip = null;
+    // "Mark answered in session": approvers on the self-hosted board, a board ask only, with a confirm step.
+    const canResolve = plainAsk && !busy && canAnswer() && isLocal() && appr !== false && typeof adapter.resolveDecision === 'function';
+    if (canResolve && conf === RESOLVE) {
+      card.append(h('div', { class: 'confirm-row' },
+        h('span', { class: 'q', text: tr('Close this question as answered in the session? Nothing is sent to {who}.', { who: str(d.from) || tr('the session') }) }),
+        h('button', { class: 'btn solid allow', type: 'button', dataset: { focus: 'confirm' }, onclick: () => resolveDecision(d), text: tr('Yes, close it') }),
+        h('button', { class: 'btn', type: 'button', onclick: () => { S.confirm = null; renderDecisions(); }, text: tr('Cancel') })));
+    }
     if (busy) {
       card.append(h('p', { class: 'saving', text: tr('Saving your answer…') }));
     } else if (canAnswer()) {
@@ -1954,7 +1972,7 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
       if (offline) { tip = tip || tr('Answers will queue until the operator returns'); card.append(h('p', { class: 'note queue', text: tr('Operator offline — answers are saved and queued until the operator returns.') })); }
       const opts = isPerm ? (truncated ? ['deny'] : ['allow', 'deny']) : Array.isArray(d.options) && d.options.length ? d.options.map(str).filter(Boolean) : isGate ? ['approve', 'request changes'] : [];
       const needsConfirm = isPerm || isProdGate(d);
-      if (conf) {
+      if (conf && conf !== RESOLVE) {
         const cls = optionClass(conf);
         const q = isPerm ? (conf === 'allow' ? tr('Allow {tool} to run?', { tool: str(d.tool_name) || tr('this') }) : tr('Deny this request?'))
           : tr('Answer "{answer}" at the production gate?', { answer: conf });
@@ -1963,6 +1981,8 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
           h('button', { class: 'btn solid ' + (cls === 'option' ? 'allow' : cls), type: 'button', dataset: { focus: 'confirm' },
             onclick: () => answerDecision(d, conf), text: tr('Yes, {answer}', { answer: isPerm ? tr(conf === 'allow' ? 'allow' : 'deny') : conf }) }),
           h('button', { class: 'btn', type: 'button', onclick: () => { S.confirm = null; renderDecisions(); }, text: tr('Cancel') })));
+      } else if (conf === RESOLVE) {
+        // the confirm row above
       } else if (opts.length) {
         card.append(h('div', { class: 'opts', role: 'group', 'aria-label': tr('Options') },
           opts.map((o) => h('button', { class: 'btn ' + optionClass(o), type: 'button',
@@ -1979,6 +1999,9 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
       }
       if (tip) for (const b of card.querySelectorAll('.opts .btn, .free .btn, .confirm-row .btn')) b.title = tip;
     }
+    if (canResolve && conf !== RESOLVE) {
+      card.append(h('div', { class: 'resolve-row' }, h('button', { class: 'btn linkish', type: 'button', onclick: () => askConfirm(d.id, RESOLVE), text: tr('Mark answered in session') })));
+    }
     const link = sessionLink(d.from, tr(truncated ? 'Open in session' : 'Answer in session'));
     card.append(h('div', { class: 'dfoot' },
       h('span', { text: isPerm ? tr(isLocal() ? 'Allow or Deny is pressed in the session right away.' : 'Allow or Deny is pressed in the session by the operator.') : isGate ? tr('Approvals are logged in Approvals below.') : tr('Your answer is relayed to {who}.', { who: str(d.from) || tr('the session') }) }),
@@ -1993,6 +2016,13 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
     const via = (Array.isArray(d.notified_via) ? d.notified_via : []).map((c) => (CHANNEL[lc(c)] ? tr(CHANNEL[lc(c)]) : str(c))).filter(Boolean);
     return h('span', { class: 'esc ' + lvl, title: tr('Escalation level: {lvl}', { lvl: trKnown(lvl, LEVELS) }) + (via.length ? tr(' · notified via {via}', { via: via.join(', ') }) : '') },
       trKnown(lvl, LEVELS), h('span', { class: 'via', text: via.length ? tr(' · escalated → {via}', { via: via.join(', ') }) : tr(' · escalated') }));
+  }
+  const RESOLVE = '\u0000resolve';  // the confirm step of "Mark answered in session" (never an option)
+  function resolveDecision(d) {
+    if (S.busy.has(d.id)) return;
+    S.busy.add(d.id); S.confirm = null; renderDecisions();
+    adapter.resolveDecision(d.id).then(() => { toast(tr('Closed as answered in the session.')); },
+      (e) => handleWriteError(e, e && e.code === 'gone')).finally(() => { S.busy.delete(d.id); renderDecisions(); });
   }
   function askConfirm(id, choice) {
     S.confirm = { id, choice, at: Date.now() };
@@ -2022,7 +2052,7 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
     hist.hidden = past.length === 0;
     $('#dec-history-sum').textContent = tr('Recent decisions ({n}) · answered, relayed or expired', { n: past.length });
     reconcile($('#dec-history-list'), past, (d) => d.id, (d) => JSON.stringify(d), (d) => h('li', null,
-      h('span', { class: 'status ' + str(d.status), text: str(d.status) || 'unknown' }),
+      h('span', { class: 'status ' + str(d.status), text: d.status === 'answered_in_pane' ? tr('answered in session') : str(d.status) || 'unknown' }),
       h('span', { class: 'what' },
         h('span', { class: 'code-chip', text: str(d.from) || '?' }), ' ',
         str(d.question) || (d.kind === 'permission' ? tr('{tool} permission', { tool: str(d.tool_name) || 'tool' }) : isGateDecision(d) ? tr('{stage} gate', { stage: stageName(d.stage || d.gate) }) : tr('Question')),
@@ -3699,6 +3729,7 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
     if (code === 'bad_duration' || code === 'bad_level' || code === 'bad_channel' || code === 'bad_op') { toast(tr('Not saved: {why}', { why: e.message || tr('the board server refused that setting.') }), true); return; }
     if (code === 'not_held' || code === 'confirm_required') { toast(tr('Not released: {why}', { why: e.message || tr('the message is not held.') }), true); return; }
     if (code === 'stale') { toast(tr('That prompt is no longer showing, so nothing was pressed. Handle it in the session.'), true); return; }
+    if (code === 'not_a_board_ask') { toast(tr('Only a question asked with board ask can be closed this way.'), true); return; }
     if (code === 'partial') { toast(tr('Your text was typed into the question but Enter was not pressed. Finish it in the session.'), true); return; }
     if (code === 'answer_in_session') { toast(tr('This question can only be answered in the session.'), true); return; }
     if (code === 'bad_option') { toast(tr('Not sent: that option no longer matches the question. Reload and try again.'), true); return; }
@@ -4117,6 +4148,8 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
       sendMessage(ids, targets, body) { return Promise.all(targets.map((to) => post('/api/messages', { to, body }))); },
       // Approvers only, after the second (confirm) click: a message the secret guard held.
       releaseMessage(id) { return post('/api/messages/' + encodeURIComponent(id) + '/release', { confirm: 'release' }); },
+      // Approvers only; board-serve runs `board resolve ID --in-pane --by <identity>`.
+      resolveDecision(id) { return post('/api/decisions/' + encodeURIComponent(id) + '/resolve', { confirm: 'resolve' }); },
       // Approvers only; board-serve runs `board away on|off --by board:<identity>`.
       setAway(state, said) { return post('/api/away', { state, said }); },
       // Approvers only; board-serve runs `board mute|unmute|notify-level|notify-presence --by board:<identity>`.
@@ -4698,6 +4731,13 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
       "When a session asks a question, hits a permission prompt or reaches a gate, it appears here with buttons to answer.": "當 session 提問、遇到權限提示或到達關卡時，會連同回答按鈕出現在這裡。",
       "Recent decisions ({n}) · answered, relayed or expired": "最近的決策（{n}）· 已回答、已轉達或已過期",
       "Recent decisions": "最近的決策",
+      "Maybe answered in the session: {who} took a new prompt and finished a turn after asking ({ago}).": "可能已在 session 中回答：{who} 在提問之後收到新的指示並完成了一輪（{ago}）。",
+      "Close this question as answered in the session? Nothing is sent to {who}.": "要把這個問題標記為已在 session 中回答並關閉嗎？不會傳送任何內容給 {who}。",
+      "Yes, close it": "是，關閉",
+      "Mark answered in session": "標記為已在 session 中回答",
+      "Closed as answered in the session.": "已標記為在 session 中回答並關閉。",
+      "answered in session": "已在 session 中回答",
+      "Only a question asked with board ask can be closed this way.": "只有用 board ask 提出的問題可以這樣關閉。",
       "{tool} permission": "{tool} 權限",
       "{stage} gate": "{stage}關卡",
       "Questions and permission prompts that sessions are waiting on. Your answer is relayed to the session.": "session 正在等待的問題和權限提示。你的回答會轉達給 session。",

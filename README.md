@@ -379,7 +379,12 @@ to the Artifact or put in an alert. Turn the prompt off with `cards: {show_promp
 - **Questions.** A worker runs `board ask --from API "Ship behind a flag?" --option yes --option no`
   and also asks in its own pane. You answer on the board or in the pane, and the first answer wins.
   The operator relays the board answer as
-  `[BOARD decision <id>] <answer> (by owner on board)`.
+  `[BOARD decision <id>] <answer> (by owner on board)`. When it was answered in the pane (or in
+  another session), the worker closes the card with `board resolve <id> --from API --in-pane`
+  (status `answered_in_pane`). If it forgets, the card says "maybe answered in the session" once
+  that session has taken a new prompt and finished a turn since the ask, and an approver can close
+  it with **Mark answered in session** (it asks to confirm; nothing is sent to the session). A card
+  is never closed automatically.
 - **Permission prompts.** The card shows the tool name and a ≤200-char summary of its input, so you
   know what you are allowing. Token-like values in the summary are replaced with `[REDACTED]`.
   **Allow** or **Deny** makes the operator run `board answer <id> allow|deny --by <you>` and then

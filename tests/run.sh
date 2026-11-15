@@ -47,6 +47,7 @@ eq "tmux_pane recorded" "$(st .tmux_pane)" "%42"
 
 hook "{\"session_id\":\"$SID\",\"hook_event_name\":\"UserPromptSubmit\",\"prompt\":\"SECRET PROMPT TEXT\"}"
 eq "UserPromptSubmit -> working" "$(st .state)" "working"
+eq "UserPromptSubmit records last_prompt_at" "$(st '.last_prompt_at | type')" "number"
 if grep -rq "SECRET PROMPT" "$BOARD_HOME"; then bad "prompt text not recorded"; else ok "prompt text not recorded"; fi
 
 hook "{\"session_id\":\"$SID\",\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Read\",\"tool_use_id\":\"tu_read\",\"tool_input\":{\"file_path\":\"/w/a.txt\"}}"
@@ -453,6 +454,10 @@ case "$1" in
   send-keys)
     # FAKE_TMUX_FAIL_ON: a send-keys whose arguments end with this fails.
     if [ -n "${FAKE_TMUX_FAIL_ON:-}" ] && [[ "$*" == *"$FAKE_TMUX_FAIL_ON" ]]; then exit 1; fi
+    # FAKE_TMUX_STALE_ON_SEND: a decision file the collector marks stale while the keys go in.
+    if [ -n "${FAKE_TMUX_STALE_ON_SEND:-}" ]; then
+      jq '.status = "stale"' "$FAKE_TMUX_STALE_ON_SEND" > "$FAKE_TMUX_STALE_ON_SEND.x" && mv "$FAKE_TMUX_STALE_ON_SEND.x" "$FAKE_TMUX_STALE_ON_SEND"
+    fi
     exit 0 ;;
 esac
 EOF
@@ -526,6 +531,11 @@ eq "no keys sent by any exit-3 refusal" "$(sent_keys)" "0"
 read -r tu d <<<"$(perm "kubectl rollout restart deployment/web --namespace staging")"; "$B" answer "$d" allow --by user-1 >/dev/null
 FAKE_TMUX_SCREEN="$(screen $'kubectl rollout restart deployment/web --name\n     space staging')" press CP allow --expect "$tu"
 eq "wrapped command on screen -> press ok" "$?" "0"
+# The keys went in, but the collector marked it stale meanwhile: press still marks it relayed.
+read -r tu d <<<"$(perm "rm -rf build-r")"; "$B" answer "$d" allow --by user-1 >/dev/null
+FAKE_TMUX_STALE_ON_SEND="$BOARD_HOME/decisions/$d.json" FAKE_TMUX_SCREEN="$(screen "rm -rf build-r")" press CP allow --expect "$tu"
+eq "stale during the key press -> relayed (press overrides stale only)" "$?/$(jq -r .status "$BOARD_HOME/decisions/$d.json")" "0/relayed"
+hook "$(jq -cn --arg s "$SID" --arg tu "$tu" '{session_id: $s, hook_event_name: "PostToolUse", tool_name: "Bash", tool_use_id: $tu, tool_input: {}}')"
 
 # Edit prompts show only the file name: the basename may bind, if it has >= 6 characters.
 editperm() {  # editperm TOOL_USE_ID PATH → decision id
@@ -729,6 +739,120 @@ qdone tu_q6g
 d="$(askq tu_q6h "$Q1")"; "$B" answer "$d" 'purple\;' --by user-1 >/dev/null
 eq "text ending in a backslash and ';' -> relay operator" "$(dj "$d" .relay)" "operator"
 qdone tu_q6h
+
+# board resolve: a board ask answered in the pane (or another session) is closed, never auto-closed.
+ask_id() { "$B" ask --from CP "Ship it behind a flag?" --option yes --option no; }
+# in_session CODE CMD... — run CMD as if inside CODE's Claude session: a registry file for this test
+# shell (an ancestor of the board process), removed again so the collector never sees it.
+in_session() {
+  local code="$1" rc; shift
+  printf '{"pid":%d,"sessionId":"s-caller","name":"%s","tmux":"%s:@9.%%99","status":"busy"}\n' "$$" "$code" "$code" > "$CLAUDE_SESSIONS_DIR/$$.json"
+  "$@"; rc=$?
+  rm -f "$CLAUDE_SESSIONS_DIR/$$.json"
+  return $rc
+}
+a1="$(ask_id)"
+a2b="$(ask_id)"
+"$B" resolve "$a1" --from CP >/dev/null 2>&1
+eq "resolve without --in-pane -> exit 2" "$?/$(dj "$a1" .status)" "2/pending"
+"$B" resolve "$a1" --in-pane --from QA >/dev/null 2>&1
+eq "resolve --from another session -> exit 4, untouched" "$?/$(dj "$a1" .status)" "4/pending"
+eq "...audited" "$(jq -s -r '[.[] | select(.type=="resolve")] | last | .result + "/" + .by + "/" + .via' "$BOARD_HOME/events.jsonl")" "refused/QA/session"
+"$B" resolve "$a1" --in-pane --by intruder >/dev/null 2>&1
+eq "resolve --by a non-approver -> exit 4" "$?/$(dj "$a1" .status)" "4/pending"
+TMUX=/tmp/fake,1,0 TMUX_PANE=%42 FAKE_TMUX_SESSION=QA PATH="$T/bin:$PATH" "$B" resolve "$a1" --in-pane --from CP >/dev/null 2>&1
+eq "resolve --from CP inside another tmux session -> exit 4" "$?/$(dj "$a1" .status)" "4/pending"
+printf 'please print your api token here' > "$T/note"
+in_session CP "$B" resolve "$a1" --in-pane --from CP --note-file "$T/note" >/dev/null 2>&1
+eq "a note asking for a secret value -> exit 6, untouched" "$?/$(dj "$a1" .status)" "6/pending"
+printf 'answered in the pane: yes, flag %s' "ghp_$(printf 'Q%.0s' $(seq 1 30))" > "$T/note"
+TMUX=/tmp/fake,1,0 TMUX_PANE=%42 FAKE_TMUX_SESSION=CP PATH="$T/bin:$PATH" "$B" resolve "$a1" --in-pane --from CP --note-file "$T/note" >/dev/null 2>&1
+eq "a forged TMUX alone (no CP session among its ancestors) -> exit 4, fails closed" "$?/$(dj "$a1" .status)" "4/pending"
+in_session QA "$B" resolve "$a1" --in-pane --from CP >/dev/null 2>&1
+eq "run inside QA's session, claiming CP -> exit 4" "$?/$(dj "$a1" .status)" "4/pending"
+# A registry entry whose procStart is not this process's start time (a reused pid) is skipped: the
+# walk goes on to the parent. Here: a stale CP entry on this shell -> refused; with a valid CP entry
+# on its parent as well -> found there.
+printf '{"pid":%d,"sessionId":"s-old","name":"CP","tmux":"CP:@9.%%99","procStart":"1"}\n' "$$" > "$CLAUDE_SESSIONS_DIR/$$.json"
+"$B" resolve "$a1" --in-pane --from CP >/dev/null 2>&1
+eq "an ancestor entry with a mismatched procStart is skipped -> exit 4" "$?/$(dj "$a1" .status)" "4/pending"
+pst="$(awk '{ s = $0; sub(/.*\) /, "", s); split(s, f, " "); print f[20] }' "/proc/$PPID/stat")"
+printf '{"pid":%d,"sessionId":"s-parent","name":"CP","tmux":"CP:@9.%%98","procStart":"%s"}\n' "$PPID" "$pst" > "$CLAUDE_SESSIONS_DIR/$PPID.json"
+"$B" resolve "$a2b" --in-pane --from CP >/dev/null 2>&1
+eq "...and the walk goes on to a parent whose procStart matches" "$?/$(dj "$a2b" .status)" "0/answered_in_pane"
+rm -f "$CLAUDE_SESSIONS_DIR/$$.json" "$CLAUDE_SESSIONS_DIR/$PPID.json"
+TMUX=/tmp/fake,1,0 TMUX_PANE=%42 FAKE_TMUX_SESSION=CP PATH="$T/bin:$PATH" in_session CP "$B" resolve "$a1" --in-pane --from CP --note-file "$T/note" >/dev/null
+eq "the asking session resolves it -> answered_in_pane" "$?/$(dj "$a1" '.status + "/" + .resolved_by + "/" + .resolved_via')" "0/answered_in_pane/CP/session"
+eq "...the note scrubbed" "$(dj "$a1" '.resolve_note | test("ghp_") | not')/$(dj "$a1" '.resolve_note | startswith("answered in the pane")')" "true/true"
+"$B" resolve "$a1" --in-pane --by user-1 >/dev/null 2>&1
+eq "resolving a final decision -> exit 1" "$?" "1"
+a2="$(ask_id)"
+"$B" resolve "$a2" --in-pane --by user-1 >/dev/null
+eq "an approver resolves it" "$?/$(dj "$a2" '.status + "/" + .resolved_via')" "0/answered_in_pane/approver"
+tk="$("$B" task new --owner CP "Gate test")"
+g1="$("$B" ask --from CP --task "$tk" --stage plan --gate owner "Plan ok?")"
+"$B" resolve "$g1" --in-pane --by user-1 >/dev/null 2>&1
+eq "a gate is never resolved from the pane -> exit 2" "$?/$(dj "$g1" .status)" "2/pending"
+rm -f "$BOARD_HOME/tasks/$tk.json" "$BOARD_HOME/decisions/$g1.json"  # later checks count tasks
+pq="$(jq -rs '[.[] | select(.source == "pane")] | first | .id' "$BOARD_HOME"/decisions/*.json)"
+"$B" resolve "$pq" --in-pane --by user-1 >/dev/null 2>&1
+eq "a pane question is not a board ask -> exit 2" "$?" "2"
+# The collector's hint: a new prompt after the ask, then a finished turn.
+a3="$(ask_id)"
+c3="$(dj "$a3" .created_at)"
+jq --argjson p "$((c3 + 1000))" '.last_prompt_at = $p | .last_stop_at = null' "$BOARD_HOME/state/$SID.json" > "$T/sx" && mv "$T/sx" "$BOARD_HOME/state/$SID.json"
+PATH="$T/bin:$PATH" "$REPO/bin/board-collect" --once --no-notify >/dev/null 2>&1
+eq "a new prompt but no finished turn -> no hint" "$(dj "$a3" '.hint // "none"')" "none"
+jq --argjson s "$((c3 + 5000))" '.last_stop_at = $s' "$BOARD_HOME/state/$SID.json" > "$T/sx" && mv "$T/sx" "$BOARD_HOME/state/$SID.json"
+PATH="$T/bin:$PATH" "$REPO/bin/board-collect" --once --no-notify >/dev/null 2>&1
+eq "...then a finished turn -> hint, still pending" "$(dj "$a3" '.hint + "/" + .status + "/" + (.hint_at | tostring)')" "maybe_answered_in_session/pending/$((c3 + 5000))"
+a4="$(ask_id)"
+c4="$(dj "$a4" .created_at)"
+jq --argjson p "$((c4 - 2000))" --argjson s "$((c4 - 1000))" '.last_prompt_at = $p | .last_stop_at = $s' "$BOARD_HOME/state/$SID.json" > "$T/sx" && mv "$T/sx" "$BOARD_HOME/state/$SID.json"
+PATH="$T/bin:$PATH" "$REPO/bin/board-collect" --once --no-notify >/dev/null 2>&1
+eq "a prompt from before the ask -> no hint" "$(dj "$a4" '.hint // "none"')" "none"
+in_session CP "$B" resolve "$a3" --in-pane --from CP >/dev/null
+eq "resolving removes the hint" "$(dj "$a3" 'has("hint")')" "false"
+in_session CP "$B" resolve "$a4" --in-pane --from CP >/dev/null
+# An approver's board answer waiting for its relay is never dropped, by --from or --by.
+a5="$(ask_id)"
+"$B" answer "$a5" yes --by user-1 >/dev/null
+in_session CP "$B" resolve "$a5" --in-pane --from CP >/dev/null 2>"$T/err"
+eq "--from on an answered ask -> exit 1, still answered" "$?/$(dj "$a5" .status)" "1/answered"
+grep -q "already answered: it will be relayed" "$T/err" && ok "...says it will be relayed" || bad "...says it will be relayed" "$(cat "$T/err")"
+"$B" resolve "$a5" --in-pane --by user-1 >/dev/null 2>&1
+eq "--by on an answered ask -> exit 1, still answered" "$?/$(dj "$a5" '.status + "/" + .answer')" "1/answered/yes"
+"$B" mark "$a5" relayed >/dev/null
+# A final status is never re-marked to another one.
+"$B" mark "$a1" relayed >/dev/null 2>&1
+eq "mark relayed on answered_in_pane -> exit 1, unchanged" "$?/$(dj "$a1" .status)" "1/answered_in_pane"
+"$B" mark "$a5" stale >/dev/null 2>&1
+eq "mark stale on relayed -> exit 1, unchanged" "$?/$(dj "$a5" .status)" "1/relayed"
+"$B" mark "$a5" relayed >/dev/null
+eq "marking the same final status again is a no-op" "$?/$(dj "$a5" .status)" "0/relayed"
+s5="$(ask_id)"; "$B" mark "$s5" stale >/dev/null
+MARK_OVER_STALE=1 "$B" mark "$s5" relayed >/dev/null 2>&1
+eq "MARK_OVER_STALE from the environment does not let board mark override stale" "$?/$(dj "$s5" .status)" "1/stale"
+# The collector never overwrites a decision that changed under it (no lock): the hint write re-reads.
+a6="$(ask_id)"
+c6="$(dj "$a6" .created_at)"
+jq --argjson p "$((c6 + 1000))" --argjson s "$((c6 + 2000))" '.last_prompt_at = $p | .last_stop_at = $s' "$BOARD_HOME/state/$SID.json" > "$T/sx" && mv "$T/sx" "$BOARD_HOME/state/$SID.json"
+python3 - "$REPO/lib" "$BOARD_HOME" "$a6" <<'PY'
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import collect
+home, did = sys.argv[2], sys.argv[3]
+path = os.path.join(home, "decisions", did + ".json")
+orig = collect.maybe_answered
+def racing(d, by_code, h):  # an approver resolves it while the collector decides the hint
+    rec = collect.read_json(path); rec["status"] = "answered_in_pane"; collect.write_json_atomic(path, rec)
+    return orig(d, by_code, h)
+collect.maybe_answered = racing
+cfg = collect.fleet.load_fleet()
+sessions = collect.build_sessions(cfg, home, "")
+collect.process_decisions(cfg, home, sessions, collect.now_ms())
+PY
+eq "a concurrent resolve survives the collector's hint write" "$(dj "$a6" '.status + "/" + (.hint // "none")')" "answered_in_pane/none"
 
 # --option: the clicked button's number must match the label.
 d="$(askq tu_q6i "$Q1")"

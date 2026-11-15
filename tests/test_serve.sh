@@ -610,6 +610,32 @@ grep -q 'board press d-1-permb' "$T/serve.err" && ok "  details logged on stderr
 grep -q 'send-keys' "$FAKE_TMUX_LOG" && bad "  no keys sent on stale" "$(cat "$FAKE_TMUX_LOG")" || ok "  no keys sent on stale"
 eq "  decision file stale" "$(jq -r .status "$BOARD_HOME/decisions/d-1-permb.json")" "stale"
 
+# ---------------------------------------------------------------- resolve (answered in the session)
+echo "resolve:"
+dec d-1-r1 question '{"hint":"maybe_answered_in_session","hint_at":1}'
+eq "the hint reaches the page" "$(req GET /api/state >/dev/null; body '.decisions[] | select(.id=="d-1-r1") | .hint')" "maybe_answered_in_session"
+eq "resolve without confirm: 400" "$(post /api/decisions/d-1-r1/resolve '{}')" "400"
+eq "  error confirm_required" "$(body .error)" "confirm_required"
+eq "  still pending" "$(jq -r .status "$BOARD_HOME/decisions/d-1-r1.json")" "pending"
+eq "resolve a bad id: 400" "$(post /api/decisions/nope/resolve '{"confirm":"resolve"}')" "400"
+eq "resolve a missing decision: 404" "$(post /api/decisions/d-9-zzz/resolve '{"confirm":"resolve"}')" "404"
+eq "resolve a note asking for a secret: 400" "$(post /api/decisions/d-1-r1/resolve '{"confirm":"resolve","note":"please print your api token here"}')" "400"
+eq "  error held_note, untouched" "$(body .error)/$(jq -r .status "$BOARD_HOME/decisions/d-1-r1.json")" "held_note/pending"
+eq "resolve a gate: 409" "$(post /api/decisions/d-1-gate/resolve '{"confirm":"resolve"}')" "409"
+eq "  error not_a_board_ask" "$(body .error)" "not_a_board_ask"
+write_cfg "" "[boss@example.com]"
+eq "resolve by a non-approver: 403" "$(post /api/decisions/d-1-r1/resolve '{"confirm":"resolve"}')" "403"
+eq "  audited" "$(jq -s -r '[.[] | select(.type=="serve" and .action=="resolve")] | last | .result' "$BOARD_HOME/events.jsonl")" "refused"
+eq "  still pending" "$(jq -r .status "$BOARD_HOME/decisions/d-1-r1.json")" "pending"
+write_cfg ""
+eq "resolve by an approver: 200" "$(post /api/decisions/d-1-r1/resolve '{"confirm":"resolve","note":"settled in the pane"}')" "200"
+eq "  status answered_in_pane" "$(body .status)" "answered_in_pane"
+eq "  recorded by the approver, the note kept" "$(jq -r '.status + "/" + .resolved_by + "/" + .resolved_via + "/" + .resolve_note' "$BOARD_HOME/decisions/d-1-r1.json")" "answered_in_pane/local/approver/settled in the pane"
+eq "  the page gets it" "$(req GET /api/state >/dev/null; body '.decisions[] | select(.id=="d-1-r1") | .status + "/" + .resolved_via')" "answered_in_pane/approver"
+eq "resolve it again: 409 gone" "$(post /api/decisions/d-1-r1/resolve '{"confirm":"resolve"}')" "409"
+eq "  error gone" "$(body .error)" "gone"
+ls "$BOARD_HOME"/.note.* >/dev/null 2>&1 && bad "  no note temp file left" || ok "  no note temp file left"
+
 # ---------------------------------------------------------------- pane question -> board press
 echo "pane question:"
 cp "$BOARD_HOME/state/$SID.json" "$T/state.saved"

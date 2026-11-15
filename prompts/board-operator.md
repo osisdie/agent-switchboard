@@ -202,6 +202,9 @@ db.
   `[BOARD decision <id>] <answer> (by owner on board)`.
   Then set `status: "relayed"` and `relayed_at` in the db, and mirror the change locally with
   `board mark <id> relayed`.
+  A local decision with `status: "answered_in_pane"` (closed with `board resolve`: answered in the
+  session's pane or another session) is final: mirror that status to the db and never relay an
+  answer for it. A `hint: "maybe_answered_in_session"` is only shown; never close a card on it.
 - **`kind: "permission"`**: never send a message. `board answer <id> <allow|deny> --by <userId>`
   (above) is required here too: `board press` refuses with **exit 4** unless the local decision is
   `answered`, its answer is the same action, and `answered_by` passes the approver check. Then run:

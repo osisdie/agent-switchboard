@@ -15,6 +15,10 @@
 #                                              gate:production), else it is marked unauthorized
 #   board mark ID relayed|stale|timeout|unauthorized
 #                                              set a decision's status
+#   board resolve ID --in-pane --from CODE|--by WHO [--note-file F]
+#                                              close a board ask that was answered in the pane
+#                                              (status answered_in_pane): the asking session
+#                                              itself, or an approver
 #   board task new --owner CODE "title" [--stage S]   create a task, print its id
 #   board task stage ID STAGE [--artifact key=ref]... move a task to a stage
 #   board task ls [--json] | board task show ID
@@ -90,6 +94,8 @@ set -u
 REPO="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 BOARD_HOME="${BOARD_HOME:-$HOME/.agent-switchboard}"
 export BOARD_HOME
+# Set only inline by board press (relayed over stale, see mark_status); never from the environment.
+unset MARK_OVER_STALE
 FLEET="$REPO/lib/fleet.py"
 GUARD="$REPO/lib/guard.py"
 umask 077   # everything under BOARD_HOME is private to this user
@@ -196,7 +202,7 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
         echo "  create a decision and print its id. With --task/--gate it is a gate decision"
         echo "  (defaults: stage = the task's stage, gate = owner, options = approve / request changes)."
         echo "  stages: $STAGES" ;;
-    decisions) echo "usage: board decisions [--status pending|answered|relayed|stale|timeout|unauthorized] [--json]" ;;
+    decisions) echo "usage: board decisions [--status pending|answered|relayed|stale|timeout|unauthorized|answered_in_pane] [--json]" ;;
     answer) echo "usage: board answer ID ANSWER|--answer-file PATH --by WHO [--option N]"
         echo "  --option N (pane question): the clicked option; refused (exit 2) unless its label is ANSWER." 
         echo "  a free-text answer that asks for a secret value is refused (exit 6, nothing written)."
@@ -209,6 +215,15 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
         echo "    $out"
         echo "  anything else (e.g. \"request changes\") records the gate as rejected." ;;
     mark) echo "usage: board mark ID relayed|stale|timeout|unauthorized" ;;
+    resolve) echo "usage: board resolve ID --in-pane --from CODE|--by WHO [--note-file F]"
+        echo "  close a board ask (kind question, not a pane question, not a gate) that was answered in"
+        echo "  the session's pane or another session: status answered_in_pane (final). --from: the"
+        echo "  asking session itself: must equal the ask's from, and this command must run inside that"
+        echo "  session (its registered Claude process is an ancestor; fails closed). This guards against"
+        echo "  honest mistakes, not a security boundary (same-user trust); where it cannot tell (no /proc,"
+        echo "  a sandbox with its own pid namespace) it refuses: use --by;"
+        echo "  --by: an approver. Exit 4 for anyone else. The note (one file, <= 500 chars) goes"
+        echo "  through the secret guard: scrubbed, and refused (exit 6) when it asks for a secret value." ;;
     press) echo "usage: board press CODE allow|deny --expect TOOL_USE_ID [--allow-truncated]"
         echo "       board press CODE answer --expect TOOL_USE_ID"
         echo "  send the allow/deny keys to CODE's tmux pane. Exit 4 (nothing sent) unless the local"
@@ -662,13 +677,147 @@ cmd_answer() {
   fi
 }
 
+# Final statuses are never re-marked to another one (relayed, stale, timeout, answered_in_pane):
+# a decision closed in the pane must not turn "relayed", nor a relayed one "stale". Marking the
+# status it already has is a no-op. Returns 1 (nothing written) when refused. One exception:
+# board press, whose keys went in, marks relayed over stale (MARK_OVER_STALE=1): the collector may
+# have marked it stale between the key press and this mark.
 mark_status() {  # mark_status ID STATUS [reason]
-  local id="$1" st="$2" reason="${3:-}" now
+  local id="$1" st="$2" reason="${3:-}" now cur
+  cur="$(jq -r '.status // empty' "$(dec_path "$id")" 2>/dev/null)"
+  case "$cur" in
+    relayed|stale|timeout|answered_in_pane)
+      [ "$cur" = "$st" ] && return 0
+      if [ "$cur" = stale ] && [ "$st" = relayed ] && [ "${MARK_OVER_STALE:-0}" = 1 ]; then cur=""; fi
+    ;;
+  esac
+  case "$cur" in
+    relayed|stale|timeout|answered_in_pane)
+      echo "board: decision $id is already $cur; not marked $st" >&2
+      return 1 ;;
+  esac
   now="$(now_ms)"
   update_decision "$id" '.status = $st | .updated_at = $now | (if $st == "relayed" then .relayed_at = $now else . end)' \
     --arg st "$st" --argjson now "$now"
   log_event "$(jq -cn --arg id "$id" --arg st "$st" --arg r "$reason" --argjson now "$now" \
     '{ts: $now, type: "mark", id: $id, status: $st} + (if $r == "" then {} else {reason: $r} end)')"
+}
+
+# caller_session_code — the code of the Claude Code session this command runs in: the first
+# ancestor of $$ (up to 16 levels) whose registry file <sessions dir>/<pid>.json describes that very
+# process, by its tmux session name, else its registered name. Empty when there is none (fails
+# closed for --from). Same-user trust against honest mistakes, not a security boundary.
+caller_session_code() {
+  local sd="${CLAUDE_SESSIONS_DIR:-$HOME/.claude/sessions}" p=$$ i reg t n pp
+  for i in $(seq 1 16); do
+    [ -n "$p" ] && [ "$p" -gt 1 ] 2>/dev/null || return 0
+    reg="$sd/$p.json"
+    # A registry file counts only for the process it describes (lib/actions.py same_process: not a
+    # zombie, and its procStart matches /proc/<pid>/stat); a reused pid is skipped and the walk
+    # goes on to its parent.
+    if [ -f "$reg" ] && python3 -c 'import json, sys
+sys.path.insert(0, sys.argv[1])
+import actions
+with open(sys.argv[2], encoding="utf-8") as fh:
+    sys.exit(0 if actions.same_process(json.load(fh), int(sys.argv[3])) else 1)' "$REPO/lib" "$reg" "$p" 2>/dev/null; then
+      t="$(jq -r '.tmux // empty' "$reg" 2>/dev/null)"; n="$(jq -r '.name // empty' "$reg" 2>/dev/null)"
+      t="${t%%:*}"
+      [ -n "$t" ] && { echo "$t"; return 0; }
+      [ -n "$n" ] && { echo "$n"; return 0; }
+      return 0
+    fi
+    if [ -r "/proc/$p/status" ]; then
+      pp="$(awk '/^PPid:/ { print $2; exit }' "/proc/$p/status" 2>/dev/null)"
+    else
+      pp="$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')"
+    fi
+    p="$pp"
+    : "$i"
+  done
+}
+
+# board resolve ID --in-pane --from CODE|--by WHO [--note-file F] — see sub_usage resolve.
+cmd_resolve() {
+  need_jq
+  local id="${1:-}" in_pane=0 from="" by="" note="" nf=""
+  [ $# -gt 0 ] && shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --in-pane) in_pane=1 ;;
+      --from) shift; from="${1:-}" ;;
+      --by) shift; by="${1:-}" ;;
+      --note-file) shift; nf="${1:-}"; note="$(from_file --note-file "$nf")" || exit 1 ;;
+      *) die "resolve: unknown option $1" ;;
+    esac
+    shift
+  done
+  if [ -z "$id" ] || [ "$in_pane" = 0 ] || { [ -z "$from" ] && [ -z "$by" ]; } || { [ -n "$from" ] && [ -n "$by" ]; }; then
+    sub_usage resolve >&2; exit 2
+  fi
+  local f; f="$(dec_path "$id")"
+  [ -f "$f" ] || die "no such decision: $id"
+  local now; now="$(now_ms)"
+  audit_resolve() {  # audit_resolve RESULT [REASON]
+    log_event "$(jq -cn --argjson now "$now" --arg id "$id" --arg from "$from" --arg by "$by" --arg r "$1" --arg why "${2:-}" \
+      '{ts: $now, type: "resolve", id: $id, result: $r} + (if $from == "" then {by: $by, via: "approver"} else {by: $from, via: "session"} end)
+       + (if $why == "" then {} else {reason: $why} end)')"
+  }
+  # Only a plain board ask: a permission or a pane question closes with its prompt (collector), and
+  # a gate is approved by an answer, never closed from the pane.
+  if [ "$(jq -r '(.kind == "question") and ((.source // "") != "pane") and ((.gate // "") == "") and ((.task_id // "") == "")' "$f")" != true ]; then
+    audit_resolve refused "not a plain board ask"
+    echo "board resolve: refused — $id is not a plain board ask (a permission, pane question or gate); nothing changed" >&2
+    exit 2
+  fi
+  # Only an ask nobody has answered on the board: an approver's answer that waits for its relay
+  # (answered) is never dropped this way, by the asking session or an approver.
+  local cur; cur="$(jq -r '.status' "$f")"
+  case "$cur" in
+    pending|unauthorized) ;;
+    answered)
+      audit_resolve refused "already answered on the board"
+      echo "board resolve: refused — $id is already answered: it will be relayed" >&2
+      exit 1 ;;
+    *) die "decision $id is already $cur" ;;
+  esac
+  if [ -n "$from" ]; then
+    local owner; owner="$(jq -r '.from // empty' "$f")"
+    if [ "$from" != "$owner" ] && [ "$(code_of "$from")" != "$(code_of "$owner")" ]; then
+      audit_resolve refused "--from is not the asking session"
+      echo "board resolve: refused — $id was asked by $owner, not $from" >&2
+      exit 4
+    fi
+    self_check "$from" resolve "$id" resolve
+    # --from is the caller's own word: it must also be true. The asking session's registered Claude
+    # process must be an ancestor of this command (the command runs inside that session). Fails
+    # closed: no such ancestor, refused.
+    local mine; mine="$(caller_session_code)"
+    if [ -z "$mine" ] || { [ "$mine" != "$owner" ] && [ "$(code_of "$mine")" != "$(code_of "$owner")" ]; }; then
+      audit_resolve refused "--from is not the session this command runs in"
+      echo "board resolve: refused — this command does not run inside $owner's session (found: ${mine:-none}); an approver uses --by" >&2
+      exit 4
+    fi
+  elif ! allowed_by "$f" "$by"; then
+    audit_resolve refused "not an approver"
+    echo "board resolve: refused — $by is not an approver" >&2
+    exit 4
+  fi
+  if [ -n "$note" ]; then
+    local held
+    if held="$(printf '%s' "$note" | python3 "$GUARD" screen)"; then :; else
+      audit_resolve refused "secret guard: $held"
+      echo "board resolve: refused by the secret guard ($held); nothing changed" >&2
+      exit 6
+    fi
+    note="$(guard_scrub "$note")"
+    note="${note:0:500}"
+  fi
+  update_decision "$id" '.status = "answered_in_pane" | .resolved_by = $who | .resolved_via = $via | .resolved_at = $now
+      | .resolve_note = (if $note == "" then null else $note end) | .updated_at = $now | del(.hint, .hint_at)' \
+    --arg who "${from:-$by}" --arg via "$(if [ -n "$from" ]; then echo session; else echo approver; fi)" \
+    --arg note "$note" --argjson now "$now"
+  audit_resolve resolved
+  echo "$id answered_in_pane"
 }
 
 cmd_mark() {
@@ -678,7 +827,8 @@ cmd_mark() {
     relayed|stale|timeout|unauthorized) ;;
     *) sub_usage mark >&2; exit 2 ;;
   esac
-  mark_status "$id" "$st"
+  [ -f "$(dec_path "$id")" ] || die "no such decision: $id"
+  mark_status "$id" "$st" || exit 1
   echo "$id $st"
 }
 
@@ -1028,20 +1178,20 @@ cmd_press() {
   if [ "$multi" = 1 ]; then
     press_multi "$pane" "$sf" "$df" "$st_sha" "$lines"
     attempt sent "ok" "$pane"
-    mark_status "$dec_id" relayed >/dev/null 2>&1
+    MARK_OVER_STALE=1 mark_status "$dec_id" relayed >/dev/null 2>&1
     echo "pressed answer ($(jq -r '.answer_options | map(tostring) | join(" ")' "$df"), submitted) in $code pane $pane"
     return 0
   fi
   if [ "$action" = answer ] && [ -n "$q_text" ]; then
     press_free_text "$pane" "$sf" "${keys[0]}" "$q_text" "$st_sha" "$lines" "$ft_label"
     attempt sent "ok" "$pane"
-    mark_status "$dec_id" relayed >/dev/null 2>&1
+    MARK_OVER_STALE=1 mark_status "$dec_id" relayed >/dev/null 2>&1
     echo "pressed answer (${keys[0]}, free text, Enter) in $code pane $pane"
     return 0
   fi
   tmux send-keys -t "$pane" "${keys[@]}" || { attempt failed "send-keys failed" "$pane"; exit 1; }
   attempt sent "ok" "$pane"
-  mark_status "$dec_id" relayed >/dev/null 2>&1
+  MARK_OVER_STALE=1 mark_status "$dec_id" relayed >/dev/null 2>&1
   echo "pressed $action (${keys[*]}) in $code pane $pane"
 }
 
@@ -1336,7 +1486,7 @@ code_of() {
 
 # Votes are self-attested (--from is declared by the caller). Inside tmux, at least refuse a
 # --from that is not this tmux session (or an alias of the same fleet code): exit 4, logged.
-self_check() {  # self_check CODE ACTION [ID]
+self_check() {  # self_check CODE ACTION [ID] [COMMAND=consensus]
   [ -n "${TMUX:-}" ] || return 0
   command -v tmux >/dev/null 2>&1 || return 0
   local me
@@ -1348,10 +1498,15 @@ self_check() {  # self_check CODE ACTION [ID]
   [ -n "$me" ] || return 0
   [ "$me" = "$1" ] && return 0
   [ "$(code_of "$me")" = "$(code_of "$1")" ] && return 0
-  log_event "$(jq -cn --argjson now "$(now_ms)" --arg a "$2" --arg id "${3:-}" --arg by "$1" --arg me "$me" \
-    '{ts: $now, type: "consensus", action: $a, by: $by, tmux_session: $me, result: "refused",
+  local cmd="${4:-consensus}"
+  log_event "$(jq -cn --argjson now "$(now_ms)" --arg a "$2" --arg id "${3:-}" --arg by "$1" --arg me "$me" --arg t "$cmd" \
+    '{ts: $now, type: $t, action: $a, by: $by, tmux_session: $me, result: "refused",
       reason: "--from is not this tmux session"} + (if $id == "" then {} else {id: $id} end)')"
-  echo "board consensus: refused — --from $1, but this is tmux session '$me'; a session votes and proposes only as itself" >&2
+  if [ "$cmd" = consensus ]; then
+    echo "board consensus: refused — --from $1, but this is tmux session '$me'; a session votes and proposes only as itself" >&2
+  else
+    echo "board $cmd: refused — --from $1, but this is tmux session '$me'; a session acts only as itself" >&2
+  fi
   exit 4
 }
 
@@ -1889,7 +2044,7 @@ case "$sub" in
   # leading -h/--help asks for help.
   answer)
     case "${1:-}" in -h|--help) sub_usage answer; exit 0 ;; esac ;;
-  ls|snapshot|ask|decisions|mark|press|limit|notify|doctor|ack|unmute|notify-level|notify-presence|resources|rc|session|pomodoro)
+  ls|snapshot|ask|decisions|mark|resolve|press|limit|notify|doctor|ack|unmute|notify-level|notify-presence|resources|rc|session|pomodoro)
     if wants_help "$@"; then sub_usage "$sub"; exit 0; fi ;;
   # proposals, notes and the owner's words are free text: only -h/--help right after the
   # subcommand (or instead of it) asks for help.
@@ -1909,6 +2064,7 @@ case "$sub" in
   decisions) guarded cmd_decisions "$@" ;;
   answer) cmd_answer "$@" ;;
   mark) cmd_mark "$@" ;;
+  resolve) cmd_resolve "$@" ;;
   press) cmd_press "$@" ;;
   task) guarded cmd_task "$@" ;;
   limit) cmd_limit "$@" ;;

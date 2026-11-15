@@ -192,10 +192,58 @@ instead. Everything in `card` also passes the guard's `scrub_tree` like the rest
   "question": "...", "options": ["A","B"], "context": "optional short text",
   "tool_use_id": "... (permission only)", "tool_name": "...", "summary": "...",
   "summary_truncated": false, "summary_len": 0, "summary_sha256": "... (permission only)",
-  "status": "pending|answered|relayed|stale|timeout|unauthorized",
+  "status": "pending|answered|relayed|stale|timeout|unauthorized|answered_in_pane",
   "answer": null, "answered_by": null, "answered_at": null, "relayed_at": null,
   "created_at": 0 }
 ```
+
+**Board asks answered elsewhere.** A plain board ask (`kind: "question"`, no `source: "pane"`, no
+`gate` / `task_id`) that was answered in the session's pane, or by the owner in another session,
+is closed with `board resolve <id> --in-pane --from <CODE>|--by <approver> [--note-file F]`:
+
+- `--from` must be the ask's `from` (or an alias of the same fleet code), inside tmux this tmux
+  session, and the command must run inside that session: the first ancestor of the `board` process
+  with a registry file (`~/.claude/sessions/<pid>.json`) that describes that very process (not a
+  zombie, and its `procStart` matches the start time in `/proc/<pid>/stat`: lib/actions.py
+  `same_process`; a reused pid is skipped and the walk goes on) must be that session (its tmux
+  session name, else its registered name). No such ancestor fails closed, so a forged `TMUX` / `TMUX_PANE`
+  or a shell outside the session cannot use `--from`; a teammate (its own registered process) cannot
+  either: the session itself or an approver closes it. `--by` must be in `approvers`. Anyone else:
+  exit 4, audited (`type: "resolve"`, `result: "refused"`). A permission, pane question or gate:
+  exit 2, nothing changed (a gate is approved by an answer, never closed from the pane).
+- Only `pending` or `unauthorized`: an `answered` ask (an approver's board answer waiting for its
+  relay) is refused with exit 1, "already answered: it will be relayed", for `--from` and `--by`
+  alike. Already final: exit 1.
+- **Trust model.** `--from` guards against honest mistakes (a session closing another session's
+  ask, a shell outside any session), within same-user trust: it is not a security boundary, since
+  any process of the same user can write a registry file. It proves only that the command runs
+  inside a process tree a registered session started; a session can still act as itself. Where it
+  cannot tell, it refuses: no `/proc` (the start-time check needs it), or a sandbox that unshares
+  the pid namespace (the session's process is not visible); use `--by` there. `--by` is a claim the local CLI cannot verify
+  (any local user can type it), like `board answer --by`; on the board the identity comes from
+  board-serve (loopback or a verified Access JWT).
+- `board mark` never re-marks a final status (`relayed`, `stale`, `timeout`, `answered_in_pane`) to
+  another one: exit 1, unchanged. Marking the status it already has is a no-op (exit 0). The one
+  exception is inside `board press`: its keys went in, so it marks `relayed` over `stale` (the
+  collector may have marked the prompt stale between the key press and the mark); never over any
+  other final status, and never from `board mark` or the environment.
+- The note goes through the guard: refused with exit 6 when it asks for a secret value, otherwise
+  scrubbed and clipped to 500 characters.
+- The record gets `status: "answered_in_pane"` (final, like `relayed`), `resolved_by`,
+  `resolved_via` (`session` | `approver`), `resolved_at`, `resolve_note`; the hint is removed.
+  The operator mirrors the status and never relays an answer for it.
+- **Hint, never an auto-close.** The hook records `last_prompt_at` (UserPromptSubmit) and
+  `last_stop_at` (Stop / StopFailure) in the state file. On every run the collector sets
+  `hint: "maybe_answered_in_session"` and `hint_at` (that Stop) on a pending plain ask when its
+  asking session's `last_prompt_at` is after the ask's `created_at` and its `last_stop_at` is after
+  that prompt: someone may have answered in the pane. It is set once and only shown. Like every
+  collector write to a decision, it re-reads the file right before writing and skips it when the
+  status moved meanwhile (an answer or a resolve wins).
+- board-serve: `POST /api/decisions/<id>/resolve` `{"confirm": "resolve", "note"?}`, approvers only
+  (403 `not_approver`, audited), runs `board resolve <id> --in-pane --by <approver>` (the note by a
+  0600 file) → 200 `{status: "answered_in_pane"}`; exit 2 → 409 `not_a_board_ask`; exit 6 → 400
+  `held_note`; otherwise 409 `gone`. The page offers it as **Mark answered in session** with a
+  confirm step, on plain asks, to approvers on the self-hosted board.
 
 **Pane questions** (`kind: "question"`, `source: "pane"`): the hook's record of an
 `AskUserQuestion` picker. Claude Code sends `tool_input: {questions: [{question, header,
