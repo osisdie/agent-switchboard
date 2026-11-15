@@ -273,6 +273,7 @@ dialog.notif { width: min(720px, calc(100vw - 24px)); }
 .free { display: flex; gap: 8px; flex-wrap: wrap; }
 /* Pane questions: an AskUserQuestion picker waiting in a session (source "pane"). */
 .panecard .pq-asks { color: var(--muted); font-weight: 600; margin-right: 4px; }
+.panecard .pq-short { color: var(--muted); font-weight: 500; font-size: 13px; }
 .panecard .pq-q { margin: 0 0 8px; }
 .panecard .pq-head { font-family: var(--f-mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
 .panecard .pq-opts { display: grid; gap: 6px; margin: 4px 0 8px; padding: 0; list-style: none; }
@@ -1331,6 +1332,11 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       box.append(h('div', { class: 'banner warn' }, h('strong', { text: tr('Waiting for board data') }),
         h('p', { text: tr('The board data has not answered yet. Keep this page open; it fills in when the connection comes back.') })));
     }
+    if (S.newVersion) {
+      box.append(h('div', { class: 'banner', id: 'new-version', role: 'status' }, h('strong', { text: tr('A newer version of the board is available.') }),
+        h('p', { text: tr('Reload when you are ready; nothing you are typing is lost until then.') }),
+        h('button', { class: 'btn primary', type: 'button', onclick: () => location.reload(), text: tr('Reload') })));
+    }
     if (S.feedError) {
       box.append(h('div', { class: 'banner warn' }, h('strong', { text: tr('Live updates stopped') }),
         h('p', { text: S.feedError })));
@@ -1375,12 +1381,16 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       timeEl(d.created_at)));
     const live = pressable && !busy && canAnswer();
     const list = qs.length ? qs : [{ question: str(d.question) || tr('Question'), options: [] }];
-    card.append(h('h3', null, h('span', { class: 'pq-asks', text: tr('{who} asks:', { who }) }), list.length === 1 ? str(list[0].question) : tr('{n} questions', { n: list.length })));
+    // The hook clips a long question (the picker in the session shows it whole); say so.
+    const shortened = (q) => q.question_clipped === true || (d.questions_clipped === true && q.question_clipped == null && str(q.question).endsWith('…'));
+    const shortNote = (q) => (shortened(q) ? h('span', { class: 'pq-short', text: ' ' + tr('(shortened)') }) : null);
+    card.append(h('h3', null, h('span', { class: 'pq-asks', text: tr('{who} asks:', { who }) }), list.length === 1 ? str(list[0].question) : tr('{n} questions', { n: list.length }),
+      list.length === 1 ? shortNote(list[0]) : null));
     list.forEach((q, qi) => {
       const opts = (Array.isArray(q.options) ? q.options : []).map((o) => (o && typeof o === 'object' ? o : { label: str(o) }));
       const box = h('section', { class: 'pq-q', 'aria-label': tr('Question {n}', { n: qi + 1 }) });
       if (q.header) box.append(h('div', { class: 'pq-head', text: str(q.header) + (q.multiSelect ? ' · ' + tr('choose any') : '') }));
-      if (list.length > 1) box.append(h('p', { class: 'ctx', text: str(q.question) }));
+      if (list.length > 1) box.append(h('p', { class: 'ctx' }, str(q.question), shortNote(q)));
       if (live) {
         box.append(h('div', { class: 'pq-opts', role: 'group', 'aria-label': tr('Options') },
           opts.map((o, i) => h('button', { class: 'btn option pq-opt', type: 'button', dataset: { option: String(i + 1) },
@@ -2314,6 +2324,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       toast(tr('This board is read-only for you. Only its editors can answer or send messages.'), true);
     } else if (code === 'quota_exceeded') toast(tr('The board\'s storage is full. Ask the owner to clear old messages.'), true);
     else if (code === 'revoked') toast(tr('Your access to this board changed. Reload to see the current view.'), true);
+    else if (code && code !== 'network') toast(tr('Couldn\'t save ({code}). Reload the page; if it keeps happening, check board-serve.', { code }), true);
     else toast(tr('Couldn\'t save. Check your connection and try again.'), true);
   }
   function relayNote(demo) {
@@ -2667,6 +2678,9 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       S.replies = new Map(Object.entries(st.replies && typeof st.replies === 'object' ? st.replies : {}).map(([k, v]) => [k, arr(v)]));
       S.me = str(st.me) || null; S.writable = st.writable !== false; S.userReady = true;
       S.canMessageLocal = st.can_message === true;
+      // board-serve has a newer board.html than the one this tab was served: offer a reload.
+      const mine = document.querySelector('meta[name="board-version"]');
+      S.newVersion = !!(mine && st.page_version && st.page_version !== mine.getAttribute('content'));
       S.account = st.account && typeof st.account === 'object' ? st.account : null;
       for (const k of Object.keys(S.got)) S.got[k] = true;
       clearTimeout(loadTimer);
@@ -3660,6 +3674,11 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       "desktop": "桌面",
       "email": "電子郵件",
       "webhook": "Webhook",
+      "(shortened)": "（已截短）",
+      "A newer version of the board is available.": "看板有新版本。",
+      "Reload": "重新載入",
+      "Reload when you are ready; nothing you are typing is lost until then.": "準備好再重新載入；在那之前，你正在輸入的內容都不會遺失。",
+      "Couldn't save ({code}). Reload the page; if it keeps happening, check board-serve.": "無法保存（{code}）。請重新載入頁面；如果一直發生，請檢查 board-serve。",
     };
   }
 })();

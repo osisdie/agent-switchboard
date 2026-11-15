@@ -132,7 +132,12 @@ start
 # ---------------------------------------------------------------- state
 echo "state:"
 eq "GET /api/state 200" "$(req GET /api/state)" "200"
-eq "state keys" "$(body 'keys | join(",")')" "account,approvals,can_message,consensus,decisions,generated_at,ledger,me,messages,mode,notify,operator,owner_away,replies,resources,sessions,tasks,writable"
+eq "state keys" "$(body 'keys | join(",")')" "account,approvals,can_message,consensus,decisions,generated_at,ledger,me,messages,mode,notify,operator,owner_away,page_version,replies,resources,sessions,tasks,writable"
+eq "page_version is the hash of artifact/board.html" "$(body .page_version)" "$(sha256sum "$REPO/artifact/board.html" | cut -c1-12)"
+pv="$(body .page_version)"
+req GET / >/dev/null
+grep -q "<meta name=\"board-version\" content=\"$pv\">" "$T/body" && ok "  the served page carries the same version" || bad "  the served page carries the same version"
+req GET /api/state >/dev/null
 eq "account: null when not known" "$(body '.account')" "null"
 echo '{"oauthAccount":{"emailAddress":"owner@example.com","organizationName":"Example Org"}}' > "$CLAUDE_JSON"
 "$REPO/bin/board-collect" --once --no-notify >/dev/null 2>&1
@@ -528,6 +533,8 @@ paneq() {  # paneq ID TOOL_USE_ID QUESTIONS PRESSABLE — a hook-made pane quest
 printf ' ☐ Color\n\nWhich color do you prefer for the test?\n\n❯ 1. Red\n     warm\n  2. Blue\n     cool\n  3. Green\n     natural\n  4. Type something.\n\nEnter to select · ↑/↓ to navigate · Esc to cancel\n' > "$FAKE_TMUX_SCREEN"
 paneq d-1-pq1 tu_q1 "$Q1" true
 eq "state lists the pane question with its questions" "$(req GET /api/state >/dev/null; body '.decisions[] | select(.id=="d-1-pq1") | "\(.source)/\(.pressable)/\(.questions[0].options[1].description)"')" "pane/true/cool"
+jq '.labels_clipped = false' "$BOARD_HOME/decisions/d-1-pq1.json" > "$T/pq" && mv "$T/pq" "$BOARD_HOME/decisions/d-1-pq1.json"
+eq "  labels_clipped passes through" "$(req GET /api/state >/dev/null; body '.decisions[] | select(.id=="d-1-pq1") | .labels_clipped')" "false"
 : > "$FAKE_TMUX_LOG"
 eq "pane question: option number that is not the label 400" "$(post /api/decisions/d-1-pq1/answer '{"answer":"Blue","option":1}')" "400"
 eq "  error bad_option" "$(body .error)" "bad_option"

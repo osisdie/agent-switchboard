@@ -123,20 +123,24 @@ multiSelect, options: [{label, description}]}]}` on `PreToolUse` (with `tool_use
 ```json
 { "id": "d-...", "kind": "question", "source": "pane", "from": null,
   "question": "first question", "options": ["label", "..."],
-  "questions": [{ "question": "...", "header": "...", "multiSelect": false,
+  "questions": [{ "question": "...", "header": "...", "multiSelect": false, "question_clipped": false,
                   "options": [{ "label": "...", "description": "..." }] }],
-  "questions_clipped": false, "pressable": true,
+  "questions_clipped": false, "labels_clipped": false, "pressable": true,
   "tool_use_id": "toolu_...", "tool_name": "AskUserQuestion", "summary": "first question",
   "summary_sha256": "...", "session_id": "...", "tmux_pane": "%3", "status": "pending", ... }
 ```
 
 - Text is redacted like a summary, control characters become spaces, and fields are clipped:
   question 300, header 40, label 80, description 160 characters (at most 6 questions and 10
-  options each). `questions_clipped` is true when a question, a label or a count was cut.
+  options each). `questions_clipped` is true when anything was cut; `labels_clipped` only when what
+  an answer is matched by was: an option label, or options or questions left out. Each question's
+  `question_clipped` says its text (or header) was cut; the page shows it as stored, marked
+  "(shortened)". Decisions without `labels_clipped` (older hooks) count any clipping.
 - `options` is the label list of a single question (empty for several). `from` is filled with the
   session code by the collector, which also marks the decision `stale` when the session no longer
   shows that `tool_use_id` pending (the human answered in the pane, `PostToolUse`, `Stop`).
-- `pressable` = exactly one question, not `multiSelect`, nothing clipped, 1–8 options. Otherwise
+- `pressable` = exactly one question, not `multiSelect`, no label clipped (`labels_clipped`
+  false; a long question or header alone is fine), 1–8 options, labels unique. Otherwise
   the card is read-only ("answer in the session") and board-serve refuses answers (409
   `answer_in_session`).
 - `board answer` adds `answer_index` (1-based option number when the answer equals a label, exact
@@ -166,8 +170,9 @@ multiSelect, options: [{label, description}]}]}` on `PreToolUse` (with `tool_use
 - exit 3 (nothing sent, `stale`) unless the state still shows that `tool_use_id` and
   `summary_sha256` pending in that pane, the last `press.lines` lines match `press.question_regex`
   (default `Enter to select.*navigate`, the picker footer), and the start of the question (≥ 8
-  characters, whitespace ignored) or every option label in order is visible; the state is read
-  again right before any key.
+  characters, whitespace ignored) or every option label in order is visible. When the question
+  was clipped (`questions_clipped`), both are needed: its start, which is never in the clipped
+  tail, and every label in order. The state is read again right before any key.
 - Keys: an option sends its number (`1`–`8`), which selects it at once in the picker (measured on
   Claude Code's picker: digits select, they do not only move).
 - Free text: before any key, row N = options + 1 within the last `press.lines` lines must match
@@ -260,7 +265,7 @@ $BOARD_HOME/
 | endpoint | does |
 |---|---|
 | `GET /` | the board page (nonce CSP, `no-store`). Any query is ignored by the server and never reflected: `/?d=<id>` (alert links, see "Board links in alerts") serves the same page, which reads the query itself. |
-| `GET /api/state` | the state below, built from `$BOARD_HOME` |
+| `GET /api/state` | the state below, built from `$BOARD_HOME`, plus `page_version`: a short hash of `artifact/board.html` as it is now. The page board-serve renders carries its own as `<meta name="board-version">`; when the two differ (board.html was updated after the tab opened) the page shows a "newer version — Reload" banner and never reloads by itself |
 | `GET /api/me` | who is asking, from the verified identity and `fleet.yaml` only (never from request headers): see "Who am I" below. Same `Host` and identity checks as `/api/state` (no or bad JWT on the tunnel → 401, a forwarded request on the local listener → 403) |
 | `GET /icon.svg`, `/favicon.png`, `/favicon.ico` (the PNG), `/apple-touch-icon.png` (+ `-precomposed`), `/icons/icon-192.png`, `/icons/icon-512.png`, `/manifest.webmanifest` | a fixed map to files under `artifact/` (nothing else there is served; the request path is never joined onto a directory), with `image/svg+xml`, `image/png` or `application/manifest+json`, `Cache-Control: private, max-age=86400` and `Content-Security-Policy: default-src 'none'`. Same Host and identity checks as every route, so through the tunnel they need Access too. The page itself gets `manifest-src 'self'` in its CSP |
 | `GET /api/events` | `text/event-stream`: `event: state` with the full state at once and after every change (1 s mtime poll; only when the state differs), `: keepalive` every 25 s |

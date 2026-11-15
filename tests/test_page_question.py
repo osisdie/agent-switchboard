@@ -155,7 +155,7 @@ def main():
             write(log, "")
             proc = os.path.join(tmp, "proc")
             subprocess.run([sys.executable, os.path.join(REPO, "tests", "fake_proc.py"), proc], check=True)
-            env = dict(os.environ, BOARD_HOME=home, BOARD_CONFIG_DIR=cfg, CLAUDE_SESSIONS_DIR=sess,
+            env = dict(os.environ, BOARD_HOME=home, BOARD_CONFIG_DIR=cfg, CLAUDE_SESSIONS_DIR=sess, CLAUDE_JSON=os.path.join(tmp, "no-claude.json"),
                        BOARD_PROC_ROOT=proc, FAKE_TMUX_LOG=log, FAKE_TMUX_SCREEN=os.path.join(tmp, "screen"),
                        PATH=fbin + os.pathsep + os.environ.get("PATH", ""))
             for k in ("BOARD_PUBLIC_URL", "TMUX", "TMUX_PANE"):
