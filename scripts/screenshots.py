@@ -204,6 +204,15 @@ def main(argv):
     with open(os.path.join(tmp, "demo.html"), "w", encoding="utf-8") as fh:
         fh.write(site.demo_html(keep_fonts=True))
     page_url = "file://" + os.path.join(tmp, "demo.html")
+    try:
+        return shoot_all(sync_playwright, page_url, names, args)
+    finally:
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def shoot_all(sync_playwright, page_url, names, args):
+    """Render each shot into args.out (see the module docstring)."""
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, executable_path=os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE") or None)
         conv = browser.new_page()
@@ -238,8 +247,6 @@ def main(argv):
                 print("%-16s %4dx%-4d @%dx  %6d bytes" % (name, viewport["width"], viewport["height"], scale, len(data)))
             ctx.close()
         browser.close()
-    import shutil
-    shutil.rmtree(tmp, ignore_errors=True)
     return 0
 
 
