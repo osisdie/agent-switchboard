@@ -15,10 +15,11 @@ SMTP_PID=""
 cleanup() {
   [ -n "$SMTP_PID" ] && kill "$SMTP_PID" 2>/dev/null
   # The statusline tap writes from a detached background subshell, which can outlive this script
-  # and recreate $T/home/statusline after the rm. Wait (bounded) until no process still carries
-  # this BOARD_HOME; grep runs without it so it never finds itself. No /proc: nothing to wait for.
+  # and recreate $T/home/statusline after the rm. Wait (bounded) until no process still has
+  # an environment entry pointing into $T; grep runs with an empty environment so it never finds
+  # itself. No /proc: nothing to wait for.
   for _ in $(seq 1 100); do
-    env -u BOARD_HOME grep -qsxzF "BOARD_HOME=$T/home" /proc/[0-9]*/environ || break
+    env -i "$(command -v grep)" -qsazF "$T/" /proc/[0-9]*/environ || break
     sleep 0.1
   done
   rm -rf "$T"

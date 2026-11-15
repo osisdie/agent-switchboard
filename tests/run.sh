@@ -9,7 +9,18 @@ REPO="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 VERBOSE=0; [ "${1:-}" = "-v" ] && VERBOSE=1
 
 T="$(mktemp -d "${TMPDIR:-/tmp}/switchboard-test.XXXXXX")"
-trap 'rm -rf "$T"' EXIT
+cleanup() {
+  # Detached children of the code under test (hooks, actions, board session apply, notifiers) can
+  # outlive this script and write into $T after the rm. Wait (bounded) until no process has an
+  # environment entry pointing into $T; grep runs with an empty environment so it never finds
+  # itself. No /proc: nothing to wait for.
+  for _ in $(seq 1 100); do
+    env -i "$(command -v grep)" -qsazF "$T/" /proc/[0-9]*/environ || break
+    sleep 0.1
+  done
+  rm -rf "$T"
+}
+trap cleanup EXIT
 
 export BOARD_HOME="$T/home"
 export CLAUDE_JSON="$T/claude.json"  # the account fixture, never ~/.claude.json
@@ -116,7 +127,7 @@ EOF
 sleep 600 & live_pid=$!
 sleep 600 & live_pid2=$!
 sleep 600 & live_pid3=$!
-trap 'kill $live_pid $live_pid2 $live_pid3 2>/dev/null; rm -rf "$T"' EXIT
+trap 'kill $live_pid $live_pid2 $live_pid3 2>/dev/null; cleanup' EXIT
 cat > "$CLAUDE_SESSIONS_DIR/$live_pid.json" <<EOF
 {"pid":$live_pid,"sessionId":"$SID","cwd":"/w","tmux":"CP:@3.%42","name":"CP","status":"busy","bridgeSessionId":"session_abc","startedAt":1}
 EOF

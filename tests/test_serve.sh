@@ -14,6 +14,14 @@ SRV_PID=""; LIVE_PID=""
 cleanup() {
   [ -n "$SRV_PID" ] && kill "$SRV_PID" 2>/dev/null
   [ -n "$LIVE_PID" ] && kill "$LIVE_PID" 2>/dev/null
+  # Detached children of the code under test (hooks, actions, board session apply, notifiers) can
+  # outlive this script and write into $T after the rm. Wait (bounded) until no process has an
+  # environment entry pointing into $T; grep runs with an empty environment so it never finds
+  # itself. No /proc: nothing to wait for.
+  for _ in $(seq 1 100); do
+    env -i "$(command -v grep)" -qsazF "$T/" /proc/[0-9]*/environ || break
+    sleep 0.1
+  done
   [ -n "${KEEP_T:-}" ] && echo "kept $T" || rm -rf "$T"
 }
 trap cleanup EXIT

@@ -5,6 +5,8 @@ logged, never a real tmux server. Never reads ~/.agent-switchboard, ~/.claude or
 
   python3 tests/test_rc.py [-v]
 """
+import atexit
+import glob
 import json
 import os
 import shutil
@@ -21,6 +23,32 @@ REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, os.path.join(REPO, "lib"))
 
 TMP = tempfile.mkdtemp(prefix="switchboard-rc-test.")
+
+
+def remove_tmp(timeout=10.0):
+    """Remove TMP once no other process points into it. Detached children of the code under test
+    (actions, board session apply) can outlive the test and would write into TMP after the rmtree."""
+    needle = (TMP.rstrip("/") + "/").encode()
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        busy = False
+        for path in glob.glob("/proc/[0-9]*/environ"):
+            if path == "/proc/%d/environ" % os.getpid():
+                continue
+            try:
+                with open(path, "rb") as fh:
+                    busy = needle in fh.read()
+            except OSError:
+                continue
+            if busy:
+                break
+        if not busy:
+            break
+        time.sleep(0.1)
+    shutil.rmtree(TMP, ignore_errors=True)
+
+
+atexit.register(remove_tmp, 3.0)   # also on Ctrl-C or a failing setUpModule; tearDownModule waits longer
 HOME = os.path.join(TMP, "home")
 CFG = os.path.join(TMP, "config")
 SESS = os.path.join(TMP, "sessions")
@@ -1304,7 +1332,7 @@ def tearDownModule():
     close_lives()
     ServeTest.stop()
     SERVE_ERR.close()
-    shutil.rmtree(TMP, ignore_errors=True)
+    remove_tmp()
 
 
 if __name__ == "__main__":
