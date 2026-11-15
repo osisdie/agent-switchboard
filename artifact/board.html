@@ -300,19 +300,38 @@ dialog.notif { width: min(720px, calc(100vw - 24px)); }
 .col .cards { display: grid; gap: 10px; }
 .col .none { font-size: 13px; color: var(--muted); padding: 6px 4px; }
 .scard { display: grid; gap: 8px; padding: 12px; border-radius: 5px; background: var(--panel); border: 1px solid var(--rule); min-width: 0; }
+/* the card is a disclosure: the summary is a button, the detail panel opens below it */
+.scard.exp { padding: 0; gap: 0; }
+.scard-toggle { display: grid; gap: 5px; width: 100%; min-width: 0; padding: 12px; border: 0; border-radius: 5px; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.scard-toggle:hover .code { color: var(--cord); }
+.scard-toggle .chev { flex: none; width: 10px; color: var(--muted); transition: transform .15s ease; }
+.scard-toggle[aria-expanded="true"] .chev { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) { .scard-toggle .chev { transition: none; } }
+.schip { flex: none; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 9px; background: var(--off-soft); color: var(--muted); white-space: nowrap; }
+.schip.needs { background: var(--lamp-soft); color: var(--lamp-ink); }
+.schip.working { background: var(--work-soft); color: var(--work); }
+.schip.done { background: var(--ok-soft); color: var(--ok); }
+.stitle, .snow { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+.stitle.none { color: var(--muted); font-style: italic; }
+.swhere { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--f-mono); font-size: 12px; color: var(--muted); }
+.snow { font-size: 13px; color: var(--muted); }
+.snow.waiting { color: var(--lamp-ink); }
+.sdetail[hidden] { display: none; }
+.sdetail { display: grid; gap: 10px; padding: 10px 12px 12px; border-top: 1px solid var(--rule); font-size: 13px; min-width: 0; }
+.sdetail .sd-title { margin: 0; font-weight: 600; font-size: 14px; overflow-wrap: anywhere; }
+.sdetail dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 12px; margin: 0; }
+.sdetail dt { color: var(--muted); }
+.sdetail dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.sdetail ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.sdetail .tool { font-family: var(--f-mono); font-weight: 600; }
+.sdetail code { font-family: var(--f-mono); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.sdetail .note { padding: 0; color: var(--muted); }
+@media (max-width: 480px) { .sdetail dl { grid-template-columns: minmax(0, 1fr); gap: 2px; } .sdetail dd { margin-bottom: 6px; } }
 .col.needs .scard { box-shadow: var(--shadow); }
 .scard-top { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .scard-top .code { font-family: var(--f-mono); font-weight: 600; font-size: 15px; }
 .scard-top .aka { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .scard-top time { margin-left: auto; font-size: 12px; color: var(--muted); }
-.scard .task { margin: 0; font-size: 14px; overflow-wrap: anywhere; }
-.scard .task.none { color: var(--muted); font-style: italic; }
-.scard .pend { display: grid; gap: 4px; padding: 8px 10px; border-radius: 4px; background: var(--lamp-soft); color: var(--lamp-ink); font-size: 13px; }
-.scard .pend .tool { font-family: var(--f-mono); font-weight: 600; }
-.scard .pend code { font-family: var(--f-mono); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
-.jack { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 10px; font-size: 12px; color: var(--muted); }
-.jack .tmux { font-family: var(--f-mono); overflow-wrap: anywhere; }
-.jack .tmux::before { content: "tmux "; font-family: var(--f-body); letter-spacing: .04em; opacity: .8; }
 
 /* ---------- messages ---------- */
 .msg-layout { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 18px; align-items: start; }
@@ -1421,26 +1440,89 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   }
 
   /* --------------------------------------------------------------- board */
+  // Session cards: a summary button (code, state, title, repo · branch, what it is doing) that
+  // expands into a detail panel. Which cards are open is kept per code across re-renders.
+  const openCards = new Set();
+  const STATE_LABEL = { needs: 'needs you', working: 'working', done: 'idle', offline: 'offline' };
+  function clip(t, n) { t = str(t); return t.length > n ? t.slice(0, n - 1) + '…' : t; }
+  function sessionDecisions(s) {
+    const names = new Set([lc(s.code), ...(Array.isArray(s.aliases) ? s.aliases.map(lc) : [])]);
+    return S.decisions.filter((d) => d.status === 'pending' && names.has(lc(d.from)));
+  }
+  // What the session is doing now: { text, waiting }.
+  function doingNow(s) {
+    const col = colOf(s), p = s.pending && typeof s.pending === 'object' ? s.pending : null;
+    const recent = Array.isArray(s.recent) ? objs(s.recent) : [];
+    const last = recent[recent.length - 1];
+    if (col === 'offline') return { text: ts(s.updated_at) ? 'Offline, last seen ' + rel(ts(s.updated_at)) : 'Offline' };
+    if (col === 'needs') {
+      if (p) return { waiting: true, text: 'Waiting: permission for ' + (str(p.tool_name) || 'a tool') + (p.summary ? ' · ' + clip(p.summary, 120) : '') };
+      const q = sessionDecisions(s).find((d) => d.kind !== 'permission');
+      return { waiting: true, text: q ? 'Waiting: ' + clip(q.question, 120) : 'Waiting for you in the session' };
+    }
+    if (col === 'working') {
+      if (last) return { text: 'Running ' + str(last.tool) + (last.summary ? ': ' + clip(last.summary, 120) : '') };
+      const ev = str(s.last_event);
+      if (ev === 'PreToolUse') return { text: 'Running a tool' };
+      if (ev === 'UserPromptSubmit') return { text: 'Working on a new prompt' };
+      return { text: 'Working' };
+    }
+    const t = ts(s.updated_at);
+    return { text: t ? 'Idle since ' + hhmm(t) + ' (' + rel(t) + ')' : 'Idle' };
+  }
+  function cardSig(s) {
+    return JSON.stringify(s) + '|' + openCards.has(s.code) + '|' + sessionDecisions(s).map((d) => d.id + (d.question || '')).join(',');
+  }
   function buildSession(s) {
     const col = colOf(s);
     const lampCls = { needs: 'needs', working: 'working', done: 'done', offline: 'offline' }[col];
-    const aliases = (Array.isArray(s.aliases) ? s.aliases : []).map(str).filter((a) => a && lc(a) !== lc(s.code));
-    const card = h('article', { class: 'scard', 'aria-label': 'Session ' + s.code });
-    card.append(h('div', { class: 'scard-top' },
-      h('span', { class: 'lamp ' + lampCls, title: str(s.state) || 'unknown', 'aria-label': 'state ' + (str(s.state) || 'unknown') }),
-      h('span', { class: 'code', text: s.code }),
-      aliases.length ? h('span', { class: 'aka', text: 'aka ' + aliases.join(', ') }) : null,
-      timeEl(s.updated_at)));
-    const task = str(s.task);
-    card.append(h('p', { class: 'task' + (task ? '' : ' none'), text: task || 'No task summary yet' }));
-    const p = s.pending && typeof s.pending === 'object' ? s.pending : null;
-    if (p && (p.tool_name || p.summary)) {
-      card.append(h('div', { class: 'pend' },
-        h('span', null, 'Waiting on ', h('span', { class: 'tool', text: str(p.tool_name) || 'a tool' })),
-        p.summary ? h('code', { text: str(p.summary) }) : null));
+    const open = openCards.has(s.code);
+    const pid = 'sd-' + str(s.code).replace(/[^A-Za-z0-9_-]/g, '_');
+    const title = str(s.title), task = str(s.task);
+    const where = [str(s.repo), str(s.branch)].filter(Boolean).join(' · ');
+    const now = doingNow(s);
+    const chev = document.createElementNS(SVGNS, 'svg');
+    chev.setAttribute('viewBox', '0 0 10 10'); chev.setAttribute('class', 'chev'); chev.setAttribute('aria-hidden', 'true');
+    chev.innerHTML = '<path d="M3 1.5 7 5 3 8.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>';
+    const card = h('article', { class: 'scard exp', 'aria-label': 'Session ' + s.code });
+    const btn = h('button', { class: 'scard-toggle', type: 'button', 'aria-expanded': open ? 'true' : 'false', 'aria-controls': pid, dataset: { focus: 'toggle' },
+      onclick: () => { if (openCards.has(s.code)) openCards.delete(s.code); else openCards.add(s.code); renderBoard(); } },
+      h('span', { class: 'scard-top' }, chev,
+        h('span', { class: 'lamp ' + lampCls, 'aria-hidden': 'true' }),
+        h('span', { class: 'code', text: s.code }),
+        h('span', { class: 'schip ' + col, text: STATE_LABEL[col] }),
+        timeEl(s.updated_at)),
+      h('span', { class: 'stitle' + (title || task ? '' : ' none'), text: title || task || 'No title yet' }),
+      where ? h('span', { class: 'swhere', text: where }) : null,
+      h('span', { class: 'snow' + (now.waiting ? ' waiting' : ''), text: now.text }));
+    card.append(btn);
+    const panel = h('div', { class: 'sdetail', id: pid, hidden: !open });
+    if (open) {
+      if (title) panel.append(h('p', { class: 'sd-title', text: title }));
+      const rows = [];
+      const row = (label, ...val) => rows.push(h('dt', { text: label }), h('dd', null, ...val));
+      if (task && task !== title) row('Task', task);
+      row('Now', now.text);
+      const decs = sessionDecisions(s);
+      const p = s.pending && typeof s.pending === 'object' ? s.pending : null;
+      if (p && p.decision_id && !decs.some((d) => d.id === p.decision_id)) decs.push({ id: str(p.decision_id), kind: 'permission', tool_name: p.tool_name });
+      if (decs.length) {
+        row('Pending', h('ul', null, decs.map((d) => h('li', null, h('a', { href: '#dec-' + str(d.id), text: d.kind === 'permission' ? 'Permission: ' + (str(d.tool_name) || 'a tool') : clip(d.question, 100) || 'A question' })))));
+      }
+      if (!Array.isArray(s.recent)) row('Tools', h('span', { class: 'note', text: 'Shown on the self-hosted board only.' }));
+      else if (!s.recent.length) row('Tools', h('span', { class: 'note', text: 'Nothing running.' }));
+      else row('Running', h('ul', null, objs(s.recent).map((r) => h('li', null, h('span', { class: 'tool', text: str(r.tool) }), r.summary ? ' ' : null, r.summary ? h('code', { text: str(r.summary) }) : null))));
+      if (where) row('Repo', where);
+      if (s.tmux) row('tmux', h('code', { text: str(s.tmux) }));
+      const link = sessionLink(s.code, 'Remote Control');
+      if (link) row('Session', link);
+      const aliases = (Array.isArray(s.aliases) ? s.aliases : []).map(str).filter((a) => a && lc(a) !== lc(s.code));
+      if (aliases.length) row('Also', aliases.join(', '));
+      const t = ts(s.updated_at);
+      if (t) row('Updated', new Date(t).toLocaleString() + ' (' + rel(t) + ')');
+      panel.append(h('dl', null, rows));
     }
-    const link = sessionLink(s.code, 'Open session');
-    if (s.tmux || link) card.append(h('div', { class: 'jack' }, s.tmux ? h('span', { class: 'tmux', text: str(s.tmux) }) : h('span'), link));
+    card.append(panel);
     return card;
   }
 
@@ -1468,7 +1550,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
         .sort((a, b) => c.key === 'needs' ? ts(a.updated_at) - ts(b.updated_at) : ts(b.updated_at) - ts(a.updated_at));
       colEl.querySelector('.count').textContent = items.length;
       colEl.querySelector('.none').hidden = items.length > 0;
-      reconcile(colEl.querySelector('.cards'), items, (s) => s.code, (s) => JSON.stringify(s), buildSession);
+      reconcile(colEl.querySelector('.cards'), items, (s) => s.code, cardSig, buildSession);
     }
   }
 
@@ -2581,13 +2663,13 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       limit: frozen ? { hit_at: now - 48 * min, kind: '5h', resets_at: now + 115 * min, note: 'demo' } : null,
       usage: { five_hour: { pct: frozen ? 100 : 91, resets_at: now + 95 * min }, seven_day: { pct: 63, resets_at: now + (3 * 24 * 60 + 260) * min }, updated_at: now - 1 * min } };
     S.sessions = [
-      { code: 'API', aliases: ['API', 'backend'], state: 'needs-you', status: 'busy', task: 'Adding pagination to the orders endpoint', tmux: 'API:@1.%3', remote_url: '#demo-session-api', pending: { tool_name: 'Bash', summary: 'npm run migrate -- --env staging', tool_use_id: 'toolu_demo1' }, updated_at: now - 4 * min },
-      { code: 'WEB', aliases: ['WEB', 'frontend'], state: 'needs-you', status: 'idle', task: 'Redesigning the settings page layout', tmux: 'WEB:@2.%5', remote_url: '#demo-session-web', pending: null, updated_at: now - 9 * min },
-      { code: 'DOCS', aliases: ['DOCS'], state: 'working', status: 'busy', task: 'Writing the upgrade guide for v2', tmux: 'DOCS:@1.%8', remote_url: null, pending: null, updated_at: now - 1 * min },
-      { code: 'OPS', aliases: ['OPS', 'infra'], state: 'working', status: 'busy', task: 'Rotating staging certificates', tmux: 'OPS:@4.%11', remote_url: '#demo-session-ops', pending: null, updated_at: now - 3 * min },
-      { code: 'QA', aliases: ['QA'], state: 'done', status: 'idle', task: 'Flaky test triage finished: 3 fixed, 1 quarantined', tmux: 'QA:@1.%2', remote_url: null, pending: null, updated_at: now - 26 * min },
-      { code: 'DATA', aliases: ['DATA'], state: 'rest', status: 'idle', task: '', tmux: 'DATA:@1.%14', remote_url: null, pending: null, updated_at: now - 70 * min },
-      { code: 'MOBILE', aliases: ['MOBILE', 'app'], state: 'offline', status: 'idle', task: 'Release notes draft', tmux: null, remote_url: null, pending: null, updated_at: now - 5 * 60 * min },
+      { code: 'API', aliases: ['API', 'backend'], state: 'needs-you', status: 'busy', task: 'Adding pagination to the orders endpoint', title: 'Paginate the orders endpoint', repo: 'orders-api', branch: 'feat/pagination', last_event: 'PermissionRequest', notification_type: 'permission_prompt', recent: [{ tool: 'Bash', summary: 'npm run migrate -- --env staging' }], tmux: 'API:@1.%3', remote_url: '#demo-session-api', pending: { tool_name: 'Bash', summary: 'npm run migrate -- --env staging', tool_use_id: 'toolu_demo1', decision_id: 'd-1-demo' }, updated_at: now - 4 * min },
+      { code: 'WEB', aliases: ['WEB', 'frontend'], state: 'needs-you', status: 'idle', task: 'Redesigning the settings page layout', title: 'Settings page redesign', repo: 'web-app', branch: 'settings-layout', last_event: 'Stop', notification_type: null, recent: [], tmux: 'WEB:@2.%5', remote_url: '#demo-session-web', pending: null, updated_at: now - 9 * min },
+      { code: 'DOCS', aliases: ['DOCS'], state: 'working', status: 'busy', task: 'Writing the upgrade guide for v2', title: 'Upgrade guide for v2', repo: 'docs-site', branch: 'main', last_event: 'PreToolUse', notification_type: null, recent: [{ tool: 'Read', summary: '…/upgrade-v2.md' }, { tool: 'Edit', summary: '…/configuration.md' }], tmux: 'DOCS:@1.%8', remote_url: null, pending: null, updated_at: now - 1 * min },
+      { code: 'OPS', aliases: ['OPS', 'infra'], state: 'working', status: 'busy', task: 'Rotating staging certificates', title: 'Rotate staging certificates', repo: 'infra', branch: 'cert-rotation', last_event: 'PreToolUse', notification_type: null, recent: [{ tool: 'Bash', summary: 'kubectl -n staging get certificates' }], tmux: 'OPS:@4.%11', remote_url: '#demo-session-ops', pending: null, updated_at: now - 3 * min },
+      { code: 'QA', aliases: ['QA'], state: 'done', status: 'idle', task: 'Flaky test triage finished: 3 fixed, 1 quarantined', title: 'Flaky test triage', repo: 'web-app', branch: 'fix/flaky-upload', last_event: 'Stop', notification_type: 'idle_prompt', recent: [], tmux: 'QA:@1.%2', remote_url: null, pending: null, updated_at: now - 26 * min },
+      { code: 'DATA', aliases: ['DATA'], state: 'rest', status: 'idle', task: '', title: null, repo: 'warehouse', branch: 'main', last_event: 'SessionStart', notification_type: null, recent: [], tmux: 'DATA:@1.%14', remote_url: null, pending: null, updated_at: now - 70 * min },
+      { code: 'MOBILE', aliases: ['MOBILE', 'app'], state: 'offline', status: 'idle', task: 'Release notes draft', title: null, repo: null, branch: null, last_event: null, notification_type: null, recent: [], tmux: null, remote_url: null, pending: null, updated_at: now - 5 * 60 * min },
     ];
     S.decisions = [
       { id: 'd-1-demo', kind: 'permission', from: 'API', question: 'Run the staging migration?', tool_use_id: 'toolu_demo1', tool_name: 'Bash', summary: 'npm run migrate -- --env staging', status: 'pending', answer: null, created_at: now - 4 * min, escalation_level: 'warn', notified_via: ['slack', 'desktop'] },
