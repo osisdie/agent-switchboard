@@ -34,6 +34,8 @@ DEFAULTS = {
         "lines": 30,
         "allow_keys": ["1"],
         "deny_keys": ["Escape"],
+        # AskUserQuestion picker footer ("Enter to select · ↑/↓ to navigate · Esc to cancel").
+        "question_regex": r"Enter to select.*navigate",
     },
 }
 

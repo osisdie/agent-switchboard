@@ -26,6 +26,9 @@
 #   board press CODE allow|deny --expect TOOL_USE_ID [--allow-truncated]
 #                                              answer a permission prompt via tmux: needs an
 #                                              approver's matching `board answer`, then checks
+#   board press CODE answer --expect TOOL_USE_ID
+#                                              answer an AskUserQuestion picker (pane question)
+#                                              with the approver's recorded answer, same checks
 #   board notify "text"                        send a Slack message (SLACK_WEBHOOK_URL)
 #   board ack KEY [KEY...]                     acknowledge alerts (board-notify ack; glob ok)
 #   board mute CHANNEL|all [--for 1h|--until HH:MM|ISO] [--include-urgent] [--by WHO]
@@ -97,6 +100,24 @@ snapshot_file() {
   echo "$f"
 }
 
+# Pane questions (AskUserQuestion pickers): an answer equal to an option label (exact, else a
+# unique case-insensitive match) is that option's number; any other answer is free text, typed
+# into "Type something" only when it is one line of at most FREE_TEXT_MAX printable characters.
+# relay: "press" (board press answers the picker) or "operator" (sent as a [BOARD decision] message).
+FREE_TEXT_MAX=200
+JQ_PANE_ANSWER='
+  def trim: gsub("^\\s+|\\s+$"; "");
+  def labels: [ (.questions // [])[0].options[]?.label ];
+  def pane_index: (.answer // "" | trim) as $a | labels as $l
+    | ([ range(0; $l | length) | select($l[.] == $a) ] | first) as $i
+    | if $i != null then $i + 1
+      else [ range(0; $l | length) | select(($l[.] | ascii_downcase) == ($a | ascii_downcase)) ] as $ci
+      | if ($ci | length) == 1 then $ci[0] + 1 else null end end;
+  def typeable: (.answer // "" | trim) as $a
+    | ($a | length) > 0 and ($a | length) <= $max and ($a | test("[\u0000-\u001f\u007f-\u009f]") | not);
+  def pane_relay: if (.pressable == true) and (pane_index != null or typeable) then "press" else "operator" end;
+'
+
 # Table cells: control characters (terminal escapes, CR, ...) become "?".
 JQ_SAFE='def safe: tostring | gsub("[\u0000-\u001f\u007f-\u009f]"; "?");'
 
@@ -124,11 +145,16 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
         echo "  anything else (e.g. \"request changes\") records the gate as rejected." ;;
     mark) echo "usage: board mark ID relayed|stale|timeout|unauthorized" ;;
     press) echo "usage: board press CODE allow|deny --expect TOOL_USE_ID [--allow-truncated]"
+        echo "       board press CODE answer --expect TOOL_USE_ID"
         echo "  send the allow/deny keys to CODE's tmux pane. Exit 4 (nothing sent) unless the local"
         echo "  permission decision is answered with this action by an approver (board answer), and"
         echo "  its summary is complete (or --allow-truncated). Exit 3 (nothing sent, decision marked"
         echo "  stale) unless the hook state still shows that tool_use_id pending, the pane shows a"
-        echo "  permission prompt and the start of the pending input is visible in the pane." ;;
+        echo "  permission prompt and the start of the pending input is visible in the pane."
+        echo "  answer: a pane question (AskUserQuestion, one question, single-select) answered by an"
+        echo "  approver. An option label sends its number key; other text (one line, <= $FREE_TEXT_MAX"
+        echo "  chars) picks \"Type something\", types it literally and presses Enter. The pane must show"
+        echo "  the picker (press.question_regex) with the start of the question (or every option label)." ;;
     task) echo "usage: board task new|stage|ls|show ..."
         echo "  board task new --owner CODE \"title\" [--stage S]"
         echo "  board task stage ID STAGE [--artifact key=ref]..."
@@ -436,6 +462,17 @@ cmd_answer() {
     --arg a "$answer" --arg by "$by" --argjson now "$now"
   log_event "$(jq -cn --arg id "$id" --arg by "$by" --argjson now "$now" '{ts: $now, type: "answer", id: $id, by: $by}')"
 
+  if [ "$(jq -r '.source // empty' "$f")" = pane ]; then
+    # A pane question: map the answer to its option number, and decide how it reaches the session.
+    update_decision "$id" "$JQ_PANE_ANSWER"'.answer_index = pane_index | .relay = pane_relay' --argjson max "$FREE_TEXT_MAX"
+    local idx relay
+    idx="$(jq -r '.answer_index // empty' "$f")"
+    relay="$(jq -r '.relay' "$f")"
+    if [ -n "$idx" ]; then echo "$id answered (option $idx, relay by $relay)"
+    else echo "$id answered (free text, relay by $relay)"; fi
+    return 0
+  fi
+
   local gate task_id
   gate="$(jq -r '.gate // empty' "$f")"
   task_id="$(jq -r '.task_id // empty' "$f")"
@@ -612,13 +649,15 @@ cmd_press() {
     esac
     shift
   done
-  case "$action" in allow|deny) ;; *) code="" ;; esac
+  case "$action" in allow|deny|answer) ;; *) code="" ;; esac
   [ -n "$code" ] && [ -n "$expect" ] || { sub_usage press >&2; exit 2; }
 
   local now; now="$(now_ms)"
-  local dec_id=""
+  local dec_id="" want=permission
+  [ "$action" = answer ] && want=pane
   if compgen -G "$BOARD_HOME/decisions/*.json" >/dev/null; then
-    dec_id="$(jq -rs --arg t "$expect" '[ .[] | select(.kind == "permission" and .tool_use_id == $t) ]
+    dec_id="$(jq -rs --arg t "$expect" --arg w "$want" '[ .[] | select(.tool_use_id == $t
+        and (if $w == "pane" then .source == "pane" else .kind == "permission" end)) ]
       | sort_by(.created_at) | last | .id // empty' "$BOARD_HOME"/decisions/*.json 2>/dev/null)"
   fi
 
@@ -643,7 +682,7 @@ cmd_press() {
   }
 
   # 1. A human approver must have answered this exact decision with this exact action.
-  [ -n "$dec_id" ] || refuse_auth "no local permission decision for tool_use_id $expect"
+  [ -n "$dec_id" ] || refuse_auth "no local $( [ "$want" = pane ] && echo "pane question" || echo permission) decision for tool_use_id $expect"
   local df; df="$(dec_path "$dec_id")"
   local d_status d_answer d_by d_trunc d_sha
   d_status="$(jq -r '.status // empty' "$df")"
@@ -652,20 +691,48 @@ cmd_press() {
   d_trunc="$(jq -r '.summary_truncated // false' "$df")"
   d_sha="$(jq -r '.summary_sha256 // empty' "$df")"
   [ "$d_status" = answered ] || refuse_auth "decision $dec_id is '$d_status', not answered (run board answer first)"
-  [ "$d_answer" = "$action" ] || refuse_auth "decision $dec_id was answered '$d_answer', not '$action'"
+  if [ "$action" != answer ]; then
+    [ "$d_answer" = "$action" ] || refuse_auth "decision $dec_id was answered '$d_answer', not '$action'"
+  fi
   if [ -z "$d_by" ] || ! allowed_by "$df" "$d_by"; then
     refuse_auth "answered_by '$d_by' is not an approver (or no approvers configured)"
   fi
-  # 2. A truncated summary means the human did not see the whole input.
-  if [ "$d_trunc" = true ] && [ "$allow_trunc" = 0 ]; then
+  # 2. A truncated summary means the human did not see the whole input. (A pane question is only
+  #    pressable when nothing it is answered by was clipped: `pressable` below.)
+  if [ "$action" != answer ] && [ "$d_trunc" = true ] && [ "$allow_trunc" = 0 ]; then
     refuse_auth "the summary of $dec_id is truncated; read the full input in the pane, then pass --allow-truncated"
   fi
 
   # 3. Keys first, so a config problem never leaves a half-checked press.
-  local keys_json key keys=()
-  if [ "$action" = allow ]; then keys_json="$(cfg_get press.allow_keys)"; else keys_json="$(cfg_get press.deny_keys)"; fi
-  while IFS= read -r key; do [ -n "$key" ] && keys+=("$key"); done < <(jq -r '.[]' <<<"$keys_json" 2>/dev/null)
-  [ ${#keys[@]} -gt 0 ] || refuse "no keys configured for $action"
+  local keys_json key keys=() q_n=0 q_idx="" q_text=""
+  if [ "$action" = answer ]; then
+    # Recompute from the decision (never trust a stored relay/answer_index alone).
+    local pa
+    pa="$(jq -c --argjson max "$FREE_TEXT_MAX" "$JQ_PANE_ANSWER"'
+      {pressable: (.pressable == true), n: ((.questions // [])[0].options // [] | length),
+       idx: pane_index, typeable: typeable, relay: pane_relay,
+       text: (.answer // "" | trim), stored: (.answer_index // null)}' "$df")"
+    [ "$(jq -r .pressable <<<"$pa")" = true ] \
+      || refuse_auth "$dec_id is not pressable from the board (several questions, multi-select or clipped): answer it in the session"
+    [ "$(jq -r .relay <<<"$pa")" = press ] \
+      || refuse_auth "the answer to $dec_id is not an option and not one line of <= $FREE_TEXT_MAX characters: relay it as a message"
+    q_n="$(jq -r .n <<<"$pa")"
+    q_idx="$(jq -r '.idx // empty' <<<"$pa")"
+    [ "$(jq -r '.stored // empty' <<<"$pa")" = "$q_idx" ] \
+      || refuse_auth "answer_index on $dec_id does not match its answer (run board answer again)"
+    case "$q_n" in [1-8]) ;; *) refuse_auth "$dec_id has $q_n options; only 1-8 can be pressed" ;; esac
+    if [ -n "$q_idx" ]; then
+      keys=("$q_idx")
+    else
+      q_text="$(jq -r .text <<<"$pa")"
+      [[ $q_text == *[[:cntrl:]]* ]] && refuse_auth "free text contains control characters"
+      keys=("$((q_n + 1))")
+    fi
+  else
+    if [ "$action" = allow ]; then keys_json="$(cfg_get press.allow_keys)"; else keys_json="$(cfg_get press.deny_keys)"; fi
+    while IFS= read -r key; do [ -n "$key" ] && keys+=("$key"); done < <(jq -r '.[]' <<<"$keys_json" 2>/dev/null)
+    [ ${#keys[@]} -gt 0 ] || refuse "no keys configured for $action"
+  fi
 
   refresh
   local snap="$BOARD_HOME/snapshot.json"
@@ -703,12 +770,17 @@ cmd_press() {
   fi
 
   local regex lines full screen
-  regex="$(cfg_get press.prompt_regex)"
+  if [ "$action" = answer ]; then regex="$(cfg_get press.question_regex)"; else regex="$(cfg_get press.prompt_regex)"; fi
+  [ -n "$regex" ] || refuse "no press regex configured for $action" "$pane"
   lines="$(cfg_get press.lines 30)"
   case "$lines" in ''|*[!0-9]*) lines=30 ;; esac
   full="$(tmux capture-pane -p -t "$pane" 2>/dev/null)" || refuse "capture-pane failed for $pane" "$pane"
   screen="$(sed -e :a -e '/^[[:space:]]*$/{$d;N;ba' -e '}' <<<"$full" | tail -n "$lines")"
-  grep -Eq -- "$regex" <<<"$screen" || refuse "no permission prompt visible in pane $pane" "$pane"
+  if [ "$action" = answer ]; then
+    grep -Eq -- "$regex" <<<"$screen" || refuse "no question picker visible in pane $pane" "$pane"
+  else
+    grep -Eq -- "$regex" <<<"$screen" || refuse "no permission prompt visible in pane $pane" "$pane"
+  fi
 
   # 4. The prompt on screen must be about this input: the start of the summary (whitespace
   #    removed, up to 40 characters, before any [REDACTED]) must be visible in the pane.
@@ -718,11 +790,26 @@ cmd_press() {
   bind="$(tr -d '[:space:]' <<<"$bind")"
   bind="${bind:0:40}"
   flat="$(tr -d '[:space:]' <<<"$full")"
-  if [ ${#bind} -lt 8 ] && [ "$summ" != "${summ%%\[REDACTED*}" ]; then
+  local seen=0
+  if [ "$action" = answer ]; then
+    # The question (start of it, as for a permission summary), or else every option label in order.
+    [ ${#bind} -ge 8 ] && [[ $flat == *"$bind"* ]] && seen=1
+    if [ "$seen" = 0 ]; then
+      local lab rest="$flat" all=1 nl=0
+      while IFS= read -r lab; do
+        lab="$(tr -d '[:space:]' <<<"$lab")"
+        [ -n "$lab" ] || continue
+        nl=$((nl + 1))
+        if [[ $rest == *"$lab"* ]]; then rest="${rest#*"$lab"}"; else all=0; break; fi
+      done < <(jq -r '(.pending.questions // [])[0].options[]?.label' "$sf")
+      [ "$all" = 1 ] && [ "$nl" -gt 0 ] && seen=1
+    fi
+    [ "$seen" = 1 ] || refuse "the pending question ('${bind}') is not visible in pane $pane" "$pane"
+  fi
+  if [ ${#bind} -lt 8 ] && [ "$summ" != "${summ%%\[REDACTED*}" ] && [ "$seen" = 0 ]; then
     refuse "too little of the summary is left before [REDACTED] to check it on screen" "$pane"
   fi
-  [ -n "$bind" ] || refuse "empty summary; cannot check what the prompt is about" "$pane"
-  local seen=0
+  [ -n "$bind" ] || [ "$seen" = 1 ] || refuse "empty summary; cannot check what the prompt is about" "$pane"
   [[ $flat == *"$bind"* ]] && seen=1
   if [ "$seen" = 0 ]; then
     case "$summ" in
@@ -739,10 +826,40 @@ cmd_press() {
     refuse "pending prompt changed while checking" "$pane"
   fi
 
+  if [ "$action" = answer ] && [ -n "$q_text" ]; then
+    press_free_text "$pane" "$sf" "${keys[0]}" "$q_text" "$st_sha"
+    attempt sent "ok" "$pane"
+    mark_status "$dec_id" relayed >/dev/null 2>&1
+    echo "pressed answer (${keys[0]}, free text, Enter) in $code pane $pane"
+    return 0
+  fi
   tmux send-keys -t "$pane" "${keys[@]}" || { attempt failed "send-keys failed" "$pane"; exit 1; }
   attempt sent "ok" "$pane"
   mark_status "$dec_id" relayed >/dev/null 2>&1
   echo "pressed $action (${keys[*]}) in $code pane $pane"
+}
+
+# press_free_text PANE STATE_FILE KEY TEXT SHA — runs inside cmd_press (uses its refuse/attempt):
+# the "Type something" number key moves the picker onto its text field (it does not submit). Only
+# when the pane then shows that row focused is the text typed, literally (-l: no key names), and
+# only when the typed text is visible on screen is Enter pressed. Anything else stops there.
+press_free_text() {
+  local pane="$1" sf="$2" key="$3" text="$4" sha="$5" scr flat want
+  tmux send-keys -t "$pane" "$key" || { attempt failed "send-keys failed" "$pane"; exit 1; }
+  sleep "${BOARD_PRESS_SETTLE:-0.3}"
+  scr="$(tmux capture-pane -p -t "$pane" 2>/dev/null)" || refuse "capture-pane failed for $pane" "$pane"
+  grep -Eq -- "^[[:space:]]*(❯|>|›)[[:space:]]*$key\." <<<"$scr" \
+    || refuse "the picker did not move to \"Type something\" ($key); nothing typed" "$pane"
+  [ "$(jq -r '[.state, (.pending.tool_use_id // ""), (.pending.summary_sha256 // "")] | join(" ")' "$sf")" \
+    = "needs-you $expect $sha" ] || refuse "pending prompt changed while typing; nothing typed" "$pane"
+  tmux send-keys -t "$pane" -l -- "$text" || { attempt failed "send-keys failed" "$pane"; exit 1; }
+  sleep "${BOARD_PRESS_SETTLE:-0.3}"
+  scr="$(tmux capture-pane -p -t "$pane" 2>/dev/null)" || refuse "capture-pane failed for $pane" "$pane"
+  flat="$(tr -d '[:space:]' <<<"$scr")"
+  want="$(tr -d '[:space:]' <<<"$text")"
+  want="${want:0:20}"
+  [[ $flat == *"$want"* ]] || refuse "the typed text is not visible in pane $pane; Enter not pressed" "$pane"
+  tmux send-keys -t "$pane" Enter || { attempt failed "send-keys failed" "$pane"; exit 1; }
 }
 
 # ---------------------------------------------------------------- notify
