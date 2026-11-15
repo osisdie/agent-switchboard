@@ -517,6 +517,7 @@ to what needs you.
 | **System** | the resources level, memory and swap bars, the OOM badge | Resources |
 | **Quiet** | whether push is muted | the Notifications dialog |
 | **Owner** | owner-away on or off | Consensus |
+| **🍅 Today** | the fleet's pomodoros today, focus time and a 7-day sparkline (see "Pomodoro") | the pomodoro panel |
 | **Fleet** (wide) | up to four sessions with state pills, the 5h / 7d bars and the burn rate | Board |
 
 - When a session starts waiting, a ripple in its waiting colour spreads across the deck from its
@@ -531,6 +532,39 @@ to what needs you.
   into a session (prompts, Enter, `/compact`): answer a prompt on its decision card.
 - Hide it with **Hide deck**, or in the profile menu (**Deck panel**). The choice is kept in this
   browser.
+
+### Pomodoro
+
+A light, fun tally of how much focused work the AI fleet gets done. The idea comes from the Focus
+Timer of [ulanzi-lab](https://github.com/osisdie/ulanzi-lab), where you press a key to start a
+pomodoro. Here each session presses its own while it works.
+
+- **One pomodoro = 25 minutes of a session working.** When it ends the session's tally goes up and
+  the next one starts at once, so 50 minutes of work counts as 2.
+- **Short gaps don't break it.** A done/idle stretch of up to 2 minutes (between tool calls, a
+  quick turn) pauses the clock and keeps the progress. A longer one resets the current pomodoro.
+- **Waiting for you pauses it** (needs-you), however long you take: the session is mid-task.
+  Going offline resets it, and so does a gap with no collector data longer than the grace.
+- The collector counts it from the session states it already reads (zero tokens) into
+  `$BOARD_HOME/pomodoro.json` (0600): per local day and session, the count, the focused minutes
+  and the current pomodoro, for 14 days. Days roll over at local midnight (`pomodoro.timezone`,
+  default the system's). The tally survives collector restarts.
+- **On the board:** each card shows a small tomato ring with `12:34 / 25:00` and `🍅×3 today`. The
+  Deck key **🍅 Today** shows the fleet total (`14 · 5h 50m focus`) with a 7-day sparkline, and
+  opens a panel with each session's count today and the last 14 days. A finished pomodoro gets a
+  short burst of tomatoes (none with *reduce motion*).
+- `board pomodoro [today|week] [--json]` prints the same tallies in a terminal.
+- Optional, off by default: `pomodoro.notify: true` sends one info notification at every 10th
+  fleet pomodoro of the day ("AI fleet finished its 10th 🍅 today").
+
+```yaml
+pomodoro:                 # fleet.yaml; all optional
+  focus_minutes: 25
+  grace_minutes: 2
+  timezone: ""            # IANA name, e.g. Asia/Taipei; empty = the system's
+  notify: false
+  notify_every: 10
+```
 
 ### Owner away: decide by explicit consensus
 
@@ -1180,9 +1214,10 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `lib/away.py` | Reads owner-away mode and consensus items for the snapshot and `board-serve` |
 | `lib/guard.py`, `lib/messages.py` | Secret guardrails: the outbound scrubber and the inbound secret-request screen; board messages and replies through them (held, release, reply) |
 | `lib/cards.py` | Card extras for board-serve (`cards.json`): teammates and their tasks, the session meter, recent tool calls, the last message and prompt (approvers only), ahead/behind, time in state |
+| `lib/pomodoro.py` | Pomodoro timer and daily tallies (`pomodoro.json`) for the board and `board pomodoro` |
 | `lib/resources.py` | Resources sampler (memory, disks, OOM, per-session processes and teammates) for `resources.json`, the snapshot digest and `board resources` |
 | `docs/design/` | Design notes, e.g. `resources-and-scheduling.md` (resources, scheduler, lessons) |
-| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), the resources sampler (`test_resources.py`, fixture `/proc`), the secret guardrails (`test_guard.py`), the card extras (`test_cards.py`), Remote Control (`test_rc.py`, scripted tmux in `fake_tmux.py`), and the optional headless checks of the page's alert links, notifications control, profile menu and theme, home-screen app, session cards, usage popover, header popovers, language toggle and Deck panel (`test_page_links.py`, `test_page_notify.py`, `test_page_profile.py`, `test_page_pwa.py`, `test_page_cards.py`, `test_page_guard.py` (held-message cards), `test_page_usage.py`, `test_page_header_tips.py`, `test_page_i18n.py`, `test_page_deck.py`, `test_page_rc.py` (Remote Control chip and switches), plus `test_site.py` for the screenshots and the Pages site: need python playwright, skip without it; not run in CI) |
+| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), the resources sampler (`test_resources.py`, fixture `/proc`), the secret guardrails (`test_guard.py`), the card extras (`test_cards.py`), Remote Control (`test_rc.py`, scripted tmux in `fake_tmux.py`), the pomodoro timer (`test_pomodoro.py`), and the optional headless checks of the page's alert links, notifications control, profile menu and theme, home-screen app, session cards, usage popover, header popovers, language toggle, Deck panel and pomodoro (`test_page_links.py`, `test_page_notify.py`, `test_page_profile.py`, `test_page_pwa.py`, `test_page_cards.py`, `test_page_guard.py` (held-message cards), `test_page_usage.py`, `test_page_header_tips.py`, `test_page_i18n.py`, `test_page_deck.py`, `test_page_rc.py` (Remote Control chip and switches), `test_page_pomodoro.py`, plus `test_site.py` for the screenshots and the Pages site: need python playwright, skip without it; not run in CI) |
 | `CONTRIBUTING.md` | Dev setup, tests, and the rule for keeping `README.zh-TW.md` in sync |
 | `fleet.example.yaml`, `.env.example` | Example config |
 
@@ -1217,6 +1252,9 @@ session" keys stay out of scope here on purpose (see "Deck panel").
   trail on state changes, agents syncing their own tasks.
 
 Both shaped the design. See their repos for their own licenses and authors.
+
+The fleet's pomodoro tally takes its idea from the Focus Timer key of
+[ulanzi-lab](https://github.com/osisdie/ulanzi-lab). No code or assets are shared.
 
 The lifecycle stages and gates are inspired by AI-DLC (open-source rules) and by AI-native SDLC
 playbooks.

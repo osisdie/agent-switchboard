@@ -477,6 +477,7 @@ board rc clear API               # 忘掉設定：回到 fleet.yaml（預設開�
 | **系統** | 資源等級、記憶體與 swap 長條、OOM 標記 | 資源 |
 | **勿擾** | 推播是否靜音 | 通知對話框 |
 | **主人** | 主人不在模式開或關 | 共識 |
+| **🍅 今日** | 全體今天完成的番茄鐘、專注時間和 7 天小長條圖（見「番茄鐘」） | 番茄鐘面板 |
 | **全體**（寬按鍵） | 最多四個 session 的狀態標籤、5h／7d 長條和消耗速度 | 看板 |
 
 - session 開始等待時，會從它的按鍵向整個面板擴散一圈它等待顏色的漣漪，只跑一次。作業系統設定了
@@ -487,6 +488,36 @@ board rc clear API               # 忘掉設定：回到 fleet.yaml（預設開�
 - **不增加任何權限。** 按鍵只會導覽，或呼叫上面那些路由。沒有會對 session 打字的按鍵（提示詞、Enter、
   `/compact`）：提示請在它的決策卡片上回答。
 - 用 **收起面板** 收起，或在個人選單（**按鍵面板**）設定。選擇會記在這個瀏覽器裡。
+
+### 番茄鐘（Pomodoro）
+
+一個輕鬆有趣的統計：看 AI 團隊一天完成了多少專注工作。點子來自 [ulanzi-lab](https://github.com/osisdie/ulanzi-lab)
+的 Focus Timer：在那裡是你按下按鍵開始一個番茄鐘；在這裡，每個 session 工作時會自己按下自己的番茄鐘。
+
+- **一個番茄鐘 = session 工作 25 分鐘。** 時間到，這個 session 的計數加一，下一個馬上開始，所以工作
+  50 分鐘算 2 個。
+- **短暫停頓不會中斷。** 完成／閒置的空檔在 2 分鐘以內（工具呼叫之間、一個很快的回合）時暫停計時，
+  進度保留；超過就把目前這個番茄鐘歸零。
+- **等你回覆時暫停**（needs-you），不管你多久才回：session 還在工作中。離線會歸零；收集器沒有資料的空檔
+  超過寬限時間也會歸零。
+- 收集器用它本來就在讀的 session 狀態來計算（不花 token），寫進 `$BOARD_HOME/pomodoro.json`（0600）：
+  依當地日期和 session 記錄計數、專注分鐘數和目前的番茄鐘，保留 14 天。每天在當地午夜換日
+  （`pomodoro.timezone`，預設是系統時區）。收集器重新啟動後統計會接著算。
+- **看板上**：每張卡片有一個小番茄圓環，顯示 `12:34 / 25:00` 和 `今日 🍅×3`。按鍵面板的 **🍅 今日**
+  顯示全體總數（`14 · 專注 5 小時 50 分`）和 7 天的小長條圖，按下會開啟面板，列出今天每個 session 的
+  計數和最近 14 天。完成一個番茄鐘時會噴出一小串番茄（設定「減少動態效果」時不會）。
+- `board pomodoro [today|week] [--json]` 在終端機印出同樣的統計。
+- 選用、預設關閉：`pomodoro.notify: true` 時，全體每天每完成第 10 個番茄鐘就送一則 info 通知
+  （「AI fleet finished its 10th 🍅 today」）。
+
+```yaml
+pomodoro:                 # fleet.yaml；全部選填
+  focus_minutes: 25
+  grace_minutes: 2
+  timezone: ""            # IANA 名稱，例如 Asia/Taipei；空白 = 系統時區
+  notify: false
+  notify_every: 10
+```
 
 ### 主人不在時：以明確的共識做決定
 
@@ -1069,9 +1100,10 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `lib/away.py` | 為 snapshot 和 `board-serve` 讀取 owner-away 模式與共識項目 |
 | `lib/guard.py`、`lib/messages.py` | 機密防護：對外的去除機密與對內的要機密篩檢；看板訊息與回覆都經過它們（攔下、放行、回覆） |
 | `lib/cards.py` | board-serve 用的卡片補充資訊（`cards.json`）：teammate 與其任務、session 用量、最近的工具呼叫、最後一則訊息與指示（僅核可者）、領先／落後、狀態持續時間 |
+| `lib/pomodoro.py` | 番茄鐘計時與每日統計（`pomodoro.json`），供看板和 `board pomodoro` 使用 |
 | `lib/resources.py` | 資源取樣器（記憶體、磁碟、OOM、每個 session 的程序與 teammate），產生 `resources.json`、snapshot 摘要和 `board resources` |
 | `docs/design/` | 設計文件，例如 `resources-and-scheduling.md`（資源、排程器、經驗） |
-| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`）、資源取樣器（`test_resources.py`，fixture `/proc`）、機密防護（`test_guard.py`）、卡片補充資訊（`test_cards.py`）、Remote Control（`test_rc.py`，用 `fake_tmux.py` 模擬 tmux 畫面），以及選用的頁面告警連結、通知控制、個人選單與主題、主畫面 app、session 卡片、用量提示框、頁首提示框、語言切換與按鍵面板 headless 檢查（`test_page_links.py`、`test_page_notify.py`、`test_page_profile.py`、`test_page_pwa.py`、`test_page_cards.py`、`test_page_guard.py`（被攔下的訊息卡片）、`test_page_usage.py`、`test_page_header_tips.py`、`test_page_i18n.py`、`test_page_deck.py`、`test_page_rc.py`（Remote Control 標籤與開關），以及截圖和 Pages 網站的 `test_site.py`：需要 python playwright，沒有就略過；CI 不執行） |
+| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`）、資源取樣器（`test_resources.py`，fixture `/proc`）、機密防護（`test_guard.py`）、卡片補充資訊（`test_cards.py`）、Remote Control（`test_rc.py`，用 `fake_tmux.py` 模擬 tmux 畫面）、番茄鐘計時（`test_pomodoro.py`），以及選用的頁面告警連結、通知控制、個人選單與主題、主畫面 app、session 卡片、用量提示框、頁首提示框、語言切換、按鍵面板與番茄鐘 headless 檢查（`test_page_links.py`、`test_page_notify.py`、`test_page_profile.py`、`test_page_pwa.py`、`test_page_cards.py`、`test_page_guard.py`（被攔下的訊息卡片）、`test_page_usage.py`、`test_page_header_tips.py`、`test_page_i18n.py`、`test_page_deck.py`、`test_page_rc.py`（Remote Control 標籤與開關）、`test_page_pomodoro.py`，以及截圖和 Pages 網站的 `test_site.py`：需要 python playwright，沒有就略過；CI 不執行） |
 | `CONTRIBUTING.md` | 開發環境設定、測試，以及讓 `README.zh-TW.md` 保持同步的規則 |
 | `fleet.example.yaml`、`.env.example` | 設定範例 |
 
@@ -1102,6 +1134,9 @@ git grep -niE "$(paste -sd'|' tmp-local/banned-terms.txt)"
   由 agent 自行同步自己的任務。
 
 兩者都影響了這個設計。各自的授權與作者請參閱它們的 repo。
+
+團隊番茄鐘統計的點子來自 [ulanzi-lab](https://github.com/osisdie/ulanzi-lab) 的 Focus Timer 按鍵。
+沒有共用任何程式碼或素材。
 
 生命週期的階段與關卡參考了 AI-DLC（開源規則）以及 AI-native SDLC 的實務手冊。
 
