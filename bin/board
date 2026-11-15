@@ -87,11 +87,14 @@
 #             4 refused: not authorized (answer: not an approver; press: no approver's answer;
 #             consensus: not a participant, or --from is not this tmux session),
 #             5 press stopped part-way (free text: some keys sent, Enter not pressed),
-#             6 refused by the secret guard (`answer`, `away --said`: asks for a secret value);
+#             6 refused by the secret guard (`answer`, `away --said`: asks for a secret value),
+#             7 press refused: the prompt still waits but is not on screen (e.g. the pane is
+#             scrolled up); no keys sent but the scroll key, the decision is pending again;
 #             `rc`: 3 refused (nothing sent), 5 stopped part-way, 6 sent but not confirmed.
 set -u
 
 REPO="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+PRESS_SCREEN_NOTE="The session's screen is scrolled or covered; try again, or answer in the session."
 BOARD_HOME="${BOARD_HOME:-$HOME/.agent-switchboard}"
 export BOARD_HOME
 # Set only inline by board press (relayed over stale, see mark_status); never from the environment.
@@ -235,7 +238,11 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
         echo "  approver. An option label sends its number key; other text (one line, <= $FREE_TEXT_MAX"
         echo "  chars) picks \"Type something\", types it literally and presses Enter. The pane must show"
         echo "  the picker (press.question_regex) with the start of the question (or every option label)."
-        echo "  Exit 5: free text stopped part-way (keys sent, Enter not pressed; finish in the session)." ;;
+        echo "  Exit 5: free text stopped part-way (keys sent, Enter not pressed; finish in the session)."
+        echo "  A pane scrolled up (press.scrolled_regex in its last lines) gets press.scroll_key (C-End)"
+        echo "  once, then is checked again. Exit 7 (nothing sent but that key): the state still shows the"
+        echo "  prompt waiting but the pane shows no prompt / picker; the decision is pending again, with a"
+        echo "  press_note (a prompt about other input on screen is still exit 3, stale)." ;;
     task) echo "usage: board task new|stage|ls|show ..."
         echo "  board task new --owner CODE \"title\" [--stage S]"
         echo "  board task stage ID STAGE [--artifact key=ref]..."
@@ -990,6 +997,27 @@ cmd_press() {
     [ -n "$dec_id" ] && mark_status "$dec_id" stale "press refused: $1" >/dev/null 2>&1
     exit 3
   }
+  # The state still shows this prompt waiting, but no prompt or picker is on screen at all (the TUI
+  # is scrolled up, an overlay covers it): exit 7. (A prompt on screen about other input is a
+  # mismatch: refuse, exit 3.) The decision goes back to pending, its answer cleared and a
+  # note set, so the board can press it again; it only becomes stale once the session moved on
+  # (state read again here; the collector also marks it stale on PostToolUse / Stop / a new prompt).
+  refuse_screen() {
+    if [ -z "$dec_id" ] || [ -z "${sf:-}" ] \
+       || [ "$(jq -r '[.state, (.pending.tool_use_id // ""), (.pending.summary_sha256 // "")] | join(" ")' "$sf" 2>/dev/null)" \
+            != "needs-you $expect ${st_sha:-}" ]; then
+      refuse "$1" "${2:-}"
+    fi
+    echo "board press: refused — $1; the prompt still waits: answer it again or in the session" >&2
+    attempt not_visible "$1" "${2:-}"
+    local n; n="$(now_ms)"
+    update_decision "$dec_id" '.status = "pending" | .answer = null | .answered_by = null | .answered_at = null
+        | .answer_index = null | .relay = null | .press_note = $note | .press_note_at = $now | .updated_at = $now' \
+      --arg note "$PRESS_SCREEN_NOTE" --argjson now "$n" >/dev/null 2>&1
+    log_event "$(jq -cn --arg id "$dec_id" --arg r "$1" --argjson now "$n" \
+      '{ts: $now, type: "mark", id: $id, status: "pending", reason: ("press not visible: " + $r)}')"
+    exit 7
+  }
   # Stopped after some keys were sent (free text: Enter not pressed): exit 5, decision stale.
   partial() {
     echo "board press: stopped — $1; keys sent, Enter not pressed: finish in the session" >&2
@@ -1102,9 +1130,26 @@ cmd_press() {
   case "$lines" in ''|*[!0-9]*) lines=30 ;; esac
   full="$(tmux capture-pane -p -t "$pane" 2>/dev/null)" || refuse "capture-pane failed for $pane" "$pane"
   screen="$(sed -e :a -e '/^[[:space:]]*$/{$d;N;ba' -e '}' <<<"$full" | tail -n "$lines")"
+  # The TUI scrolled up (new messages arrived above an open prompt): its last lines show
+  # press.scrolled_regex ("4 new messages (ctrl+End) ↓") instead of the prompt. Send the one key
+  # that scrolls to the bottom (press.scroll_key, C-End: never submits anything), once, then look
+  # again. Every check below runs on the new capture.
+  if ! grep -Eq -- "$regex" <<<"$screen"; then
+    local scrolled_re scroll_key
+    scrolled_re="$(cfg_get press.scrolled_regex)"
+    scroll_key="$(cfg_get press.scroll_key)"
+    if [ -n "$scrolled_re" ] && [ -n "$scroll_key" ] \
+       && tail -n 4 <<<"$screen" | grep -Eq -- "$scrolled_re"; then
+      attempt scroll "pane scrolled up: sent $scroll_key" "$pane"
+      tmux send-keys -t "$pane" "$scroll_key" || refuse "send-keys failed (scroll key)" "$pane"
+      sleep "${BOARD_PRESS_SETTLE:-0.3}"
+      full="$(tmux capture-pane -p -t "$pane" 2>/dev/null)" || refuse "capture-pane failed for $pane" "$pane"
+      screen="$(sed -e :a -e '/^[[:space:]]*$/{$d;N;ba' -e '}' <<<"$full" | tail -n "$lines")"
+    fi
+  fi
   local ft_label=""
   if [ "$action" = answer ]; then
-    grep -Eq -- "$regex" <<<"$screen" || refuse "no question picker visible in pane $pane" "$pane"
+    grep -Eq -- "$regex" <<<"$screen" || refuse_screen "no question picker visible in pane $pane" "$pane"
     if [ -n "$q_text" ]; then
       # The row the free-text key goes to must be the picker's "Type something" row.
       ft_label="$(cfg_get press.free_text_label)"
@@ -1113,7 +1158,7 @@ cmd_press() {
         || refuse "row ${keys[0]} of the picker is not \"Type something\"" "$pane"
     fi
   else
-    grep -Eq -- "$regex" <<<"$screen" || refuse "no permission prompt visible in pane $pane" "$pane"
+    grep -Eq -- "$regex" <<<"$screen" || refuse_screen "no permission prompt visible in pane $pane" "$pane"
   fi
 
   # 4. The prompt on screen must be about this input: the start of the summary (whitespace

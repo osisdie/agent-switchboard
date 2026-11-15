@@ -44,6 +44,10 @@ DEFAULTS = {
         "review_regex": r"Review your answers",
         "focus_regex": r"(❯|>|›)",
         "submit_label": r"Submit answers",
+        # The TUI scrolled up with a prompt open: "4 new messages (ctrl+End) ↓" in its last lines.
+        # board press then sends scroll_key (scroll to the bottom; never submits) once and looks again.
+        "scrolled_regex": r"[0-9]+ new messages?|ctrl\+End|↓[[:space:]]*$",
+        "scroll_key": "C-End",
     },
     # Session actions (lib/actions.py): fixed slash commands typed into an idle session's empty
     # prompt box, and what the pane must show before and after (Claude Code's own screens;

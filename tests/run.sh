@@ -511,8 +511,16 @@ eq "deny sends Escape" "$(grep '^send-keys' "$FAKE_TMUX_LOG" | tail -1)" "send-k
 : > "$FAKE_TMUX_LOG"
 read -r tu d <<<"$(perm "rm -rf build")"; "$B" answer "$d" allow --by user-1 >/dev/null
 FAKE_TMUX_SCREEN="just a shell prompt" press CP allow --expect "$tu"
-eq "no permission prompt visible -> exit 3" "$?" "3"
-eq "...decision marked stale" "$(jq -r .status "$BOARD_HOME/decisions/$d.json")" "stale"
+eq "no permission prompt visible, the prompt still waits -> exit 7" "$?" "7"
+eq "...decision pending again, answer cleared, with a note" \
+  "$(jq -r '"\(.status)/\(.answer)/\(.answered_by)/\(.press_note | test("scrolled"))"' "$BOARD_HOME/decisions/$d.json")" "pending/null/null/true"
+eq "...logged as not_visible" "$(jq -s -r '[.[] | select(.type=="press")] | last | .result' "$BOARD_HOME/events.jsonl")" "not_visible"
+eq "...no scroll key without the scrolled indicator" "$(grep -c 'C-End' "$FAKE_TMUX_LOG")" "0"
+"$B" answer "$d" allow --by user-1 >/dev/null
+FAKE_TMUX_SCREEN="$(screen "rm -rf build")" press CP allow --expect "$tu"
+eq "...answered again, the prompt on screen -> press ok" "$?/$(jq -r .status "$BOARD_HOME/decisions/$d.json")" "0/relayed"
+: > "$FAKE_TMUX_LOG"
+hook "$(jq -cn --arg s "$SID" --arg tu "$tu" '{session_id: $s, hook_event_name: "PostToolUse", tool_name: "Bash", tool_use_id: $tu, tool_input: {}}')"
 read -r tu d <<<"$(perm "rm -rf build-b")"; "$B" answer "$d" allow --by user-1 >/dev/null
 FAKE_TMUX_SESSION=OTHER FAKE_TMUX_SCREEN="$(screen "rm -rf build-b")" press CP allow --expect "$tu"
 eq "pane of another tmux session -> exit 3" "$?" "3"
@@ -630,8 +638,8 @@ qscreen() {  # qscreen [focus ROW4_TEXT] — the picker as Claude Code draws it 
 FAKE_TMUX_SCREEN="$(qscreen)" press CP allow --expect tu_q1
 eq "allow/deny never targets a pane question -> exit 4" "$?" "4"
 FAKE_TMUX_SCREEN="just a shell prompt" press CP answer --expect tu_q1
-eq "no picker on screen -> exit 3" "$?" "3"
-eq "...decision marked stale" "$(dj "$d" .status)" "stale"
+eq "no picker on screen, the question still waits -> exit 7" "$?" "7"
+eq "...decision pending again (clickable), not stale" "$(dj "$d" .status)/$(dj "$d" .answer)" "pending/null"
 eq "...no keys sent" "$(sent_keys)" "0"
 qdone tu_q1
 
@@ -853,6 +861,33 @@ sessions = collect.build_sessions(cfg, home, "")
 collect.process_decisions(cfg, home, sessions, collect.now_ms())
 PY
 eq "a concurrent resolve survives the collector's hint write" "$(dj "$a6" '.status + "/" + (.hint // "none")')" "answered_in_pane/none"
+# A TUI scrolled up (new messages above the open picker) shows "N new messages (ctrl+End) ↓" at the
+# bottom instead of the picker: board press sends C-End once, looks again, then runs every check.
+SCR="$(junk)
+  4 new messages (ctrl+End) ↓"
+d="$(askq tu_s1 "$Q1")"; "$B" answer "$d" "Blue" --by user-1 >/dev/null
+seqpress tu_s1 "$SCR" "$U"
+eq "scrolled pane -> C-End, then the picker -> press ok" "$?/$(keys_sent)" "0/send-keys -t %42 C-End|send-keys -t %42 2|"
+eq "...decision relayed" "$(dj "$d" .status)" "relayed"
+eq "...the scroll is logged" "$(jq -s -r '[.[] | select(.type=="press" and .result=="scroll")] | length' "$BOARD_HOME/events.jsonl")" "1"
+qdone tu_s1
+d="$(askq tu_s2 "$Q1")"; "$B" answer "$d" "Blue" --by user-1 >/dev/null
+seqpress tu_s2 "$SCR" "$SCR"
+eq "still scrolled after C-End -> exit 7, only the scroll key sent" "$?/$(keys_sent)" "7/send-keys -t %42 C-End|"
+eq "...not stale: pending, answer cleared, note says scrolled" "$(dj "$d" '"\(.status)/\(.answer)/\(.press_note | test("scrolled"))"')" "pending/null/true"
+eq "...the collector keeps it pending while the session waits" "$(PATH="$T/bin:$PATH" "$REPO/bin/board-collect" --once --no-notify >/dev/null 2>&1; dj "$d" .status)" "pending"
+qdone tu_s2
+eq "...stale once the session moved on (PostToolUse)" "$(PATH="$T/bin:$PATH" "$REPO/bin/board-collect" --once --no-notify >/dev/null 2>&1; dj "$d" .status)" "stale"
+d="$(askq tu_s3 "$Q1")"; "$B" answer "$d" "Blue" --by user-1 >/dev/null
+FAKE_TMUX_MUTATE_AT=2 FAKE_TMUX_MUTATE="$BOARD_HOME/state/$SID.json" seqpress tu_s3 "$SCR" "$SCR"
+eq "scrolled, and the state moved on meanwhile -> exit 3, stale" "$?/$(dj "$d" .status)" "3/stale"
+qdone tu_s3
+d="$(askq tu_s4 "$Q1")"; "$B" answer "$d" "Blue" --by user-1 >/dev/null
+printf 'press:\n  scroll_key: ""\n' >> "$BOARD_CONFIG_DIR/fleet.yaml"
+seqpress tu_s4 "$SCR" "$U"
+eq "press.scroll_key empty -> no key sent, exit 7" "$?/$(keys_sent)" "7/"
+sed -i '/^press:$/,$d' "$BOARD_CONFIG_DIR/fleet.yaml"
+qdone tu_s4
 
 # --option: the clicked button's number must match the label.
 d="$(askq tu_q6i "$Q1")"
