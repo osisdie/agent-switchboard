@@ -109,7 +109,7 @@ DECISION_KEYS = ("id", "kind", "from", "question", "options", "context", "tool_u
                  "summary", "status", "answer", "answered_by", "answered_at", "relayed_at",
                  "created_at", "updated_at", "task_id", "stage", "gate", "artifact_ref",
                  "escalation_level", "notified_via", "summary_truncated",
-                 "labels_clipped",
+                 "labels_clipped", "answer_options",
                  # pane questions (an AskUserQuestion picker): source "pane"
                  "source", "questions", "questions_clipped", "pressable", "answer_index", "relay")
 OPERATOR_KEYS = ("heartbeat_at", "version", "operator_session", "account_hint")
@@ -951,6 +951,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not fleet.id_list(cfg, "approvers"):
             self.audit(ident, via, "answer", id=did, result="refused", reason="no approvers configured")
             raise Refused(403, "no_approvers", "fleet.yaml approvers is empty: nobody may answer")
+        # A form of several questions (a pane question): {"options": [i, j, ...]}, one option number
+        # per question, checked against the decision below; no answer text.
+        options = body.get("options")
+        if options is not None:
+            if not isinstance(options, list) or not 2 <= len(options) <= 4 or any(
+                    isinstance(o, bool) or not isinstance(o, int) or not 1 <= o <= 8 for o in options):
+                raise Refused(400, "bad_options", "options must be one option number (1-8) per question")
+            if body.get("answer") is not None or body.get("option") is not None:
+                raise Refused(400, "bad_options", "options go without answer or option")
+            body = dict(body, answer="(options)")
         answer = body.get("answer")
         if not isinstance(answer, str) or not answer.strip() or len(answer) > MAX_ANSWER:
             raise Refused(400, "bad_answer", "answer must be a non-empty string (max %d chars)" % MAX_ANSWER)
@@ -982,9 +992,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 raise Refused(409, "gone", "decision is already %s" % dec.get("status"))
             if kind == "permission" and answer not in ("allow", "deny"):
                 raise Refused(400, "bad_answer", "a permission answer is allow or deny")
+            if options is not None:
+                qs = dec.get("questions") if isinstance(dec.get("questions"), list) else []
+                if kind != "question" or dec.get("source") != "pane" or len(qs) < 2:
+                    raise Refused(400, "bad_options", "options are only for a form of several questions in a session")
+                if len(options) != len(qs):
+                    raise Refused(400, "bad_options", "%d options for %d questions" % (len(options), len(qs)))
+                for i, (o, q) in enumerate(zip(options, qs)):
+                    n = len(q.get("options") or []) if isinstance(q, dict) else 0
+                    if o > n:
+                        raise Refused(400, "bad_options", "question %d has %d options" % (i + 1, n))
             # A free-text answer is relayed as [BOARD decision], the most trusted channel: it must not
-            # ask the session for a secret value. (Picking one of the session's own options is fine.)
-            reason = None if kind == "permission" else guard.screen_answer(raw_answer, dec.get("options"))
+            # ask the session for a secret value. (Picking one of the session's own options is fine,
+            # and a form answered by option numbers is nothing but the session's own options.)
+            reason = None if kind == "permission" or options is not None else guard.screen_answer(raw_answer, dec.get("options"))
             if reason:
                 self.audit(ident, via, "answer", id=did, result="held", reason=reason)
                 messages.audit(home, {"action": "held-answer", "id": did, "by": by, "reason": reason})
@@ -996,11 +1017,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 raise Refused(409, "review_in_session",
                               "the request is only partly shown here: review and allow it in the session")
             pane_q = kind == "question" and dec.get("source") == "pane"
-            # A pane question with several questions, multi-select or clipped text is read-only here.
+            # A pane question with multi-select, clipped labels or repeated labels is read-only here.
             if pane_q and not dec.get("pressable"):
                 self.audit(ident, via, "answer", id=did, result="refused", reason="not pressable")
                 raise Refused(409, "answer_in_session",
-                              "this question can only be answered in the session (multi-question form)")
+                              "this question can only be answered in the session")
+            if pane_q and len(dec.get("questions") or []) > 1 and options is None:
+                raise Refused(400, "bad_options", "a form of several questions is answered with one option per question")
             code = dec.get("from")
             if (kind == "permission" or pane_q) and not code:
                 snap = read_json(os.path.join(home, "snapshot.json")) or {}
@@ -1010,17 +1033,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 raise Refused(400, "bad_option", "option is only for a question shown in a session")
             # The answer goes by file, never as an argument: "-", "--help" or "--answer-file" typed on
             # the board are recorded literally and are never read as options.
-            fd, afile = tempfile.mkstemp(prefix=".answer.", dir=home)
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                    fh.write(answer)
-                rc, out, err = self.board("answer", did, "--answer-file", afile, "--by", by,
-                                          *(("--option", str(option)) if option is not None else ()))
-            finally:
+            if options is not None:
+                rc, out, err = self.board("answer", did, "--options", ",".join(str(o) for o in options), "--by", by)
+            else:
+                fd, afile = tempfile.mkstemp(prefix=".answer.", dir=home)
                 try:
-                    os.unlink(afile)
-                except OSError:
-                    pass
+                    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                        fh.write(answer)
+                    rc, out, err = self.board("answer", did, "--answer-file", afile, "--by", by,
+                                              *(("--option", str(option)) if option is not None else ()))
+                finally:
+                    try:
+                        os.unlink(afile)
+                    except OSError:
+                        pass
+            if rc == 2 and options is not None:
+                self.audit(ident, via, "answer", id=did, result="refused", reason="options do not match")
+                raise Refused(400, "bad_options", "those options do not match the questions; reload and try again")
             if rc == 2 and option is not None:
                 self.audit(ident, via, "answer", id=did, result="refused", reason="option does not match")
                 raise Refused(400, "bad_option", "that option does not match the question; reload and try again")
@@ -1030,6 +1059,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 raise Refused(403, "not_approver", "you may not answer this decision")
             # Never report success unless the file really holds this answer by this person.
             rec = read_json(os.path.join(home, "decisions", did + ".json")) or {}
+            if options is not None:
+                answer = rec.get("answer") if rec.get("answer_options") == options else None
             if rc != 0 or rec.get("status") != "answered" or rec.get("answer") != answer \
                     or rec.get("answered_by") != by:
                 log("board answer %s failed (rc %d): %s %s" % (did, rc, err, out))

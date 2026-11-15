@@ -602,6 +602,23 @@ paneq() {  # paneq ID TOOL_USE_ID QUESTIONS PRESSABLE — a hook-made pane quest
 }
 printf ' ☐ Color\n\nWhich color do you prefer for the test?\n\n❯ 1. Red\n     warm\n  2. Blue\n     cool\n  3. Green\n     natural\n  4. Type something.\n\nEnter to select · ↑/↓ to navigate · Esc to cancel\n' > "$FAKE_TMUX_SCREEN"
 paneq d-1-pq1 tu_q1 "$Q1" true
+Q2F='[{"question":"Which color?","header":"Color","options":[{"label":"Red","description":""},{"label":"Blue","description":""}],"multiSelect":false},{"question":"Which size?","header":"Size","options":[{"label":"S","description":""}],"multiSelect":false}]'
+paneq d-1-pqm tu_qm "$Q2F" true
+eq "form: options for each question 400" "$(post /api/decisions/d-1-pqm/answer '{"options":[1]}')" "400"
+eq "  error bad_options" "$(body .error)" "bad_options"
+eq "form: an option out of range 400" "$(post /api/decisions/d-1-pqm/answer '{"options":[1,2]}')/$(body .error)" "400/bad_options"
+eq "form: more than 4 options 400" "$(post /api/decisions/d-1-pqm/answer '{"options":[1,1,1,1,1]}')/$(body .error)" "400/bad_options"
+eq "form: a boolean is not an option 400" "$(post /api/decisions/d-1-pqm/answer '{"options":[true,1]}')/$(body .error)" "400/bad_options"
+eq "form: options with answer text 400" "$(post /api/decisions/d-1-pqm/answer '{"options":[1,1],"answer":"Red"}')/$(body .error)" "400/bad_options"
+eq "form: free text instead of options 400" "$(post /api/decisions/d-1-pqm/answer '{"answer":"Red"}')/$(body .error)" "400/bad_options"
+eq "options on a single question 400" "$(post /api/decisions/d-1-pq1/answer '{"options":[1,1]}')/$(body .error)" "400/bad_options"
+eq "  nothing recorded" "$(jq -r '.status' "$BOARD_HOME/decisions/d-1-pqm.json")/$(jq -r '.status' "$BOARD_HOME/decisions/d-1-pq1.json")" "pending/pending"
+: > "$FAKE_TMUX_LOG"
+eq "form: valid options are recorded, then pressed (this screen is not the form: 409 stale)" "$(post /api/decisions/d-1-pqm/answer '{"options":[2,1]}')/$(body .error)" "409/stale"
+eq "  recorded by board answer --options" "$(jq -r '"\(.answer)|\(.answer_options | join(","))|\(.answered_by)"' "$BOARD_HOME/decisions/d-1-pqm.json")" "Color: Blue · Size: S|2,1|local"
+grep -q '^send-keys' "$FAKE_TMUX_LOG" && bad "  no key sent on a screen that is not the form" || ok "  no key sent on a screen that is not the form"
+rm -f "$BOARD_HOME/decisions/d-1-pqm.json"
+paneq d-1-pq1 tu_q1 "$Q1" true
 eq "state lists the pane question with its questions" "$(req GET /api/state >/dev/null; body '.decisions[] | select(.id=="d-1-pq1") | "\(.source)/\(.pressable)/\(.questions[0].options[1].description)"')" "pane/true/cool"
 jq '.labels_clipped = false' "$BOARD_HOME/decisions/d-1-pq1.json" > "$T/pq" && mv "$T/pq" "$BOARD_HOME/decisions/d-1-pq1.json"
 eq "  labels_clipped passes through" "$(req GET /api/state >/dev/null; body '.decisions[] | select(.id=="d-1-pq1") | .labels_clipped')" "false"

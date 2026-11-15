@@ -168,7 +168,7 @@ your `statusLine` and removes the symlinks.
   | `remote_url_prefix` | `https://claude.ai/code/` | prefix for each session's Remote Control link |
   | `serve.enabled`, `serve.port` | `false`, `39410` | self-hosted board: `fleet-up` starts `board-serve`; the local listener (identity `local`) |
   | `serve.tunnel.*` | off | `enabled`, `port` (port + 1), `hostname`, `team_domain`, `aud`: the listener cloudflared points at; identity = the email of a verified Cloudflare Access token |
-  | `press.prompt_regex`, `press.question_regex`, `press.free_text_label`, `press.lines`, `press.allow_keys`, `press.deny_keys` | see example | the screen checks and keys used by `board press` (`question_regex`: the AskUserQuestion picker) |
+  | `press.prompt_regex`, `press.question_regex`, `press.free_text_label`, `press.tabbar_regex`, `press.review_regex`, `press.submit_label`, `press.focus_regex`, `press.lines`, `press.allow_keys`, `press.deny_keys` | see example | the screen checks and keys used by `board press` (`question_regex`: the AskUserQuestion picker; `tabbar_regex`, `review_regex`, `submit_label`: a form of several questions) |
 
 - `.env`: alert channels (Slack, email, LINE, SNS, webhook; all optional, see
   [Alerting & escalation](#alerting--escalation)). Start from `.env.example`.
@@ -424,7 +424,10 @@ to the Artifact or put in an alert. Turn the prompt off with `cards: {show_promp
   after a key was sent, Enter is not pressed and the card says to finish in the session (exit 5).
   A longer answer goes to the session as a `[BOARD decision <id>]` message instead. Option buttons
   also send the option number, which must match the label; repeated labels make the card read-only.
-  Several questions, multi-select or a clipped option label make a read-only card: answer it in the session.
+  A form of several questions (up to 4, single-select) shows option buttons per question on the
+  self-hosted board: pick one in each, then **Send answers**. `board press` picks them question by
+  question, checking each one on screen, then checks the review screen and picks **Submit answers**
+  (never Enter). Multi-select or a clipped option label make a read-only card: answer it in the session.
   When the session moves on, the card goes stale.
 
 ### Messages

@@ -270,10 +270,19 @@ update() {
           # counts any clipping, as before.
           | (if ($pending | has("labels_clipped")) then $pending.labels_clipped
              else ($pending.questions_clipped // false) end) as $labels_clipped
-          | ($qs | length == 1 and ($qs[0].multiSelect | not) and ($labels_clipped | not)
-             and ($qs[0].options | length) >= 1 and ($qs[0].options | length) <= 8
-             # repeated labels (case-insensitive) would make a label answer ambiguous
-             and ([ $qs[0].options[].label | ascii_downcase ] | unique | length) == ($qs[0].options | length)
+          # A form of 1-4 single-select questions, each with 1-8 options whose labels are whole and
+          # unique (case-insensitive: a label answer must be unambiguous). Several questions are
+          # answered one option each and pressed question by question (board press), which tells
+          # them apart by their text: no start of a question (as stored, whitespace removed, Unicode
+          # spaces too, as board press removes them) may begin
+          # another, or a screen still on one question could pass for the next.
+          | [ $qs[] | .question // "" | tostring | split("…")[0] | split("[REDACTED")[0] | gsub("[\\s\u0085\u00a0\u1680\u2000-\u200b\u2028\u2029\u202f\u205f\u3000\ufeff]"; "") ] as $qkeys
+          | (($qs | length) >= 1 and ($qs | length) <= 4 and ($labels_clipped | not)
+             and all($qs[]; (.multiSelect | not)
+                     and (.options | length) >= 1 and (.options | length) <= 8
+                     and ([ .options[].label | ascii_downcase ] | unique | length) == (.options | length))
+             and all(range(0; $qkeys | length) as $a | range(0; $qkeys | length) as $b | select($a != $b) | [$a, $b];
+                     . as $p | $qkeys[$p[1]] | startswith($qkeys[$p[0]]) | not)
             ) as $pressable
           | { id: $new_dec, kind: "question", source: "pane", from: null,
               question: (if ($qs | length) > 0 then $qs[0].question else ($pending.summary // "") end),

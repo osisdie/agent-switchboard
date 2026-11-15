@@ -3,8 +3,8 @@
 picker waiting in a session, decision source "pane") in artifact/board.html.
 
 Demo data: a single-select question shows "<CODE> asks:", one button per option (label and
-description) and a "Type something" field; a multi-question one is read-only with "Answer in the
-session". Local adapter: clicking an option goes through a real bin/board-serve, which runs
+description) and a "Type something" field; a form with a multi-select question is read-only with
+"Answer in the session (multi-select)". Local adapter: clicking an option goes through a real bin/board-serve, which runs
 `board press CODE answer`; a fake tmux records the number key.
 
 Needs python playwright and a Chromium it can launch; without them it prints "skipped" and exits 0.
@@ -119,8 +119,8 @@ def main():
             check("no horizontal scroll at phone width", not c["wide"], c)
             m = page.evaluate(CARD_JS, "d-10-demo")
             check("multi-question: read-only, no buttons, no input", not m["buttons"] and not m["input"] and m["readonly"], m)
-            check("multi-question: answer in the session",
-                  any("Answer in the session (multi-question form)" in n for n in m["notes"]), m)
+            check("form with a multi-select question: answer in the session",
+                  any("Answer in the session (multi-select)" in n for n in m["notes"]), m)
             page.click("#dec-d-9-demo .pq-opt >> nth=1")
             page.wait_for_timeout(300)
             check("demo click answers the card", page.evaluate("() => !document.getElementById('dec-d-9-demo')"))
