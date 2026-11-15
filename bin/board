@@ -145,8 +145,21 @@ JQ_PANE_ANSWER='
   def typeable: (.answer // "" | trim) as $a
     | ($a | length) > 0 and ($a | length) <= $max and ($a | test("[\u0000-\u001f\u007f-\u009f]") | not)
     and ($a | test("\\\\;$") | not);
-  def pane_relay: if (.pressable == true) and labels_unique and (pane_index != null or typeable)
+  def multi: ((.questions // []) | length) > 1;
+  def pane_relay: if multi then "operator"
+    elif (.pressable == true) and labels_unique and (pane_index != null or typeable)
     then "press" else "operator" end;
+  # A form of several questions answered one option per question (board answer --options):
+  # "ok", or why it cannot be pressed.
+  def multi_check: (.answer_options // null) as $o | (.questions // []) as $qs
+    | if .pressable != true then "not pressable"
+      elif ($o | type) != "array" or ($o | length) != ($qs | length) then "answer_options do not match the questions"
+      elif any(range(0; $qs | length); ($o[.] | type) != "number" or $o[.] < 1 or $o[.] > ($qs[.].options | length) or $o[.] > 8)
+        then "an option is out of range"
+      elif any($qs[]; .multiSelect == true) then "multi-select"
+      elif any($qs[]; ([ .options[].label | tostring | trim | ascii_downcase ] | unique | length) != (.options | length))
+        then "repeated labels"
+      else "ok" end;
 '
 
 # Table cells: control characters (terminal escapes, CR, ...) become "?".
@@ -451,8 +464,10 @@ allowed_by() {
 
 cmd_answer() {
   need_jq
-  local id="${1:-}" answer="${2:-}" by="" option=""
-  if [ $# -ge 2 ]; then shift 2; else set --; fi
+  local id="${1:-}" answer="${2:-}" by="" option="" options=""
+  # board answer ID --options 1,2 --by WHO: a form of several questions, one option per question.
+  if [ "$answer" = --options ]; then answer=""; shift 1
+  elif [ $# -ge 2 ]; then shift 2; else set --; fi
   # --answer-file PATH: the answer from a file, so untrusted text (a db answer the operator mirrors)
   # never goes through a shell argument.
   if [ "$answer" = --answer-file ]; then
@@ -463,13 +478,34 @@ cmd_answer() {
     case "$1" in
       --by) shift; by="${1:-}" ;;
       --option) shift; option="${1:-}" ;;
+      --options) shift; options="${1:-}" ;;
       *) die "answer: unknown option $1" ;;
     esac
     shift
   done
-  [ -n "$id" ] && [ -n "$answer" ] && [ -n "$by" ] || { sub_usage answer >&2; exit 2; }
+  [ -n "$id" ] && { [ -n "$answer" ] || [ -n "$options" ]; } && [ -n "$by" ] || { sub_usage answer >&2; exit 2; }
   local f; f="$(dec_path "$id")"
   [ -f "$f" ] || die "no such decision: $id"
+  # --options I,J,...: one option number per question of a pane form, checked before anything is
+  # written (exit 2, nothing recorded). The answer is composed from the session's own labels.
+  local opts_json=""
+  if [ -n "$options" ]; then
+    { [ -z "$answer" ] && [ -z "$option" ]; } || { echo "board answer: --options takes no answer text and no --option" >&2; exit 2; }
+    [[ $options =~ ^[1-9](,[1-9])*$ ]] || { echo "board answer: --options is a list of option numbers, e.g. 1,2" >&2; exit 2; }
+    opts_json="[${options}]"
+    local why
+    why="$(jq -r --argjson o "$opts_json" '(.questions // []) as $qs
+      | if .source != "pane" then "--options is only for a question shown in a session"
+        elif ($qs | length) < 2 then "--options is for a form of several questions (use --option)"
+        elif ($o | length) != ($qs | length) then "\($o | length) options for \($qs | length) questions"
+        elif any(range(0; $qs | length); $o[.] > ($qs[.].options | length)) then "an option number is out of range"
+        elif any($qs[]; .multiSelect == true) then "a multi-select question is answered in the session"
+        else "ok" end' "$f")"
+    [ "$why" = ok ] || { echo "board answer: $why on $id; nothing recorded" >&2; exit 2; }
+    answer="$(jq -r --argjson o "$opts_json" '[ range(0; .questions | length) as $i | .questions[$i]
+        | ((.header // "") | tostring | gsub("^\\s+|\\s+$"; "")) as $h
+        | (if $h == "" then "Q\($i + 1)" else $h end) + ": " + (.options[$o[$i] - 1].label | tostring) ] | join(" · ")' "$f")"
+  fi
   local raw_answer="$answer"
   answer="$(guard_scrub "$answer")"   # a free-text answer is shown on the board and relayed
   local cur; cur="$(jq -r '.status' "$f")"
@@ -516,8 +552,11 @@ cmd_answer() {
   # An approver's free-text answer is relayed as [BOARD decision]: it must not ask for a secret value
   # (one of the decision's own options always passes). Refused: exit 6, nothing written, audited,
   # alerted. Checked after the approver check, so nobody else can raise these alerts.
+  # (--options: every part is one of the session's own labels, which always passes, as one option
+  # of a single question does; the composed text was scrubbed above.)
   local held
-  if held="$(printf '%s' "$raw_answer" | python3 "$GUARD" screen-answer "$f")"; then :; else
+  if [ -n "$opts_json" ]; then :
+  elif held="$(printf '%s' "$raw_answer" | python3 "$GUARD" screen-answer "$f")"; then :; else
     log_event "$(jq -cn --arg id "$id" --arg by "$by" --arg r "$held" --argjson now "$(now_ms)" \
       '{ts: $now, type: "guard", action: "held-answer", id: $id, by: $by, reason: $r}')"
     "$REPO/bin/board-notify" send --level high --key "guard:held-answer:$id" --board "$id" \
@@ -531,7 +570,13 @@ cmd_answer() {
 
   if [ "$(jq -r '.source // empty' "$f")" = pane ]; then
     # A pane question: map the answer to its option number, and decide how it reaches the session.
-    update_decision "$id" "$JQ_PANE_ANSWER"'.answer_index = pane_index | .relay = pane_relay' --argjson max "$FREE_TEXT_MAX"
+    if [ -n "$opts_json" ]; then
+      update_decision "$id" '.answer_options = $o | .answer_index = null
+        | .relay = (if .pressable == true then "press" else "operator" end)' --argjson o "$opts_json"
+      echo "$id answered (options $options, relay by $(jq -r '.relay' "$f"))"
+      return 0
+    fi
+    update_decision "$id" "$JQ_PANE_ANSWER"'.answer_index = pane_index | .relay = pane_relay | .answer_options = null' --argjson max "$FREE_TEXT_MAX"
     local idx relay
     idx="$(jq -r '.answer_index // empty' "$f")"
     relay="$(jq -r '.relay' "$f")"
@@ -779,8 +824,16 @@ cmd_press() {
   fi
 
   # 3. Keys first, so a config problem never leaves a half-checked press.
-  local keys_json key keys=() q_n=0 q_idx="" q_text=""
-  if [ "$action" = answer ]; then
+  local keys_json key keys=() q_n=0 q_idx="" q_text="" multi=0
+  if [ "$action" = answer ] && [ "$(jq -r '((.questions // []) | length) > 1' "$df")" = true ]; then
+    # A form of several questions: one option per question (board answer --options), pressed one
+    # question at a time by press_multi below. Recomputed from the decision, never trusted.
+    multi=1
+    local chk
+    chk="$(jq -r "$JQ_PANE_ANSWER"'multi_check' "$df")"
+    [ "$chk" = ok ] || refuse_auth "$dec_id cannot be pressed from the board: $chk"
+    [ "$(jq -r '.relay // empty' "$df")" = press ] || refuse_auth "the answer to $dec_id relays by message, not by keys"
+  elif [ "$action" = answer ]; then
     # Recompute from the decision (never trust a stored relay/answer_index alone).
     local pa
     pa="$(jq -c --argjson max "$FREE_TEXT_MAX" "$JQ_PANE_ANSWER"'
@@ -867,7 +920,9 @@ cmd_press() {
 
   # 4. The prompt on screen must be about this input: the start of the summary (whitespace
   #    removed, up to 40 characters, before any [REDACTED]) must be visible in the pane.
+  #    (A form of several questions is checked question by question in press_multi.)
   local summ bind flat
+  if [ "$multi" = 0 ]; then
   summ="$(jq -r '.pending.summary // ""' "$sf")"
   bind="${summ%%\[REDACTED*}"
   bind="$(tr -d '[:space:]' <<<"$bind")"
@@ -914,12 +969,21 @@ cmd_press() {
   fi
   [ "$seen" = 1 ] || refuse "the pending input ('${bind}') is not visible in pane $pane" "$pane"
 
+  fi
+
   # 5. Last look at the state right before typing: abort if the pending prompt changed.
   if [ "$(jq -r '[.state, (.pending.tool_use_id // ""), (.pending.summary_sha256 // "")] | join(" ")' "$sf")" \
        != "needs-you $expect $st_sha" ]; then
     refuse "pending prompt changed while checking" "$pane"
   fi
 
+  if [ "$multi" = 1 ]; then
+    press_multi "$pane" "$sf" "$df" "$st_sha" "$lines"
+    attempt sent "ok" "$pane"
+    mark_status "$dec_id" relayed >/dev/null 2>&1
+    echo "pressed answer ($(jq -r '.answer_options | map(tostring) | join(" ")' "$df"), submitted) in $code pane $pane"
+    return 0
+  fi
   if [ "$action" = answer ] && [ -n "$q_text" ]; then
     press_free_text "$pane" "$sf" "${keys[0]}" "$q_text" "$st_sha" "$lines" "$ft_label"
     attempt sent "ok" "$pane"
@@ -975,6 +1039,83 @@ press_free_text() {
   [ "$ok" = 1 ] || partial "the focused row $key does not show the typed text" "$pane"
   same_prompt || partial "pending prompt changed while typing" "$pane"
   tmux send-keys -t "$pane" Enter || partial "send-keys failed (Enter)" "$pane"
+}
+
+# press_multi PANE STATE_FILE DECISION SHA LINES — runs inside cmd_press (uses its refuse/partial).
+# A form of several questions, as Claude Code draws it: a tab bar ("←  ☐ Color  ☐ Size  ✔ Submit
+# →"), one question at a time (a digit picks an option and moves on to the next question), then a
+# review screen ("Review your answers": each question and "→ label") with "1. Submit answers".
+# Only the lines after the last tab bar count: the session's own text above (the prompt that asked
+# for the form) may repeat the questions. For each question: its start and every label in order
+# must show, the hook state must still be this prompt, then its option digit. Then the review
+# screen must list every question with the chosen label, and its submit row's digit is pressed.
+# Never Enter. A check that fails before the first key exits 3; after it, 5 (partial, stale).
+press_multi() {
+  local pane="$1" sf="$2" df="$3" sha="$4" lines="$5"
+  local tabbar review submit n i key sent=0 raw flat rest q lab lbl seg digit
+  tabbar="$(cfg_get press.tabbar_regex)"; review="$(cfg_get press.review_regex)"; submit="$(cfg_get press.submit_label)"
+  [ -n "$tabbar" ] && [ -n "$review" ] && [ -n "$submit" ] \
+    || refuse "press.tabbar_regex, press.review_regex or press.submit_label is not configured" "$pane"
+  n="$(jq -r '.questions | length' "$df")"
+  fail() { if [ "$sent" = 0 ]; then refuse "$1" "$pane"; else partial "$1" "$pane"; fi; }
+  same_prompt() {
+    [ "$(jq -r '[.state, (.pending.tool_use_id // ""), (.pending.summary_sha256 // "")] | join(" ")' "$sf")" \
+      = "needs-you $expect $sha" ]
+  }
+  form_region() {  # the last LINES non-blank-trailing lines, after the last tab bar; fails without one
+    tmux capture-pane -p -t "$pane" 2>/dev/null | sed -e :a -e '/^[[:space:]]*$/{$d;N;ba' -e '}' | tail -n "$lines" \
+      | awk -v re="$tabbar" '$0 ~ re { buf = ""; found = 1; next } found { buf = buf $0 "\n" }
+                             END { if (!found) exit 1; printf "%s", buf }'
+  }
+  qstart() {  # the start of question I as stored (before any clip "…" or [REDACTED]), no whitespace
+    local t
+    t="$(jq -r --argjson i "$1" '.questions[$i].question // "" | split("…")[0] | split("[REDACTED")[0]' "$df")"
+    t="$(tr -d '[:space:]' <<<"$t")"
+    printf '%s' "${t:0:40}"
+  }
+  for ((i = 0; i < n; i++)); do
+    raw="$(form_region)" || fail "no question form visible for question $((i + 1))"
+    flat="$(tr -d '[:space:]' <<<"$raw")"
+    q="$(qstart "$i")"
+    [ -n "$q" ] || fail "question $((i + 1)) has no text to check on screen"
+    [[ $flat == *"$q"* ]] || fail "question $((i + 1)) ('$q') is not the one showing"
+    rest="${flat#*"$q"}"
+    while IFS= read -r lab; do
+      lab="$(tr -d '[:space:]' <<<"$lab")"
+      [ -n "$lab" ] || continue
+      [[ $rest == *"$lab"* ]] || fail "the options of question $((i + 1)) are not showing"
+      rest="${rest#*"$lab"}"
+    done < <(jq -r --argjson i "$i" '.questions[$i].options[].label' "$df")
+    same_prompt || fail "pending prompt changed (question $((i + 1)))"
+    key="$(jq -r --argjson i "$i" '.answer_options[$i]' "$df")"
+    tmux send-keys -t "$pane" "$key" || fail "send-keys failed (question $((i + 1)))"
+    sent=1
+    sleep "${BOARD_PRESS_SETTLE:-0.3}"
+  done
+  # The review screen: every question with the chosen label, in order, then the submit row.
+  raw="$(form_region)" || partial "no review screen after the last question; nothing submitted" "$pane"
+  grep -Eq -- "$review" <<<"$raw" || partial "the review screen did not appear; nothing submitted" "$pane"
+  flat="$(tr -d '[:space:]' <<<"$raw")"
+  rest="$flat"
+  for ((i = 0; i < n; i++)); do
+    q="$(qstart "$i")"
+    [[ $rest == *"$q"* ]] || partial "the review screen does not show question $((i + 1)); nothing submitted" "$pane"
+    rest="${rest#*"$q"}"
+  done
+  # One "→ label" line per question, in order, each exactly the chosen label (whitespace aside):
+  # "→ Redwood" never passes for "Red", and a label the screen wrapped fails safe.
+  local -a shown=()
+  while IFS= read -r seg; do shown+=("$(tr -d '[:space:]' <<<"${seg#*→}")"); done < <(grep -E '^[[:space:]]*→' <<<"$raw")
+  [ "${#shown[@]}" = "$n" ] || partial "the review screen shows ${#shown[@]} answers for $n questions; nothing submitted" "$pane"
+  for ((i = 0; i < n; i++)); do
+    lbl="$(jq -r --argjson i "$i" '.questions[$i].options[.answer_options[$i] - 1].label' "$df")"
+    lbl="$(tr -d '[:space:]' <<<"$lbl")"
+    [ "${shown[$i]}" = "$lbl" ] || partial "the review screen shows another answer for question $((i + 1)); nothing submitted" "$pane"
+  done
+  digit="$(sed -nE "s/^[[:space:]]*(❯|>|›)?[[:space:]]*([0-9])\.[[:space:]]*(${submit}).*/\2/p" <<<"$raw" | head -n 1)"
+  [ -n "$digit" ] || partial "no \"Submit answers\" row on the review screen; nothing submitted" "$pane"
+  same_prompt || partial "pending prompt changed before submitting" "$pane"
+  tmux send-keys -t "$pane" "$digit" || partial "send-keys failed (submit)" "$pane"
 }
 
 # ---------------------------------------------------------------- notify

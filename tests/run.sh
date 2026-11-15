@@ -751,7 +751,7 @@ qdone tu_q6j
 # Read-only cards: several questions, multi-select, clipped text.
 QM='[{"question":"Which color?","header":"Color","options":[{"label":"Red","description":""},{"label":"Blue","description":""}],"multiSelect":false},{"question":"Which size?","header":"Size","options":[{"label":"S","description":""},{"label":"L","description":""}],"multiSelect":false}]'
 d="$(askq tu_q7 "$QM")"
-eq "two questions -> not pressable" "$(dj "$d" .pressable)" "false"
+eq "two single-select questions -> pressable (one option per question)" "$(dj "$d" .pressable)" "true"
 eq "...both questions kept, no flat options" "$(dj "$d" '"\(.questions | length)/\(.options | length)"')" "2/0"
 "$B" answer "$d" "Red" --by user-1 >/dev/null
 eq "...an answer relays by message" "$(dj "$d" .relay)" "operator"
@@ -812,6 +812,84 @@ d="$(askq tu_q12 "$HDRQ")"
 eq "a clipped header: header_clipped, not question_clipped, pressable" \
   "$(dj "$d" '"\(.questions[0].header_clipped)/\(.questions[0].question_clipped)/\(.questions_clipped)/\(.labels_clipped)/\(.pressable)"')" "true/false/true/false/true"
 qdone tu_q12
+# ---- A form of several questions, as Claude Code draws it (recorded on a private tmux server):
+# a tab bar, one question at a time (a digit picks and moves on), a review screen, "1. Submit answers".
+# The prompt above the form repeats the questions: only the lines after the tab bar may count.
+Q2F="$(jq -cn '[{question: "Which color for the banner?", header: "Color", multiSelect: false,
+  options: [{label: "Red", description: "warm"}, {label: "Blue", description: "cool"}, {label: "Green", description: "natural"}]},
+  {question: "Which size for the banner?", header: "Size", multiSelect: false,
+  options: [{label: "Small", description: "compact"}, {label: "Large", description: "wide"}]}]')"
+mq_head() { printf '❯ Ask me two things: Which color for the banner? Red Blue Green. Which size for the banner? Small Large.\n\n────\n←  %s Color  %s Size  ✔ Submit  →\n\n' "$1" "$2"; }
+mq_q1() { mq_head ☐ ☐; printf 'Which color for the banner?\n\n❯ 1. Red\n     warm\n  2. Blue\n     cool\n  3. Green\n     natural\n  4. Type something.\n───\n  5. Chat about this\n\nEnter to select · Tab/Arrow keys to navigate · Esc to cancel\n'; }
+mq_q2() { mq_head ☒ ☐; printf 'Which size for the banner?\n\n❯ 1. Small\n     compact\n  2. Large\n     wide\n  3. Type something.\n───\n  4. Chat about this\n\nEnter to select · Tab/Arrow keys to navigate · Esc to cancel\n'; }
+mq_review() { mq_head ☒ ☒; printf 'Review your answers\n\n ● Which color for the banner?\n   → %s\n ● Which size for the banner?\n   → %s\n\nReady to submit your answers?\n\n❯ 1. Submit answers\n  2. Cancel\n' "$1" "$2"; }
+d="$(askq tu_m0 "$Q2F")"
+eq "form: pressable, no flat options" "$(dj "$d" '"\(.pressable)/\(.options | length)"')" "true/0"
+"$B" answer "$d" --options 2 --by user-1 >/dev/null 2>&1
+eq "--options: one number for two questions -> exit 2" "$?/$(dj "$d" .status)" "2/pending"
+"$B" answer "$d" --options 2,3 --by user-1 >/dev/null 2>&1
+eq "--options: 3 for a question of 2 options -> exit 2" "$?/$(dj "$d" .status)" "2/pending"
+"$B" answer "$d" --options 2,x --by user-1 >/dev/null 2>&1
+eq "--options: not numbers -> exit 2" "$?/$(dj "$d" .status)" "2/pending"
+"$B" answer "$d" Red --options 1,1 --by user-1 >/dev/null 2>&1
+eq "--options with answer text -> exit 2" "$?/$(dj "$d" .status)" "2/pending"
+"$B" answer "$d" --options 1,1 --by intruder >/dev/null 2>&1
+eq "--options by a non-approver -> exit 4, unauthorized" "$?/$(dj "$d" .status)" "4/unauthorized"
+"$B" answer "$d" "Red" --by user-1 >/dev/null
+eq "a single free answer on a form relays by message, never by keys" "$(dj "$d" '"\(.relay)/\(.answer_options)"')" "operator/null"
+: > "$FAKE_TMUX_LOG"
+FAKE_TMUX_SCREEN="$(mq_q1)" press CP answer --expect tu_m0
+eq "...press refused -> exit 4, nothing sent" "$?/$(sent_keys)" "4/0"
+qdone tu_m0
+d1="$(askq tu_q1x "$Q1")"
+"$B" answer "$d1" --options 1,1 --by user-1 >/dev/null 2>&1
+eq "--options on a single question -> exit 2" "$?/$(dj "$d1" .status)" "2/pending"
+qdone tu_q1x
+
+d="$(askq tu_m1 "$Q2F")"
+"$B" answer "$d" --options 2,2 --by user-1 >/dev/null
+eq "--options 2,2 -> composed answer, option per question, relay press" "$(dj "$d" '"\(.answer)|\(.answer_options | join(","))|\(.relay)"')" "Color: Blue · Size: Large|2,2|press"
+seqpress tu_m1 "$(mq_q1)" "$(mq_q1)" "$(mq_q2)" "$(mq_review Blue Large)"
+eq "form: each question checked, digits, then Submit -> ok" "$?/$(keys_sent)" "0/send-keys -t %42 2|send-keys -t %42 2|send-keys -t %42 1|"
+eq "...never Enter, decision relayed" "$(grep -c 'Enter' "$FAKE_TMUX_LOG")/$(dj "$d" .status)" "0/relayed"
+qdone tu_m1
+
+d="$(askq tu_m2 "$Q2F")"; "$B" answer "$d" --options 2,2 --by user-1 >/dev/null
+seqpress tu_m2 "$(mq_q1)" "$(mq_q1)" "$(mq_q1)"
+eq "question 2 does not appear after the first digit -> exit 5, one key" "$?/$(keys_sent)" "5/send-keys -t %42 2|"
+eq "...stale, logged partial" "$(dj "$d" .status)/$(jq -s -r '[.[] | select(.type=="press")] | last | .result' "$BOARD_HOME/events.jsonl")" "stale/partial"
+qdone tu_m2
+
+d="$(askq tu_m3 "$Q2F")"; "$B" answer "$d" --options 2,2 --by user-1 >/dev/null
+seqpress tu_m3 "$(mq_q1)" "$(mq_q1)" "$(mq_q2)" "$(mq_q2)"
+eq "no review screen after the last question -> exit 5, nothing submitted" "$?/$(keys_sent)" "5/send-keys -t %42 2|send-keys -t %42 2|"
+qdone tu_m3
+
+d="$(askq tu_m4 "$Q2F")"; "$B" answer "$d" --options 2,2 --by user-1 >/dev/null
+seqpress tu_m4 "$(mq_q1)" "$(mq_q1)" "$(mq_q2)" "$(mq_review Green Large)"
+eq "the review shows another answer -> exit 5, nothing submitted" "$?/$(keys_sent)" "5/send-keys -t %42 2|send-keys -t %42 2|"
+qdone tu_m4
+
+d="$(askq tu_m5 "$Q2F")"; "$B" answer "$d" --options 1,2 --by user-1 >/dev/null
+seqpress tu_m5 "$(mq_q1)" "$(mq_q1)" "$(mq_q2)" "$(mq_review Redwood Large)"
+eq "a longer label starting with the chosen one does not pass -> exit 5" "$?/$(keys_sent)" "5/send-keys -t %42 1|send-keys -t %42 2|"
+qdone tu_m5
+
+d="$(askq tu_m6 "$Q2F")"; "$B" answer "$d" --options 2,2 --by user-1 >/dev/null
+FAKE_TMUX_MUTATE_AT=3 FAKE_TMUX_MUTATE="$BOARD_HOME/state/$SID.json" seqpress tu_m6 "$(mq_q1)" "$(mq_q1)" "$(mq_q2)" "$(mq_review Blue Large)"
+eq "the prompt changes mid-way -> exit 5 before the next digit" "$?/$(keys_sent)" "5/send-keys -t %42 2|"
+qdone tu_m6
+
+d="$(askq tu_m7 "$Q2F")"; "$B" answer "$d" --options 2,2 --by user-1 >/dev/null
+seqpress tu_m7 "$(mq_q2)"
+eq "question 1 only in the prompt above the form (question 2 showing) -> exit 3, nothing sent" "$?/$(keys_sent)" "3/"
+qdone tu_m7
+
+d="$(askq tu_m8 "$Q2F")"; "$B" answer "$d" --options 2,2 --by user-1 >/dev/null
+seqpress tu_m8 "$(mq_q1 | sed 's/✔ Submit/  Done/')"
+eq "no tab bar -> exit 3, nothing sent" "$?/$(keys_sent)" "3/"
+qdone tu_m8
+
 # One label cut short -> read-only, even with a short question.
 CLIPL="$(jq -cn --arg l "Option $(printf 'l%.0s' $(seq 1 100))" '[{question: "Which one?", header: "Pick", options: [{label: $l, description: ""}, {label: "No", description: ""}], multiSelect: false}]')"
 d="$(askq tu_q11 "$CLIPL")"
