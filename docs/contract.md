@@ -31,6 +31,7 @@ $BOARD_HOME/
   session-actions.json      # queued session actions (compact) per session; session-actions.lock
   actions-last.json         # the last attempt per session and action; actions-last.lock
   actions-run.lock          # flock held while a session action types into a pane (one at a time)
+  pomodoro.json             # pomodoro timers and 14 days of daily tallies, written by the collector (see "Pomodoro")
 ```
 
 ### state/<session_id>.json
@@ -341,6 +342,7 @@ Rules:
 | `consensus/{id}` | operator | a `snapshot.consensus` item as it is. Read-only on the page: no page write path, never relayed as a `[BOARD decision]`. |
 | `meta/notify` | operator | the notification controls, read-only on the page: `board-notify status --json` → `.controls` without `presence.present`, plus `channels` (`{slack: true, ...}`, booleans only). See "Notification controls". |
 | `meta/resources` | operator | `board resources --mirror`: the `/api/state` `resources` block with percentages bucketed to 5% and sizes to 100 MB. Written only when `snapshot.resources` changes, at most every 10 minutes. Read-only on the page. |
+| `meta/pomodoro` | operator (optional) | `board pomodoro --mirror`: today's fleet and per-session pomodoro counts and focus, and 14 days of totals. Written when today's fleet count changes or the day rolls over. Read-only on the page; no running clock. See "Pomodoro". |
 | `meta/ledger` | operator | `rows[]`: `{version, date, what, review, lead:{input,cache_read,cache_write,output,total}, teammate, note}` and `total{}`. The page renders this as the "版本與花費" (versions and cost) table in an Info dialog/footer. |
 
 ## Local adapter API (`bin/board-serve`, `lib/serve.py`)
@@ -426,7 +428,8 @@ State (`/api/state` and every SSE frame):
   "notify":    { mutes, min_level, effective_min_level, presence: {reduce, min_level, window_seconds,
                  idle_seconds}, breakthrough, updated_at, updated_by, channels: {slack: bool, ...} } | null,
   "resources": { see "Resources": resources.json without pids, paths or unknown fields }|null,
-  "rc":        { "all": "on"|"off"|null, "sessions": {"<code>": "on"|"off"}, "updated_at" } | null }
+  "rc":        { "all": "on"|"off"|null, "sessions": {"<code>": "on"|"off"}, "updated_at" } | null,
+  "pomodoro":  { see "Pomodoro": today's tallies, each session's current pomodoro, 14 days }|null }
 ```
 
 `account` is the Claude account the sessions run on, from `$BOARD_HOME/account.json` (the collector
@@ -931,7 +934,8 @@ calls an existing approver-only route after a confirm step.
 | System | the resources level, mem and swap bars, the OOM badge | scroll to Resources | — |
 | Quiet | the notification mute state | open the Notifications dialog | mute all push for 1 h / unmute all (`POST /api/notify-prefs`) |
 | Owner | owner-away on or off, since when | scroll to Consensus | away on / off (`POST /api/away`) |
-| Fleet (wide) | up to 4 sessions with state pills (waiting first), the 5h and 7d bars and the burn rate | scroll to Board | — |
+| 🍅 Today | the fleet's pomodoros today, focus time and a 7-day sparkline (see "Pomodoro") | open the pomodoro panel: per-session counts today and 14 days | — |
+| Fleet (wide) | up to 4 sessions with state pills (waiting first), the 5h and 7d bars and the burn rate; it shares the last row with 🍅 Today | scroll to Board | — |
 
 - **Alert wave:** when a session newly enters needs-you (not on the first render), a ring in its
   waiting colour spreads across the deck from its key (from HITL when it has no key), once.
@@ -947,6 +951,97 @@ calls an existing approver-only route after a confirm step.
 - Related project: [ulanzi-lab](https://github.com/osisdie/ulanzi-lab), a hardware key-deck dashboard (5 × 3 keys) that shows the same HITL and usage
   signals from the same hooks. The two run side by side (independent hooks, separate state; its hub listens on
   `127.0.0.1:39300`). The board never calls it.
+
+## Pomodoro
+
+Each session runs its own pomodoro while it works, and the board keeps a daily tally per session
+and for the fleet (`lib/pomodoro.py`; the idea comes from the Focus Timer of
+[ulanzi-lab](https://github.com/osisdie/ulanzi-lab)). The collector advances it on every run from
+the session states it already derived (the snapshot's `state` per code): zero tokens, no transcript
+read.
+
+**Timer rules** (deterministic, per session code; FOCUS = `pomodoro.focus_minutes`, default 25;
+GRACE = `pomodoro.grace_minutes`, default 2):
+
+| state seen | the current pomodoro |
+|---|---|
+| `working` | runs. At FOCUS minutes of focus it completes at that exact moment: the code's tally for the local day it completed in goes up by one, and the next pomodoro starts at once (50 minutes of work = 2) |
+| `done`, `rest` | paused. A done/rest run longer than GRACE resets it to 0:00; a shorter one keeps its progress |
+| `needs-you` | paused, progress kept, however long the human takes |
+| `offline` (or a code no longer in the snapshot) | reset |
+| no collector run for longer than NODATA = max(GRACE, 60 s, 20 s + 2 × `poll_interval`) | that gap is a break: every current pomodoro resets |
+
+- The time between two collector runs counts for the state seen at the first of them; nothing is
+  extrapolated past the last run.
+- Focused minutes are split at local midnight in `pomodoro.timezone` (an IANA name; empty = the
+  system's local time, DST-aware). A pomodoro counts on the day it completes, even if it started the
+  day before. 14 days are kept: only days older than that window are dropped. A day later than
+  today stays (the clock moved back across midnight, or `pomodoro.timezone` moved west).
+- A clock that moves back credits nothing for that run, and a done/rest run never starts after
+  `now`.
+- No short-break counting: a break is just a pause (or a reset after GRACE).
+
+**`$BOARD_HOME/pomodoro.json`** (0600, written by the collector only):
+
+```json
+{ "version": 1,
+  "at": 1763193600000,                       // the last run this file reflects (epoch ms)
+  "settings": { "focus_ms": 1500000, "grace_ms": 120000, "tz": "Asia/Taipei" },
+  "sessions": { "API": { "state": "working", "acc": 600000,   // ms into the current pomodoro
+                         "away_since": null,                  // start of the current done/rest run
+                         "done_at": 1763192000000 } },        // the last completion
+  "days": { "2026-11-15": { "API": { "done": 3, "focus_ms": 5400000 } } },
+  "notified": { "2026-11-15": 10 } }          // the last fleet milestone reached today
+```
+
+It is rewritten when something a viewer sees changes (a state, a tally, a reset, a milestone) and
+at least every 20 s while a pomodoro runs or is paused. A run that skips the write loses nothing:
+the next run integrates again from the stored `at`. So a restarted collector carries on: the stored
+`at` can lag the last run by up to 20 s, so a restart shorter than NODATA − 20 s (100 s with the
+defaults) keeps every pomodoro. `pomodoro.enabled: false` removes the file.
+
+**`/api/state` `pomodoro`** (`board_view`, numbers and session codes only; null when there is no
+file):
+
+```json
+{ "enabled": true, "focus_ms": 1500000, "grace_ms": 120000, "tz": "",
+  "today": "2026-11-15", "day_start": 1763164800000,      // today's local midnight
+  "seen": 1763193600000, "seen_step_ms": 300000,          // the last run, floored to 5 min (null: nothing runs)
+  "fleet": { "done": 14, "focus_ms": 20400000 },
+  "sessions": {
+    "API": { "done": 3, "focus_ms": 4800000, "running": true, "state": "working",
+             "started_at": 1763193000000, "progress_ms": null, "done_at": 1763192000000 },
+    "WEB": { "done": 1, "focus_ms": 1800000, "running": false, "state": "needs-you",
+             "started_at": null, "progress_ms": 360000, "done_at": 1763180000000 } },
+  "days": [ { "date": "2026-11-02", "done": 9, "focus_ms": 14580000, "sessions": { "API": 2 } },
+            … 14 entries, oldest first, today last … ] }
+```
+
+The view changes only when something a viewer sees changes, never with the collector's heartbeat,
+so a fleet that keeps working (or keeps waiting) costs no SSE frame beyond one per 5-minute `seen`
+bucket (none while nothing runs):
+- A running pomodoro has a fixed `started_at` (= `at` − progress) and `progress_ms: null`; a paused
+  one has `progress_ms` and `started_at: null`.
+- Today's `focus_ms` (per session, `fleet`, the last `days` entry) leaves out the running stretches.
+  The page adds `min(now, started_at + FOCUS) − max(started_at, day_start)` for each running
+  session. This base can be negative: when a pomodoro paused across midnight, part of its progress
+  counts for yesterday, but the formula above credits all of it after `day_start`. The server never
+  clamps it (that would break base + live); the page clamps only the sum it shows at 0.
+- The page runs the clocks while `now − seen` < `seen_step_ms` + 3 minutes, and otherwise holds them
+  at `seen + seen_step_ms` and shows them as paused (the collector stopped).
+- No `at`: `board pomodoro --json` (and `--mirror`) give the numbers as of the last run instead.
+
+**Artifact:** the operator may mirror `board pomodoro --mirror` to
+`meta/pomodoro` (`today, tz, focus_ms, fleet, sessions: {code: {done, focus_ms}}, days,
+updated_at`): daily totals only, no running clock, nothing sensitive. The page reads it read-only.
+
+**CLI:** `board pomodoro [today|week] [--json|--mirror]`.
+
+**Notify** (off by default): with `pomodoro.notify: true`, every `pomodoro.notify_every`-th (10)
+fleet pomodoro of the day sends one `info` alert, key `pomodoro:<day>:<n>`, title "AI fleet finished
+its 10th 🍅 today", through lib/notify.py (no escalation, no repeat). Milestones are recorded even
+while it is off, so switching it on mid-day does not replay them. `board-collect --no-notify` and
+`--baseline` hold it.
 
 ## Resources
 

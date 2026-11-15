@@ -134,6 +134,10 @@ Waiting costs no tokens. When it fires:
    query `messages` where `status == "new"`.
 2. Update `meta/operator.heartbeat_at`, even when there is nothing to do. Mirror the notification
    controls (section 11) when they changed.
+   Optionally mirror the pomodoro tally: run `board pomodoro --mirror` and, when its `today` or
+   `fleet.done` differs from what you last wrote, write the output as is to `meta/pomodoro` (daily
+   totals and session codes only, nothing sensitive). Never more often than this tick; never alert
+   or comment on it. Local mode: nothing to mirror (`board-serve` serves `pomodoro.json`).
 3. Relay each item as below, oldest first. Then write the new statuses in one batch.
 
 If the page's `room` fast path wakes you with `{kind, id}`, handle that one item right away (for a

@@ -116,6 +116,15 @@ sessions:
     autostart: false
     remote_control: false     # fleet-up starts it without --remote-control
 
+# Pomodoro tally (lib/pomodoro.py; README "Pomodoro"): each session runs a pomodoro while it works.
+# pomodoro:
+#   enabled: true
+#   focus_minutes: 25           # one pomodoro
+#   grace_minutes: 2            # a done/idle gap up to this long pauses; longer resets
+#   timezone: ""                # day rollover at local midnight here (IANA name); empty = the system's
+#   notify: false               # info notification at every notify_every-th fleet pomodoro of the day
+#   notify_every: 10
+
 # Aliases can also be given here: CODE -> [alias, ...]
 # aliases:
 #   WEB: [frontend]
