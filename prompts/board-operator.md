@@ -190,6 +190,10 @@ the user id come from db paths and match fixed patterns, so they are safe as arg
     pending**. Set `status: "unauthorized"` in the db with
     `context: "no approvers configured"`, so the page shows that the answer was not relayed. Send
     one Slack note. After someone fills in the list, an approver can re-answer it.
+- **exit 1 with "run the same answer again"** on stderr → the gate's task was busy (or could not be
+  written). Nothing is relayed yet, and the answer is not lost: run the same `board answer` (same
+  file, same `--by`) again on the next tick, and relay only once it exits 0. Never drop it silently;
+  if it keeps failing for 10 minutes, tell the owner in your pane.
 - **exit 1** (the decision isn't found locally) → **fail closed: relay nothing.** Leave the db
   status as it is, set `context: "operator has no local state for this decision"`, and send one
   `info` alert. Never relay any decision, of any kind, without a local mirror.

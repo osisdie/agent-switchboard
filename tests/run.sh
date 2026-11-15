@@ -1763,10 +1763,21 @@ g4="$(BOARD_TASK_LOCK_WAIT=5 "$B" ask --from CP --task "$tid" --gate owner "Unlo
 wait "$lockpid"
 (flock "$tf.lock" sleep 3) & lockpid=$!; sleep 0.2
 BOARD_TASK_LOCK_WAIT=1 "$B" answer "$g4" approve --by u-owner >/dev/null 2>&1; r1=$?
-eq "answer exits non-zero when the task was not updated" "$r1,$(jq -r .status "$BOARD_HOME/decisions/$g4.json"),$(jq -r --arg g "$g4" '.gates[] | select(.decision_id == $g) | .status' "$tf")" "1,answered,pending"
+eq "answer on a busy task records nothing, exits 1" "$r1,$(jq -r .status "$BOARD_HOME/decisions/$g4.json"),$(jq -r --arg g "$g4" '.gates[] | select(.decision_id == $g) | .status' "$tf")" "1,pending,pending"
 wait "$lockpid"
 "$B" answer "$g4" approve --by u-owner >/dev/null; r1=$?
 eq "answering again updates the task" "$r1,$(jq -r --arg g "$g4" '.gates[] | select(.decision_id == $g) | .status' "$tf")" "0,approved"
+# While ask waits for the task lock no decision exists, so a collector run in between sees none.
+pend() { jq --arg t "$tid" '[.decisions[] | select(.task_id == $t and .status == "pending")] | length' "$BOARD_HOME/snapshot.json"; }
+(flock "$tf.lock" sleep 3) & lockpid=$!; sleep 0.2
+BOARD_TASK_LOCK_WAIT=6 "$B" ask --from CP --task "$tid" --gate owner "Waiting?" > "$T/ask-wait.out" 2>&1 & askpid=$!
+sleep 0.5
+"$REPO/bin/board-collect" --once --no-notify
+eq "no ghost decision while ask waits for the task lock" "$(pend)" "0"
+wait "$askpid"; r1=$?; wait "$lockpid"
+gw="$(cat "$T/ask-wait.out")"
+eq "the waiting ask then creates decision and gate" "$r1,$(jq -r --arg g "$gw" '[.gates[] | select(.decision_id == $g)] | length' "$tf")" "0,1"
+"$B" answer "$gw" approve --by u-owner >/dev/null
 "$REPO/bin/board-collect" --once --no-notify
 sf="$BOARD_HOME/scheduler.json"
 eq "scheduler.json written, mode 0600" "$(stat -c %a "$sf" 2>/dev/null)" "600"

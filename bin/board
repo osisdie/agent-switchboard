@@ -437,20 +437,27 @@ task_path() {
   echo "$BOARD_HOME/tasks/$1.json"
 }
 
-# task_write PATH JQ-ARGS... — read-modify-write a task file under tasks/<id>.json.lock (the lock
-# lib/tasks.py takes too), so a gate added by `board ask` and a field set by `board task` never
-# overwrite each other.
-task_write() {
-  local tf="$1" out rc=1
-  shift
+# Task files are rewritten under tasks/<id>.json.lock (the lock lib/tasks.py takes too), so a gate
+# added by `board ask` and a field set by `board task` never overwrite each other.
+task_lock() {  # task_lock PATH — take the task's lock on fd 7; 1 (and a message) on timeout
   command -v flock >/dev/null 2>&1 || die "flock is required (util-linux)"
-  exec 7>>"$tf.lock" || die "cannot open $tf.lock"
-  if flock -w "${BOARD_TASK_LOCK_WAIT:-10}" 7; then   # the wait is shortened by tests only
-    out="$(jq "$@" "$tf")" && write_atomic "$tf" "$out" && rc=0
-  else
-    echo "board: task $(basename "$tf" .json) is locked; try again" >&2
-  fi
-  flock -u 7 2>/dev/null; exec 7>&-
+  exec 7>>"$1.lock" || die "cannot open $1.lock"
+  flock -w "${BOARD_TASK_LOCK_WAIT:-10}" 7 && return 0   # the wait is shortened by tests only
+  exec 7>&-
+  echo "board: task $(basename "$1" .json) is busy (locked)" >&2
+  return 1
+}
+task_unlock() { flock -u 7 2>/dev/null; exec 7>&-; }
+task_jq() {  # task_jq PATH JQ-ARGS... — rewrite a task file; the caller holds its lock
+  local tf="$1" out
+  shift
+  out="$(jq "$@" "$tf")" && write_atomic "$tf" "$out"
+}
+task_write() {  # task_write PATH JQ-ARGS... — task_jq under the lock
+  task_lock "$1" || return 1
+  local rc=0
+  task_jq "$@" || rc=$?
+  task_unlock
   return "$rc"
 }
 
@@ -500,6 +507,9 @@ cmd_ask() {
     opts_json="[]"
   fi
   mkdir -p "$BOARD_HOME/decisions"
+  # Lock first: while ask waits for the task, no decision exists that the collector could pick up
+  # and alert on, and a timeout leaves nothing behind.
+  if [ -n "$tf" ]; then task_lock "$tf" || die "ask: nothing was created; try again"; fi
   # The secret guard scrubs the question, options and context before they are stored.
   write_atomic "$(dec_path "$id")" "$(jq -n --arg id "$id" --arg from "$from" --arg q "$question" \
     --arg ctx "$context" --argjson opts "$opts_json" --argjson now "$now" \
@@ -513,13 +523,14 @@ cmd_ask() {
          { task_id: ($task | nz), stage: ($stage | nz), gate: ($gate | nz), artifact_ref: ($art | nz) }
        else {} end)' | { python3 "$GUARD" scrub-json || [ $? = 3 ]; })"
   if [ -n "$tf" ]; then
-    task_write "$tf" --arg id "$id" --arg stage "$stage" --arg gate "$gate" --argjson now "$now" '
+    task_jq "$tf" --arg id "$id" --arg stage "$stage" --arg gate "$gate" --argjson now "$now" '
       .gates = ((.gates // []) + [{ stage: $stage, gate: $gate, status: "pending", decision_id: $id,
                                     approved_by: null, approved_at: null }])
       | .updated_at = $now' || {
       rm -f "$(dec_path "$id")"   # fail closed: no decision without its gate on the task
       die "ask: could not record the gate on task $task; nothing was created"
-    } >&2
+    }
+    task_unlock
   fi
   log_event "$(jq -cn --arg id "$id" --arg from "$from" --arg task "$task" --arg gate "$gate" --argjson now "$now" \
     '{ts: $now, type: "ask", id: $id, from: $from} + (if $task == "" then {} else {task_id: $task} end)
@@ -762,6 +773,16 @@ cmd_answer() {
     echo "board answer: refused by the secret guard ($held); nothing recorded" >&2
     exit 6
   fi
+  # A gate on a task: take the task's lock first, so a busy task leaves the decision as it was.
+  local lock_tf=""
+  if [ "$(jq -r '(.source // "") != "pane" and (.gate // "") != "" and (.task_id // "") != ""' "$f")" = true ]; then
+    lock_tf="$(task_path "$(jq -r '.task_id' "$f")")"
+    if [ -f "$lock_tf" ]; then
+      task_lock "$lock_tf" || { echo "board answer: nothing recorded; run the same answer again" >&2; exit 1; }
+    else
+      lock_tf=""
+    fi
+  fi
   update_decision "$id" '.status = "answered" | .answer = $a | .answered_by = $by | .answered_at = $now | .updated_at = $now
       | del(.press_note, .press_note_at, .status_reason)' \
     --arg a "$answer" --arg by "$by" --argjson now "$now"
@@ -798,8 +819,8 @@ cmd_answer() {
         relayed_at: null}' "$f")"
     if [ -n "$task_id" ]; then
       local tf; tf="$(task_path "$task_id")"
-      if [ -f "$tf" ]; then
-        task_write "$tf" --arg id "$id" --arg result "$result" --arg by "$by" --argjson now "$now" '
+      if [ -n "$lock_tf" ]; then
+        task_jq "$tf" --arg id "$id" --arg result "$result" --arg by "$by" --argjson now "$now" '
           .gates = [ (.gates // [])[] | if .decision_id == $id then
                        .status = $result
                        | .approved_by = (if $result == "approved" then $by else null end)
@@ -810,6 +831,7 @@ cmd_answer() {
           echo "board: answer: $id is answered, but task $task_id was not updated; run the same answer again" >&2
           task_failed=1
         }
+        task_unlock
       fi
     fi
     echo "$id answered ($gate gate $result)"
