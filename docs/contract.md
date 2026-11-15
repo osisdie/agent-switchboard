@@ -442,7 +442,8 @@ open** (everything is delivered).
 with `include_urgent` (`board mute all --include-urgent`: "mute everything, including urgent")
 stops it. Urgent covers a production gate (urgent at once), a usage-limit hit, usage ≥ 95%, a
 permission prompt unacknowledged for 10 minutes, anything unacknowledged for 30 minutes, and any
-`board-notify send --level urgent` (for example an operator-down alert).
+`board-notify send --level urgent`. (There is no operator-silent alert yet; it arrives with the
+resources change and is urgent, so it breaks through the same way.)
 
 **Other senders.** `board notify` (the plain Slack post) is an `info` message on `slack`: it asks
 `board-notify gate --channel slack --level info --key notify` (exit 0 = send, 10 = held and

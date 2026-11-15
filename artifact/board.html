@@ -1497,8 +1497,10 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     const rows = h('ul', { class: 'nf-rows' });
     for (const [c, name] of NCHANNELS) {
       const m = byT.get(c), off = chans[c] === false;
-      const state = off ? 'not configured' : all && !all.include_urgent && !m ? 'muted by "all" · urgent gets through' : all && !m ? 'muted by "all", urgent too'
-        : m ? 'muted ' + untilText(m.until) + (m.include_urgent ? ', urgent too' : ' · urgent gets through')
+      // Urgent is stopped when either mute in force (the channel's or "all") includes it.
+      const urgentToo = !!((m && m.include_urgent) || (all && all.include_urgent));
+      const state = off ? 'not configured' : all && !m ? 'muted by "all"' + (urgentToo ? ', urgent too' : ' · urgent gets through')
+        : m ? 'muted ' + untilText(m.until) + (urgentToo ? ', urgent too' : ' · urgent gets through')
         : 'on · ' + (eff[c] || 'info') + (eff[c] === 'urgent' ? ' only' : ' and up');
       rows.append(h('li', { class: 'nf-row', id: 'nf-' + c },
         h('span', { class: 'nf-name', text: name }),

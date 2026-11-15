@@ -160,6 +160,14 @@ def main():
             page.click("#nf-slack button")
             page.wait_for_timeout(200)
             check("mute one channel until I unmute", view()["banner"] == "Slack muted until you unmute", view())
+            check("  its row: urgent gets through", page.text_content("#nf-slack .nf-state").endswith("urgent gets through"))
+            page.check("#notif-urgent")
+            page.click("#notif-mute-all")
+            page.wait_for_timeout(200)
+            check("mute all incl. urgent: a channel muted on its own says urgent too",
+                  page.text_content("#nf-slack .nf-state").endswith("urgent too"), page.text_content("#nf-slack .nf-state"))
+            check("  a channel muted only by all says urgent too",
+                  page.text_content("#nf-desktop .nf-state") == 'muted by "all", urgent too', page.text_content("#nf-desktop .nf-state"))
             page.emulate_media(color_scheme="dark")
             page.wait_for_timeout(100)
             bg = page.evaluate("() => getComputedStyle(document.querySelector('.banner.mute')).backgroundColor")

@@ -568,9 +568,9 @@ whatever is still open escalates and reaches you as usual. Turn it off or change
 **Breakthrough rules.**
 
 - `urgent` breaks through every mute and presence by default: a production gate, a usage-limit
-  hit, usage ≥ 95%, a permission prompt left 10 minutes, anything left 30 minutes, or an alert
-  sent with `--level urgent` (an operator-down alert, for example). Triage can't stop it either,
-  since urgent is the top level.
+  hit, usage ≥ 95%, a permission prompt left 10 minutes, anything left 30 minutes, or any
+  `board-notify send --level urgent`. Triage can't stop it either, since urgent is the top level.
+  (An operator-silent alert is not there yet; it comes with the resources change, as urgent.)
 - Only a mute **with `--include-urgent`** stops urgent. That is the explicit "mute everything,
   including urgent" switch; use it with an expiry.
 - Quiet hours (`alerting.quiet_hours`) still apply on top: outside urgent, they hold and later

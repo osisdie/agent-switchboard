@@ -342,6 +342,8 @@ hasnt "  no LINE token" "$out" "line-secret"
 js="$("$N" status --json)"
 eq "  --json controls" "$(jq -r '.controls.mutes.email.by + "/" + .controls.effective_min_level.slack + "/" + (.controls.presence.present | join(","))' <<<"$js")" "CP/high/local"
 hasnt "  --json has no secrets" "$js" "SECRETHOOK"
+has "board-notify --help lists gate" "$("$N" --help)" "board-notify gate --channel C --level L"
+has "  and the controls in status" "$("$N" --help)" "notification controls in force"
 eq "board mute status --json: breakthrough level" "$("$B" mute status --json | jq -r .breakthrough)" "urgent"
 
 echo "fails open:"
