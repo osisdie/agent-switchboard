@@ -15,7 +15,7 @@ export BOARD_HOME="$T/home"
 export BOARD_CONFIG_DIR="$T/config"
 export CLAUDE_SESSIONS_DIR="$T/sessions"
 export CLAUDE_SETTINGS="$T/settings.json"
-unset TMUX_PANE TMUX
+unset TMUX_PANE TMUX BOARD_PUBLIC_URL
 while IFS= read -r v; do unset "$v"; done < <(compgen -e | grep -E '^(SLACK_|SMTP_|ALERT_|LINE_|AWS_)')
 export ALERT_DESKTOP=0
 mkdir -p "$BOARD_CONFIG_DIR" "$CLAUDE_SESSIONS_DIR" "$T/bin"
@@ -195,6 +195,32 @@ grep -q "owner is not away" <<<"$out" && grep -q "$c1" <<<"$out" && ok "ls: away
 jq '.decided_at = 1 | .updated_at = 1' "$BOARD_HOME/consensus/$c1.json" > "$T/c1" && cp "$T/c1" "$BOARD_HOME/consensus/$c1.json"
 grep -q "$c1" <<<"$("$B" consensus ls)" && bad "ls hides items decided over 24 h ago" || ok "ls hides items decided over 24 h ago"
 grep -q "$c1" <<<"$("$B" consensus ls --all)" && ok "ls --all shows them" || bad "ls --all shows them"
+
+# With a public board URL set, the notifies that hand an item to the owner link to its card.
+cat > "$T/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+cat >> "$FAKE_CURL_LOG"
+printf '200'
+EOF
+: > "$FAKE_CURL_LOG"
+echo 'SLACK_WEBHOOK_URL="http://example.invalid/hook"' > "$BOARD_CONFIG_DIR/.env"
+export BOARD_PUBLIC_URL=https://board.example.com
+"$B" away on --by CP --said "links" >/dev/null 2>&1
+c6="$("$B" consensus propose --from CP --to API "linked objection" 2>/dev/null)"
+PATH="$T/bin:$PATH" "$B" consensus vote "$c6" object --from API >/dev/null 2>&1
+grep -qF "https://board.example.com/?c=$c6" "$FAKE_CURL_LOG" && ok "objected notify links to the consensus card" \
+  || bad "objected notify links to the consensus card" "$(cat "$FAKE_CURL_LOG")"
+c7="$("$B" consensus propose --from CP --to API "linked owner back" 2>/dev/null)"
+: > "$FAKE_CURL_LOG"
+PATH="$T/bin:$PATH" "$B" away off --by CP >/dev/null 2>&1
+grep -qF "https://board.example.com/?c=$c7" "$FAKE_CURL_LOG" && ok "owner-back notify links to the returned item" \
+  || bad "owner-back notify links to the returned item" "$(cat "$FAKE_CURL_LOG")"
+: > "$FAKE_CURL_LOG"
+unset BOARD_PUBLIC_URL
+PATH="$T/bin:$PATH" "$B" away on --by CP --said "no link" >/dev/null 2>&1
+grep -q "board.example.com" "$FAKE_CURL_LOG" && bad "no board URL -> no link" || ok "no board URL -> no link"
+"$B" away off --by CP >/dev/null 2>&1
+rm -f "$BOARD_CONFIG_DIR/.env" "$BOARD_HOME/consensus/$c6.json" "$BOARD_HOME/consensus/$c7.json"
 
 # Help: free text may start with a dash, only a leading -h/--help asks for help.
 eq "board away --help" "$("$B" away --help | head -1 | cut -c1-17)" "usage: board away"

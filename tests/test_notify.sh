@@ -469,6 +469,18 @@ at $((L0 + 200 * MIN)); "$N" tick >/dev/null
 [ "$(n_slack)" -ge 1 ] && ok "unset again: repeats still go out" || bad "unset again: repeats still go out" "no slack call"
 hasnt "unset again: repeats carry no board link" "$(cat "$T"/curl/*.cfg 2>/dev/null)" "board.example.com"
 
+echo "board notify --link:"
+reset_calls
+BOARD_PUBLIC_URL="$BL" "$REPO/bin/board" notify --link c-1794650400-ef56 "Consensus parked"
+has "board notify --link appends the card link" "$(slack_text)" $'Consensus parked\n'"$BL/?c=c-1794650400-ef56"
+reset_calls
+BOARD_PUBLIC_URL="$BL" "$REPO/bin/board" notify --link root "BOARD back online"
+eq "board notify --link root" "$(slack_text)" $'BOARD back online\n'"$BL/"
+reset_calls
+"$REPO/bin/board" notify --link c-1794650400-ef56 "no url set"
+eq "board notify --link without a board URL: text only" "$(slack_text)" "no url set"
+"$REPO/bin/board" notify --link >/dev/null 2>&1; rc=$?
+eq "board notify --link without an id -> usage (2)" "$rc" "2"
 rm -f "$BOARD_HOME/alerts.json" "$BOARD_HOME/snapshot.json"
 
 echo "statusline tap:"

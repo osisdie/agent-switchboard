@@ -131,8 +131,10 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
         echo "  show (or end) the current usage-limit episode (\$BOARD_HOME/limit.json)" ;;
     ack) echo "usage: board ack KEY [KEY...]"
         echo "  stop escalation of open alerts (board-notify ack). KEY may be a glob: 'session:API:*'" ;;
-    notify) echo "usage: board notify \"text\""
-        echo "  post to SLACK_WEBHOOK_URL (env or <config dir>/.env); silent no-op when unset" ;;
+    notify) echo "usage: board notify [--link ID|root] \"text\""
+        echo "  post to SLACK_WEBHOOK_URL (env or <config dir>/.env); silent no-op when unset"
+        echo "  --link appends the board link (BOARD_PUBLIC_URL / fleet.yaml board_url) that opens"
+        echo "  decision, message or consensus ID, or the board root; nothing when no board URL is set" ;;
     doctor) echo "usage: board doctor"
         echo "  check dependencies, config, hook installation and the collector" ;;
     away) echo "usage: board away on --by WHO --said \"owner's words\" [--replace]"
@@ -696,9 +698,23 @@ cmd_press() {
 }
 
 # ---------------------------------------------------------------- notify
+# board_link [ID] — the public board link for a decision/message/consensus id (no ID or an id
+# that fails its strict pattern: the board root). Prints nothing when no board URL is set.
+board_link() { python3 "$FLEET" board-link "${1:-}" 2>/dev/null || true; }
+
 cmd_notify() {
+  local link_to="" want_link=0
+  if [ "${1:-}" = --link ]; then
+    [ $# -ge 2 ] || { sub_usage notify >&2; exit 2; }
+    want_link=1; link_to="$2"; shift 2
+    [ "$link_to" = root ] && link_to=""
+  fi
   local text="${1:-}"
   [ -n "$text" ] || { sub_usage notify >&2; exit 2; }
+  if [ "$want_link" = 1 ]; then
+    local link; link="$(board_link "$link_to")"
+    [ -n "$link" ] && text="$text"$'\n'"$link"
+  fi
   local url="${SLACK_WEBHOOK_URL:-}"
   local envf; envf="$(config_dir)/.env"
   if [ -z "$url" ] && [ -f "$envf" ]; then
@@ -723,7 +739,8 @@ cmd_notify() {
 }
 
 # Best effort: a notify problem (no channel configured, webhook down) never fails the caller.
-notify_quiet() { ( cmd_notify "$1" ) || true; }
+# notify_quiet TEXT [ID|root] — with a second argument the board link is appended (when set).
+notify_quiet() { if [ $# -ge 2 ]; then ( cmd_notify --link "$2" "$1" ) || true; else ( cmd_notify "$1" ) || true; fi; }
 
 # ---------------------------------------------------------------- owner away & consensus
 # The owner is away while $BOARD_HOME/owner-away exists, whatever its content: a legacy
@@ -935,7 +952,8 @@ away_set() {
   echo "owner back (by $by); $n pending consensus item(s) returned to the owner${returned:+: $(paste -sd " " - <<<"$returned")}"
   notify_quiet "$(jq -rn --arg by "$by" --arg n "$n" --arg ret "$returned" "$JQ_LINE"'
     "[board] Owner back (by \($by | line)); away mode off."
-    + (if $n == "0" then "" else " \($n) pending consensus item(s) returned to the owner: \($ret | split("\n") | map(select(. != "")) | join(", "))" end)')"
+    + (if $n == "0" then "" else " \($n) pending consensus item(s) returned to the owner: \($ret | split("\n") | map(select(. != "")) | join(", "))" end)')" \
+    "$( [ "$n" = 1 ] && printf '%s' "$returned" || echo root )"
 }
 
 cons_path() {
@@ -976,7 +994,8 @@ sweep_if_back() {
   away_record >/dev/null && { [ "$was" = 1 ] || unlock_board; return 0; }
   returned="$(consensus_owner_back "$(now_ms)" "owner-away file removed")"
   [ "$was" = 1 ] || unlock_board
-  [ -n "$returned" ] && notify_quiet "[board] Owner back (owner-away file removed); pending consensus returned to the owner: $(paste -sd " " - <<<"$returned")"
+  [ -n "$returned" ] && notify_quiet "[board] Owner back (owner-away file removed); pending consensus returned to the owner: $(paste -sd " " - <<<"$returned")" \
+    "$( [ "$(wc -l <<<"$returned")" -eq 1 ] && printf '%s' "$returned" || echo root )"
   return 0
 }
 
@@ -1137,11 +1156,11 @@ cons_vote() {
     agreed)
       echo "  record it in the PR/ticket: board consensus show $id --markdown" >&2
       notify_quiet "$(jq -rn --arg id "$id" --arg ref "$(jq -r '.ref // ""' "$f")" "$JQ_LINE"'
-        "[board] Consensus \($id) agreed by every participant" + (if $ref == "" then "" else " (\($ref | line))" end)')" ;;
+        "[board] Consensus \($id) agreed by every participant" + (if $ref == "" then "" else " (\($ref | line))" end)')" "$id" ;;
     objected)
       echo "  parked for the owner; record it in the PR/ticket: board consensus show $id --markdown" >&2
       notify_quiet "$(jq -rn --arg id "$id" --arg by "$from" "$JQ_LINE"'
-        "[board] Consensus \($id) objected by \($by | line): parked for the owner"')" ;;
+        "[board] Consensus \($id) objected by \($by | line): parked for the owner"')" "$id" ;;
   esac
   return 0
 }
@@ -1241,6 +1260,10 @@ cmd_doctor() {
   if [ -n "${SLACK_WEBHOOK_URL:-}" ] || grep -q '^[[:space:]]*\(export[[:space:]]\+\)\?SLACK_WEBHOOK_URL=..' "$cd/.env" 2>/dev/null; then
     ok "SLACK_WEBHOOK_URL set"
   else warn "SLACK_WEBHOOK_URL not set — notify is a no-op"; fi
+  local bu
+  if bu="$(python3 "$FLEET" board-url-check 2>/dev/null)"; then
+    if [ -n "$bu" ]; then ok "board URL $bu (alerts link to the board)"; else warn "no board URL (BOARD_PUBLIC_URL / board_url) — alerts carry no board link"; fi
+  else fail "board URL $bu — alerts carry no board link"; fi
 
   echo "install:"
   local settings="${CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"
