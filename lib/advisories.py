@@ -101,7 +101,7 @@ def deliver(advisories, sent, batches, st, valid, now, quiet=False, paused=False
                 d["state"] = "sent"
             elif s and int(s.get("n") or 0) >= MAX_SENDS:
                 d["state"] = "board"                    # sent MAX_SENDS times, never answered: stop
-            elif (live is not None and a["to"] not in live) or (quiet and a["severity"] != "high"):
+            elif (live is not None and a["to"] not in live) or (quiet and a.get("raised_from", a["severity"]) != "high"):
                 d["state"] = "held"
             else:
                 recent = [t for t in batches.get(a["to"]) or [] if now - t < 3600 * 1000]
@@ -173,7 +173,9 @@ def load_state(home):
             "sent": s.get("sent") if isinstance(s.get("sent"), dict) else {},
             "batches": s.get("batches") if isinstance(s.get("batches"), dict) else {},
             "resolved": s.get("resolved") if isinstance(s.get("resolved"), list) else [],
-            "lesson_on": s.get("lesson_on") if isinstance(s.get("lesson_on"), list) else []}
+            "lesson_on": s.get("lesson_on") if isinstance(s.get("lesson_on"), list) else [],
+            "lesson_off": s.get("lesson_off") if isinstance(s.get("lesson_off"), dict) else {},
+            "to_learn": s.get("to_learn") if isinstance(s.get("to_learn"), list) else []}
 
 
 def advance(doc, state, st, valid, now, quiet=False, paused=False, live=None):
@@ -190,6 +192,7 @@ def advance(doc, state, st, valid, now, quiet=False, paused=False, live=None):
     jams, opened, resolved = episodes(state["jams"], conds, now)
     doc["jams"] = opened
     return {"jams": jams, "sent": sent, "batches": batches, "lesson_on": state.get("lesson_on") or [],
+            "lesson_off": state.get("lesson_off") or {}, "to_learn": state.get("to_learn") or [],
             "resolved": (state["resolved"] + resolved)[-KEEP_RESOLVED:]}, resolved
 
 

@@ -352,4 +352,9 @@ The scheduler ships in three steps instead of section 7's PRs 2–4: (1) task mo
 - **Hits** are counted when a rule starts to match (not every pass), so the file does not grow
   while a rule keeps matching. Owner lessons never expire.
 - **Export.** `--generic` drops ids and signals; free text is exported as written.
+- **Review fixes.** Hint text and reasons are screened like other text, and a hint may not mention
+  approvals, deploys, decisions or `[BOARD`. `raise_severity` never gets past quiet hours. A hit
+  counts only after the rule was off 30 minutes. Delete is "forget" (the tombstone keeps the
+  fingerprint; capture skips it), retire is "stop applying". J3b lessons are global (no repo in the
+  fingerprint). `board lesson note` is for auto lessons only. Uncaptured episodes wait in the state.
 

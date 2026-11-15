@@ -55,6 +55,8 @@ OPS = ("lt", "lte", "gt", "gte", "eq")
 SIMPLE_ACTIONS = ("defer_heavy", "pause_new_starts", "serialize_repo", "raise_severity")
 ID_RE = re.compile(r"l-[0-9]+-[0-9a-f]{8}")
 CTL_RE = re.compile("[\x00-\x1f\x7f-\x9f]")
+# A hint is shown with the schedule: it never reads like an approval, a deploy order or a decision.
+BANNED_RE = re.compile(r"approv|deploy|\[BOARD|decision", re.I)
 TITLE_MAX, TEXT_MAX, ADVISE_MAX = 120, 400, 160
 LOOSEN = ("only tightening actions are allowed (defer_heavy, max_heavy:N, pause_new_starts, serialize_repo, "
           "advise:<text>, raise_severity); a lesson cannot loosen the schedule. To undo one, retire or delete it.")
@@ -134,15 +136,18 @@ def validate_rule(rule):
         if not re.fullmatch(r"max_heavy:[0-8]", a):
             raise Bad("rule.then: max_heavy:N takes N from 0 to 8 (the scheduler keeps the lower of N and its own limit)")
     elif a.startswith("advise:"):
-        text = " ".join(a[len("advise:"):].split())
-        if not 1 <= len(text) <= ADVISE_MAX:
+        text = _text(a[len("advise:"):], "rule.then advise", ADVISE_MAX) or ""
+        if not text:
             raise Bad("rule.then: advise:<text> takes 1 to %d characters" % ADVISE_MAX)
+        if BANNED_RE.search(text):
+            raise Bad("rule.then: a hint may not mention approvals, deploys, decisions or [BOARD; "
+                      "it orders work, it never authorizes anything")
         a = "advise:" + text
     elif a not in SIMPLE_ACTIONS:
         raise Bad("rule.then: unknown action %r: %s" % (a[:40], LOOSEN))
     out = {"when": {"all": conds}, "then": {"action": a}}
     if isinstance(then.get("reason"), str) and then["reason"].strip():
-        out["then"]["reason"] = " ".join(then["reason"].split())[:TEXT_MAX]
+        out["then"]["reason"] = _text(then["reason"], "rule.then reason", TEXT_MAX)
     return out
 
 
@@ -240,13 +245,17 @@ def capture(home, resolved, cfg, now):
         return []
     new, lines = [], []
     with locked(home, 2.0):
-        recs = load(home)
+        everything = load(home, with_deleted=True)
+        recs = {k: v for k, v in everything.items() if not v.get("deleted")}
+        forgotten = {r.get("fingerprint") for r in everything.values() if r.get("deleted") and r.get("fingerprint")}
         by_fp = {r.get("fingerprint"): r for r in recs.values() if r.get("fingerprint")}
         for ep in resolved:
             if not isinstance(ep, dict) or int(ep.get("lost_min") or 0) < st["min_lost_minutes"] or ep.get("rule") not in AUTO:
                 continue
             signals = ep.get("signals") if isinstance(ep.get("signals"), dict) else {}
             fp = fingerprint(ep["rule"], signals)
+            if fp in forgotten:
+                continue                               # deleted by an approver: never re-learned
             cur = by_fp.get(fp)
             if cur:
                 occ = int(cur.get("occurrences") or 0) + 1
@@ -410,6 +419,8 @@ def cmd_change(home, verb, argv):
                     raise Bad("edit: the title cannot be empty")
                 rec = version(cur, now, by, **f)
             elif verb == "note":
+                if cur.get("source") != "auto":
+                    raise Bad("note: only for lessons the scheduler learned; approvers edit their own with board lesson edit")
                 f = _fields(data, ("cause", "resolution"), home)
                 if not f:
                     raise Bad("note: cause and/or resolution")
@@ -421,8 +432,9 @@ def cmd_change(home, verb, argv):
             elif verb == "retire":
                 rec = version(cur, now, by, status="retired", retired_by=by)
             else:
+                # delete = forget: the fingerprint stays, so capture never learns this pattern again
                 rec = {"id": cur["id"], "deleted": True, "by": by, "at": now, "title": cur.get("title"),
-                       "schema_version": SCHEMA_VERSION}
+                       "fingerprint": cur.get("fingerprint"), "schema_version": SCHEMA_VERSION}
         append(home, [rec])
     _log(home, {"ts": now, "type": "lesson", "action": verb, "id": rec["id"], "by": by})
     print("%s %s" % (rec["id"], {"add": "added", "edit": "edited", "note": "noted", "activate": "active",

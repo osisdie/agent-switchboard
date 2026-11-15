@@ -500,8 +500,8 @@ def decide(tasks, sessions, res, st, now, ctx=None):
 
     if acting("raise_severity"):
         for a in advisories:
-            if a["severity"] == "warn":
-                a["severity"] = "high"
+            if a["severity"] == "warn":                 # ranks higher; quiet hours still judge the original
+                a["severity"], a["raised_from"] = "high", "warn"
     hints = [{"lesson": L["id"], "text": L["rule"]["then"]["action"][len("advise:"):]} for L in acting("advise")]
     conds, answer_first = conditions(rows, live, sessions, sstate, cur_of, stuck, picks, free_owners, since,
                                      st, now, lvl, res, umode, resets_at, ctx)
@@ -619,7 +619,7 @@ def conditions(rows, live, sessions, sstate, cur_of, stuck, picks, free_owners, 
             if len(ids) >= 2:
                 out.append(_cond("J3b", _hash(repo), "warn", {rows[i]["session"] for i in ids if rows[i]["session"]},
                                  "%d open PRs in %s (%s): finish one first." % (len(ids), repo, ", ".join(sorted(ids))),
-                                 tasks=sorted(ids), signals={"repo": repo}))
+                                 tasks=sorted(ids)))      # its rule is global: no repo in the fingerprint
     # J4: stalled work, or an idle session with a ready task
     for s in stuck:
         out.append(_cond("J4", s["session"], s["severity"], [s["session"]],
@@ -746,16 +746,35 @@ def step(cfg, home, sessions, tasks, now):
         return doc, True
 
 
+HIT_OFF_MS = 30 * 60 * 1000      # a rule counts a new hit only after it was off this long (no flapping)
+
+
 def learn(cfg, home, doc, state, new_state, resolved, now):
-    """Lessons: resolved jams become (or merge into) lessons; a rule that starts to match counts a
-    hit; stale auto lessons retire. A failure here never stops the schedule."""
+    """Lessons: resolved jams become (or merge into) lessons; a rule that starts to match after
+    HIT_OFF_MS off counts a hit; stale auto lessons retire. Episodes not yet captured (the lessons
+    file was busy) wait in the state for the next pass. A failure here never stops the schedule."""
     applied = set((doc.get("lessons") or {}).get("applied") or [])
-    new_state["lesson_on"] = sorted(applied)
+    was_on = set(state.get("lesson_on") or [])
+    off = {k: v for k, v in (state.get("lesson_off") or {}).items() if isinstance(v, int)} \
+        if isinstance(state.get("lesson_off"), dict) else {}
+    hits = {i for i in applied - was_on if i not in off or now - off[i] >= HIT_OFF_MS}
+    off = {i: t for i, t in off.items() if i not in applied}
+    off.update({i: now for i in was_on - applied})
+    pending = [e for e in state.get("to_learn") or [] if isinstance(e, dict)] + list(resolved)
+    new_state.update(lesson_on=sorted(applied), lesson_off=off, to_learn=[])
     try:
-        lessonstore.capture(home, resolved, cfg, now)
-        lessonstore.maintain(home, cfg, applied - set(state.get("lesson_on") or []), now)
+        lessonstore.capture(home, pending, cfg, now)
+    except Exception:  # noqa: BLE001 - busy or broken: keep the episodes for the next pass
+        new_state["to_learn"] = pending[-advisories_keep():]
+    try:
+        lessonstore.maintain(home, cfg, hits, now)
     except Exception:  # noqa: BLE001
-        new_state["lesson_on"] = state.get("lesson_on") or []   # try the hits again next pass
+        new_state["lesson_on"] = sorted(was_on & applied)       # count these hits next pass
+
+
+def advisories_keep():
+    import advisories
+    return advisories.KEEP_RESOLVED
 
 
 def snapshot_digest(doc):

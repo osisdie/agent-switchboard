@@ -1508,8 +1508,10 @@ schedule:
 
 `lib/lessons.py` keeps what the scheduler learned from jams in `$BOARD_HOME/lessons.jsonl` (0600,
 append-only, written under `lessons.lock`). Each line is a full version of one lesson; the last
-line per id wins. A delete appends a tombstone `{id, deleted: true, by, at, title}`; nothing is
-rewritten, so the file is its own audit trail (plus `{type: "lesson", action, id, by}` events).
+line per id wins. A delete appends a tombstone `{id, deleted: true, by, at, title, fingerprint}`;
+nothing is rewritten, so the file is its own audit trail (plus `{type: "lesson", action, id, by}`
+events). **Delete = forget**: the scheduler never learns that pattern (fingerprint) again.
+**Retire = stop applying**: the lesson stays, and occurrences still merge into it.
 
 ```json
 { "id": "l-<epoch s>-<8 hex>", "schema_version": 1, "status": "candidate|active|retired",
@@ -1523,16 +1525,18 @@ rewritten, so the file is its own audit trail (plus `{type: "lesson", action, id
 
 - **Capture** (the collector, zero tokens): a jam episode that resolves after costing at least
   `lessons.min_lost_minutes` (10; minutes × sessions) merges into the lesson with the same
-  fingerprint (rule + signals such as the repo, the J4 kind, an OOM or the usage mode; never session
-  codes or times), adding an occurrence and the minutes; otherwise it starts a `candidate` with a
+  fingerprint (rule + signals such as the J4 kind, an OOM or the usage mode; never session codes,
+  repos or times), adding an occurrence and the minutes; otherwise it starts a `candidate` with a
   fixed title per rule. J3b and J5 lessons come with a default rule (`serialize_repo` while the repo
   has an open PR; `max_heavy:1` under 30% available memory); the others are text lessons until
   someone adds a rule. `board-serve --watch` prints `lesson <id> candidate` for an auto candidate
   with no note yet; the operator adds one (`board lesson note`).
 - **Activation.** A candidate becomes `active` at `lessons.auto_activate_after` (2) occurrences,
   while fewer than 100 are active. An auto lesson unseen and unused for `ttl_days` (30) is retired
-  (`retired_by: "ttl"`); owner lessons never expire. A lesson's rule that starts to match counts a
-  hit (`hits`, `last_hit_at`).
+  (`retired_by: "ttl"`); owner lessons never expire. A lesson's rule that starts to match after it
+  has been off for 30 minutes counts a hit (`hits`, `last_hit_at`), so a flapping metric does not
+  grow the file. Episodes that could not be captured (the file was busy) wait in
+  `schedule-state.json` (`to_learn`) for the next pass.
 - **Rules** are declarative, from a fixed vocabulary, and **only tighten**:
   - `when.all`: 1–6 conditions `{metric, <op>: value}`, `op` in `lt lte gt gte eq`; metrics
     `mem_available_mb mem_available_pct swap_used_pct psi_mem load_per_cpu disk_free_pct
@@ -1542,8 +1546,12 @@ rewritten, so the file is its own audit trail (plus `{type: "lesson", action, id
   - `then.action`: `defer_heavy` (a heavy task gets no slot: `deferred{lesson}`), `max_heavy:N`
     (0–8; the lower of N and the scheduler's own limit), `pause_new_starts` (`deferred{lesson}`),
     `serialize_repo` (no new start in a repo where a task runs), `raise_severity` (warn advisories
-    become high), `advise:<text>` (≤ 160 chars; a hint in `scheduler.json` `lessons.hints`, never
-    sent).
+    rank as high; `raised_from` keeps the original, which quiet hours still judge),
+    `advise:<text>` (≤ 160 chars; a hint in `scheduler.json` `lessons.hints`, never sent).
+  - The hint text and `then.reason` go through the same path as other text: control characters
+    removed, screened by the secret guard (exit 6), scrubbed. A hint that mentions approvals,
+    deploys, decisions or `[BOARD` is refused (exit 2): it orders work and never authorizes
+    anything. The scheduler re-checks hand-edited lines the same way and skips a failing rule.
   - Anything else is refused with a message (exit 2 / 400 `bad_lesson`), for the owner's rules too:
     a lesson cannot loosen the schedule; to undo one, retire or delete it. A rule that fails
     validation when the scheduler reads it is skipped, never half-applied. `scheduler.json` lists
@@ -1552,7 +1560,8 @@ rewritten, so the file is its own audit trail (plus `{type: "lesson", action, id
   [--generic]` (active lessons; `--generic` leaves out ids and signals; the text is as written);
   `add --by WHO --file F` and `edit ID --by WHO --file F` (JSON `{title, rule, cause, resolution}`),
   `activate|retire|delete ID --by WHO`: WHO must be in `approvers` (a `board:` prefix is allowed),
-  else exit 4. `note ID --by WHO --file F` (`{cause, resolution}` only) is for the operator. Text is
+  else exit 4. `note ID --by WHO --file F` (`{cause, resolution}` only, auto lessons only; exit 2
+  otherwise) is for the operator. Text is
   one line, capped (title 120, others 400), screened by the secret guard (a secret request: exit
   6, nothing written) and scrubbed. Exit 1: no such lesson; 8: the file is busy.
 - **API** (`board-serve`): `GET /api/lessons[?q=TEXT]` → `{lessons, can_edit}` (the newest 100
