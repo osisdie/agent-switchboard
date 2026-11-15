@@ -37,6 +37,32 @@ serve:
 # Unset: alerts carry no board link. `board doctor` says whether it is accepted.
 # board_url: https://board.example.com
 
+# System resources (lib/resources.py): the collector samples memory, swap, load, disks, OOM kills
+# and each session's processes and teammates every `interval` seconds into resources.json. Alerts
+# res:mem / res:swap / res:disk:<id> (warn -> high), res:oom:<n> and res:idle-teammates:<code>.
+# The board shows them; it never stops a process. `board resources` prints the last sample.
+# resources:
+#   enabled: true
+#   interval: 15
+#   disks: auto                 # BOARD_HOME + each live session's cwd (network/FUSE mounts skipped);
+#                               # or a list of paths (always probed, 2 s budget)
+#   thresholds:                 # [warn, high]; critical = high for 2 samples, or an OOM kill
+#     mem_available_pct: [15, 8]
+#     mem_available_mb:  [2048, 1024]
+#     swap_used_pct:     [50, 80]
+#     psi_mem_some_avg60: [10, 25]
+#     load_per_cpu:      [1.5, 3.0]
+#     disk_free_pct:     [10, 3]
+#     disk_free_mb:      [5120, 1024]
+#   teammate_idle_minutes: 30   # a teammate idle this long is flagged (and alerted, info/warn)
+#   # process_classes: {test: "regex", browser: "regex", build: "regex", container: "regex"}
+
+# Operator health (local mode, serve.enabled): operator:stale alerts (high, urgent after 30 min)
+# when operator.json's heartbeat is older than this, or board-serve --watch is not running, and an
+# answer or message waits to be relayed.
+# schedule:
+#   operator_stale_minutes: 10
+
 # `board press` safety settings: a key is only sent when the last `lines` lines of the pane
 # match `prompt_regex`.
 press:

@@ -20,6 +20,9 @@
 #                                              stages: plan design build test deploy production
 #                                              maintain; artifacts: intent spec plan evals review
 #   board limit [--json|--clear]               show (or end) the current usage-limit episode
+#   board resources [--json|--mirror] [--refresh]
+#                                              system resources, per-session processes and
+#                                              teammates (resources.json; read-only, kills nothing)
 #   board press CODE allow|deny --expect TOOL_USE_ID [--allow-truncated]
 #                                              answer a permission prompt via tmux: needs an
 #                                              approver's matching `board answer`, then checks
@@ -139,6 +142,11 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
     "task show") echo "usage: board task show ID" ;;
     limit) echo "usage: board limit [--json|--clear]"
         echo "  show (or end) the current usage-limit episode (\$BOARD_HOME/limit.json)" ;;
+    resources) echo "usage: board resources [--json|--mirror] [--refresh]"
+        echo "  memory, swap, load, disks, OOM kills and each session's processes and teammates from"
+        echo "  \$BOARD_HOME/resources.json (sampled by the collector every resources.interval seconds)."
+        echo "  --json the raw file, --mirror the bucketed meta/resources document for the Artifact board,"
+        echo "  --refresh samples now first. The board never stops a process." ;;
     ack) echo "usage: board ack KEY [KEY...]"
         echo "  stop escalation of open alerts (board-notify ack). KEY may be a glob: 'session:API:*'" ;;
     notify) echo "usage: board notify [--link ID|root] \"text\""
@@ -577,6 +585,18 @@ cmd_limit() {
     --clear) python3 "$REPO/lib/limit.py" clear >/dev/null; echo "usage-limit episode cleared" ;;
     *) sub_usage limit >&2; exit 2 ;;
   esac
+}
+
+# ---------------------------------------------------------------- resources
+cmd_resources() {
+  local a args=()
+  for a in "$@"; do
+    case "$a" in
+      --json|--mirror|--refresh) args+=("$a") ;;
+      *) sub_usage resources >&2; exit 2 ;;
+    esac
+  done
+  python3 "$REPO/lib/resources.py" show "${args[@]}"
 }
 
 # ---------------------------------------------------------------- press
@@ -1330,6 +1350,8 @@ cmd_doctor() {
   if [ -f "$BOARD_HOME/collect.lock" ] && ! flock -n "$BOARD_HOME/collect.lock" true 2>/dev/null; then
     ok "collector running (pid $(cat "$BOARD_HOME/collect.pid" 2>/dev/null || echo '?'))"
   else warn "collector not running (fleet-up starts it in tmux session 'switchboard')"; fi
+  echo "resources:"
+  python3 "$REPO/lib/resources.py" doctor 2>&1 | sed 's/^/  /'
   echo "alerting (board-notify status):"
   "$REPO/bin/board-notify" status 2>&1 | sed 's/^/  /'
   if [ -f "$BOARD_HOME/snapshot.json" ]; then
@@ -1347,7 +1369,7 @@ case "$sub" in
   # leading -h/--help asks for help.
   answer)
     case "${1:-}" in -h|--help) sub_usage answer; exit 0 ;; esac ;;
-  ls|snapshot|ask|decisions|mark|press|limit|notify|doctor|ack|unmute|notify-level|notify-presence)
+  ls|snapshot|ask|decisions|mark|press|limit|notify|doctor|ack|unmute|notify-level|notify-presence|resources)
     if wants_help "$@"; then sub_usage "$sub"; exit 0; fi ;;
   # proposals, notes and the owner's words are free text: only -h/--help right after the
   # subcommand (or instead of it) asks for help.
@@ -1370,6 +1392,7 @@ case "$sub" in
   press) cmd_press "$@" ;;
   task) cmd_task "$@" ;;
   limit) cmd_limit "$@" ;;
+  resources) cmd_resources "$@" ;;
   notify) cmd_notify "$@" ;;
   ack) [ $# -gt 0 ] || { sub_usage ack >&2; exit 2; }; exec "$REPO/bin/board-notify" ack "$@" ;;
   doctor) cmd_doctor "$@" ;;

@@ -407,6 +407,79 @@ eq "concurrent mutes: none lost" "$(jq -r '.mutes | keys | join(",")' "$P")" "de
 leftover="$(find "$BOARD_HOME" -name '*.tmp.*' | wc -l | tr -d ' ')"
 eq "  no temp files left" "$leftover" "0"
 
+echo "resources + operator:stale go through the controls:"
+fresh
+rm -f "$BOARD_HOME/snapshot.json" "$BOARD_HOME/resources.json" "$BOARD_HOME/operator.json"
+fleet $'serve:\n  enabled: true'
+R0=$((T0 + 2 * 24 * 60 * MIN))
+# rs LEVELS_JSON IDLE — resources.json sampled now, with one teammate of CP (idle or not)
+rs() {
+  jq -n --argjson at "$BOARD_NOW_MS" --argjson lv "$1" --argjson idle "$2" '{at: $at, platform: "linux",
+    level: "high", levels: $lv, mem: {total_mb: 16384, available_mb: 900, available_pct: 6},
+    sessions: [{code: "CP", children: [], teammates: [{name: "t1", rss_mb: 300, idle_s: 2400, idle: $idle}]}],
+    orphan_teammates: [], teammate_idle_minutes: 30, operator: {watch: true}}' >"$BOARD_HOME/resources.json"
+}
+at "$R0"
+jq -n '{generated_at: 0, sessions: [], limit: null,
+  decisions: [{id: "d-9-a", kind: "question", from: "CP", question: "q", status: "answered"}]}' >"$BOARD_HOME/snapshot.json"
+jq -n --argjson hb $((R0 - 15 * MIN)) '{heartbeat_at: $hb}' >"$BOARD_HOME/operator.json"
+rs '{"mem":"high"}' true
+"$B" mute all --for 4h >/dev/null
+"$N" tick >/dev/null
+expect "mute all: res:mem, idle teammates and operator:stale all held" "0/0/0/0/0/0"
+eq "  res:mem opened at high" "$(alert res:mem .level)" "high"
+eq "  operator:stale opened at high" "$(alert operator:stale .level)" "high"
+has "  res:mem suppression logged" "$(held res:mem)" "slack:muted:all"
+has "  operator:stale suppression logged" "$(held operator:stale)" "email:muted:all"
+has "  idle-teammates suppression logged" "$(held res:idle-teammates:CP)" "slack:muted:all"
+reset_calls
+at $((R0 + 31 * MIN)); rs '{"mem":"high"}' true; "$N" tick >/dev/null
+eq "  operator:stale escalates to urgent" "$(alert operator:stale .level)" "urgent"
+expect "  urgent operator:stale breaks through mute all (only it)" "1/1/1/1/1/1"
+has "  the one delivery is operator:stale" "$(cat "$T"/curl/*.cfg)" "Board operator is not running"
+"$B" mute all --include-urgent --for 4h >/dev/null
+rm -f "$BOARD_HOME/alerts.json"; reset_calls
+at $((R0 + 32 * MIN)); rs '{"mem":"high"}' true; "$N" tick >/dev/null
+at $((R0 + 63 * MIN)); rs '{"mem":"high"}' true; "$N" tick >/dev/null
+eq "  mute all --include-urgent: operator:stale urgent" "$(alert operator:stale .level)" "urgent"
+expect "  ... and held too" "0/0/0/0/0/0"
+"$B" unmute all >/dev/null
+# Floors: an info idle-teammates alert under `notify-level all warn` is held; warn passes.
+rm -f "$BOARD_HOME/alerts.json" "$BOARD_HOME/operator.json"; reset_calls
+fleet ""
+"$B" notify-level all warn >/dev/null
+at $((R0 + 70 * MIN)); rs '{"mem":"ok"}' true; "$N" tick >/dev/null
+eq "  idle teammates without pressure -> info" "$(alert res:idle-teammates:CP .level)" "info"
+expect "  info held by the floor" "0/0/0/0/0/0"
+has "  floor logged" "$(held res:idle-teammates:CP)" "slack:below_min_level"
+at $((R0 + 71 * MIN)); rs '{"mem":"warn"}' true; "$N" tick >/dev/null
+eq "  memory pressure -> warn" "$(alert res:idle-teammates:CP .level)" "warn"
+has "  warn passes the floor" "$(cat "$T"/curl/*.cfg 2>/dev/null)" "teammate(s) idle"
+"$B" notify-level all default >/dev/null
+# Presence: an approver watching the board holds pushes below high; urgent still goes out.
+rm -f "$BOARD_HOME/alerts.json"; reset_calls
+fleet $'serve:\n  enabled: true'
+PR0=$((R0 + 200 * MIN))
+at "$PR0"; present local
+jq -n --argjson hb $((PR0 - 15 * MIN)) '{heartbeat_at: $hb}' >"$BOARD_HOME/operator.json"
+"$B" mute all --for 4h >/dev/null   # only to keep the opening (high) round out of the counts
+rs '{"mem":"ok"}' true; "$N" tick >/dev/null
+"$B" unmute all >/dev/null
+eq "presence: idle teammates at info" "$(alert res:idle-teammates:CP .level)" "info"
+reset_calls
+at $((PR0 + 31 * MIN)); present local; rs '{"mem":"ok"}' true; "$N" tick >/dev/null
+eq "presence: operator:stale urgent" "$(alert operator:stale .level)" "urgent"
+expect "presence: urgent operator:stale is delivered" "1/1/1/1/1/1"
+has "  and it is operator:stale" "$(cat "$T"/curl/*.cfg)" "Board operator is not running"
+rm -f "$BOARD_HOME/alerts.json"; reset_calls
+at $((PR0 + 40 * MIN)); present local
+jq -n --argjson hb "$BOARD_NOW_MS" '{heartbeat_at: $hb}' >"$BOARD_HOME/operator.json"
+rs '{"mem":"ok"}' true; "$N" tick >/dev/null
+eq "presence: a new idle-teammates alert at info" "$(alert res:idle-teammates:CP .level)" "info"
+expect "presence: info is held while the owner watches" "0/0/0/0/0/0"
+has "  logged as owner_present" "$(held res:idle-teammates:CP)" "slack:owner_present"
+rm -f "$BOARD_HOME/snapshot.json" "$BOARD_HOME/resources.json" "$BOARD_HOME/operator.json" "$BOARD_HOME/presence.json"
+
 echo
 echo "passed: $pass  failed: $fail"
 [ "$fail" = 0 ]

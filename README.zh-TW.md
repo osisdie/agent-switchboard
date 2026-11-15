@@ -442,7 +442,8 @@ flowchart LR
 
 - **確認就會停止升級**。決策離開 `pending`（不論在哪裡回答）、session 離開 needs-you，或上限事件結束時，
   告警會自動確認。要手動確認，執行 `board ack 'session:API:*'`（或 `board-notify ack …`），可以用萬用字元。
-  key 的格式像 `decision:<id>`、`session:<code>:needs-you`、`limit:<hit_at>`、`usage:<window>:<threshold>`。
+  key 的格式像 `decision:<id>`、`session:<code>:needs-you`、`limit:<hit_at>`、`usage:<window>:<threshold>`，
+  以及下面的資源與 operator key。
 - **看板連結**：設定了 `board_url`（或 `BOARD_PUBLIC_URL`）時，每則告警都會連到看板上對應的項目
   （`<board_url>/?d=<decision id>`、`?c=`、`?m=`，或看板首頁）。請見「在手機上開啟看板」，以及契約文件的
   「Board links in alerts」。
@@ -554,7 +555,7 @@ board notify-level slack default
 
 - 預設情況下，`urgent` 會突破所有靜音和在場減量：production 關卡、用量上限、用量 ≥ 95%、權限提示放了
   10 分鐘、任何項目放了 30 分鐘，或任何 `board-notify send --level urgent`。分級也擋不住它，因為 urgent
-  是最高等級。（operator 沉默告警還沒有；它會隨 resources 變更一起加入，等級為 urgent。）
+  是最高等級。（operator 沉默告警 `operator:stale` 從 high 開始，30 分鐘後升為 urgent 時就會突破。）
 - 只有**加上 `--include-urgent`** 的靜音才擋得住 urgent。這是明確的「全部靜音，包括 urgent」開關；
   請搭配到期時間使用。
 - 勿擾時段（`alerting.quiet_hours`）仍然疊加生效：urgent 以外的項目會先保留，之後再送出。
@@ -569,6 +570,26 @@ operator 鏡像到 `meta/notify`。
 
 設定存在 `$BOARD_HOME/notify-prefs.json`；`board-notify status` 顯示實際生效的狀態，不會印出任何憑證。
 詳見合約的「Notification controls」。
+
+### 系統資源與沉默的 operator
+
+收集器也會每 15 秒取樣一次這台機器（`lib/resources.py`，不花 token）：記憶體、swap、記憶體壓力（PSI）、
+負載、磁碟、OOM kill，以及每個 session 正在跑什麼，包括 teammate。teammate 是 session 在額外 tmux pane
+裡啟動的獨立 `claude` 程序（`--agent-id`）；停下來卻沒關掉的，常常每個佔 250–400 MB。看板上有
+**System 系統** 方塊和 **Resources 資源** 區塊，閒置的 teammate 會被標出來。看板**從不停止任何程序**；
+它只告訴你，由 session 自己停掉自己啟動的程序。
+
+| Key | 等級 | 時機 |
+|---|---|---|
+| `res:mem`、`res:swap`、`res:disk:<id>` | warn → high | 超過 `resources.thresholds`（有遲滯，需連續 2 次取樣；swap 只在記憶體吃緊時才算）；未處理時每小時重送。記憶體告警會先列出可回收的閒置 teammate |
+| `res:oom:<count>` | high | 核心的 OOM killer 觸發了 |
+| `res:idle-teammates:<code>` | info（記憶體吃緊時為 warn） | session 的 teammate 閒置超過 `resources.teammate_idle_minutes`（30） |
+| `operator:stale` | high → 30 分鐘後 urgent | `serve.enabled` 時：operator 的 heartbeat 超過 10 分鐘，或 `board-serve --watch` 沒在跑，而且有回答或訊息等著轉送 |
+
+`operator:stale` 補上了 operator session 悄悄掛掉的缺口：以前只有頁面上的橫幅會顯示。原始數字存在
+`resources.json`；snapshot 只帶等級，所以 operator 的 Monitor 不會每次取樣都被叫醒。`board resources`
+印出最近一次取樣，`board doctor` 顯示這個平台能取得哪些指標（macOS 和其他平台改用 `ps`；讀不到的會標示為
+不可用）。用 `resources.enabled: false` 關閉。
 
 ## 在用量上限下運作
 
@@ -866,7 +887,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 |---|---|
 | `docs/contract.md` | 具約束力的資料契約：本機檔案、資料庫 collection、生命週期階段與關卡、轉發格式、降級模式 |
 | `hooks/board-hook.sh` | 生命週期 hook：寫入 `state/<session_id>.json`、附加到 `events.jsonl`，永遠以 exit 0 結束 |
-| `bin/board` | CLI：`ls`、`snapshot`、`ask`、`task new/stage/ls/show`、`decisions`、`answer`、`mark`、`limit`、`press`、`notify`、`mute`、`unmute`、`notify-level`、`notify-presence`、`away`、`consensus`、`doctor`。結束碼：3 = 拒絕按鍵，4 = 拒絕回答／投票 |
+| `bin/board` | CLI：`ls`、`snapshot`、`ask`、`task new/stage/ls/show`、`decisions`、`answer`、`mark`、`limit`、`resources`、`press`、`notify`、`mute`、`unmute`、`notify-level`、`notify-presence`、`away`、`consensus`、`doctor`。結束碼：3 = 拒絕按鍵，4 = 拒絕回答／投票 |
 | `bin/board-collect` | 不耗 token 的收集器：snapshot、diff，每一輪執行 `board-notify`；首次安裝時用 `--baseline` |
 | `bin/board-notify`、`lib/notify.py` | 告警：`send`、`ack`、`tick`、`test`、`status`、`gate`。轉接器（slack、desktop、email、line、sns、webhook）、等級、升級、確認、勿擾時段、去除重複 |
 | `lib/prefs.py` | 通知控制：靜音、最低等級、在場（`board mute`、`notify-level`、`notify-presence`），以及 `lib/notify.py` 套用的送出規則 |
@@ -885,7 +906,9 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `.github/workflows/ci.yml` | CI：gitleaks、shellcheck、測試、readme-sync |
 | `.gitleaks.toml` | gitleaks 預設規則，加上針對測試 fixture 的小範圍允許清單 |
 | `lib/away.py` | 為 snapshot 和 `board-serve` 讀取 owner-away 模式與共識項目 |
-| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`），以及選用的頁面告警連結、通知控制、個人選單與主題、主畫面 app headless 檢查（`test_page_links.py`、`test_page_notify.py`、`test_page_profile.py`、`test_page_pwa.py`：需要 python playwright，沒有就略過；CI 不執行） |
+| `lib/resources.py` | 資源取樣器（記憶體、磁碟、OOM、每個 session 的程序與 teammate），產生 `resources.json`、snapshot 摘要和 `board resources` |
+| `docs/design/` | 設計文件，例如 `resources-and-scheduling.md`（資源、排程器、經驗） |
+| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`）、資源取樣器（`test_resources.py`，fixture `/proc`），以及選用的頁面告警連結、通知控制、個人選單與主題、主畫面 app headless 檢查（`test_page_links.py`、`test_page_notify.py`、`test_page_profile.py`、`test_page_pwa.py`：需要 python playwright，沒有就略過；CI 不執行） |
 | `CONTRIBUTING.md` | 開發環境設定、測試，以及讓 `README.zh-TW.md` 保持同步的規則 |
 | `fleet.example.yaml`、`.env.example` | 設定範例 |
 

@@ -18,6 +18,8 @@ trap cleanup EXIT
 export TZ=UTC
 export BOARD_HOME="$T/home"
 export BOARD_CONFIG_DIR="$T/config"
+# Resources: a calm fixture /proc (tests/fake_proc.py), so the live machine's numbers never alert.
+python3 "$REPO/tests/fake_proc.py" "$T/proc" && export BOARD_PROC_ROOT="$T/proc"
 unset BOARD_NOW_MS BOARD_STATUSLINE_NEXT BOARD_PUBLIC_URL
 while IFS='=' read -r k _; do
   case "$k" in SLACK_*|SMTP_*|ALERT_*|LINE_*|AWS_*) unset "$k" ;; esac
@@ -538,6 +540,151 @@ eq "board notify: text escaped, link added after escaping" "$(slack_text)" \
 "$REPO/bin/board" notify --link >/dev/null 2>&1; rc=$?
 eq "board notify --link without an id -> usage (2)" "$rc" "2"
 rm -f "$BOARD_HOME/alerts.json" "$BOARD_HOME/snapshot.json"
+
+echo "resources + operator (res:*, operator:stale):"
+RS0=$((T0 + 3 * 24 * 60 * MIN))
+rm -f "$BOARD_HOME/alerts.json" "$BOARD_HOME/snapshot.json" "$BOARD_HOME/usage.json"
+printf 'serve:\n  enabled: true\n' >"$BOARD_CONFIG_DIR/fleet.yaml"
+# res LEVELS_JSON [IDLE] [ORPHAN_IDLE] [OOM_RECENT] [WATCH] — resources.json sampled "now"
+res() {
+  jq -n --argjson at "$BOARD_NOW_MS" --argjson lv "$1" --argjson idle "${2:-false}" --argjson oi "${3:-false}" \
+    --argjson oom "${4:-false}" --argjson w "${5:-true}" '{at: $at, platform: "linux",
+    level: ([$lv[]] | if index("critical") then "critical" elif index("high") then "high" elif index("warn") then "warn" else "ok" end),
+    levels: $lv, mem: {total_mb: 16384, available_mb: 1900, available_pct: 12, psi_some_avg60: 0},
+    swap: {total_mb: 4096, used_pct: 10}, oom_kills: 3, oom_recent: $oom,
+    disks: [{id: "disk2", mount: "/data", total_mb: 102400, free_mb: 2048, free_pct: 2, level: "high", labels: ["API"]}],
+    sessions: [{code: "CP", children: [{class: "test", comm: "python3", rss_mb: 2100, heavy: true}],
+      teammates: [{name: "idle-one", rss_mb: 300, idle_s: 2400, idle: $idle}, {name: "busy-one", rss_mb: 350, idle_s: 0, idle: false}]}],
+    orphan_teammates: [{name: "lost-one", rss_mb: 250, idle_s: 3600, idle: $oi}],
+    teammate_idle_minutes: 30, operator: {watch: $w}}' >"$BOARD_HOME/resources.json"
+}
+opjson() { jq -n --argjson hb "$1" '{heartbeat_at: $hb, version: "t", operator_session: "BOARD"}' >"$BOARD_HOME/operator.json"; }
+pend() {  # pend N — N answered questions waiting for the relay, plus what the operator never relays:
+  # a question still pending on the owner and an answered permission prompt (board-serve presses it)
+  jq -n --argjson n "$1" '{generated_at: 0, sessions: [], limit: null,
+    decisions: ([range($n) | {id: "d-9-a\(.)", kind: "question", from: "CP", question: "q", status: "answered"}]
+      + [{id: "d-9-p", kind: "question", from: "CP", question: "q", status: "pending"},
+         {id: "d-9-x", kind: "permission", from: "CP", status: "answered"}])}' >"$BOARD_HOME/snapshot.json"
+}
+nosnap() { jq -n '{generated_at: 0, sessions: [], decisions: [], limit: null}' >"$BOARD_HOME/snapshot.json"; }
+at "$RS0"; opjson "$RS0"; nosnap; reset_calls
+res '{"mem":"warn","swap":"ok","load":"ok"}' true
+"$N" tick >/dev/null
+wait_calls "2/2/0/0/0/0"
+eq "res:mem warn" "$(alert res:mem .level)" "warn"
+eq "res:mem kind" "$(alert res:mem .kind)" "resources"
+eq "res:mem does not escalate" "$(alert res:mem .escalate)" "false"
+has "res:mem title" "$(alert res:mem .title)" "Memory warn: 12% available (1.9 GB of 16.0 GB)"
+has "res:mem body: reclaim idle teammates first" "$(alert res:mem .body)" "Reclaim idle teammates first: CP 1 idle (300 MB)."
+has "res:mem body: largest heavy process" "$(alert res:mem .body)" "Largest: CP python3 2.1 GB."
+eq "idle teammates under memory pressure -> warn" "$(alert res:idle-teammates:CP .level)" "warn"
+has "idle teammates title" "$(alert res:idle-teammates:CP .title)" "CP has 1 teammate(s) idle > 30 min (300 MB)"
+has "idle teammates: the board kills nothing" "$(alert res:idle-teammates:CP .body)" "never stops processes"
+eq "res:swap ok -> no alert" "$(alert res:swap .level)" "null"
+eq "operator fresh -> no operator:stale" "$(alert operator:stale .level)" "null"
+reset_calls
+at $((RS0 + MIN)); res '{"mem":"critical","swap":"ok"}' true; "$N" tick >/dev/null
+wait_mail 1
+eq "res:mem critical -> high" "$(alert res:mem .level)" "high"
+has "res:mem title follows" "$(alert res:mem .title)" "Memory critical"
+eq "high reaches email" "$(n_mail)" "1"
+reset_calls
+at $((RS0 + 40 * MIN)); res '{"mem":"critical"}' true; "$N" tick >/dev/null
+eq "res:mem: no time-based escalation" "$(alert res:mem .level)" "high"
+eq "40 min: nothing re-sent" "$(n_slack)" "0"
+at $((RS0 + 62 * MIN)); res '{"mem":"critical"}' true; "$N" tick >/dev/null
+eq "res:mem repeats after repeat_minutes" "$(n_slack)" "1"
+reset_calls
+at $((RS0 + 63 * MIN)); res '{"mem":"ok","swap":"ok"}' false; "$N" tick >/dev/null
+eq "mem ok -> res:mem resolved" "$(alert res:mem .resolved)" "true"
+eq "  auto-acked" "$(alert res:mem .acked_by)" "auto"
+eq "teammates no longer idle -> resolved" "$(alert res:idle-teammates:CP .resolved)" "true"
+eq "resolve sends nothing" "$(calls)" "0/0/0/0/0/0"
+res '{"mem":"ok","disk:disk2":"high"}' false false true; "$N" tick >/dev/null
+wait_mail 2
+eq "res:disk:disk2 high" "$(alert res:disk:disk2 .level)" "high"
+eq "disk title: an opaque id and what lives there, no path" "$(alert res:disk:disk2 .title)" "Disk disk2 (API) high: 2% free (2.0 GB)"
+hasnt "disk body: no teammate hint" "$(alert res:disk:disk2 .body)" "teammates"
+eq "res:oom:3 high" "$(alert res:oom:3 .level)" "high"
+has "oom title" "$(alert res:oom:3 .title)" "OOM kill: the kernel killed a process (3 so far)"
+eq "oom: one-shot" "$(alert res:oom:3 .repeat)" "false"
+reset_calls
+at $((RS0 + 130 * MIN)); res '{"mem":"ok","disk:disk2":"high"}' false false true; "$N" tick >/dev/null
+eq "oom not re-sent" "$(grep -l 'OOM kill' "$T"/curl/*.cfg 2>/dev/null | wc -l | tr -d ' ')" "0"
+reset_calls
+res '{"mem":"ok"}' true true; "$N" tick >/dev/null
+wait_calls "2/0/0/0/0/0"
+eq "disk ok -> resolved" "$(alert res:disk:disk2 .resolved)" "true"
+eq "oom over -> resolved" "$(alert res:oom:3 .resolved)" "true"
+eq "idle teammates without memory pressure -> info" "$(alert res:idle-teammates:CP .level)" "info"
+eq "orphaned idle teammates -> info" "$(alert res:orphan-teammates .level)" "info"
+has "orphan body" "$(alert res:orphan-teammates .body)" "lost-one (250 MB)"
+eq "info -> slack only" "$(calls)" "2/0/0/0/0/0"
+res '{"mem":"ok","swap":"high"}' true true; "$N" tick >/dev/null
+eq "swap alone does not promote idle teammates" "$(alert res:idle-teammates:CP .level)" "info"
+# A stale resources.json (collector stopped): res:* are neither opened nor resolved.
+at $((RS0 + 140 * MIN)); "$N" tick >/dev/null
+eq "stale sample keeps res:* as they are" "$(alert res:idle-teammates:CP .resolved)" "false"
+res '{"mem":"ok"}'; "$N" tick >/dev/null
+eq "fresh sample resolves again" "$(alert res:idle-teammates:CP .resolved)" "true"
+
+# operator:stale (J6): heartbeat old, or no board-serve --watch while serve is enabled, and
+# something waiting for the operator.
+echo '{}' >"$BOARD_HOME/alerts.json"; reset_calls
+OP0=$((RS0 + 300 * MIN))
+at "$OP0"; res '{"mem":"ok"}'; opjson $((OP0 - 11 * MIN)); pend 0; "$N" tick >/dev/null
+eq "old heartbeat, only owner-pending questions and answered prompts -> no alert" "$(alert operator:stale .level)" "null"
+pend 2; "$N" tick >/dev/null
+wait_mail 1
+eq "old heartbeat + pending -> operator:stale high" "$(alert operator:stale .level)" "high"
+has "operator:stale title" "$(alert operator:stale .title)" "Board operator is not running — 2 item(s) waiting"
+has "operator:stale reason" "$(alert operator:stale .body)" "heartbeat 11 min old"
+reset_calls
+at $((OP0 + 31 * MIN)); res '{"mem":"ok"}'; "$N" tick >/dev/null
+eq "30 min -> urgent" "$(alert operator:stale .level)" "urgent"
+eq "urgent reaches LINE" "$(grep -l 'api.line.me' "$T"/curl/*.cfg 2>/dev/null | xargs -r grep -l 'Board operator' | wc -l | tr -d ' ')" "1"
+reset_calls
+opjson $((OP0 + 31 * MIN)); "$N" tick >/dev/null
+eq "fresh heartbeat -> resolved" "$(alert operator:stale .resolved)" "true"
+eq "  auto-acked" "$(alert operator:stale .acked_by)" "auto"
+eq "resolve sends nothing" "$(calls)" "0/0/0/0/0/0"
+at $((OP0 + 40 * MIN)); res '{"mem":"ok"}' false false false false; opjson $((OP0 + 39 * MIN)); "$N" tick >/dev/null
+eq "watch missing while serve enabled -> new episode" "$(alert operator:stale .level)" "high"
+has "watch reason" "$(alert operator:stale .body)" "board-serve --watch is not running"
+eq "  new episode not acked" "$(alert operator:stale .acked_at)" "null"
+printf 'serve:\n  enabled: false\n' >"$BOARD_CONFIG_DIR/fleet.yaml"
+"$N" tick >/dev/null
+eq "serve disabled: the watch does not matter -> resolved" "$(alert operator:stale .resolved)" "true"
+printf 'serve:\n  enabled: true\n' >"$BOARD_CONFIG_DIR/fleet.yaml"
+pend 0; "$N" tick >/dev/null
+eq "nothing pending -> stays resolved" "$(alert operator:stale .resolved)" "true"
+printf 'serve:\n  enabled: true\nschedule:\n  operator_stale_minutes: 60\n' >"$BOARD_CONFIG_DIR/fleet.yaml"
+res '{"mem":"ok"}'; pend 1; opjson $((OP0 - 20 * MIN)); "$N" tick >/dev/null
+eq "operator_stale_minutes: 60 -> 60 min heartbeat is fine" "$(alert operator:stale .resolved)" "true"
+printf 'serve:\n  enabled: false\n' >"$BOARD_CONFIG_DIR/fleet.yaml"
+opjson $((OP0 - 120 * MIN)); "$N" tick >/dev/null
+eq "Artifact mode (serve off): an old operator.json is not judged" "$(alert operator:stale .resolved)" "true"
+# Quiet hours: high is held like any non-urgent alert; it passes once it turns urgent at 30 min.
+echo '{}' >"$BOARD_HOME/alerts.json"; reset_calls
+printf 'serve:\n  enabled: true\n' >"$BOARD_CONFIG_DIR/fleet.yaml"
+printf 'alerting:\n  quiet_hours: "00:00-23:59"\n' >"$BOARD_CONFIG_DIR/alerting.yaml"
+QO=$(( $(date -u -d '2026-11-20T01:00:00Z' +%s) * 1000 ))
+at "$QO"; res '{"mem":"ok"}'; opjson $((QO - 15 * MIN)); pend 1; "$N" tick >/dev/null
+eq "quiet hours: operator:stale opened at high" "$(alert operator:stale .level)" "high"
+eq "quiet hours: high held" "$(calls)" "0/0/0/0/0/0"
+at $((QO + 20 * MIN)); res '{"mem":"ok"}'; "$N" tick >/dev/null
+eq "quiet hours: still held at 20 min" "$(n_slack)" "0"
+at $((QO + 31 * MIN)); res '{"mem":"ok"}'; "$N" tick >/dev/null
+eq "quiet hours: urgent after 30 min" "$(alert operator:stale .level)" "urgent"
+[ "$(n_slack)" -ge 1 ] && ok "quiet hours: urgent is delivered" || bad "quiet hours: urgent is delivered" "$(calls)"
+rm -f "$BOARD_CONFIG_DIR/alerting.yaml"
+# A first run (no alerts.json) takes the open resource conditions as the baseline.
+rm -f "$BOARD_HOME/alerts.json"; reset_calls; nosnap
+res '{"mem":"high"}' true; "$N" tick >/dev/null 2>&1; rm -f "$BOARD_HOME/alerts.json"
+python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import notify; print(",".join(sorted(notify.baseline())))' "$REPO/lib" >"$T/base"
+eq "baseline acks res:* conditions" "$(cat "$T/base")" "res:idle-teammates:CP,res:mem"
+rm -f "$BOARD_HOME/alerts.json" "$BOARD_HOME/snapshot.json" "$BOARD_HOME/resources.json" "$BOARD_HOME/operator.json"
+: >"$BOARD_CONFIG_DIR/fleet.yaml"
 
 echo "statusline tap:"
 TAP="$REPO/hooks/board-statusline-tap.sh"

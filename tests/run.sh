@@ -15,6 +15,8 @@ export BOARD_HOME="$T/home"
 export BOARD_CONFIG_DIR="$T/config"
 export CLAUDE_SESSIONS_DIR="$T/sessions"
 export CLAUDE_SETTINGS="$T/settings.json"
+# Resources: a calm fixture /proc (tests/fake_proc.py), so the live machine's numbers never alert.
+python3 "$REPO/tests/fake_proc.py" "$T/proc" && export BOARD_PROC_ROOT="$T/proc"
 unset TMUX_PANE BOARD_PUBLIC_URL
 # Alert channels: nothing from the real environment, and never a real desktop toast.
 while IFS= read -r v; do unset "$v"; done < <(compgen -e | grep -E '^(SLACK_|SMTP_|ALERT_|LINE_|AWS_)')
