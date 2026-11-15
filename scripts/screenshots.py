@@ -19,6 +19,7 @@ playwright expects is not installed.
 """
 import argparse
 import base64
+import json
 import datetime as dt
 import os
 import sys
@@ -40,10 +41,13 @@ SHOTS = {
     "decisions": ("Decision cards: a permission prompt with Allow / Deny and a question with its options", DESKTOP, "light", 1),
     "notifications": ("The Notifications dialog: mutes, triage floor and presence", {"width": 1280, "height": 1100}, "light", 1),
     "resources": ("The Resources section: memory, swap, disks and per-session processes", DESKTOP, "light", 1),
-    "profile-menu": ("The profile menu: identity, roles, theme switcher and API keys", DESKTOP, "light", 1),
+    "usage-popover": ("The usage popover: both windows with reset times, the threshold reached and the account", DESKTOP, "light", 1),
+    "profile-menu": ("The profile menu: identity, roles, theme and language switchers, API keys", DESKTOP, "light", 1),
     "phone-dark": ("The board on a phone, dark mode", PHONE, "dark", 2),
     "pwa-standalone": ("The board as an iPhone home-screen app, clear of the status bar", {"width": 393, "height": 852}, "light", 2),
+    "overview-zh": ("The board in Traditional Chinese (繁體中文)", DESKTOP, "light", 1),
 }
+LANG = {"overview-zh": "zh-TW"}  # shots in another language; English otherwise
 
 WEBP_JS = """async ([b64, q]) => {
   const img = new Image();
@@ -107,7 +111,7 @@ def union(page, sels, pad=12):
 
 def shoot(page, name):
     """Set the page up for one shot and return the PNG bytes."""
-    if name in ("overview-light", "overview-dark", "phone-dark", "pwa-standalone"):
+    if name in ("overview-light", "overview-dark", "phone-dark", "pwa-standalone", "overview-zh"):
         return page.screenshot()
     if name == "session-card":
         page.click('article[aria-label="Session API"] .scard-toggle')
@@ -121,6 +125,10 @@ def shoot(page, name):
         return page.locator("#notif").screenshot()
     if name == "resources":
         return page.locator("#resources").screenshot()
+    if name == "usage-popover":
+        page.hover("#usage")
+        page.wait_for_timeout(200)
+        return page.screenshot(full_page=True, clip=union(page, ["#usage", "#usage-pop"], pad=16))
     if name == "profile-menu":
         page.click("#acct-btn")
         page.wait_for_timeout(200)
@@ -164,6 +172,8 @@ def main(argv):
                                       timezone_id="UTC", locale="en-US", reduced_motion="reduce")
             if name == "pwa-standalone":
                 ctx.add_init_script("Object.defineProperty(navigator, 'standalone', { get: () => true });")
+            # The language is chosen before the page's pre-paint script reads it.
+            ctx.add_init_script("try { localStorage.setItem('switchboard.lang', %s); } catch (e) {}" % json.dumps(LANG.get(name, "en")))
             page = ctx.new_page()
             page.clock.set_fixed_time(DEMO_TIME)
             if name == "pwa-standalone":
