@@ -287,10 +287,12 @@ dialog.notif { width: min(720px, calc(100vw - 24px)); }
 .panecard .pq-q { margin: 0 0 8px; }
 .panecard .pq-head { font-family: var(--f-mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
 .panecard .pq-opts { display: grid; gap: 6px; margin: 4px 0 8px; padding: 0; list-style: none; }
+.panecard .pq-free { display: flex; margin: 0 0 8px; }
+.panecard .pq-free .pq-text { flex: 1 1 auto; min-width: 0; }
 .panecard .pq-opt { display: flex; flex-direction: column; align-items: flex-start; text-align: left; gap: 2px; width: 100%; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 .panecard .pq-opt small, .panecard .pq-ro small { color: var(--muted); font-weight: 400; }
 .panecard .pq-ro { border: 1px solid var(--rule); border-radius: 6px; padding: 6px 10px; overflow-wrap: anywhere; }
-.free input { flex: 1 1 200px; min-width: 0; font: inherit; font-size: 14px; padding: 7px 10px; border-radius: 5px; border: 1px solid var(--rule); background: var(--paper); color: var(--ink); }
+.free input, .panecard .pq-free input { flex: 1 1 200px; min-width: 0; font: inherit; font-size: 14px; padding: 7px 10px; border-radius: 5px; border: 1px solid var(--rule); background: var(--paper); color: var(--ink); }
 .confirm-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .confirm-row .q { font-size: 14px; font-weight: 600; flex-basis: 100%; }
 .dfoot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; align-items: center; font-size: 13px; color: var(--muted); border-top: 1px solid var(--rule); padding-top: 10px; }
@@ -1796,6 +1798,13 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
 
   const isGateDecision = (d) => !!(d.gate || d.stage);
   const isProdGate = (d) => stageIndex(d.gate) === 5 || stageIndex(d.stage) === 5;
+  // Free text for a session's picker, as board-serve and board answer keep it: control, escape and
+  // line-break characters (a newline would submit early), zero-width and bidi controls become
+  // spaces; runs of space one; trimmed.
+  const FREE_TEXT_MAX = 200;
+  function cleanText(v) {
+    return str(v).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, FREE_TEXT_MAX);
+  }
   function optionClass(o) {
     const v = lc(o);
     if (/^(approve|approved|allow|yes|ship)/.test(v)) return 'allow';
@@ -1813,6 +1822,8 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
     const formOk = d.pressable === true && qs.length > 1 && qs.every((q) => !q.multiSelect);
     const multi = formOk && (isLocal() || S.demo);
     const picks = Array.isArray(S.drafts[d.id + ':picks']) ? S.drafts[d.id + ':picks'] : qs.map(() => null);
+    // Free text per question ("Type something" in the session's form): a pick or a text, never both.
+    const texts = Array.isArray(S.drafts[d.id + ':texts']) ? S.drafts[d.id + ':texts'] : qs.map(() => '');
     const busy = S.busy.has(d.id), offline = operatorOffline(), appr = approverState();
     const who = str(d.from) || tr('A session');
     const card = h('article', { id: 'dec-' + d.id, class: 'dcard question panecard' + (offline ? ' queued' : ''), 'aria-label': tr('Question from {who}', { who }) });
@@ -1826,7 +1837,7 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
     const live = pressable && !busy && canAnswer();
     const liveMulti = multi && !busy && canAnswer();
     let sendMulti = null;
-    const pickedAll = () => picks.length === qs.length && picks.every((x) => Number.isInteger(x));
+    const pickedAll = () => picks.length === qs.length && qs.every((q, i) => Number.isInteger(picks[i]) || !!cleanText(texts[i]));
     const list = qs.length ? qs : [{ question: str(d.question) || tr('Question'), options: [] }];
     // The hook clips a long question (the picker in the session shows it whole); say so.
     // Only the question text itself: a clipped header alone is not marked.
@@ -1849,6 +1860,9 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
             onclick: () => {
               picks[qi] = i + 1;
               S.drafts[d.id + ':picks'] = picks.slice();
+              texts[qi] = ''; S.drafts[d.id + ':texts'] = texts.slice();  // an option replaces typed text
+              const ti = box.querySelector('.pq-text');
+              if (ti) ti.value = '';
               for (const x of group.querySelectorAll('.pq-opt')) {
                 const on = x === b;
                 x.classList.toggle('picked', on); x.setAttribute('aria-pressed', on ? 'true' : 'false');
@@ -1859,6 +1873,20 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
           group.append(b);
         });
         box.append(group);
+        // Or type a different answer for this question: typing clears its option pick.
+        const ti = h('input', { class: 'pq-text', type: 'text', maxlength: String(FREE_TEXT_MAX), value: texts[qi] || '',
+          placeholder: tr('Or type a different answer'), 'aria-label': tr('Type something for question {n}', { n: qi + 1 }),
+          dataset: { q: String(qi + 1), focus: 'answer-' + (qi + 1) } });
+        ti.value = texts[qi] || '';
+        ti.addEventListener('input', () => {
+          texts[qi] = ti.value; S.drafts[d.id + ':texts'] = texts.slice();
+          if (cleanText(ti.value) && picks[qi] != null) {
+            picks[qi] = null; S.drafts[d.id + ':picks'] = picks.slice();
+            for (const x of group.querySelectorAll('.pq-opt')) { x.classList.remove('picked'); x.setAttribute('aria-pressed', 'false'); }
+          }
+          if (sendMulti) sendMulti.disabled = !pickedAll();
+        });
+        box.append(h('div', { class: 'pq-free' }, ti));
       } else if (live) {
         box.append(h('div', { class: 'pq-opts', role: 'group', 'aria-label': tr('Options') },
           opts.map((o, i) => h('button', { class: 'btn option pq-opt', type: 'button', dataset: { option: String(i + 1) },
@@ -1878,10 +1906,13 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
       sendMulti = h('button', { class: 'btn primary', type: 'button', disabled: !pickedAll(), dataset: { focus: 'send-form' },
         onclick: () => {
           if (!pickedAll()) return;
-          const text = qs.map((q, i) => (str(q.header).trim() || 'Q' + (i + 1)) + ': ' + str((q.options || [])[picks[i] - 1] && q.options[picks[i] - 1].label)).join(' · ');
-          answerDecision(d, text, null, picks.slice());
+          const parts = qs.map((q, i) => (Number.isInteger(picks[i]) ? { option: picks[i] } : { text: cleanText(texts[i]) }));
+          const text = qs.map((q, i) => (str(q.header).trim() || 'Q' + (i + 1)) + ': ' + (parts[i].text != null ? parts[i].text
+            : str((q.options || [])[picks[i] - 1] && q.options[picks[i] - 1].label))).join(' · ');
+          if (parts.some((x) => x.text != null)) answerDecision(d, text, null, null, parts.map((x, i) => Object.assign({ question_index: i }, x)));
+          else answerDecision(d, text, null, picks.slice());
         }, text: tr('Send answers') });
-      card.append(h('div', { class: 'free' }, h('span', { class: 'help', text: tr('Pick one option for each question, then send them together.') }), sendMulti));
+      card.append(h('div', { class: 'free' }, h('span', { class: 'help', text: tr('Pick an option or type an answer for each question, then send them together.') }), sendMulti));
     } else if (multi && busy) {
       card.append(h('p', { class: 'saving', text: tr('Sending your answer…') }));
     } else if (formOk && !multi) {
@@ -2054,7 +2085,10 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
     config: 'the board\'s press settings are incomplete',
   };
   // Only the fixed codes are worded; anything else (free text a db record may carry) never reaches the page.
-  const reasonText = (d) => (typeof d.status_reason === 'string' && Object.hasOwn(REASONS, d.status_reason) ? tr(REASONS[d.status_reason]) : tr('reason not recorded'));
+  // A form of several questions is never "typed into the question": its keys went in, it was not submitted.
+  const isForm = (d) => Array.isArray(d.questions) && d.questions.length > 1;
+  const reasonText = (d) => (typeof d.status_reason === 'string' && Object.hasOwn(REASONS, d.status_reason)
+    ? tr(d.status_reason === 'partial' && isForm(d) ? 'keys were sent but the form was not submitted' : REASONS[d.status_reason]) : tr('reason not recorded'));
   function renderDecisions() {
     const pend = pendingDecisions();
     $('#dec-empty').hidden = pend.length > 0;
@@ -3801,18 +3835,18 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
 
   // Called synchronously from a click / key press. Nothing is awaited before
   // room.sendToClaudeSession so the viewer's gesture still counts.
-  function answerDecision(d, answer, option, options) {
+  function answerDecision(d, answer, option, options, answers) {
     if (!canAnswer()) return;
     if (S.demo) {
       const i = S.decisions.findIndex((x) => x.id === d.id);
       if (i >= 0) S.decisions[i] = Object.assign({}, d, { status: 'answered', answer, answered_by: S.me, answered_at: Date.now() });
-      S.confirm = null; delete S.drafts[d.id]; delete S.drafts[d.id + ':picks'];
+      S.confirm = null; delete S.drafts[d.id]; delete S.drafts[d.id + ':picks']; delete S.drafts[d.id + ':texts'];
       renderAll(); toast(tr('Demo: answer shown on this page only.') + ' ' + relayNote(true));
       return;
     }
     const offline = operatorOffline(), appr = approverState();
     let writeP;
-    try { writeP = adapter.answer(d, answer, option, options); } catch (e) { writeP = Promise.reject(e); }
+    try { writeP = adapter.answer(d, answer, option, options, answers); } catch (e) { writeP = Promise.reject(e); }
     // Nothing to ping when the operator is down or the answer will not be relayed.
     const sendP = offline || appr === false ? null : adapter.fastPath('decision', d.id);
     S.busy.add(d.id); S.confirm = null;
@@ -3820,14 +3854,22 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
     writeP.catch(() => {});
     (async () => {
       let ok = true, res = null;
-      try { res = await writeP; } catch (e) { ok = false; handleWriteError(e, !S.decisions.some((x) => x.id === d.id && isOpen(x))); }
+      try { res = await writeP; } catch (e) {
+        ok = false;
+        if (e && e.code === 'partial' && isForm(d)) toast(tr('Keys were sent to the form but it was not submitted. Finish it in the session.'), true);
+        else handleWriteError(e, !S.decisions.some((x) => x.id === d.id && isOpen(x)));
+      }
       S.busy.delete(d.id);
-      if (ok) {
-        delete S.drafts[d.id]; delete S.drafts[d.id + ':picks'];
+      // Drafts (typed text, picks) go only once the answer was accepted; anything not delivered
+      // keeps them, so nothing typed is lost.
+      const accepted = ok && (!isLocal() || !res || res.status === 'relayed' || res.status === 'answered');
+      if (ok && !accepted) toast(tr('Not delivered. Your answers are kept: try again or answer in the session.'), true);
+      if (accepted) {
+        delete S.drafts[d.id]; delete S.drafts[d.id + ':picks']; delete S.drafts[d.id + ':texts'];
         let sent = false;
         if (sendP) { try { await sendP; sent = true; } catch (e) { sent = false; } }
         // board-serve presses permission prompts itself: report what happened.
-        if (isLocal() && res && res.status === 'relayed' && options) toast(tr('Answers picked and submitted in {who}.', { who: str(d.from) || tr('the session') }));
+        if (isLocal() && res && res.status === 'relayed' && (options || answers)) toast(tr('Answers picked and submitted in {who}.', { who: str(d.from) || tr('the session') }));
         else if (isLocal() && res && res.status === 'relayed') toast(tr('Pressed {key} in {who}.', { key: trKnown(answer, ['allow', 'deny']), who: str(d.from) || tr('the session') }));
         else toast(tr('Answer saved') + ' · ' + (appr === false ? tr('not relayed: you are not an approver.') : offline ? tr('queued until the operator returns.') : sent ? tr('Sent to operator.') : queuedText()));
       }
@@ -4187,8 +4229,8 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
         };
       },
       // A form of several questions sends only its option numbers: board-serve composes the answer.
-      answer(d, answer, option, options) {
-        return post('/api/decisions/' + encodeURIComponent(d.id) + '/answer', options ? { options } : option ? { answer, option } : { answer });
+      answer(d, answer, option, options, answers) {
+        return post('/api/decisions/' + encodeURIComponent(d.id) + '/answer', answers ? { answers } : options ? { options } : option ? { answer, option } : { answer });
       },
       sendMessage(ids, targets, body) { return Promise.all(targets.map((to) => post('/api/messages', { to, body }))); },
       // Approvers only, after the second (confirm) click: a message the secret guard held.
@@ -5392,7 +5434,11 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
       "no sessions": "沒有 session",
       "Options for question {n}": "問題 {n} 的選項",
       "Send answers": "送出回答",
-      "Pick one option for each question, then send them together.": "每一題選一個選項，再一起送出。",
+      "Pick an option or type an answer for each question, then send them together.": "每題選一個選項或輸入回答，再一起送出。",
+      "Type something for question {n}": "輸入第 {n} 題的回答",
+      "keys were sent but the form was not submitted": "按鍵已送出，但表單沒有送出",
+      "Keys were sent to the form but it was not submitted. Finish it in the session.": "按鍵已送到表單，但表單沒有送出。請到 session 中完成。",
+      "Not delivered. Your answers are kept: try again or answer in the session.": "未送達。你的回答已保留：請再試一次，或到 session 中回答。",
       "Answer on the self-hosted board or in the session (multi-question form).": "請在自架看板或 session 中回答（多題表單）。",
       "Your choices are picked in {who}'s form one question at a time, then submitted.": "你的選擇會在 {who} 的表單中逐題選取，然後送出。",
       "Answers picked and submitted in {who}.": "已在 {who} 選取並送出回答。",

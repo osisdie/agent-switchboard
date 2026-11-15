@@ -96,6 +96,24 @@ STATIC_CACHE = "private, max-age=86400"  # private: behind Access, never cached 
 DEFAULT_PORT = 39410
 MAX_BODY = 16 * 1024
 MAX_ANSWER = 500
+MAX_FREE_TEXT = 200     # typed into "Type something" (bin/board FREE_TEXT_MAX)
+# What a typed answer loses before it is checked and typed: control and escape characters, line
+# breaks (Enter would submit early or move the focus), zero-width and bidi controls.
+FREE_TEXT_STRIP_RE = re.compile("[\x00-\x1f\x7f-\x9f\u2028\u2029\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]+")
+
+
+def clean_free_text(text):
+    return re.sub(r"\s+", " ", FREE_TEXT_STRIP_RE.sub(" ", text)).strip(" ")
+
+
+def is_free_text_label(text):
+    """Does TEXT read as the picker's own "Type something." row (press.free_text_label)? Such a
+    text could not be told apart from that row on screen, so it is refused."""
+    label = str(fleet.get_key(fleet.load_fleet(), "press.free_text_label") or "")
+    try:
+        return bool(label) and re.fullmatch("(?:%s)[.…]*" % label, text, re.IGNORECASE) is not None
+    except re.error:
+        return True
 MAX_MESSAGE = 4000
 MAX_IDLE_MS = 24 * 3600 * 1000   # presence: idle_ms above a day is refused (400)
 MAX_SSE = 32            # per listener, so the tunnel can't starve the local browser
@@ -1028,7 +1046,42 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # A form of several questions (a pane question): {"options": [i, j, ...]}, one option number
         # per question, checked against the decision below; no answer text.
         options = body.get("options")
-        if options is not None:
+        # The same form with free text for some questions: {"answers": [{"question_index": 0,
+        # "option": 2}, {"question_index": 1, "text": "..."}, ...]}, one per question, in order.
+        # Text is cleaned like board answer does (control, escape and line-break characters become
+        # spaces), capped, and screened by the secret guard; it reaches the CLI by file.
+        answers = body.get("answers")
+        texts = None
+        if answers is not None:
+            if options is not None or body.get("answer") is not None or body.get("option") is not None:
+                raise Refused(400, "bad_answers", "answers go without options, answer or option")
+            if not isinstance(answers, list) or not 2 <= len(answers) <= 4:
+                raise Refused(400, "bad_answers", "answers must be one entry per question (2-4)")
+            options, texts = [], []
+            for i, a in enumerate(answers):
+                if not isinstance(a, dict) or set(a) - {"question_index", "option", "text"} \
+                        or ("question_index" in a and (type(a["question_index"]) is not int or a["question_index"] != i)) \
+                        or ("option" in a) == ("text" in a):
+                    raise Refused(400, "bad_answers", "each answer is {question_index, option} or {question_index, text}, in order")
+                if "option" in a:
+                    o = a["option"]
+                    if isinstance(o, bool) or not isinstance(o, int) or not 1 <= o <= 8:
+                        raise Refused(400, "bad_answers", "an option is a number 1-8")
+                    options.append(o)
+                    texts.append(None)
+                else:
+                    t = a["text"]
+                    if not isinstance(t, str) or len(t) > MAX_ANSWER:
+                        raise Refused(400, "bad_answers", "a text answer is a string (max %d chars)" % MAX_ANSWER)
+                    t = clean_free_text(t)
+                    if not t or len(t) > MAX_FREE_TEXT or t.endswith("\\;"):
+                        raise Refused(400, "bad_answers", "a text answer must be 1-%d characters of one line" % MAX_FREE_TEXT)
+                    if is_free_text_label(t):
+                        raise Refused(400, "bad_answers", "a text answer may not be the \"Type something\" row itself")
+                    options.append(0)  # its "Type something" row, set below from the question
+                    texts.append(t)
+            body = dict(body, answer="(answers)")
+        elif options is not None:
             if not isinstance(options, list) or not 2 <= len(options) <= 4 or any(
                     isinstance(o, bool) or not isinstance(o, int) or not 1 <= o <= 8 for o in options):
                 raise Refused(400, "bad_options", "options must be one option number (1-8) per question")
@@ -1074,12 +1127,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     raise Refused(400, "bad_options", "%d options for %d questions" % (len(options), len(qs)))
                 for i, (o, q) in enumerate(zip(options, qs)):
                     n = len(q.get("options") or []) if isinstance(q, dict) else 0
-                    if o > n:
+                    if texts is not None and texts[i] is not None:
+                        options[i] = n + 1  # the "Type something" row
+                        if n + 1 > 9:
+                            raise Refused(400, "bad_answers", "question %d has too many options for free text" % (i + 1))
+                    elif o > n:
                         raise Refused(400, "bad_options", "question %d has %d options" % (i + 1, n))
             # A free-text answer is relayed as [BOARD decision], the most trusted channel: it must not
             # ask the session for a secret value. (Picking one of the session's own options is fine,
             # and a form answered by option numbers is nothing but the session's own options.)
-            reason = None if kind == "permission" or options is not None else guard.screen_answer(raw_answer, dec.get("options"))
+            if texts is not None:
+                qs = dec.get("questions") or []
+                # A secret-shaped value in a text would be typed into the session and kept in the
+                # decision file as it is: held, like a request for a secret (never typed redacted).
+                reason = next(("a text answer holds a secret-shaped value" for t in texts
+                               if t is not None and guard.scrub(t) != t), None) or next((r for r in (guard.screen_answer(t, [o.get("label") for o in (qs[i].get("options") or [])
+                                                                  if isinstance(o, dict)])
+                                           for i, t in enumerate(texts) if t is not None) if r), None)
+            else:
+                reason = None if kind == "permission" or options is not None else guard.screen_answer(raw_answer, dec.get("options"))
             if reason:
                 self.audit(ident, via, "answer", id=did, result="held", reason=reason)
                 messages.audit(home, {"action": "held-answer", "id": did, "by": by, "reason": reason})
@@ -1107,7 +1173,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 raise Refused(400, "bad_option", "option is only for a question shown in a session")
             # The answer goes by file, never as an argument: "-", "--help" or "--answer-file" typed on
             # the board are recorded literally and are never read as options.
-            if options is not None:
+            if texts is not None:
+                fd, afile = tempfile.mkstemp(prefix=".form.", dir=home)
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                        json.dump([{"question_index": i, "text": t} if t is not None else {"question_index": i, "option": o}
+                                   for i, (o, t) in enumerate(zip(options, texts))], fh, ensure_ascii=False)
+                    rc, out, err = self.board("answer", did, "--form-file", afile, "--by", by)
+                finally:
+                    try:
+                        os.unlink(afile)
+                    except OSError:
+                        pass
+            elif options is not None:
                 rc, out, err = self.board("answer", did, "--options", ",".join(str(o) for o in options), "--by", by)
             else:
                 fd, afile = tempfile.mkstemp(prefix=".answer.", dir=home)
@@ -1121,6 +1199,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         os.unlink(afile)
                     except OSError:
                         pass
+            if rc == 6 and texts is not None:
+                self.audit(ident, via, "answer", id=did, result="held", reason="secret guard (board answer)")
+                raise Refused(400, "held_answer", "not recorded or relayed: a text answer asks for a secret value")
             if rc == 2 and options is not None:
                 self.audit(ident, via, "answer", id=did, result="refused", reason="options do not match")
                 raise Refused(400, "bad_options", "those options do not match the questions; reload and try again")
@@ -1134,7 +1215,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # Never report success unless the file really holds this answer by this person.
             rec = read_json(os.path.join(home, "decisions", did + ".json")) or {}
             if options is not None:
-                answer = rec.get("answer") if rec.get("answer_options") == options else None
+                answer = rec.get("answer") if rec.get("answer_options") == options \
+                    and (rec.get("answer_texts") or None) == (texts if texts is not None else None) else None
             if rc != 0 or rec.get("status") != "answered" or rec.get("answer") != answer \
                     or rec.get("answered_by") != by:
                 log("board answer %s failed (rc %d): %s %s" % (did, rc, err, out))
