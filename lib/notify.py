@@ -1185,6 +1185,7 @@ def main(argv):
     p.add_argument("--json", action="store_true")
     p = sub.add_parser("ack")
     p.add_argument("keys", nargs="+")
+    p.add_argument("--by", default="cli", help="who acknowledged (recorded as acked_by)")
     p = sub.add_parser("tick")
     p.add_argument("--json", action="store_true")
     p = sub.add_parser("test")
@@ -1206,7 +1207,7 @@ def main(argv):
     if args.cmd == "ack":
         n = 0
         for k in args.keys:
-            for key in ack(k):
+            for key in ack(k, by=args.by):
                 print("acked %s" % key)
                 n += 1
         return 0 if n else 1

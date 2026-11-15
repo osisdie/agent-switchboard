@@ -175,6 +175,12 @@ eq "operator heartbeat" "$(body '.operator.heartbeat_at')" "$NOW"
 eq "operator fields are an allowlist" "$(body '.operator | has("secret_field")')" "false"
 eq "usage pct" "$(body '.operator.usage.five_hour.pct')" "42"
 eq "usage drops session_id" "$(body '.operator.usage | has("session_id")')" "false"
+eq "burn rate from usage-samples.json (an old report: stale)" "$(body '.operator.usage.burn.status')" "stale"
+eq "  burn fields are an allowlist, no samples" "$(body '.operator.usage.burn | keys | join(",")')" "hit_at,n,pct_per_hour,status"
+jq -n --argjson now "$NOW" '{resets_at: ($now + 7200000), samples: [{t: $now, pct: 60}],
+  burn: {status: "danger", pct_per_hour: 30, hit_at: ($now + 4800000), n: 12, extra: "x"}, computed_at: $now}' > "$BOARD_HOME/usage-samples.json"
+sleep 1.3
+eq "  a new burn rate reaches the state (signature)" "$(req GET /api/state >/dev/null; body '.operator.usage.burn | "\(.status)/\(.pct_per_hour)/\(.n)/\(has("extra"))"')" "danger/30/12/false"
 eq "approver_ids from fleet.yaml" "$(body '.operator.approver_ids | join(",")')" "local,boss@example.com"
 eq "limit null when none" "$(body '.operator.limit')" "null"
 
@@ -414,6 +420,33 @@ eq "presence off" "$(post /api/notify-prefs '{"op":"presence","reduce":false}')"
 eq "  reply" "$(body .notify.presence.reduce)" "false"
 eq "presence on at urgent" "$(post /api/notify-prefs '{"op":"presence","reduce":true,"level":"urgent"}')" "200"
 eq "  reply" "$(body '"\(.notify.presence.reduce)/\(.notify.presence.min_level)"')" "true/urgent"
+echo "alerts ack:"
+AJ="$BOARD_HOME/alerts.json"
+cp "$AJ" "$T/alerts.saved" 2>/dev/null || echo '{}' > "$T/alerts.saved"
+seed_alerts() {
+  jq -n --argjson now "$NOW" '{"decision:d-1-q1": {level: "warn", first_at: $now, last_at: $now, acked_at: null},
+    "session:CP:needs-you": {level: "high", first_at: $now, last_at: $now, acked_at: null},
+    "usage:five_hour:80": {level: "warn", first_at: $now, last_at: $now, acked_at: 5, acked_by: "cli"}}' > "$AJ"
+}
+seed_alerts
+for b in '{}' '{"scope":"some"}' '{"scope":"*"}' '{"scope":["all"]}'; do
+  eq "bad body refused: $b" "$(post /api/alerts/ack "$b")" "400"
+done
+eq "  refused POSTs ack nothing" "$(jq '[.[] | select(.acked_at == null)] | length' "$AJ")" "2"
+eq "alerts ack without X-Board refused" "$(req POST /api/alerts/ack -H 'Content-Type: application/json' -H "$ORIGIN" --data-binary '{"scope":"all"}')" "403"
+eq "alerts ack cross-origin refused" "$(req POST /api/alerts/ack -H 'Content-Type: application/json' -H 'X-Board: 1' -H 'Origin: https://evil.example' --data-binary '{"scope":"all"}')" "403"
+eq "alerts ack text/plain refused" "$(req POST /api/alerts/ack -H 'Content-Type: text/plain' -H 'X-Board: 1' -H "$ORIGIN" --data-binary '{"scope":"all"}')" "415"
+eq "alerts ack with a forwarded header refused" "$(post /api/alerts/ack '{"scope":"all"}' -H 'X-Forwarded-For: 203.0.113.9')" "403"
+eq "alerts ack by GET is not a route" "$(req GET /api/alerts/ack)" "404"
+eq "  still nothing acked" "$(jq '[.[] | select(.acked_at == null)] | length' "$AJ")" "2"
+eq "approver acks every open alert" "$(post /api/alerts/ack '{"scope":"all"}')" "200"
+eq "  reply: how many" "$(body '"\(.status)/\(.acked)"')" "ok/2"
+eq "  all acked, by board:local" "$(jq -r '[.[] | select(.acked_at == null)] | length' "$AJ")/$(jq -r '[.["decision:d-1-q1"].acked_by, .["session:CP:needs-you"].acked_by] | join(",")' "$AJ")" "0/board:local,board:local"
+eq "  an alert acked earlier keeps its ack" "$(jq -r '.["usage:five_hour:80"] | "\(.acked_at)/\(.acked_by)"' "$AJ")" "5/cli"
+eq "  audited" "$(evlast alerts-ack '.by + "/" + .scope + "/" + .result + "/" + (.acked | tostring)')" "local/all/ok/2"
+eq "  logged as alert-ack events" "$(jq -s '[.[] | select(.type=="alert-ack" and .by=="board:local")] | length' "$BOARD_HOME/events.jsonl")" "2"
+eq "nothing open: still 200, none acked" "$(post /api/alerts/ack '{"scope":"all"}')/$(body .acked)" "200/0"
+cp "$T/alerts.saved" "$AJ"
 echo "presence:"
 PRF="$BOARD_HOME/presence.json"
 for b in '{}' '{"visible":"yes"}' \
@@ -610,6 +643,10 @@ eq "empty approvers: notify-prefs refused" "$(post /api/notify-prefs '{"op":"mut
 eq "  error no_approvers" "$(body .error)" "no_approvers"
 eq "empty approvers: presence refused" "$(post /api/presence '{"visible":true}')" "403"
 eq "  error no_approvers" "$(body .error)" "no_approvers"
+seed_alerts
+eq "empty approvers: alerts ack refused" "$(post /api/alerts/ack '{"scope":"all"}')" "403"
+eq "  error no_approvers" "$(body .error)" "no_approvers"
+eq "  nothing acked" "$(jq '[.[] | select(.acked_at == null)] | length' "$AJ")" "2"
 if [ -e "$BOARD_HOME/notify-prefs.json" ] || [ -e "$BOARD_HOME/presence.json" ]; then bad "  nothing written"; else ok "  nothing written"; fi
 write_cfg "" "[boss@example.com]"
 start
@@ -626,6 +663,11 @@ eq "  notify-prefs refused for a non-approver" "$(post /api/notify-prefs '{"op":
 eq "  error not_approver" "$(body .error)" "not_approver"
 eq "  refusal audited" "$(jq -s -r '[.[] | select(.type=="serve" and .action=="notify-prefs")] | last | .result + "/" + .reason + "/" + .channel' "$BOARD_HOME/events.jsonl")" "refused/not an approver/slack"
 eq "  presence refused for a non-approver" "$(post /api/presence '{"visible":true}')" "403"
+eq "  alerts ack refused for a non-approver" "$(post /api/alerts/ack '{"scope":"all"}')" "403"
+eq "  error not_approver" "$(body .error)" "not_approver"
+eq "  nothing acked" "$(jq '[.[] | select(.acked_at == null)] | length' "$AJ")" "2"
+eq "  refusal audited" "$(evlast alerts-ack '.result + "/" + .reason')" "refused/not an approver"
+cp "$T/alerts.saved" "$AJ"
 if [ -e "$BOARD_HOME/notify-prefs.json" ] || [ -e "$BOARD_HOME/presence.json" ]; then bad "  nothing written"; else ok "  nothing written"; fi
 # MUST-FIX: a non-approver must never cancel an approver's answer that waits for the relay.
 dec d-1-q6 question
@@ -775,6 +817,14 @@ EOF
   eq "  notify-prefs without a JWT refused (never local)" "$(tpost /api/notify-prefs '{"op":"unmute","channel":"all"}' "${TUNNEL_HDRS[@]}")" "401"
   eq "  mute still in place after the refusals" "$(jq -r '.mutes.email.by' "$BOARD_HOME/notify-prefs.json")" "board:boss@example.com"
   eq "  a release manager who is not an approver may not" "$(tpost /api/notify-prefs '{"op":"unmute","channel":"all"}' "${TUNNEL_HDRS[@]}" -H "$(jwt rm)")" "403"
+  seed_alerts
+  eq "tunnel: alerts ack without a JWT refused (never local)" "$(tpost /api/alerts/ack '{"scope":"all"}' "${TUNNEL_HDRS[@]}")" "401"
+  eq "  local Origin refused on the tunnel" "$(tpost /api/alerts/ack '{"scope":"all"}' -H 'Host: board.example.com' -H "Origin: http://127.0.0.1:$TPORT" -H "$(jwt good)")" "403"
+  eq "  a release manager who is not an approver may not" "$(tpost /api/alerts/ack '{"scope":"all"}' "${TUNNEL_HDRS[@]}" -H "$(jwt rm)")" "403"
+  eq "  nothing acked yet" "$(jq '[.[] | select(.acked_at == null)] | length' "$AJ")" "2"
+  eq "tunnel: an approver acks from the phone" "$(tpost /api/alerts/ack '{"scope":"all"}' "${TUNNEL_HDRS[@]}" -H "$(jwt good)")/$(body .acked)" "200/2"
+  eq "  recorded as board:<email>" "$(jq -r '.["decision:d-1-q1"].acked_by' "$AJ")" "board:boss@example.com"
+  cp "$T/alerts.saved" "$AJ"
   rm -f "$BOARD_HOME/notify-prefs.json" "$BOARD_HOME/presence.json"
   eq "tunnel: messages carry the email" "$(tpost /api/messages '{"to":"CP","body":"from phone"}' "${TUNNEL_HDRS[@]}" -H "$(jwt good)" >/dev/null; jq -r .by "$BOARD_HOME/messages/$(body .id).json")" "boss@example.com"
   # serve.tunnel.allowed_emails lets a viewer in who is not an approver: they read, never decide.
@@ -797,6 +847,10 @@ EOF
   eq "    error not_approver" "$(body .error)" "not_approver"
   eq "    audited with the token's email" "$(jq -s -r '[.[] | select(.type=="serve" and .action=="notify-prefs")] | last | .by + "/" + .via + "/" + .result' "$BOARD_HOME/events.jsonl")" "intruder@example.com/cf-jwt/refused"
   eq "  a viewer's presence heartbeat: 403" "$(tpost /api/presence '{"visible":true}' "${TUNNEL_HDRS[@]}" -H "$(jwt nobody)")" "403"
+  seed_alerts
+  eq "  a viewer acks alerts: 403" "$(tpost /api/alerts/ack '{"scope":"all"}' "${TUNNEL_HDRS[@]}" -H "$(jwt nobody)")" "403"
+  eq "    nothing acked" "$(jq '[.[] | select(.acked_at == null)] | length' "$AJ")" "2"
+  cp "$T/alerts.saved" "$AJ"
   if [ -e "$BOARD_HOME/notify-prefs.json" ] || [ -e "$BOARD_HOME/presence.json" ]; then bad "    nothing written"; else ok "    nothing written"; fi
   eq "  --check lists the allowed emails" "$("$REPO/bin/board-serve" --check | grep -c '^emails .*intruder@example.com')" "1"
   eq "local listener still local with the tunnel on" "$(req GET /api/state >/dev/null; body .me)" "local"

@@ -31,6 +31,8 @@ listeners (docs/contract.md, "Local adapter API"):
                                        only; via `board mute|unmute|notify-level|notify-presence`)
   POST /api/presence                   {"visible": bool, "idle_ms": ms}  (approvers only;
                                        the board page's heartbeat, recorded in presence.json)
+  POST /api/alerts/ack                 {"scope": "all"}  (approvers only; the Deck panel's
+                                       "acknowledge all", via `board ack --by board:<identity> '*'`)
 
 --check prints the resolved settings and exits. --watch serves nothing: it prints one line per
 item the local-mode operator must relay (see prompts/board-operator.md, "Local mode").
@@ -107,6 +109,7 @@ DECISION_KEYS = ("id", "kind", "from", "question", "options", "context", "tool_u
                  # pane questions (an AskUserQuestion picker): source "pane"
                  "source", "questions", "questions_clipped", "pressable", "answer_index", "relay")
 OPERATOR_KEYS = ("heartbeat_at", "version", "operator_session", "account_hint")
+BURN_KEYS = ("status", "pct_per_hour", "hit_at", "n")
 
 
 def log(msg):
@@ -360,7 +363,8 @@ class StateBuilder:
 
     def signature(self):
         h = hashlib.sha1()
-        paths = [self.p(n) for n in ("snapshot.json", "usage.json", "account.json", "limit.json", "operator.json",
+        paths = [self.p(n) for n in ("snapshot.json", "usage.json", "usage-samples.json", "account.json",
+                                    "limit.json", "operator.json",
                                     "ledger.json", "events.jsonl", "owner-away", prefs.PREFS_FILE)]
         paths.append(self.p("resources.json"))  # rewritten on a bucketed change, else every 60 s
         for sub in ("decisions", "tasks", "consensus"):
@@ -479,6 +483,9 @@ class StateBuilder:
         usage = read_json(self.p("usage.json"))
         if isinstance(usage, dict):
             operator["usage"] = {k: usage.get(k) for k in ("five_hour", "seven_day", "updated_at") if k in usage}
+            burn = (read_json(self.p("usage-samples.json")) or {}).get("burn")
+            if isinstance(burn, dict):
+                operator["usage"]["burn"] = {k: burn.get(k) for k in BURN_KEYS}
         lim = limit.active()
         operator["limit"] = {k: lim.get(k) for k in ("hit_at", "kind", "resets_at", "note")} if lim else None
         ledger = read_json(self.p("ledger.json"))
@@ -882,6 +889,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if path == "/api/presence":
                 body = self.read_body()
                 return self.presence(body, ident, via)
+            if path == "/api/alerts/ack":
+                body = self.read_body()
+                return self.ack_alerts(body, ident, via)
             raise Refused(404, "not_found")
         except Refused as exc:
             return self.refuse(exc)
@@ -1204,6 +1214,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if changed:
             self.audit(ident, via, "presence", visible=visible, result="ok")
         return self.send_json(200, {"status": "ok", "visible": visible})
+
+
+    def ack_alerts(self, body, ident, via):
+        """The Deck panel's "acknowledge all": stops the escalation of every open alert (what
+        `board ack '*'` does in a terminal). Approvers only; the alerts stay on the board, and a
+        condition that opens again alerts again."""
+        if body.get("scope") != "all":
+            raise Refused(400, "bad_scope", "scope must be \"all\"")
+        by = self.approver(ident, via, "alerts-ack", what="acknowledge alerts", scope="all")
+        with self.server.write_lock:
+            rc, out, err = self.board("ack", "--by", "board:%s" % by, "*")
+            if rc != 0 and not (rc == 1 and not err):  # 1 and silent: nothing was open
+                log("board ack failed (rc %d): %s %s" % (rc, err, out))
+                self.audit(ident, via, "alerts-ack", scope="all", result="error", rc=rc)
+                raise Refused(500, "ack_failed", "the alerts could not be acknowledged")
+            n = sum(1 for line in out.splitlines() if line.startswith("acked "))
+            self.audit(ident, via, "alerts-ack", scope="all", result="ok", acked=n)
+        self.hub_kick()
+        return self.send_json(200, {"status": "ok", "acked": n})
 
 
 class Server(http.server.ThreadingHTTPServer):
