@@ -98,6 +98,33 @@ HOST_LIGHT = """(() => {
 })();"""
 
 
+# The host stamps data-theme="light" after the pre-paint script and before the app script runs:
+# when the parser adds #toasts, the element right before the app's <script>.
+HOST_LIGHT_LATE = """(() => {
+  new MutationObserver((recs, o) => {
+    for (const r of recs) for (const n of r.addedNodes) if (n.id === 'toasts') { document.documentElement.setAttribute('data-theme', 'light'); o.disconnect(); return; }
+  }).observe(document, { subtree: true, childList: true });
+})();"""
+
+# A stand-in for the claude.ai viewer: claude.use('user') and claude.use('db') with an empty board
+# and a meta/operator document. %s is a JSON object {me, operator}.
+CLAUDE_STUB = """(() => {
+  const cfg = %s;
+  const snap = (docs) => ({ docs, metadata: { fromCache: false } });
+  const query = () => { const q = { orderBy: () => q, limit: () => q,
+    onSnapshot(cb) { setTimeout(() => cb(snap([])), 0); return () => {}; } }; return q; };
+  const doc = (path) => ({
+    onSnapshot(cb) { const d = path === 'meta/operator' ? Object.assign({ heartbeat_at: Date.now() }, cfg.operator) : null;
+      setTimeout(() => cb({ exists: !!d, data: () => d }), 0); return () => {}; },
+    set: async () => {}, update: async () => {} });
+  const db = { collection: query, doc };
+  const me = Object.assign({ id: 'u_test_me', name: '', avatarUrl: '', color: '#777', email: null, isOwner: false, canEdit: false }, cfg.me);
+  const user = { id: async () => me.id, canEdit: async () => me.canEdit, isOwner: async () => me.isOwner,
+    can: async () => null, me: async () => me };
+  window.claude = { use: (name) => Promise.resolve(name === 'user' ? user : name === 'db' ? db : null) };
+})();"""
+
+
 def free_port():
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
@@ -171,6 +198,14 @@ def main():
             pg.keyboard.press("Enter")
             pg.wait_for_timeout(100)
             check("Enter on the button opens it again", pg.evaluate(MENU_JS)["open"])
+            ring = pg.evaluate("() => { const p = document.getElementById('acct-panel'); return { fv: p.matches(':focus-visible'), outline: getComputedStyle(p).outlineStyle }; }")
+            check("opened from the keyboard: the panel shows a focus ring", ring == {"fv": True, "outline": "solid"}, ring)
+            pg.keyboard.press("Escape")
+            pg.mouse.click(10, 700)  # a mouse user: focus on the page, not on the button
+            pg.click("#acct-btn")
+            pg.wait_for_timeout(100)
+            ring = pg.evaluate("() => { const p = document.getElementById('acct-panel'); return { fv: p.matches(':focus-visible'), outline: getComputedStyle(p).outlineStyle }; }")
+            check("opened with the mouse: no focus ring", ring["outline"] == "none", ring)
             pg.mouse.click(10, 700)
             pg.wait_for_timeout(100)
             check("a click outside closes it", not pg.evaluate(MENU_JS)["open"])
@@ -228,8 +263,35 @@ def main():
             s, t = pg.evaluate(MENU_JS), pg.evaluate(THEME_JS)
             check("host theme kept over the stored choice", t["attr"] == "light" and t["bg"] == LIGHT_BG, t)
             check("switcher disabled, shows the host's theme, says why", s["themeDisabled"] and s["checked"] == "light" and s["themeNote"], s)
+            pg.evaluate("() => document.documentElement.setAttribute('data-theme', 'dark')")
+            pg.wait_for_timeout(100)
+            s = pg.evaluate(MENU_JS)
+            check("the host switches to dark: the menu follows at once", s["themeDisabled"] and s["checked"] == "dark", s)
+            pg.evaluate("() => document.documentElement.removeAttribute('data-theme')")
+            pg.wait_for_timeout(100)
+            s, t = pg.evaluate(MENU_JS), pg.evaluate(THEME_JS)
+            check("the host removes its stamp: the stored choice applies again", t["attr"] == "dark" and t["bg"] == DARK_BG, t)
+            check("  and the switcher is back", not s["themeDisabled"] and s["checked"] == "dark" and not s["themeNote"], s)
+            theme_btn(pg, "light")
+            t = pg.evaluate(THEME_JS)
+            check("  and works again", t["attr"] == "light" and t["stored"] == "light", t)
             pg.evaluate("() => localStorage.removeItem('switchboard.theme')")
             pg.close()
+
+            pg = new_page([HOST_LIGHT_LATE], scheme="dark")
+            pg.goto(DEMO)
+            pg.wait_for_timeout(300)
+            pg.evaluate("() => localStorage.setItem('switchboard.theme', 'dark')")
+            pg.reload()
+            pg.wait_for_timeout(300)
+            pg.click("#acct-btn")
+            pg.wait_for_timeout(100)
+            s, t = pg.evaluate(MENU_JS), pg.evaluate(THEME_JS)
+            check("a stamp between the pre-paint and app scripts is kept", t["attr"] == "light" and t["bg"] == LIGHT_BG, t)
+            check("  and the switcher follows it", s["themeDisabled"] and s["checked"] == "light" and s["themeNote"], s)
+            pg.evaluate("() => localStorage.removeItem('switchboard.theme')")
+            pg.close()
+
             pg = new_page()
             pg.goto(DEMO)
             pg.wait_for_timeout(300)
@@ -240,6 +302,30 @@ def main():
             s = pg.evaluate(MENU_JS)
             check("a host stamp after load: the switcher follows it", s["themeDisabled"] and s["checked"] == "dark" and s["themeNote"], s)
             pg.close()
+
+            print("claude adapter (stubbed viewer):")
+            claude_page = "file://" + PAGE_FILE
+            for label, cfg, want in (
+                ("approver, release_manager_ids empty: both roles (fallback)",
+                 {"me": {}, "operator": {"approver_ids": ["u_test_me"], "release_manager_ids": []}},
+                 {"name": "You", "avatar": "Y", "via": "Signed in to claude.ai · cannot edit this board", "roles": ["Approver", "Release manager"]}),
+                ("named owner who edits, release manager only",
+                 {"me": {"name": "Jane Doe", "isOwner": True, "canEdit": True},
+                  "operator": {"approver_ids": ["u_other"], "release_manager_ids": ["u_test_me"]}},
+                 {"name": "Jane Doe", "avatar": "JD", "via": "Signed in to claude.ai · owner · can edit this board", "roles": ["Release manager"]}),
+                ("in neither list: viewer",
+                 {"me": {}, "operator": {"approver_ids": ["u_other"], "release_manager_ids": []}},
+                 {"name": "You", "avatar": "Y", "via": "Signed in to claude.ai · cannot edit this board", "roles": ["Viewer"]})):
+                pg = new_page(CLAUDE_STUB % json.dumps(cfg))
+                pg.goto(claude_page)
+                pg.wait_for_timeout(500)
+                pg.click("#acct-btn")
+                pg.wait_for_timeout(200)
+                s = pg.evaluate(MENU_JS)
+                got = {k: s[k] for k in want}
+                check("claude: " + label, got == want, got)
+                check("  API keys not enabled, no sign-out", s["keysOff"] and s["keys"] == [] and not s["signout"], s)
+                pg.close()
 
             print("local adapter (board-serve):")
             home, cfg, sess = (os.path.join(tmp, x) for x in ("home", "config", "sessions"))
