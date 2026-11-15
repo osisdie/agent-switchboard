@@ -1334,32 +1334,42 @@ class Handler(http.server.BaseHTTPRequestHandler):
         known |= {s["code"] for s in fleet.load_fleet()["sessions"]}
         return code in known
 
+    @staticmethod
+    def _audit_str(v):
+        """A request value for the audit log: a short string, or "?"."""
+        return v if isinstance(v, str) and len(v) <= 64 and not fleet.CONTROL_RE.search(v) else "?"
+
     def set_rc(self, body, ident, via):
         """POST /api/rc {code|"all", state}: Remote Control for one session or all of them. For
-        one session it is the same as POST /api/sessions/<code>/action {action: rc_on|rc_off}."""
+        one session it is the same as POST /api/sessions/<code>/action {action: rc_on|rc_off}.
+        Who is asking is checked first, so a refused probe is audited whatever it sent."""
         code, state = body.get("code"), body.get("state")
+        by = self.approver(ident, via, "rc", what="change Remote Control",
+                           code=self._audit_str(code), state=self._audit_str(state))
         if state not in ("on", "off"):
             raise Refused(400, "bad_state", "state must be \"on\" or \"off\"")
         if code != "all" and not self.known_code(code):
             raise Refused(400, "bad_code", "code must be a session on this board or \"all\"")
-        return self.session_action(code, "rc_" + state, ident, via, route="rc")
+        return self.session_action(code, "rc_" + state, ident, via, route="rc", by=by)
 
     def action(self, code, body, ident, via):
-        """POST /api/sessions/<code>/action {action}: an allowlisted session action."""
+        """POST /api/sessions/<code>/action {action}: an allowlisted session action. Approvers
+        only, checked before the input."""
         name = body.get("action")
+        by = self.approver(ident, via, "session-action", what="run session actions",
+                           code=self._audit_str(code), name=self._audit_str(name))
         if name not in actions.ACTIONS:
             raise Refused(400, "bad_action", "action must be one of %s" % ", ".join(sorted(actions.ACTIONS)))
         if not self.known_code(code):
             raise Refused(404, "not_found", "no such session on this board")
-        return self.session_action(code, name, ident, via)
+        return self.session_action(code, name, ident, via, by=by)
 
-    def session_action(self, code, name, ident, via, route="action"):
-        """Approvers only. The choice (rc) or the queue entry (compact) is stored at once through
-        the board CLI (argv); typing into the pane (seconds, or until the session is idle) runs
-        in the background (`board session apply`), and the page follows it in the snapshot."""
+    def session_action(self, code, name, ident, via, route="action", by=None):
+        """The choice (rc) or the queue entry (compact) is stored at once through the board CLI
+        (argv); typing into the pane (seconds, or until the session is idle) runs in the
+        background (`board session apply`), and the page follows it in the snapshot."""
         audit_action = "rc" if route == "rc" else "session-action"
         kw = {"code": code, "state": name[3:]} if route == "rc" else {"code": code, "name": name}
-        by = self.approver(ident, via, audit_action, what="run session actions", **kw)
         if name == "compact":
             argv = ["session", code, "compact", "--by", "board:%s" % by, "--queue-only"]
         else:
