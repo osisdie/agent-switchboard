@@ -434,7 +434,7 @@ cat > "$T/bin/tmux" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >> "$FAKE_TMUX_LOG"
 case "$1" in
-  display-message) echo "${FAKE_TMUX_SESSION:-CP}" ;;
+  display-message) case "$*" in *pane_current_command*) echo "${FAKE_TMUX_CMD-claude}" ;; *) echo "${FAKE_TMUX_SESSION:-CP}" ;; esac ;;
   capture-pane)
     # FAKE_TMUX_SEQ: a directory of screens 1, 2, ... shown one per capture (the last one repeats).
     n=0
@@ -517,6 +517,7 @@ eq "...decision pending again, answer cleared, with a note" \
 eq "...logged as not_visible" "$(jq -s -r '[.[] | select(.type=="press")] | last | .result' "$BOARD_HOME/events.jsonl")" "not_visible"
 eq "...no scroll key without the scrolled indicator" "$(grep -c 'C-End' "$FAKE_TMUX_LOG")" "0"
 "$B" answer "$d" allow --by user-1 >/dev/null
+eq "...answering again clears the press note" "$(jq -r 'has("press_note")' "$BOARD_HOME/decisions/$d.json")" "false"
 FAKE_TMUX_SCREEN="$(screen "rm -rf build")" press CP allow --expect "$tu"
 eq "...answered again, the prompt on screen -> press ok" "$?/$(jq -r .status "$BOARD_HOME/decisions/$d.json")" "0/relayed"
 : > "$FAKE_TMUX_LOG"
@@ -524,6 +525,7 @@ hook "$(jq -cn --arg s "$SID" --arg tu "$tu" '{session_id: $s, hook_event_name: 
 read -r tu d <<<"$(perm "rm -rf build-b")"; "$B" answer "$d" allow --by user-1 >/dev/null
 FAKE_TMUX_SESSION=OTHER FAKE_TMUX_SCREEN="$(screen "rm -rf build-b")" press CP allow --expect "$tu"
 eq "pane of another tmux session -> exit 3" "$?" "3"
+eq "...status_reason unknown_session" "$(jq -r .status_reason "$BOARD_HOME/decisions/$d.json")" "unknown_session"
 read -r tu d <<<"$(perm "rm -rf build-c")"; "$B" answer "$d" allow --by user-1 >/dev/null
 FAKE_TMUX_SCREEN="$(screen "rm -rf /")" press CP allow --expect "$tu"
 eq "prompt on screen is about other input -> exit 3" "$?" "3"
@@ -532,6 +534,7 @@ read -r tu d <<<"$(perm "rm -rf build-d")"; "$B" answer "$d" allow --by user-1 >
 jq '.pending.summary_sha256 = "0000"' "$BOARD_HOME/state/$SID.json" > "$T/sx" && mv "$T/sx" "$BOARD_HOME/state/$SID.json"
 FAKE_TMUX_SCREEN="$(screen "rm -rf build-d")" press CP allow --expect "$tu"
 eq "pending input sha differs from the decision -> exit 3" "$?" "3"
+eq "...status_reason moved_on" "$(jq -r .status_reason "$BOARD_HOME/decisions/$d.json")" "moved_on"
 read -r tu d <<<"$(perm "rm -rf build-e")"; "$B" answer "$d" allow --by user-1 >/dev/null
 FAKE_TMUX_MUTATE="$BOARD_HOME/state/$SID.json" FAKE_TMUX_SCREEN="$(screen "rm -rf build-e")" press CP allow --expect "$tu"
 eq "prompt changed while checking (re-read before send-keys) -> exit 3" "$?" "3"
@@ -885,6 +888,7 @@ eq "...stale once the session moved on, status_reason moved_on" "$(dj "$d" .stat
 d="$(askq tu_s3 "$Q1")"; "$B" answer "$d" "Blue" --by user-1 >/dev/null
 FAKE_TMUX_MUTATE_AT=2 FAKE_TMUX_MUTATE="$BOARD_HOME/state/$SID.json" seqpress tu_s3 "$SCR" "$SCR"
 eq "scrolled, and the state moved on meanwhile -> exit 3, stale" "$?/$(dj "$d" .status)" "3/stale"
+eq "...status_reason moved_on" "$(dj "$d" .status_reason)" "moved_on"
 qdone tu_s3
 d="$(askq tu_s4 "$Q1")"; "$B" answer "$d" "Blue" --by user-1 >/dev/null
 printf 'press:\n  scroll_key: ""\n' >> "$BOARD_CONFIG_DIR/fleet.yaml"
@@ -892,14 +896,47 @@ seqpress tu_s4 "$SCR" "$U"
 eq "press.scroll_key empty -> no key sent, exit 7" "$?/$(keys_sent)" "7/"
 sed -i '/^press:$/,$d' "$BOARD_CONFIG_DIR/fleet.yaml"
 qdone tu_s4
+# Only a whole-line indicator in the last 2 non-blank lines scrolls: text the session writes never does.
+pn=0
+for probe in "we have 3 new messages for you" "see the list below ↓" "ctrl+End to jump" "I wrote: 3 new messages (ctrl+End) ↓"; do
+  pn=$((pn + 1))
+  d="$(askq "tu_pr$pn" "$Q1")"; "$B" answer "$d" "Blue" --by user-1 >/dev/null
+  seqpress "tu_pr$pn" "$(junk)
+$probe" "$U"
+  eq "no scroll key for '$probe' -> exit 7, nothing sent" "$?/$(keys_sent)" "7/"
+  qdone "tu_pr$pn"
+done
+d="$(askq tu_z2 "$Q1")"; "$B" answer "$d" "Blue" --by user-1 >/dev/null
+seqpress tu_z2 "$(junk)
+  4 new messages (ctrl+End) ↓
+line after
+another line" "$U"
+eq "indicator above the last 2 lines -> no scroll key" "$?/$(keys_sent)" "7/"
+qdone tu_z2
+# The pane must run Claude Code's TUI: a shell there would read the keys as readline input.
+d="$(askq tu_z3 "$Q1")"; "$B" answer "$d" "Blue" --by user-1 >/dev/null
+FAKE_TMUX_CMD=bash seqpress tu_z3 "$SCR" "$U"
+eq "pane runs a shell -> exit 3, nothing sent, stale" "$?/$(keys_sent)/$(dj "$d" .status)" "3//stale"
+qdone tu_z3
+d="$(askq tu_z4 "$Q1")"; "$B" answer "$d" "Blue" --by user-1 >/dev/null
+FAKE_TMUX_CMD=claude.exe seqpress tu_z4 "$U"
+eq "claude.exe counts as the TUI" "$?/$(keys_sent)" "0/send-keys -t %42 2|"
+qdone tu_z4
+# An unauthorized answer, then an approver's: status_reason not_approver is cleared.
+d="$(askq tu_z5 "$Q1")"
+"$B" answer "$d" "Blue" --by intruder >/dev/null 2>&1
+eq "a non-approver's answer -> not_approver" "$(dj "$d" .status_reason)" "not_approver"
+"$B" answer "$d" "Blue" --by user-1 >/dev/null
+eq "...an approver's answer clears it" "$(dj "$d" '.status + "/" + (has("status_reason") | tostring)')" "answered/false"
+qdone tu_z5
 
 # board mark --reason: only the fixed codes.
-d="$(askq tu_m1 "$Q1")"
+d="$(askq tu_mk1 "$Q1")"
 "$B" mark "$d" stale --reason "rm -rf /" >/dev/null 2>&1
 eq "mark --reason with free text -> exit 2, untouched" "$?/$(dj "$d" .status)" "2/pending"
 "$B" mark "$d" stale --reason operator >/dev/null
 eq "mark --reason operator" "$(dj "$d" '.status + "/" + .status_reason')" "stale/operator"
-qdone tu_m1
+qdone tu_mk1
 
 # --option: the clicked button's number must match the label.
 d="$(askq tu_q6i "$Q1")"

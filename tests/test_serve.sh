@@ -73,7 +73,7 @@ cat > "$T/bin/tmux" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >> "$FAKE_TMUX_LOG"
 case "$1" in
-  display-message) echo CP ;;
+  display-message) case "$*" in *pane_current_command*) echo claude ;; *) echo CP ;; esac ;;
   list-panes) printf '%%42\t✳ Clean the build in /secret/path/build\n' ;;
   capture-pane) cat "$FAKE_TMUX_SCREEN" ;;
   send-keys) exit 0 ;;

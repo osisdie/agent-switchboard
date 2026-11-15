@@ -44,10 +44,14 @@ DEFAULTS = {
         "review_regex": r"Review your answers",
         "focus_regex": r"(❯|>|›)",
         "submit_label": r"Submit answers",
-        # The TUI scrolled up with a prompt open: "4 new messages (ctrl+End) ↓" in its last lines.
-        # board press then sends scroll_key (scroll to the bottom; never submits) once and looks again.
-        "scrolled_regex": r"[0-9]+ new messages?|ctrl\+End|↓[[:space:]]*$",
+        # The TUI scrolled up with a prompt open: one of its last 2 non-blank lines is, as a whole line,
+        # "4 new messages (ctrl+End) ↓". board press then sends scroll_key (scroll to the bottom; never
+        # submits in Claude Code's TUI) once and looks again.
+        "scrolled_regex": r"^[[:space:]]*[0-9]+ new messages? .*ctrl\+End.*$",
         "scroll_key": "C-End",
+        # The pane's #{pane_current_command} must match this (Claude Code's TUI) before any key.
+        # Empty: not checked.
+        "tui_command_regex": r"^(claude|node)",
     },
     # Session actions (lib/actions.py): fixed slash commands typed into an idle session's empty
     # prompt box, and what the pane must show before and after (Claude Code's own screens;

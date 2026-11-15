@@ -71,7 +71,7 @@ SCREEN = (" ☐ Color\n\nWhich color do you prefer for the test?\n\n❯ 1. Red\n
 FAKE_TMUX = """#!/usr/bin/env bash
 echo "$*" >> "$FAKE_TMUX_LOG"
 case "$1" in
-  display-message) echo CP ;;
+  display-message) case "$*" in *pane_current_command*) echo claude ;; *) echo CP ;; esac ;;
   capture-pane) cat "$FAKE_TMUX_SCREEN" ;;
 esac
 exit 0
