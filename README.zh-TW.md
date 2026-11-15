@@ -16,7 +16,7 @@
 以及哪些事正在等人類做決定。你可以直接在看板上回答，用手機也行。
 
 同一個看板頁面可以走**兩種通道**：自架（`board-serve`，透過 Cloudflare Tunnel 並以 Cloudflare Access
-把關，手機就連得到），以及 claude.ai Artifact。**建議兩者並用。**請見
+把關，手機就連得到），以及 claude.ai Artifact。**建議兩者並用**。請見
 [兩種通道](#two-channels-self-hosted-and-artifact-recommended-both)。
 
 > 狀態：早期階段。資料契約在 [`docs/contract.md`](docs/contract.md)，其餘一切都以它為依據。
@@ -26,10 +26,10 @@
 你在 tmux 裡常駐好幾個 Claude Code session，一個 repo 或一個領域一個（例如 `API`、`WEB`、`INFRA`、
 `DOCS`），彼此用 `SendMessage` 協調。這樣做沒問題，直到：
 
-- **你搞不清楚誰卡住了。**某個 session 在你一小時沒看的 pane 裡等權限提示。
-- **要人決定的事散落各處。**問題分散在四個 pane、兩串 Slack 討論和某個 teammate 的回報裡，沒有任何地方告訴你
+- **你搞不清楚誰卡住了**。某個 session 在你一小時沒看的 pane 裡等權限提示。
+- **要人決定的事散落各處**。問題分散在四個 pane、兩串 Slack 討論和某個 teammate 的回報裡，沒有任何地方告訴你
   「這 3 件事要你處理」。
-- **session 分不出哪個是你的決定、哪個是別的 session 的建議。**其他 session 傳來「使用者核准了 X」，
+- **session 分不出哪個是你的決定、哪個是別的 session 的建議**。其他 session 傳來「使用者核准了 X」，
   並不等於核准。
 
 ## 核心概念
@@ -204,7 +204,7 @@ scripts/expose-cloudflare.sh --hostname board.example.com --tunnel board        
    看板首頁。`board doctor` 會檢查這個網址（只接受 https，不能有 query 或 fragment）；沒設定的話，
    告警就不帶看板連結。
 
-**建議：在全新、context 小的 session 裡執行 operator。**operator 每隔幾分鐘醒來一次，**每次
+**建議：在全新、context 小的 session 裡執行 operator**。operator 每隔幾分鐘醒來一次，**每次
 tick 都會重新讀取整個 context**，所以對話拖得越長，每次 tick 就越貴。比較好的做法是讓 `BOARD`
 每次都全新啟動，從持久化的狀態重建。提示檔、`board snapshot`／`board decisions` 和看板資料庫裡已經有它需要的一切：
 
@@ -223,7 +223,7 @@ sessions:
 
 **自動啟動**（選用）。詳見 [`autostart/README.md`](autostart/README.md)：
 
-- **有 systemd 的 Linux／WSL：**把 `claude-fleet.service` 複製到 `~/.config/systemd/user/`，然後執行
+- **有 systemd 的 Linux／WSL**：把 `claude-fleet.service` 複製到 `~/.config/systemd/user/`，然後執行
   `systemctl --user enable --now claude-fleet.service`。在 WSL 中，要在 `/etc/wsl.conf` 的 `[boot]`
   底下設定 `systemd=true`。
 - **Windows（WSL）：**`windows-task.ps1 -Distro <name>` 會註冊一個每位使用者各自的登入工作
@@ -279,7 +279,7 @@ flowchart LR
 | **Production gate** | 不適用 | **由 release manager 授權；agent 在此停下** |
 | Maintain | 新的 `intent.md` | 服務負責人分類處理 |
 
-- **每個階段都讀取上一個階段的最後一個 commit。**沒有任何東西是憑記憶或從未 commit 的草稿開始跑的。
+- **每個階段都讀取上一個階段的最後一個 commit**。沒有任何東西是憑記憶或從未 commit 的草稿開始跑的。
 - **每次核准都有紀錄**：寫在產出物的 `## Approvals` 段落、commit trailer，以及看板上只能附加的
   `approvals/` 紀錄。在本機，每一個經過授權的關卡回答，`board answer` 都會在 `events.jsonl` 寫一筆
   `type: "approval"` 事件，並帶有 `result: approved|rejected`。一連串的 commit 加上這份紀錄，就是稽核軌跡。
@@ -296,7 +296,7 @@ flowchart LR
   階段：`plan design build test deploy production maintain`。產出物 key：`intent spec plan evals
   review`。`board answer` 會把核准類的回答（見 `board answer --help`）記成 `approved`。其他任何回答，
   包括 `request changes`，都記成 `rejected`，任務留在原本的階段。
-- **Production 是特例。**沒有授權 `gate: production` 決策的 `[BOARD decision]`（或在 pane 裡的回答），
+- **Production 是特例**。沒有授權 `gate: production` 決策的 `[BOARD decision]`（或在 pane 裡的回答），
   worker 絕不部署到 production。只有回答的人在 `release_managers` 裡（`release_managers` 是空的時候則看
   `approvers`），operator 才會轉發那個決策。如果兩者都沒有設定，所有回答都會被拒絕（**fail closed**），
   決策會一直維持 pending，直到有人設定 release manager。名單以外的人的回答會標成 `unauthorized`。
@@ -308,13 +308,13 @@ flowchart LR
 ### 這週先拿一個低風險服務試試
 
 - [ ] **挑一個低風險的服務**，不要挑最關鍵的那個。內部工具或文件網站最理想。
-- [ ] **加上規則。**安裝 [`delivery-harness`](playbook/delivery-harness/SKILL.md) skill，並填好它的
+- [ ] **加上規則**。安裝 [`delivery-harness`](playbook/delivery-harness/SKILL.md) skill，並填好它的
       「Configure once」表格。
-- [ ] **把 intent 寫成檔案。**第一個任務從 `intent.md` 開始，讓 agent 在那裡提問。
-- [ ] **用 CLAUDE.md + hook，讓規則不只存在 wiki 裡。**把
+- [ ] **把 intent 寫成檔案**。第一個任務從 `intent.md` 開始，讓 agent 在那裡提問。
+- [ ] **用 CLAUDE.md + hook，讓規則不只存在 wiki 裡**。把
       [`snippets/worker-protocol.md`](snippets/worker-protocol.md) 貼進 `CLAUDE.md`，並執行
       `scripts/install.sh` 安裝 hook。
-- [ ] **指定 release manager。**在第一個任務走到 production gate 之前，把他們的使用者 ID 寫進
+- [ ] **指定 release manager**。在第一個任務走到 production gate 之前，把他們的使用者 ID 寫進
       `fleet.yaml` 的 `release_managers`。
 
 ### Session 狀態
@@ -330,12 +330,12 @@ flowchart LR
 
 ### 決策
 
-- **關卡。**階段關卡是一個連結到任務、階段和產出物的問題型決策（見上文）。回答就是選項的文字：
+- **關卡**。階段關卡是一個連結到任務、階段和產出物的問題型決策（見上文）。回答就是選項的文字：
   `approve` 讓任務進入下一個階段，`request changes` 則讓它留在同一個階段修改。
-- **問題。**worker 執行 `board ask --from API "Ship behind a flag?" --option yes --option no`，
+- **問題**。worker 執行 `board ask --from API "Ship behind a flag?" --option yes --option no`，
   同時也在自己的 pane 裡發問。你可以在看板或 pane 上回答，先回答的算數。operator 會把看板上的回答以
   `[BOARD decision <id>] <answer> (by owner on board)` 的格式轉發。
-- **權限提示。**卡片會顯示工具名稱，以及其輸入內容的摘要（最多 200 個字元），讓你知道自己允許的是什麼。
+- **權限提示**。卡片會顯示工具名稱，以及其輸入內容的摘要（最多 200 個字元），讓你知道自己允許的是什麼。
   摘要裡看起來像 token 的值會被替換成 `[REDACTED]`。按下 **Allow** 或 **Deny** 後，operator 會執行
   `board answer <id> allow|deny --by <you>`，接著執行 `board press <CODE> allow|deny --expect <tool_use_id>`。
   只有**每一項檢查**都通過，才會透過 `tmux send-keys` 送出按鍵：
@@ -352,7 +352,7 @@ flowchart LR
   畫面檢查失敗時，不會送出任何按鍵，卡片會變成 **stale**（「請到 session 裡處理」）。如果 hook 無法判斷
   某個提示屬於哪一次工具呼叫（`ambiguous`），就完全不建立卡片。每一次按鍵嘗試都會記錄到 `events.jsonl`。
 
-  **坦白說風險：**這是畫面自動化。這些防護讓按錯鍵的機率很低，但不是不可能：提示可能在檢查和按鍵之間改變，
+  **坦白說風險**：這是畫面自動化。這些防護讓按錯鍵的機率很低，但不是不可能：提示可能在檢查和按鍵之間改變，
   未來的 UI 也可能長得像舊的樣式。Allow 只用在你不看 pane 也會核准的動作上。如果你的環境不能接受這種風險，
   就把它關掉。
 
@@ -364,10 +364,10 @@ flowchart LR
 
 ### 主人不在時：以明確的共識做決定
 
-**是什麼。**你離線時，可能會跟各個 session 說「你們自己商量，大家都同意就去做」。owner-away
+**是什麼**。你離線時，可能會跟各個 session 說「你們自己商量，大家都同意就去做」。owner-away
 模式讓這條規則變得明確、有範圍、可稽核。
 
-**為什麼。**沒有它的話，session 不是每遇到跨 session 的問題就停下來等你回來，就是有某個 session
+**為什麼**。沒有它的話，session 不是每遇到跨 session 的問題就停下來等你回來，就是有某個 session
 把「其他人都同意了」當成許可。在這裡，同意必須明確表示並留下紀錄，沉默永遠不算同意，危險的事依然要等你。
 
 - **不在 = `$BOARD_HOME/owner-away` 這個檔案存在**（內容不拘，所以舊版的自由文字檔案也算）。
@@ -380,7 +380,7 @@ flowchart LR
   board away off --by OPS --said "back"
   ```
 
-- **共識。**不在期間，提案人要列出每個受影響的 session；每一個都必須明確投下 `agree`。只要有一個
+- **共識**。不在期間，提案人要列出每個受影響的 session；每一個都必須明確投下 `agree`。只要有一個
   `object`，提案就擱置等你處理。提案人本身算作同意。
 
   ```bash
@@ -397,7 +397,7 @@ flowchart LR
   `TMUX= board consensus …`，或在 tmux 以外的 shell 執行）。票可以從 agree 改成 object，但不能從
   object 改成 agree。你回來時（`board away off`），仍在 pending 的項目會變成 `owner_back` 等你處理。
   `agreed`、`objected` 和 `owner_back` 都會送出一則 info 等級的通知。
-- **紅線永遠不能靠共識通過：**production 部署、刪除正式資料、不可逆的操作、碰觸共用的 production
+- **紅線永遠不能靠共識通過**：production 部署、刪除正式資料、不可逆的操作、碰觸共用的 production
   或第三方資料、對外發布、放寬權限或安全設定。
 - **共識永遠不能回答看板提問**或關卡，BOARD 也絕不會把它轉成 `[BOARD decision …]`。看板會顯示
   「Owner away」橫幅和唯讀的共識清單；在自架看板上，核准者會看到 **I'm away**／**I'm back** 按鈕
@@ -422,13 +422,13 @@ flowchart LR
 | `high`（**L2**） | 10 分鐘後仍未確認、用量 ≥ 90%（「準備切換帳號」） | + **email** |
 | `urgent`（**L3**） | 30 分鐘後仍未確認、權限提示 10 分鐘未確認、**production gate**（立即 urgent）、用量 ≥ 95%、達到用量上限 | + **line**、sns、webhook |
 
-- **確認就會停止升級。**決策離開 `pending`（不論在哪裡回答）、session 離開 needs-you，或上限事件結束時，
+- **確認就會停止升級**。決策離開 `pending`（不論在哪裡回答）、session 離開 needs-you，或上限事件結束時，
   告警會自動確認。要手動確認，執行 `board ack 'session:API:*'`（或 `board-notify ack …`），可以用萬用字元。
   key 的格式像 `decision:<id>`、`session:<code>:needs-you`、`limit:<hit_at>`、`usage:<window>:<threshold>`。
-- **看板連結：**設定了 `board_url`（或 `BOARD_PUBLIC_URL`）時，每則告警都會連到看板上對應的項目
+- **看板連結**：設定了 `board_url`（或 `BOARD_PUBLIC_URL`）時，每則告警都會連到看板上對應的項目
   （`<board_url>/?d=<decision id>`、`?c=`、`?m=`，或看板首頁）。請見「在手機上開啟看板」，以及契約文件的
   「Board links in alerts」。
-- **去重：**同一個 key 在同一個等級最多只送一次。仍未關閉的告警，要過了 `repeat_minutes`（預設 60）
+- **去重**：同一個 key 在同一個等級最多只送一次。仍未關閉的告警，要過了 `repeat_minutes`（預設 60）
   才會以相同等級重送。用量告警在每個重設週期裡，每個門檻只觸發一次。
 - **勿擾時段**（預設關閉）：設定 `quiet_hours: "23:00-08:00"`（當地時間）時，只會送出 `urgent`。
   其他告警都會先保留，等勿擾時段結束再送，除非期間已經被確認。
@@ -447,7 +447,7 @@ flowchart LR
 |---|---|---|
 | `slack` | `SLACK_WEBHOOK_URL`、`SLACK_MENTION`（`<@your member id>`） | 讓手機震動的是 mention。標題和內文都會**跳脫**（`&`、`<`、`>`），所以 session 傳來的文字無法注入 mention 或連結。只有你自己設定裡的 `SLACK_MENTION` 會以標記語法送出，也只有一般的 `http(s)` 網址會變成連結 |
 | `desktop` | 不需要；`ALERT_DESKTOP=0` 可關閉 | WSL（`powershell.exe` toast）、Linux 上的 `notify-send`，或 macOS 通知。盡力而為，絕不阻塞 |
-| `email` | `SMTP_HOST`、`SMTP_PORT`、`SMTP_USER`、`SMTP_PASSWORD`、`SMTP_FROM`、`ALERT_EMAIL_TO` | 任何 SMTP 伺服器皆可，**只走 TLS**：port 465 用 SSL，其他 port 一律要求 STARTTLS。伺服器不提供 STARTTLS 就不會送出。`SMTP_SECURITY=ssl\|starttls` 可強制指定模式。`none`（明文）只在**沒有**帳密時才接受，登入資訊絕不會以未加密方式送出。**不相容變更：**以前在 465 以外的 port、不支援 STARTTLS 的伺服器會收到明文郵件（連同登入資訊）；現在會直接失敗，除非你設定 `SMTP_SECURITY=none` 並移除帳密，或改用 TLS |
+| `email` | `SMTP_HOST`、`SMTP_PORT`、`SMTP_USER`、`SMTP_PASSWORD`、`SMTP_FROM`、`ALERT_EMAIL_TO` | 任何 SMTP 伺服器皆可，**只走 TLS**：port 465 用 SSL，其他 port 一律要求 STARTTLS。伺服器不提供 STARTTLS 就不會送出。`SMTP_SECURITY=ssl\|starttls` 可強制指定模式。`none`（明文）只在**沒有**帳密時才接受，登入資訊絕不會以未加密方式送出。**不相容變更**：以前在 465 以外的 port、不支援 STARTTLS 的伺服器會收到明文郵件（連同登入資訊）；現在會直接失敗，除非你設定 `SMTP_SECURITY=none` 並移除帳密，或改用 TLS |
 | `line` | `LINE_CHANNEL_ACCESS_TOKEN`、`LINE_TO`（使用者或群組 ID） | LINE Messaging API 推播。注意你方案的每月推播額度 |
 | `sns` | `AWS_SNS_TOPIC_ARN`，加上設定好的 `aws` CLI | 在 topic 上訂閱 SMS 或 email |
 | `webhook` | `ALERT_WEBHOOK_URL`，`ALERT_WEBHOOK_AUTH` 選用 | 通用的 JSON POST：推播服務、事件管理工具的事件橋接，或你自己的轉發服務 |
@@ -461,10 +461,10 @@ flowchart LR
      但 mention 會。
    - 拿不到 member ID？incoming webhook 無法查詢 member ID。改用 `SLACK_MENTION=<!channel>`
      （通知頻道所有成員），或 `<!here>`（只通知目前在線的成員）。兩者都會強制觸發手機推播。
-2. **Email：**使用應用程式專用密碼，絕不要用主要密碼，並寄到手機收得到的信箱。
-3. **LINE：**建立 Messaging API channel，簽發長期的 channel access token，把該帳號加為好友
+2. **Email**：使用應用程式專用密碼，絕不要用主要密碼，並寄到手機收得到的信箱。
+3. **LINE**：建立 Messaging API channel，簽發長期的 channel access token，把該帳號加為好友
    （或加入群組），再把你的使用者或群組 ID 填入 `LINE_TO`。
-4. **SNS／webhook：**選用，用於 SMS 或事件管理工具。
+4. **SNS／webhook**：選用，用於 SMS 或事件管理工具。
 5. 在整晚依賴之前，**先測試每個管道**：
    ```bash
    board-notify test --channel slack     # also: desktop, email, line, sns, webhook; --level to pick a level
@@ -500,16 +500,16 @@ alerting:
 operator 是一個 LLM session。帳號碰到 **5 小時或每週用量上限**時，operator 會停下來，看板也會凍結。
 這套系統的設計是讓降級狀態看得見：
 
-- **心跳橫幅。**operator 每一輪都會寫入 `meta/operator.heartbeat_at`。超過 10 分鐘沒有更新，頁面就會顯示紅色的
+- **心跳橫幅**。operator 每一輪都會寫入 `meta/operator.heartbeat_at`。超過 10 分鐘沒有更新，頁面就會顯示紅色的
   「operator offline since HH:MM」橫幅，並把回答按鈕變灰。回答仍會被儲存，等 operator 回來後再轉發。
-- **告警照常運作。**收集器和 `board-notify` 都不耗 token。上限事件開始時，它們會送出一則 `urgent` 的
+- **告警照常運作**。收集器和 `board-notify` 都不耗 token。上限事件開始時，它們會送出一則 `urgent` 的
   「usage limit hit, resets ~HH:MM, N decisions pending」告警，並持續為 needs-you 的狀態轉換和決策升級告警。
   看板凍結期間，告警加上 tmux 就是你的溝通管道。
-- **容錯移轉。**另一個帳號上的 session，如果是看板的 **Editor**（以 email 邀請；絕不要把看板開放給整個組織編輯），
+- **容錯移轉**。另一個帳號上的 session，如果是看板的 **Editor**（以 email 邀請；絕不要把看板開放給整個組織編輯），
   並且在**同一台機器**上（因為 operator 必須跟 worker 在同一處執行），就可以對同一個網址執行
   `prompts/board-operator.md` 來接手。原本的 operator 回來後，看到比自己更新的心跳，就會保持被動。
-- **追進度。**恢復後的第一輪會重寫每個 session、轉發每個已回答的決策，並送出每則新訊息，從最舊的開始。
-- **上限事件。**hook 看到 `StopFailure`，或看起來像用量上限的通知文字時，會記錄
+- **追進度**。恢復後的第一輪會重寫每個 session、轉發每個已回答的決策，並送出每則新訊息，從最舊的開始。
+- **上限事件**。hook 看到 `StopFailure`，或看起來像用量上限的通知文字時，會記錄
   `$BOARD_HOME/limit.json`。事件在下一個 `PreToolUse` 或 `Stop` 時結束（表示 session 真的又在跑了）。
   它**不會**在 `UserPromptSubmit` 時結束，因為在受限的 session 裡輸入提示，不代表上限已經解除。
   `board limit` 顯示目前的事件，`board limit --clear` 則手動結束它。
@@ -554,8 +554,8 @@ Claude Code 會把 `rate_limits.five_hour` 和 `rate_limits.seven_day`（`used_p
 
 **何時切換**
 
-- **到 90%：**準備。啟動第二個帳號的 session，但先不要給它 operator 的角色。
-- **到 95% 或達到上限：**切換。如果是每週週期，而且離重設還有好幾天，到 90% 就切換。
+- **到 90%**：準備。啟動第二個帳號的 session，但先不要給它 operator 的角色。
+- **到 95% 或達到上限**：切換。如果是每週週期，而且離重設還有好幾天，到 90% 就切換。
 - 5 小時週期如果不到約 30 分鐘就會重設，就不要切換。讓看板短暫凍結即可，反正告警還是會送到你手上。
 
 **接手**
@@ -612,17 +612,17 @@ Claude Code 會把 `rate_limits.five_hour` 和 `rate_limits.seven_day`（`used_p
 
 ### 擇一使用，或兩者並用
 
-- **只用自架。**完全不牽涉 claude.ai 帳號。設定 `serve.enabled: true`，要在手機上用的話再設定
+- **只用自架**。完全不牽涉 claude.ai 帳號。設定 `serve.enabled: true`，要在手機上用的話再設定
   `serve.tunnel`。以 local 模式執行 operator（`prompts/board-operator.md` 第 9 節）。
-- **只用 Artifact。**這是最初的架設方式：operator 同步到 Artifact，並從那裡轉發。
-- **兩者並用（建議）。**兩種通道讀寫同一個 `$BOARD_HOME`。不論從哪一邊回答，都會經過 `board answer`，
+- **只用 Artifact**。這是最初的架設方式：operator 同步到 Artifact，並從那裡轉發。
+- **兩者並用（建議）**。兩種通道讀寫同一個 `$BOARD_HOME`。不論從哪一邊回答，都會經過 `board answer`，
   所以先到先贏，另一邊則顯示結果。`board-serve` 一定能用。operator 只在連得到 Artifact 時才同步過去
   （否則改為只用本機，第 1a 節），並用 `board-serve --watch` 轉發自架看板上的回答。即使 claude.ai
   帳號碰到上限或失去存取權，你的手機仍然可以繼續用。
 
 **尚未支援（未來工作）：**
 
-- **在 Artifact 看板上讓核准者傳訊息。**訊息是共用文件，所以在那裡只有 Editor 能送出訊息，
+- **在 Artifact 看板上讓核准者傳訊息**。訊息是共用文件，所以在那裡只有 Editor 能送出訊息，
   核准者（Contributor）只能回答。若有一個 `messages/{self}` 寄件匣，由 operator 複製到 `messages/`，
   核准者就不必成為 Editor 也能傳訊息。
 - **雲端版本**，讓機器關機時也能連上看板。
@@ -637,14 +637,14 @@ bin/board-serve              # local: http://127.0.0.1:39410
 或者讓 `fleet-up` 在 tmux session `switchboard` 的 `serve` 視窗裡啟動它（`serve.enabled: true`）。
 
 - **即時且不耗 token。**`board-serve` 讀取 `$BOARD_HOME`，並透過 Server-Sent Events 把每個變更推送到開著的頁面。
-- **權限提示不需要 operator。**Allow／Deny 會先執行 `board answer`（核准者檢查），再執行
+- **權限提示不需要 operator**。Allow／Deny 會先執行 `board answer`（核准者檢查），再執行
   `board press CODE allow|deny --expect TOOL_USE_ID`。卡片會變成 `relayed`；如果提示已經不在，則變成
   `stale`。摘要被截斷的請求只能在 session 裡允許。
 - **問題和關卡**以 `board answer --by <identity>` 記錄。operator 以事件驅動的方式轉發
   （在 `Monitor` 裡執行 `board-serve --watch`），不需要 cron。
 - **訊息**寫到 `$BOARD_HOME/messages/<id>.json`，回覆則寫到 `messages/<id>/replies/`。
 
-**兩個監聽器，兩種身分。**兩者都綁定在 127.0.0.1：
+**兩個監聽器，兩種身分**。兩者都綁定在 127.0.0.1：
 
 | 監聽器 | port | 誰連得到 | 身分 |
 |---|---|---|---|
@@ -670,7 +670,7 @@ bin/board-serve              # local: http://127.0.0.1:39410
 - POST 需要 `X-Board: 1`，以及來自監聽器自身來源的 `Origin`（缺少 Origin 或為 `null` 都會被拒絕），
   只接受 JSON，最多 16 KiB。`OPTIONS` 回傳 405，也絕不送出任何 `Access-Control-*` header。
 - 在組出任何路徑之前，決策和訊息的 ID 都會先用嚴格的樣式檢查；呼叫 `board` 時使用 argv 清單，絕不經過 shell。
-- **`approvers` 是空的時候，所有回答都會被拒絕。**寫入任何東西之前，都會先拿身分對照 `approvers`／
+- **`approvers` 是空的時候，所有回答都會被拒絕**。寫入任何東西之前，都會先拿身分對照 `approvers`／
   `release_managers` 檢查，所以被拒絕的回答絕不會碰到決策本身。特別是，它無法取消某位核准者正等待轉發的回答。
   只有核准者和 release manager 可以傳送訊息。
 - 在 tunnel 上，經過驗證的 email 還必須在 `serve.tunnel.allowed_emails` 裡（預設：`approvers` ∪
@@ -691,7 +691,7 @@ bin/board-serve              # local: http://127.0.0.1:39410
 `release_managers`。改填你的 email 並透過 tunnel（經 Access 驗證）回答，或乾脆不要在那台主機上執行
 `board-serve`。
 
-**誰是核准者：兩種命名空間。**在自架看板上，`approvers` 和 `release_managers` 放的是來自 Cloudflare
+**誰是核准者：兩種命名空間**。在自架看板上，`approvers` 和 `release_managers` 放的是來自 Cloudflare
 Access 的 **email**，以及字面上的 **`local`**（這台機器上的瀏覽器，只有列出時才算數）。在 Artifact
 看板上，放的是 **claude.ai 使用者 ID**，它是不透明的，而且每個組織各不相同。兩者彼此永遠對不上，所以兩種通道
 並用時，同一個人要用兩種形式都列出來：
@@ -703,23 +703,23 @@ release_managers: [you@example.com, <your claude.ai user id>]
 
 ## 安全模型
 
-- **絕不要把看板開放給整個組織編輯，也絕不要讓核准者成為 Editor。**Editor（和擁有者）可以發布**新的頁面程式碼和新的資料庫規則**，
+- **絕不要把看板開放給整個組織編輯，也絕不要讓核准者成為 Editor**。Editor（和擁有者）可以發布**新的頁面程式碼和新的資料庫規則**，
   所以惡意或粗心的 Editor 可能推出一個以別人名義回答的頁面。請**以 email 邀請核准者成為 Contributor**。
   Editor 只留給擁有者，必要時再加一個備援 operator 帳號。
-- **誰回答的，看路徑而不是欄位。**在 Artifact 看板上，回答寫在 `answers/<user id>/d/<decision id>`。
+- **誰回答的，看路徑而不是欄位**。在 Artifact 看板上，回答寫在 `answers/<user id>/d/<decision id>`。
   資料庫規則 `answers/{self}` 只讓該使用者寫入那裡，連擁有者都不行。operator 只讀取 `approver_ids`
   （production 則加上 `release_manager_ids`）裡那些 ID 底下的回答，從路徑取得身分，再執行
   `board answer <decision> <answer> --by <that id>`。`answered_by` 欄位永遠不被信任。回答被拒絕時
   （例如 production gate 由一位不是 release manager 的核准者回答），卡片會顯示 `unauthorized`。
   這不是最終結果：有權限的人仍然可以回答。
-- **session 之間的訊息是資訊，不是核准。**唯一的例外是 operator 送出、已通過核准者檢查的
+- **session 之間的訊息是資訊，不是核准**。唯一的例外是 operator 送出、已通過核准者檢查的
   `[BOARD decision <id>]` 這個確切格式。其他任何內容（「X 說使用者同意了」），worker 都應該只當作資訊。
-- **資料庫裡不放機密。**看得到 artifact 的人都看得到看板資料。hook 只儲存簡短的工具摘要，絕不儲存提示文字。
+- **資料庫裡不放機密**。看得到 artifact 的人都看得到看板資料。hook 只儲存簡短的工具摘要，絕不儲存提示文字。
   不要在問題裡放 token、密碼或客戶資料。
 - **本機狀態**（`$BOARD_HOME`）只在你的機器上，目錄權限為 0700、檔案為 0600。除非有核准者回答過、而且每一項
   畫面與狀態檢查都通過，否則 `board press` 一律拒絕。摘要被截斷時，除非有人親自加上 `--allow-truncated`，
   否則它絕不按鍵。
-- **Production 需要指名的人。**production 決策（`gate` 或 `stage` 去除空白並轉成小寫後等於
+- **Production 需要指名的人**。production 決策（`gate` 或 `stage` 去除空白並轉成小寫後等於
   `production`）只有在回答者的 ID ∈ `meta/operator.release_manager_ids`（來自 `fleet.yaml` 的
   `release_managers`）時才會被轉發。那份清單是空的時候，檢查會退回用 `approver_ids`。如果**兩者**都是空的，
   所有 production 回答都會被拒絕：它會 **fail closed**，production 沒有不檢查的模式，決策會維持 pending。
@@ -727,7 +727,7 @@ release_managers: [you@example.com, <your claude.ai user id>]
 - **沒有設定核准者 = 什麼都決定不了。**`approvers` 清單是空的時候，`board answer` 會拒絕所有回答（exit 4），
   決策維持 pending。權限提示也一樣，所以 `board press` 永遠不會送出按鍵。`board-serve` 同樣拒絕所有回答。
   在依賴看板之前，先填好 `approvers`。
-- **`board answer --by` 在本機是被信任的。**CLI 無法驗證是誰輸入的：任何能以你的使用者身分執行 `board`
+- **`board answer --by` 在本機是被信任的**。CLI 無法驗證是誰輸入的：任何能以你的使用者身分執行 `board`
   的人，都可以聲稱任何 ID。屏障在於 `$BOARD_HOME` 的檔案權限（0700）和你的使用者帳號。除此之外，operator
   只會傳入從資料庫回答的路徑（`answers/<user id>/`）取得的 ID，而 `board-serve` 只會傳入 `local`
   （來自這台機器的任何直接請求）或經過驗證的 Access email。
