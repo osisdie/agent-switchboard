@@ -56,10 +56,11 @@
 #      if it exists, else ~/.config/agent-switchboard), CLAUDE_SESSIONS_DIR, CLAUDE_SETTINGS.
 #
 # Exit codes: 0 ok, 1 error (`away status`: the owner is not away), 2 usage (also an unknown
-#             option to `away status`), 3 press refused: screen/state mismatch (no keys sent),
-#             5 press stopped part-way (free text: some keys sent, Enter not pressed),
+#             option to `away status`; `answer --option N` whose label is not ANSWER),
+#             3 press refused: screen/state mismatch (no keys sent),
 #             4 refused: not authorized (answer: not an approver; press: no approver's answer;
-#             consensus: not a participant, or --from is not this tmux session).
+#             consensus: not a participant, or --from is not this tmux session),
+#             5 press stopped part-way (free text: some keys sent, Enter not pressed).
 set -u
 
 REPO="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
@@ -888,7 +889,9 @@ press_free_text() {
   last_lines() {
     tmux capture-pane -p -t "$pane" 2>/dev/null | sed -e :a -e '/^[[:space:]]*$/{$d;N;ba' -e '}' | tail -n "$lines"
   }
-  tmux send-keys -t "$pane" "$key" || { attempt failed "send-keys failed" "$pane"; exit 1; }
+  # From the first key on, every failure is partial (exit 5, stale): a retry could otherwise type
+  # the number into a text field that is already open.
+  tmux send-keys -t "$pane" "$key" || partial "send-keys failed (the \"Type something\" key)" "$pane"
   sleep "${BOARD_PRESS_SETTLE:-0.3}"
   scr="$(last_lines)"
   grep -Eq -- "${focus}[[:space:]]*(${label})" <<<"$scr" \
@@ -897,7 +900,7 @@ press_free_text() {
   # tmux reads a trailing ";" as a command separator: escape it (the text never ends in "\;").
   send="$text"
   [[ $send == *";" ]] && send="${send%;}\\;"
-  tmux send-keys -t "$pane" -l -- "$send" || { attempt failed "send-keys failed" "$pane"; exit 1; }
+  tmux send-keys -t "$pane" -l -- "$send" || partial "send-keys failed (typing the text)" "$pane"
   sleep "${BOARD_PRESS_SETTLE:-0.3}"
   scr="$(last_lines)"
   want="$(tr -d '[:space:]' <<<"$text")"
@@ -905,11 +908,13 @@ press_free_text() {
   ok=0
   while IFS= read -r row; do
     row="$(tr -d '[:space:]' <<<"$row")"
-    [[ $row == *"$want"* ]] && { ok=1; break; }
+    # The text must follow "N." directly, as the picker draws it ("❯ 4. purple"), so a short answer
+    # such as "some" never matches the "4. Type something." placeholder.
+    [[ $row == *"$key.$want"* ]] && { ok=1; break; }
   done < <(grep -E -- "$focus" <<<"$scr")
   [ "$ok" = 1 ] || partial "the focused row $key does not show the typed text" "$pane"
   same_prompt || partial "pending prompt changed while typing" "$pane"
-  tmux send-keys -t "$pane" Enter || { attempt failed "send-keys failed" "$pane"; exit 1; }
+  tmux send-keys -t "$pane" Enter || partial "send-keys failed (Enter)" "$pane"
 }
 
 # ---------------------------------------------------------------- notify

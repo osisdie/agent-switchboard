@@ -404,7 +404,10 @@ case "$1" in
     else
       printf '%s\n' "${FAKE_TMUX_SCREEN:-}"
     fi ;;
-  send-keys) exit 0 ;;
+  send-keys)
+    # FAKE_TMUX_FAIL_ON: a send-keys whose arguments end with this fails.
+    if [ -n "${FAKE_TMUX_FAIL_ON:-}" ] && [[ "$*" == *"$FAKE_TMUX_FAIL_ON" ]]; then exit 1; fi
+    exit 0 ;;
 esac
 EOF
 chmod +x "$T/bin/tmux"
@@ -648,6 +651,27 @@ d="$(askq tu_q6e "$Q1")"; "$B" answer "$d" "purple" --by user-1 >/dev/null
 FAKE_TMUX_MUTATE_AT=3 FAKE_TMUX_MUTATE="$BOARD_HOME/state/$SID.json" seqpress tu_q6e "$U" "$F" "$(qscreen focus purple)"
 eq "prompt changed after typing -> exit 5, no Enter" "$?/$(keys_sent)" "5/send-keys -t %42 4|send-keys -t %42 -l -- purple|"
 qdone tu_q6e
+d="$(askq tu_q6k "$Q1")"; "$B" answer "$d" "some" --by user-1 >/dev/null
+seqpress tu_q6k "$U" "$F" "$F"
+eq "short answer 'some' never matches the 'Type something' placeholder -> exit 5, no Enter" "$?/$(keys_sent)" "5/send-keys -t %42 4|send-keys -t %42 -l -- some|"
+qdone tu_q6k
+d="$(askq tu_q6l "$Q1")"; "$B" answer "$d" "some" --by user-1 >/dev/null
+seqpress tu_q6l "$U" "$F" "$(qscreen focus some)"
+eq "'some' typed into the row -> ok" "$?/$(keys_sent)" "0/send-keys -t %42 4|send-keys -t %42 -l -- some|send-keys -t %42 Enter|"
+qdone tu_q6l
+d="$(askq tu_q6m "$Q1")"; "$B" answer "$d" "purple" --by user-1 >/dev/null
+FAKE_TMUX_MUTATE_AT=2 FAKE_TMUX_MUTATE="$BOARD_HOME/state/$SID.json" seqpress tu_q6m "$U" "$F" "$(qscreen focus purple)"
+eq "prompt changed before typing -> exit 5, nothing typed" "$?/$(keys_sent)" "5/send-keys -t %42 4|"
+qdone tu_q6m
+d="$(askq tu_q6n "$Q1")"; "$B" answer "$d" "purple" --by user-1 >/dev/null
+FAKE_TMUX_FAIL_ON=Enter seqpress tu_q6n "$U" "$F" "$(qscreen focus purple)"
+eq "send-keys fails after the first key -> exit 5 (not 1)" "$?" "5"
+eq "...decision stale, not left answered" "$(dj "$d" .status)" "stale"
+qdone tu_q6n
+d="$(askq tu_q6o "$Q1")"; "$B" answer "$d" "purple" --by user-1 >/dev/null
+FAKE_TMUX_FAIL_ON=" 4" seqpress tu_q6o "$U" "$F" "$(qscreen focus purple)"
+eq "send-keys fails on the Type something key -> exit 5, stale" "$?/$(dj "$d" .status)" "5/stale"
+qdone tu_q6o
 d="$(askq tu_q6f "$Q1")"; "$B" answer "$d" "purple" --by user-1 >/dev/null
 seqpress tu_q6f "$(qscreen | sed 's/4\. Type something\./4. Chat about this/')"
 eq "row 4 is not Type something -> exit 3, nothing sent" "$?/$(keys_sent)" "3/"

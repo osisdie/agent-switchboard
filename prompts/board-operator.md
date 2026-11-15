@@ -221,9 +221,9 @@ db.
     (`board answer` above exited 0 for this very answer) and it says `relay: "operator"` (also
     after an exit 4 from `board press`, once you have re-read the file and it says so): relay it
     like any question with `SendMessage` (`[BOARD decision <id>] <answer> (by owner on board)`);
-    the picker stays for the human. In any other case (the file is not `answered`, or
-    `answered_by` is not an approver, or `relay` is `"press"` and `board press` exited 4), set
-    `status: "unauthorized"` in the db and relay nothing.
+    the picker stays for the human. If you were about to send that message but the file is not
+    `answered`, its `answered_by` is not an approver, or it says `relay: "press"` (after an exit 4),
+    set `status: "unauthorized"` in the db and send nothing. Exits 0, 3 and 5 never lead here.
   - Never type into the pane yourself. A pane question with `pressable: false` is answered in the
     session; the page does not offer answers for it.
 - If the target session is offline or missing from `ListAgents`, leave the decision `answered`. It is

@@ -989,7 +989,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 |---|---|
 | `docs/contract.md` | Binding data contract: local files, db collections, lifecycle stages & gates, relay formats, degraded mode |
 | `hooks/board-hook.sh` | Lifecycle hook: writes `state/<session_id>.json`, appends `events.jsonl`, always exits 0 |
-| `bin/board` | CLI: `ls`, `snapshot`, `ask`, `task new/stage/ls/show`, `decisions`, `answer`, `mark`, `limit`, `resources`, `press`, `notify`, `mute`, `unmute`, `notify-level`, `notify-presence`, `away`, `consensus`, `doctor`. Exit codes: 3 = press refused, 4 = answer / vote refused |
+| `bin/board` | CLI: `ls`, `snapshot`, `ask`, `task new/stage/ls/show`, `decisions`, `answer`, `mark`, `limit`, `resources`, `press`, `notify`, `mute`, `unmute`, `notify-level`, `notify-presence`, `away`, `consensus`, `doctor`. Exit codes: 2 = usage (also `answer --option` mismatch), 3 = press refused, 4 = answer / vote refused, 5 = press partial (keys sent, Enter not pressed) |
 | `bin/board-collect` | Zero-token collector: snapshot, diff, runs `board-notify` each loop; `--baseline` on first install |
 | `bin/board-notify`, `lib/notify.py` | Alerting: `send`, `ack`, `tick`, `test`, `status`, `gate`. Adapters (slack, desktop, email, line, sns, webhook), levels, escalation, ack, quiet hours, dedupe |
 | `lib/prefs.py` | Notification controls: mutes, min levels, presence (`board mute`, `notify-level`, `notify-presence`) and the delivery rule `lib/notify.py` applies |
