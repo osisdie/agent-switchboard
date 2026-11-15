@@ -106,7 +106,8 @@ def is_production(d):
 
 
 def read_dotenv(path=None):
-    """KEY=VALUE pairs of <config dir>/.env (comments, `export ` and matching quotes handled)."""
+    """KEY=VALUE pairs of <config dir>/.env (comments, inline ` # comments` after an unquoted value,
+    `export ` and quotes handled)."""
     env = {}
     path = path or os.path.join(config_dir(), ".env")
     try:
@@ -120,8 +121,10 @@ def read_dotenv(path=None):
                 if k.startswith("export "):
                     k = k[7:].strip()
                 v = v.strip()
-                if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
-                    v = v[1:-1]
+                if v[:1] in ("\"", "'") and v.find(v[0], 1) > 0:
+                    v = v[1:v.find(v[0], 1)]  # quoted: up to the closing quote (a comment may follow)
+                else:
+                    v = re.split(r"\s+#", v, maxsplit=1)[0]  # unquoted: an inline " # comment" is not the value
                 env[k] = v
     except OSError:
         pass

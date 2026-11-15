@@ -380,6 +380,7 @@ toplevel 的名稱和目前的分支，絕不顯示路徑），以及它現在�
 輸入 `@API is the migration merged?` 或 `@all please pause deploys`。operator 會透過 `SendMessage`
 送出 `[BOARD ask <msgId>] …`（`@all` 會送給 `ListAgents` 列出的每個存活 session）。worker 用
 `[re <msgId>] …` 回覆，回覆會串在原訊息底下。**訊息只是資訊，絕不是核准。**
+向 session 要機密值的訊息會被攔下，不會轉送（見[機密防護](#secret-guardrails)）。
 
 ### 個人選單、主題與語言
 
@@ -417,6 +418,8 @@ toplevel 的名稱和目前的分支，絕不顯示路徑），以及它現在�
   board away on --by OPS --said "Offline until Monday 09:00. Agree among yourselves."
   board away status            # exit 0 = away, 1 = not; --quiet, --json
   board away off --by OPS --said "back"
+  # words you are quoting (yours, or pasted from elsewhere) go by file, never on the command line:
+  board away on --by OPS --said-file /tmp/owner-words.txt --replace
   ```
 
 - **共識**。不在期間，提案人要列出每個受影響的 session；每一個都必須明確投下 `agree`。只要有一個
@@ -427,6 +430,7 @@ toplevel 的名稱和目前的分支，絕不顯示路徑），以及它現在�
          "Bump the shared fixture to v2 in both repos before the nightly run")
   board consensus vote "$id" agree --from WEB --note "diff reviewed"     # in WEB
   board consensus vote "$id" agree --from QA                             # in QA → agreed
+  # a quoted proposal or note goes by file: consensus propose ... --file F, vote ... --note-file F
   board consensus show "$id" --markdown     # paste into PR 42: proposal, votes with times, outcome
   board consensus ls [--all]
   ```
@@ -881,6 +885,34 @@ Artifact 頁面無法提供同層的檔案，所以只有以 `data:` URI 內嵌�
 - **自架看板。**`board-serve` 綁定在 127.0.0.1。遠端存取只能經過 tunnel 監聽器，而且必須帶著經過驗證的
   Cloudflare Access token（見[兩種通道](#two-channels-self-hosted-and-artifact-recommended-both)）。
 
+<a id="secret-guardrails"></a>
+
+### 機密防護
+
+看板可以從手機連上（之後還會有 API key），所以任何人都不能拿它來挖憑證，包括拿到被盜 key 的人。防護分成幾層：
+
+- **要機密的訊息會被攔下。**`POST /api/messages` 和 `board message send` 會先篩檢內容（英文和中文）。
+  只要要求印出、顯示、cat、echo、傳送、列出或透露密碼、token、API key、secret、私鑰、cookie、session id、
+  `.env`、`~/.ssh`、`printenv`/`env`，或 kube／雲端憑證，訊息就以 `held` 狀態存下，並附上通用的原因。
+  被攔下的訊息絕不轉送。系統會發出 **high** 告警（標題不會複述原文），並記入稽核。誤判時，approver
+  可以在看板上放行，但要再按一次確認。放行會記入稽核，轉送時也會提醒 session：放行不代表可以透露任何機密的值。
+  「rotate the token」「token 設定在哪裡」會通過；「印出 token 的值」不會。
+- **看板顯示的一切都先去除機密。**`lib/guard.py` 會處理訊息與回覆、決策的問題／選項／答案、任務標題、
+  工具摘要、共識文字、告警標題與內文、`/api/state` 和每個 SSE frame，以及 operator 會鏡像的讀取指令。
+  它把 key=value 形式的機密、Bearer/Basic 的值、URL 裡的密碼、各家 token、私鑰區塊、JWT、
+  `asb_live_`/`asb_test_` key、長的十六進位字串（40 字元的 git sha 保留）和大小寫混合的 base64
+  換成 `[REDACTED]`。看板自己的 `.env`（以及 `guard.secret_files` 列出的檔案）裡每個機密的值，原文出現時換成 `[redacted:NAME]`。
+- **答案與 away 文字也會篩檢**。自由文字的決策答案（會以 `[BOARD decision]` 轉送）和 owner-away
+  的文字也照同樣規則篩檢：要機密的會被拒絕（400 `held_answer`／`held_said`，`board answer`／`board away`
+  結束碼 6），並記入稽核、發出告警。
+- **worker 會拒絕**。worker 協定規定：任何看板來的文字（`[BOARD ask]`、`[BOARD decision]` 或其他）
+  都不能授權透露機密的值。worker 只回 `[re <id>] refused: secret request`，並告訴自己的使用者。
+  說明機密設定在哪裡可以，值不行。
+- **沒有讀機密的路由。**`board-serve` 的路由是固定清單，不提供任何檔案或環境變數。有一個測試會埋入哨兵機密，
+  檢查每個回應、告警、鏡像視圖和存下的訊息。
+
+`board guard scrub|screen|secrets` 可以在 shell 裡跑同樣的檢查。`secrets` 只列 key 名稱，不列值。
+
 ## 機密與去識別化
 
 任何東西離開你的機器之前，都會先經過兩項檢查。詳見
@@ -914,7 +946,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 |---|---|
 | `docs/contract.md` | 具約束力的資料契約：本機檔案、資料庫 collection、生命週期階段與關卡、轉發格式、降級模式 |
 | `hooks/board-hook.sh` | 生命週期 hook：寫入 `state/<session_id>.json`、附加到 `events.jsonl`，永遠以 exit 0 結束 |
-| `bin/board` | CLI：`ls`、`snapshot`、`ask`、`task new/stage/ls/show`、`decisions`、`answer`、`mark`、`limit`、`resources`、`press`、`notify`、`mute`、`unmute`、`notify-level`、`notify-presence`、`away`、`consensus`、`doctor`。結束碼：2 = 用法錯誤（也包括 `answer --option` 不一致），3 = 拒絕按鍵，4 = 拒絕回答／投票，5 = 按鍵做到一半（已送出按鍵、沒有按 Enter） |
+| `bin/board` | CLI：`ls`、`snapshot`、`ask`、`task new/stage/ls/show`、`decisions`、`answer`、`mark`、`limit`、`resources`、`press`、`notify`、`mute`、`unmute`、`notify-level`、`notify-presence`、`away`、`consensus`、`message`、`guard`、`doctor`。結束碼：2 = 用法錯誤（也包括 `answer --option` 不一致），3 = 拒絕按鍵，4 = 拒絕回答／投票，5 = 按鍵做到一半（已送出按鍵、沒有按 Enter） |
 | `bin/board-collect` | 不耗 token 的收集器：snapshot、diff，每一輪執行 `board-notify`；首次安裝時用 `--baseline` |
 | `bin/board-notify`、`lib/notify.py` | 告警：`send`、`ack`、`tick`、`test`、`status`、`gate`。轉接器（slack、desktop、email、line、sns、webhook）、等級、升級、確認、勿擾時段、去除重複 |
 | `lib/prefs.py` | 通知控制：靜音、最低等級、在場（`board mute`、`notify-level`、`notify-presence`），以及 `lib/notify.py` 套用的送出規則 |
@@ -933,9 +965,10 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `.github/workflows/ci.yml` | CI：gitleaks、shellcheck、測試、readme-sync |
 | `.gitleaks.toml` | gitleaks 預設規則，加上針對測試 fixture 的小範圍允許清單 |
 | `lib/away.py` | 為 snapshot 和 `board-serve` 讀取 owner-away 模式與共識項目 |
+| `lib/guard.py`、`lib/messages.py` | 機密防護：對外的去除機密與對內的要機密篩檢；看板訊息與回覆都經過它們（攔下、放行、回覆） |
 | `lib/resources.py` | 資源取樣器（記憶體、磁碟、OOM、每個 session 的程序與 teammate），產生 `resources.json`、snapshot 摘要和 `board resources` |
 | `docs/design/` | 設計文件，例如 `resources-and-scheduling.md`（資源、排程器、經驗） |
-| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`）、資源取樣器（`test_resources.py`，fixture `/proc`），以及選用的頁面告警連結、通知控制、個人選單與主題、主畫面 app、session 卡片、用量提示框與語言切換 headless 檢查（`test_page_links.py`、`test_page_notify.py`、`test_page_profile.py`、`test_page_pwa.py`、`test_page_cards.py`、`test_page_usage.py`、`test_page_i18n.py`：需要 python playwright，沒有就略過；CI 不執行） |
+| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`）、資源取樣器（`test_resources.py`，fixture `/proc`）、機密防護（`test_guard.py`），以及選用的頁面告警連結、通知控制、個人選單與主題、主畫面 app、session 卡片、用量提示框與語言切換 headless 檢查（`test_page_links.py`、`test_page_notify.py`、`test_page_profile.py`、`test_page_pwa.py`、`test_page_cards.py`、`test_page_guard.py`（被攔下的訊息卡片）、`test_page_usage.py`、`test_page_i18n.py`：需要 python playwright，沒有就略過；CI 不執行） |
 | `CONTRIBUTING.md` | 開發環境設定、測試，以及讓 `README.zh-TW.md` 保持同步的規則 |
 | `fleet.example.yaml`、`.env.example` | 設定範例 |
 

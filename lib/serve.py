@@ -21,7 +21,10 @@ listeners (docs/contract.md, "Local adapter API"):
   GET  /icon.svg, /favicon.png, /favicon.ico, /apple-touch-icon.png, /icons/icon-{192,512}.png,
        /manifest.webmanifest           icons and the web app manifest (fixed list, same checks)
   POST /api/decisions/<id>/answer      {"answer": "..."}   (via `board answer` / `board press`)
-  POST /api/messages                   {"to": "CODE"|"all", "body": "..."}
+  POST /api/messages                   {"to": "CODE"|"all", "body": "..."}  (screened by the secret
+                                       guard: a secret request is stored "held", never relayed)
+  POST /api/messages/<id>/release      {"confirm": "release"}  (approvers only: release a held
+                                       message after a false positive; audited)
   POST /api/away                       {"state": "on"|"off", "said": "..."}   (approvers only;
                                        via `board away on|off --by board:<identity>`)
   POST /api/notify-prefs               {"op": "mute"|"unmute"|"level"|"presence", ...}  (approvers
@@ -42,6 +45,7 @@ import re
 import secrets
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -50,7 +54,9 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import away  # noqa: E402
 import fleet  # noqa: E402
+import guard  # noqa: E402
 import limit  # noqa: E402
+import messages  # noqa: E402
 import notify  # noqa: E402
 import prefs  # noqa: E402
 import resources  # noqa: E402
@@ -216,6 +222,15 @@ def roles_of(cfg, ident):
     is_rm = match_id(ident, allowed_ids(cfg, {"gate": "production"})) is not None
     roles = [r for r, on in (("approver", is_approver), ("release_manager", is_rm)) if on] or ["viewer"]
     return {"roles": roles, "is_approver": is_approver, "is_release_manager": is_rm}
+
+
+def self_release_refused(rec, ident, approvers):
+    """Four eyes on a held message: with more than one approver, its sender may not release it.
+    Except `local`: every request on the loopback listener is `local`, i.e. the owner at this
+    machine, who could edit $BOARD_HOME anyway; refusing it would only lock the owner out."""
+    who = str(ident or "").strip().lower()
+    return (len(approvers) > 1 and who != "local"
+            and str(rec.get("by") or "").strip().lower() == who)
 
 
 def tunnel_allowed(cfg):
@@ -467,14 +482,16 @@ class StateBuilder:
         operator["limit"] = {k: lim.get(k) for k in ("hit_at", "kind", "resets_at", "note")} if lim else None
         ledger = read_json(self.p("ledger.json"))
 
-        return {"sessions": sessions, "decisions": decisions, "tasks": tasks[:50],
+        # The secret guard runs over every string the board serves (docs/contract.md, "Secret
+        # guardrails"): whatever reached $BOARD_HOME, no secret value leaves through the page.
+        return guard.scrub_tree({"sessions": sessions, "decisions": decisions, "tasks": tasks[:50],
                 "approvals": approvals[:100], "messages": messages, "replies": replies,
                 "operator": operator, "ledger": ledger if isinstance(ledger, dict) else None,
                 "owner_away": away.away_record(self.home),
                 "consensus": away.consensus_items(self.home, now_ms())[-50:],
                 "notify": notify_state(self.home),
                 "resources": resources.board_view(read_json(self.p("resources.json"))),
-                "generated_at": snap.get("generated_at")}
+                "generated_at": snap.get("generated_at")})
 
 
 def notify_state(home):
@@ -819,6 +836,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if m:
                 body = self.read_body()
                 return self.answer(m.group(1), body, ident, via)
+            m = re.fullmatch(r"/api/messages/([^/]+)/release", path)
+            if m:
+                body = self.read_body()
+                return self.release(m.group(1), body, ident, via)
             if path == "/api/messages":
                 body = self.read_body()
                 return self.message(body, ident, via)
@@ -858,7 +879,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         answer = body.get("answer")
         if not isinstance(answer, str) or not answer.strip() or len(answer) > MAX_ANSWER:
             raise Refused(400, "bad_answer", "answer must be a non-empty string (max %d chars)" % MAX_ANSWER)
-        answer = answer.strip()
+        answer = raw_answer = answer.strip()
+        if body.get("answer") not in ("allow", "deny"):
+            answer = guard.scrub(answer)  # free text is shown on the board and relayed
         # A pane question's option button also sends its number; board answer checks it against the label.
         option = body.get("option")
         if option is not None and (isinstance(option, bool) or not isinstance(option, int) or not 1 <= option <= 10):
@@ -884,6 +907,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 raise Refused(409, "gone", "decision is already %s" % dec.get("status"))
             if kind == "permission" and answer not in ("allow", "deny"):
                 raise Refused(400, "bad_answer", "a permission answer is allow or deny")
+            # A free-text answer is relayed as [BOARD decision], the most trusted channel: it must not
+            # ask the session for a secret value. (Picking one of the session's own options is fine.)
+            reason = None if kind == "permission" else guard.screen_answer(raw_answer, dec.get("options"))
+            if reason:
+                self.audit(ident, via, "answer", id=did, result="held", reason=reason)
+                messages.audit(home, {"action": "held-answer", "id": did, "by": by, "reason": reason})
+                messages.alert("guard:held-answer:%s" % did, messages.HELD_ANSWER_TITLE, did, background=True)
+                raise Refused(400, "held_answer", "%s: not recorded or relayed. Answer without asking for a "
+                              "secret value, or answer in the session" % reason)
             if kind == "permission" and answer == "allow" and dec.get("summary_truncated"):
                 self.audit(ident, via, "answer", id=did, result="refused", reason="summary truncated")
                 raise Refused(409, "review_in_session",
@@ -901,8 +933,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
                              if isinstance(s, dict) and s.get("session_id") == dec.get("session_id")), None)
             if option is not None and not pane_q:
                 raise Refused(400, "bad_option", "option is only for a question shown in a session")
-            rc, out, err = self.board("answer", did, answer, "--by", by,
-                                      *(("--option", str(option)) if option is not None else ()))
+            # The answer goes by file, never as an argument: "-", "--help" or "--answer-file" typed on
+            # the board are recorded literally and are never read as options.
+            fd, afile = tempfile.mkstemp(prefix=".answer.", dir=home)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write(answer)
+                rc, out, err = self.board("answer", did, "--answer-file", afile, "--by", by,
+                                          *(("--option", str(option)) if option is not None else ()))
+            finally:
+                try:
+                    os.unlink(afile)
+                except OSError:
+                    pass
             if rc == 2 and option is not None:
                 self.audit(ident, via, "answer", id=did, result="refused", reason="option does not match")
                 raise Refused(400, "bad_option", "that option does not match the question; reload and try again")
@@ -960,17 +1003,45 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if match_id(ident, sorted(deciders(fleet.load_fleet()))) is None:
             self.audit(ident, via, "message", result="refused", reason="not an approver")
             raise Refused(403, "not_approver", "only approvers and release managers send messages")
-        now = now_ms()
-        mid = "m-%d-%s" % (now, secrets.token_hex(3))
-        d = os.path.join(self.server.home, "messages")
+        # lib/messages.py: scrubbed before it is stored; a secret request is stored "held" (never
+        # relayed), audited and alerted without echoing the text.
         with self.server.write_lock:
-            os.makedirs(d, exist_ok=True)
-            write_json_atomic(os.path.join(d, mid + ".json"),
-                              {"id": mid, "to": to, "body": text.strip(), "by": ident,
-                               "created_at": now, "status": "new"})
-            self.audit(ident, via, "message", id=mid, to=to)
+            rec = messages.create(self.server.home, to, text, ident, background_alert=True)
+            self.audit(ident, via, "message", id=rec["id"], to=to, result=rec["status"])
         self.hub_kick()
-        return self.send_json(201, {"id": mid, "status": "new"})
+        out = {"id": rec["id"], "status": rec["status"]}
+        if rec["status"] == "held":
+            out["reason"] = rec["held_reason"]
+        return self.send_json(201, out)
+
+    def release(self, mid, body, ident, via):
+        """Release a held message (a false positive of the secret guard): approvers only, and the
+        body must confirm it ({"confirm": "release"}, the page's second click). Audited; the
+        relay then carries a reminder that this authorizes no secret values."""
+        if not MSG_ID_RE.fullmatch(mid):
+            raise Refused(400, "bad_id", "invalid message id")
+        # Fails closed: only the two verified listeners (a direct local request, a verified Access
+        # JWT) may release; any other channel (an API key, later) may not.
+        if via not in ("loopback", "cf-jwt"):
+            self.audit(ident, via, "message-release", id=mid, result="refused", reason="channel")
+            raise Refused(403, "release_refused", "held messages are released only on the board itself")
+        by = self.approver(ident, via, "message-release", what="release a held message", id=mid)
+        if body.get("confirm") != "release":
+            raise Refused(400, "confirm_required", "confirm the release: {\"confirm\": \"release\"}")
+        with self.server.write_lock:
+            rec = messages.read(self.server.home, mid) or {}
+            approvers = fleet.id_list(fleet.load_fleet(), "approvers")
+            if self_release_refused(rec, ident, approvers):
+                self.audit(ident, via, "message-release", id=mid, result="refused", reason="self-release")
+                raise Refused(403, "self_release", "another approver must release a message you sent")
+            try:
+                messages.release(self.server.home, mid, by)
+            except messages.MessageError as exc:
+                self.audit(ident, via, "message-release", id=mid, result=exc.code)
+                raise Refused(404 if exc.code == "not_found" else 409, exc.code, exc.detail) from exc
+            self.audit(ident, via, "message-release", id=mid, result="released")
+        self.hub_kick()
+        return self.send_json(200, {"id": mid, "status": "new"})
 
 
     def set_away(self, body, ident, via):
@@ -985,6 +1056,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         said = said.strip()
         cfg = fleet.load_fleet()
         approvers = fleet.id_list(cfg, "approvers")
+        reason = guard.screen(said) if said else None
         if not approvers:
             self.audit(ident, via, "away", state=state, result="refused", reason="no approvers configured")
             raise Refused(403, "no_approvers", "fleet.yaml approvers is empty: nobody may change this")
@@ -993,6 +1065,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.audit(ident, via, "away", state=state, result="refused", reason="not an approver")
             raise Refused(403, "not_approver", "only approvers change owner-away mode")
         home = self.server.home
+        if reason:  # `said` is broadcast to every session
+            self.audit(ident, via, "away", state=state, result="held", reason=reason)
+            messages.audit(home, {"action": "held-said", "by": by, "reason": reason})
+            messages.alert("guard:held-said:%d" % now_ms(), messages.HELD_SAID_TITLE, None, background=True)
+            raise Refused(400, "held_said", "%s: owner-away mode was not changed" % reason)
         with self.server.write_lock:
             was = away.away_record(home) is not None
             args = ["away", state, "--by", "board:%s" % by]
@@ -1012,7 +1089,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return self.send_json(200, {"away": now_away, "status": result})
 
 
-    def approver(self, ident, via, action, **kw):
+    def approver(self, ident, via, action, what="change notification settings", **kw):
         """The configured spelling of an approver identity; fails closed (403) otherwise."""
         approvers = fleet.id_list(fleet.load_fleet(), "approvers")
         if not approvers:
@@ -1021,7 +1098,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         by = match_id(ident, approvers)
         if by is None:
             self.audit(ident, via, action, result="refused", reason="not an approver", **kw)
-            raise Refused(403, "not_approver", "only approvers change notification settings")
+            raise Refused(403, "not_approver", "only approvers %s" % what)
         return by
 
     def notify_prefs(self, body, ident, via):
