@@ -13,6 +13,10 @@ $BOARD_HOME/
   snapshot.json             # written by bin/board-collect (merged view, see below)
   alerts.json               # board-notify alert state {key: {level, first_at, last_at, acked_at}}; dedupe/repeat per
                             # key and level follow the alerting policy (alerting.yaml / fleet.yaml `alerting:`)
+  notify-prefs.json         # notification controls: mutes, min levels, presence policy (see "Notification controls")
+  notify-prefs.lock         # flock held by `board mute|unmute|notify-level|notify-presence`
+  presence.json             # board-serve: which approver has the board open and visible (presence heartbeats)
+  presence.lock             # flock held by board-serve while it writes presence.json
   owner-away                # present = the owner is away (see "Owner away & consensus")
   consensus/<id>.json       # written by `board consensus` while the owner is away
   consensus.lock            # flock held by `board away on|off` and `board consensus propose|vote`
@@ -121,6 +125,7 @@ Rules:
 | `meta/operator` | operator | `heartbeat_at, version, owner_id`. The page shows "operator offline" if the heartbeat is older than 10 minutes. |
 | `meta/away` | operator | `{active: true, since, by, said, legacy?, updated_at}` while the owner is away, `{active: false, updated_at}` otherwise. The page shows the away banner only for `active: true`. |
 | `consensus/{id}` | operator | a `snapshot.consensus` item as it is. Read-only on the page: no page write path, never relayed as a `[BOARD decision]`. |
+| `meta/notify` | operator | the notification controls, read-only on the page: `board-notify status --json` → `.controls` without `presence.present`, plus `channels` (`{slack: true, ...}`, booleans only). See "Notification controls". |
 | `meta/ledger` | operator | `rows[]`: `{version, date, what, review, lead:{input,cache_read,cache_write,output,total}, teammate, note}` and `total{}`. The page renders this as the "版本與花費" (versions and cost) table in an Info dialog/footer. |
 
 ## Local adapter API (`bin/board-serve`, `lib/serve.py`)
@@ -161,6 +166,8 @@ $BOARD_HOME/
 | `GET /api/events` | `text/event-stream`: `event: state` with the full state at once and after every change (1 s mtime poll; only when the state differs), `: keepalive` every 25 s |
 | `POST /api/decisions/<id>/answer` `{answer}` | `<id>` must match `^d-[0-9]+-[a-z0-9]+$`. With empty `approvers` → 403 `no_approvers` (fails closed). The identity is then checked **before anything is written**, with the rule of `board answer` (`approvers`; for a production decision, gate or stage, `release_managers`, falling back to `approvers`): not allowed → 403 `not_approver`, audited, file untouched (so it can never cancel an approver's answer that waits for the relay). Otherwise `board answer <id> <answer> --by <identity>` (argv, no shell; an answer such as `--help` is recorded literally) → 200 `{status: "answered"}`. For `kind: "permission"` (`answer` = `allow`\|`deny`; `allow` with `summary_truncated` → 409 `review_in_session`), it then runs `board press <from> <answer> --expect <tool_use_id>` → 200 `{status: "relayed"}`; exit 3 → 409 `stale`; exit 4 → 403 `press_refused`. A decision already `relayed`/`stale`/`timeout` → 409 `gone`. |
 | `POST /api/messages` `{to, body}` | only for `approvers` ∪ `release_managers` (else 403 `not_approver`); writes `messages/<id>.json` (`^m-[0-9]+-[a-z0-9]+$`) with `status: "new"`, `by: <identity>` → 201 `{id}` |
+| `POST /api/notify-prefs` `{op, ...}` | Notification controls. `op` is `mute` `{channel, for?\|until?, include_urgent?}`, `unmute` `{channel}`, `level` `{channel, level}` or `presence` `{reduce, level?}`. `channel` is `slack`, `desktop`, `email`, `line`, `sns`, `webhook` or `all`; `for` matches `^[1-9][0-9]{0,4}[mhd]$` (at most 30 days); `until` is `HH:MM` or an ISO time in the next 30 days (a string of at most 64 characters); `include_urgent` and `reduce` are booleans; `level` is `info\|warn\|high\|urgent\|default` (`presence`: `warn\|high\|urgent`). Anything else → 400 `bad_op` / `bad_channel` / `bad_duration` / `bad_level` / `bad_body`, nothing run. Empty `approvers` → 403 `no_approvers`; identity not in `approvers` → 403 `not_approver`, audited. Otherwise `board mute\|unmute\|notify-level\|notify-presence … --by board:<identity>` (argv, no shell) → 200 `{status: "ok", notify}` (the new `notify` state). Failure → 500 `prefs_failed`. |
+| `POST /api/presence` `{visible, interaction_at?}` | The page's presence heartbeat. `visible` boolean, `interaction_at` epoch ms or null (else 400 `bad_body`; a time in the future is clamped to now). Same approver rule as `/api/notify-prefs`. Recorded in `presence.json` under the listener's verified identity, never one from the body → 200 `{status: "ok", visible}`. Audited only when the identity's `visible` changes. |
 | `POST /api/away` `{state: "on"\|"off", said?}` | `state` other than `on`/`off` → 400 `bad_state`; `said` not a string or over 500 chars → 400 `bad_said`. Empty `approvers` → 403 `no_approvers`; identity not in `approvers` → 403 `not_approver`, audited, nothing written. Otherwise `board away on\|off --by board:<identity> [--said <said>]` (argv, no shell; `on` without `said` records "away (set on the board)") → 200 `{away: true\|false, status: "on"\|"off"\|"unchanged"}`. `on` while already away keeps the existing record (`unchanged`). Failure → 500 `away_failed`. |
 
 Every request: `Host` from the listener's allowlist, else 421. Per listener, at most 64
@@ -172,7 +179,8 @@ from the listener's allowlist (`http://127.0.0.1:<port>`, `http://localhost:<por
 `https://<hostname>`; missing or `null` → 403 `csrf`), `Content-Type: application/json` (else
 415), at most 16 KiB (else 413). `OPTIONS` and every other method → 405, and no
 `Access-Control-*` header is ever sent. Every write appends `{type: "serve", action:
-"answer"|"press"|"message"|"away", by, via: "loopback"|"cf-jwt", id, result}` to `events.jsonl`.
+"answer"|"press"|"message"|"away"|"notify-prefs"|"presence", by, via: "loopback"|"cf-jwt", id, result}` to
+`events.jsonl` (`presence` only when visibility changes).
 
 State (`/api/state` and every SSE frame):
 
@@ -187,7 +195,9 @@ State (`/api/state` and every SSE frame):
                  release_manager_ids, usage: {five_hour, seven_day, updated_at}, limit|null },
   "ledger": {...}|null,
   "owner_away": {since, by, said, legacy?}|null,
-  "consensus": [ snapshot.consensus items, newest 50 ] }
+  "consensus": [ snapshot.consensus items, newest 50 ],
+  "notify":    { mutes, min_level, effective_min_level, presence: {reduce, min_level, window_seconds,
+                 idle_seconds}, breakthrough, updated_at, updated_by, channels: {slack: bool, ...} } | null }
 ```
 
 The shape matches what the page reads from the Artifact db (`sessions/*`, `decisions/*`, `tasks/*`,
@@ -294,6 +304,8 @@ Levels and the default routing (overridable in fleet.yaml under `alerting.routes
 - **Ack:** a decision leaves `pending`, or a session leaves needs-you. An ack stops escalation.
 - **State:** kept in `$BOARD_HOME/alerts.json` as `{key: {level, first_at, last_at, acked_at}}`. The key is `decision:<id>`, `session:<code>:needs-you` or `usage:<window>:<threshold>`.
 - **Quiet hours:** `alerting.quiet_hours: "23:00-08:00"`. Only `urgent` passes during them.
+- **Notification controls:** mutes, per-channel and global min levels and presence-aware reduction
+  apply at delivery time; see "Notification controls".
 - **Dedupe:** at most one send per key per level. A re-alert at the same level happens only after `alerting.repeat_minutes` (default 60).
 
 ### Board links in alerts
@@ -344,6 +356,96 @@ An optional public board URL makes every alert carry a link that opens the board
   - **Malformed** id (fails its pattern): ignored. Nothing is shown and the parameter stays in the
     address bar.
   - In the claude.ai Artifact the query may not reach the page; then nothing happens.
+
+## Notification controls (mute, triage, presence)
+
+The owner's Slack-like control over push. It changes **what is pushed**, never what is recorded:
+the board always shows every session, decision and alert, alerts.json keeps escalating, and every
+held send is logged.
+
+**Prefs file** (`$BOARD_HOME/notify-prefs.json`, 0600, written atomically under an exclusive
+`flock` on `notify-prefs.lock`, 10 s timeout, by `lib/prefs.py` only):
+
+```json
+{ "version": 1,
+  "mutes":     { "slack": {"until": 1794664800000, "by": "board:local", "at": 0, "include_urgent": false},
+                 "all":   {"until": null, "by": "CP", "at": 0, "include_urgent": true} },
+  "min_level": { "all": "high", "email": "urgent" },
+  "presence":  { "reduce": true, "min_level": "high" },
+  "updated_at": 0, "updated_by": "board:local" }
+```
+
+- Keys of `mutes` and `min_level`: `slack`, `desktop`, `email`, `line`, `sns`, `webhook`, `all`.
+  Unknown keys and malformed values are ignored. `until: null` (or a non-number) means until
+  unmuted; an expired mute is ignored at once and dropped on the next write.
+- `--by` follows the `board away` rule (`^(board:)?[A-Za-z0-9][A-Za-z0-9@._+:-]{0,199}$`).
+  Every change appends `{type: "notify-prefs", action: "mute"|"unmute"|"level"|"presence", ...}`.
+
+**Defaults from config.** `alerting.min_level` in fleet.yaml (or alerting.yaml) is a level (the
+global floor) or `{all|channel: level}`; `alerting.presence` is `{reduce, min_level,
+window_seconds, idle_seconds}` (defaults `true`, `high`, `120`, `900`). The prefs file overrides
+`min_level` per key and `presence.reduce` / `presence.min_level`; `board notify-level X default`
+removes a prefs floor so the config (else `info`) applies again.
+
+**CLI** (`bin/board` → `lib/prefs.py`; exit 0 ok, 1 error such as a held lock, 2 usage, nothing written):
+
+- `board mute CHANNEL|all [--for 30m|1h|4h|2d | --until HH:MM|ISO] [--include-urgent] [--by WHO]`.
+  `--until HH:MM` is the next such local time; ISO without an offset is local time; at most 30
+  days ahead, never in the past.
+- `board unmute CHANNEL|all [--by WHO]`: `all` removes **every** mute. Unmuting a channel while
+  `all` is muted says so on stderr (the channel stays muted).
+- `board mute status [--json]`: mutes in force, floors with their source (`prefs`, `config`,
+  `default`), the effective floor per channel, the presence policy and who is watching now.
+- `board notify-level CHANNEL|all info|warn|high|urgent|default [--by WHO]`.
+- `board notify-presence on|off [--level warn|high|urgent] [--by WHO]`.
+
+**Presence** (`$BOARD_HOME/presence.json`, 0600, `flock` on `presence.lock`, written by
+`board-serve` only): `{<identity>: {at, visible, interaction_at, via}}`. The page sends a
+heartbeat on load, every 30 s while visible, on every visibility change and on `pagehide`
+(`POST /api/presence`, approvers only; the identity is the listener's verified one). An identity
+**is watching** when it is in `approvers` (case-insensitive), its last heartbeat says `visible`,
+is at most `window_seconds` old, and its `interaction_at` (last click, tap, scroll or key) is at
+most `idle_seconds` old (`0` = no idle limit). A page left open on an unattended screen therefore
+stops counting after 15 minutes. Entries older than a day are dropped; at most 50 are kept.
+
+**Delivery rule** (`lib/notify.py`, after dedupe and quiet hours, for every routed and configured
+channel of every delivery: first sends, escalation re-sends, repeats and retries):
+
+1. **Muted:** a mute of `all` or of the channel that has not expired holds it (`muted:all`,
+   `muted:<channel>`), **unless the level is `urgent` and that mute does not have
+   `include_urgent`**.
+2. **Triage:** the level must reach the stricter of the `all` floor and the channel's own floor,
+   else `below_min_level`.
+3. **Presence:** while `presence.reduce` is on and an approver is watching, a level below
+   `presence.min_level` is held (`owner_present`).
+
+Each held channel appends `{ts, type: "alert-suppressed", key, channel, level, reason}` to
+`events.jsonl`. When **every** routed channel is held, the level counts as delivered
+(`sent[level]` and `suppressed[level]` are set, status `suppressed`): nothing is replayed when the
+mute ends or the owner leaves, and an alert that is still open and unacked goes out at its next
+escalation step or `repeat_minutes` repeat, under the rules in force then. A partly held delivery
+is a normal delivery to the other channels. A prefs or presence file that cannot be read **fails
+open** (everything is delivered).
+
+**Breakthrough.** `urgent` is the top level, so it always passes triage and presence; only a mute
+with `include_urgent` (`board mute all --include-urgent`: "mute everything, including urgent")
+stops it. Urgent covers a production gate (urgent at once), a usage-limit hit, usage ≥ 95%, a
+permission prompt unacknowledged for 10 minutes, anything unacknowledged for 30 minutes, and any
+`board-notify send --level urgent` (for example an operator-down alert).
+
+**Other senders.** `board notify` (the plain Slack post) is an `info` message on `slack`: it asks
+`board-notify gate --channel slack --level info --key notify` (exit 0 = send, 10 = held and
+logged) and sends nothing when held. `board-notify test` ignores the controls (it is an explicit
+check of a channel). `board-notify status [--json]` shows the effective controls (`controls`),
+never a credential.
+
+**Board page.** A Notifications dialog (mute all with a duration and "include urgent", per-channel
+mute and min level, the global min level, "reduce push while I'm watching" and its level) and a
+banner while anything is muted ("Slack muted until 14:00", and whether urgent breaks through).
+Self-hosted: approvers change it through `POST /api/notify-prefs`, everyone else sees it
+read-only, and `/api/state.notify` carries it (no watcher list; `presence.json` does not wake the
+SSE stream). Artifact: read-only from `meta/notify`, which the operator mirrors
+(`prompts/board-operator.md`); the page drops mutes whose `until` has passed by itself.
 
 ## Usage meter (approaching 5h / weekly limits)
 
