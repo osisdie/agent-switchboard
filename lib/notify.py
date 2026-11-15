@@ -913,7 +913,8 @@ def resource_alerts(res, rcfg=None):
     R = _res_lib()
     levels = res.get("levels") if isinstance(res.get("levels"), dict) else {}
     idle = R.idle_teammates(res)
-    mem_rank = max(R.LEVELS.index(levels.get(k)) if levels.get(k) in R.LEVELS else 0 for k in ("mem", "swap", "oom"))
+    # memory pressure: mem (PSI included) or an OOM kill; swap alone never promotes anything
+    mem_rank = max(R.LEVELS.index(levels.get(k)) if levels.get(k) in R.LEVELS else 0 for k in ("mem", "oom"))
     hint = _reclaim_hint(idle)
     m, sw = res.get("mem") or {}, res.get("swap") or {}
     for metric in sorted(levels):
@@ -929,8 +930,9 @@ def resource_alerts(res, rcfg=None):
         elif base == "swap":
             title = "Swap %s: %s%% used of %s" % (lvl, sw.get("used_pct"), _fmt_mb(sw.get("total_mb")))
         else:
-            d = next((x for x in res.get("disks") or [] if "disk:%s" % x.get("mount") == metric), {})
-            title = "Disk %s %s: %s%% free (%s)" % (metric[5:], lvl, d.get("free_pct"), _fmt_mb(d.get("free_mb")))
+            d = next((x for x in res.get("disks") or [] if "disk:%s" % x.get("id") == metric), {})
+            used = ", ".join(str(x) for x in d.get("labels") or []) or "?"
+            title = "Disk %s (%s) %s: %s%% free (%s)" % (metric[5:], used, lvl, d.get("free_pct"), _fmt_mb(d.get("free_mb")))
         body = " ".join(x for x in ((hint if base != "disk" else ""), _largest(res) if base != "disk" else "") if x)
         out.append({"level": "warn" if lvl == "warn" else "high", "key": "res:%s" % metric, "kind": "resources",
                     "escalate": False, "repeat": True, "title": title, "body": body})
@@ -962,9 +964,11 @@ def operator_alert(health):
 
 
 def _pending_count(snap, h):
-    """Decisions waiting or answered-but-not-relayed, plus new messages: what the operator relays."""
+    """What `board-serve --watch` hands the operator (serve.actionable): answered questions and
+    gates (not permission prompts: board-serve presses those itself) and new messages. Decisions
+    still pending wait on the owner, not on the operator."""
     n = sum(1 for d in (snap or {}).get("decisions") or []
-            if isinstance(d, dict) and d.get("status") in ("pending", "answered"))
+            if isinstance(d, dict) and d.get("status") == "answered" and d.get("kind") != "permission")
     mdir = os.path.join(h, "messages")
     try:
         names = [f for f in os.listdir(mdir) if f.endswith(".json")]

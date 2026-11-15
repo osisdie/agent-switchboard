@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
@@ -34,6 +35,25 @@ from fake_proc import FakeProc  # noqa: E402
 T0 = 1794650400000  # 2026-11-14 10:00 UTC
 GIB = 1024 * 1024 * 1024
 SECRET = "verify-key-must-never-be-stored"
+
+
+def slurp(path):
+    with open(path, encoding="utf-8") as fh:
+        return fh.read()
+
+
+def paths_in(obj):
+    """Every string in obj that looks like a filesystem path."""
+    out = []
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            out += paths_in(k) + paths_in(v)
+    elif isinstance(obj, list):
+        for v in obj:
+            out += paths_in(v)
+    elif isinstance(obj, str) and (obj.startswith(("/", "~")) or ":/" in obj or "/" in obj):
+        out.append(obj)
+    return out
 
 
 def teammate_argv(name, parent_sid, team="team-x"):
@@ -109,6 +129,38 @@ class SystemMetrics(Base):
         self.assertIsNone(doc["mem"]["psi_some_avg60"])
         self.assertIsNone(doc["oom_kills"])
         self.assertNotIn("swap", doc["levels"])
+
+    def test_swap_alone_is_not_pressure(self):
+        self.fp.mem(16384, 8192, swap_total_mb=4096, swap_free_mb=400)   # 90% swap, 50% memory free
+        for i in range(4):
+            doc = self.run_sample(T0 + i * 15000)
+        self.assertEqual(doc["levels"]["swap"], "ok")
+        self.assertEqual(doc["level"], "ok")
+        self.fp.mem(16384, 1500, swap_total_mb=4096, swap_free_mb=400)   # memory at warn: swap counts
+        for i in range(4, 8):
+            doc = self.run_sample(T0 + i * 15000)
+        self.assertEqual(doc["levels"]["mem"], "warn")
+        self.assertEqual(doc["levels"]["swap"], "critical")
+        self.assertEqual(doc["worst"], "swap")
+
+    def test_oom_counter_reset(self):
+        self.fp.write("vmstat", "oom_kill 5\n")
+        self.run_sample(T0)
+        self.fp.write("vmstat", "oom_kill 1\n")                        # a reboot: the counter restarted
+        doc = self.run_sample(T0 + 15000)
+        self.assertEqual(doc["oom_kills_delta"], 1)
+        self.assertTrue(doc["oom_recent"])
+
+    def test_bad_threshold_does_not_stop_the_sampler(self):
+        cfg = R.settings({"resources": {"thresholds": {"mem_available_pct": "abc", "swap_used_pct": [50, "x"]}}})
+        self.assertEqual(cfg["thresholds"]["mem_available_pct"], [15.0, 8.0])
+        self.assertEqual(len(cfg["config_errors"]), 2)
+        cfg["disks"] = []
+        doc = R.sample(cfg, self.home, [], {}, T0)
+        self.assertEqual(doc["level"], "ok")
+        self.assertEqual(len(doc["config_errors"]), 2)
+        # and the raw evaluator skips a bad value instead of raising
+        self.assertEqual(R.metric_candidate(5, ["x", 8], True, "ok"), "high")
 
     def test_oom_delta_is_critical(self):
         self.run_sample(T0)
@@ -205,6 +257,20 @@ class Processes(Base):
         doc = self.run_sample(T0 + 15000)
         self.assertEqual([s["code"] for s in doc["sessions"]], ["CP", "API"])
 
+    def test_playwright_mcp_is_not_a_browser(self):
+        self.tree()
+        self.fp.proc(106, 100, "node", ["node", "/x/.bin/playwright-mcp", "--browser", "chrome"], rss_mb=90)
+        self.fp.proc(107, 101, "node", ["node", "/x/.bin/playwright", "test", "--project=chromium"], rss_mb=200)
+        doc = self.run_sample(T0)
+        cp = next(s for s in doc["sessions"] if s["code"] == "CP")
+        cls = {c["pid"]: c["class"] for c in cp["children"]}
+        self.assertEqual(cls.get(106, "other"), "other")
+        self.assertEqual(cls[107], "test")
+        self.assertEqual(cls[104], "browser")                    # the browser itself, by comm
+
+    def test_descendants_terminate_on_a_loop(self):
+        self.assertEqual(sorted(R._descendants({1: [2], 2: [3, 1], 3: [2]}, 1)), [2, 3])
+
     def test_class_override(self):
         self.tree()
         self.cfg["process_classes"] = {"container": r"\bpython3\b"}
@@ -255,8 +321,74 @@ class Disks(Base):
         self.assertEqual(disks["/data"]["labels"], ["B"])
         self.assertEqual((disks["/data"]["free_pct"], disks["/data"]["free_mb"]), (2, 2048))
         self.assertEqual(disks["/data"]["level"], "critical")   # high (2% < 3%) for 2 samples
-        self.assertEqual(doc["worst"], "disk:/data")
-        self.assertNotIn(self.dir, json.dumps(doc))             # labels, never paths
+        self.assertEqual({d["mount"]: d["id"] for d in doc["disks"]}, {"/": "disk1", "/data": "disk2"})
+        self.assertEqual(doc["worst"], "disk:disk2")            # opaque ids, never mount paths
+        self.assertEqual(set(doc["levels"]) - {"mem", "swap", "load"}, {"disk:disk1", "disk:disk2"})
+        self.assertNotIn(self.dir, json.dumps(doc))
+        self.assertEqual(paths_in(R.board_view(doc)), [])
+        self.assertEqual(paths_in(R.mirror_view(doc)), [])
+
+    def patched(self, probe=None, mounts=None):
+        orig = (R.mount_of, R.statvfs, R.DISK_TIMEOUT_S)
+        R.mount_of = mounts or (lambda p: "/")
+        R.statvfs = probe or (lambda p: type("V", (), {"f_blocks": 1000, "f_bavail": 500, "f_frsize": 4096})())
+        R.DISK_TIMEOUT_S = 0.3
+        return orig
+
+    def restore(self, orig):
+        R.mount_of, R.statvfs, R.DISK_TIMEOUT_S = orig
+
+    def test_hung_disk_times_out_and_is_skipped(self):
+        slow = os.path.join(self.dir, "slow")
+        os.makedirs(slow)
+        calls = []
+        V = type("V", (), {"f_blocks": 1000, "f_bavail": 500, "f_frsize": 4096})
+
+        def probe(p):
+            calls.append(p)
+            if p == "/slow":
+                time.sleep(3)
+            return V()
+        orig = self.patched(probe, lambda p: "/slow" if p == slow else "/")
+        try:
+            self.cfg["disks"] = "auto"
+            self.sessions = [{"code": "S", "pid": 7, "cwd": slow}]
+            t = time.monotonic()
+            doc = self.run_sample(T0)
+            took = time.monotonic() - t
+            self.assertLess(took, 2.0)
+            stuck = [d for d in doc["disks"] if d.get("unresponsive")]
+            self.assertEqual([(d["labels"], d["level"]) for d in stuck], [(["S"], None)])
+            self.assertIn("disk", doc["unavailable"])
+            self.assertNotIn("disk:" + stuck[0]["id"], doc["levels"])
+            n = calls.count("/slow")
+            doc = self.run_sample(T0 + 15000)                     # remembered: not probed again
+            self.assertEqual(calls.count("/slow"), n)
+            self.assertTrue(any(d.get("unresponsive") for d in doc["disks"]))
+            self.assertTrue(R.board_view(doc)["disks"][-1]["unresponsive"])
+            self.run_sample(T0 + R.DISK_HUNG_MS + 1000)           # retried after DISK_HUNG_MS
+            self.assertEqual(calls.count("/slow"), n + 1)
+        finally:
+            self.restore(orig)
+
+    def test_network_mounts_skipped_unless_configured(self):
+        net = os.path.join(self.dir, "net")
+        os.makedirs(os.path.join(net, "repo"))
+        self.fp.write("self/mountinfo", "22 1 8:1 / / rw - ext4 /dev/sda1 rw\n"
+                      "40 22 0:50 / %s rw - 9p drvfs rw\n" % net.replace(" ", "\\040"))
+        seen = []
+        orig = self.patched(mounts=lambda p: seen.append(p) or "/")
+        try:
+            self.cfg["disks"] = "auto"
+            self.sessions = [{"code": "N", "pid": 7, "cwd": os.path.join(net, "repo")}]
+            doc = self.run_sample(T0)
+            self.assertEqual([d["labels"] for d in doc["disks"]], [["$BOARD_HOME"]])
+            self.assertNotIn(os.path.join(net, "repo"), seen)        # never touched
+            self.cfg["disks"] = [os.path.join(net, "repo")]
+            doc = self.run_sample(T0 + 15000)
+            self.assertEqual([d["labels"] for d in doc["disks"]], [["disks[0]"]])  # explicit: probed
+        finally:
+            self.restore(orig)
 
 
 class Levels(unittest.TestCase):
@@ -279,6 +411,19 @@ class Levels(unittest.TestCase):
         want = ["ok", "high", "critical", "critical", "critical", "critical", "critical", "warn", "warn", "ok"]
         # 9 < 8 * 4/3 keeps high; 12 leaves high (> 10.67) but stays under warn's leave (20)
         self.assertEqual(self.run_table("mem", "mem_available_pct", True, seq), want)
+
+    def test_swinging_values_still_move(self):
+        # From ok, 7% / 9% available alternate between high and warn candidates: both are worse
+        # than ok, so the level moves up to the step closest to ok that the streak sustained.
+        seq = [7, 9, 7, 9, 7, 9]
+        want = ["ok", "warn", "warn", "warn", "warn", "warn"]
+        self.assertEqual(self.run_table("mem", "mem_available_pct", True, seq), want)
+        # From high, 19% / 21% alternate between warn and ok candidates: both better than high,
+        # so it comes down (to warn, the closer step) instead of latching critical.
+        st = {"mem": {"level": "high", "high_n": 5}}
+        out = [R.evaluate({"mem": [(v, "mem_available_pct", True)]}, R.DEFAULTS["thresholds"], st)["mem"]
+               for v in [19, 21, 19, 21, 19, 21]]
+        self.assertEqual(out, ["critical", "warn", "warn", "warn", "warn", "warn"])
 
     def test_higher_is_worse(self):
         seq = [10, 55, 55, 45, 35, 35, 85, 85, 85, 70, 59, 59]   # warn leaves under 37.5, high under 60
@@ -360,7 +505,9 @@ class OperatorHealth(unittest.TestCase):
         self.assertFalse(H(None, self.res(False), off, 1, T0)["stale"])             # Artifact mode: unknown
         self.assertTrue(H(None, self.res(True), self.cfg, 1, T0)["stale"])          # serve on, never checked in
         self.assertFalse(H(fresh, self.res(False, at=T0 - 600000), self.cfg, 1, T0)["stale"])  # sample too old
-        self.assertTrue(H({"heartbeat_at": (T0 - 20 * 60000) / 1000}, None, off, 1, T0)["stale"])  # seconds ok
+        self.assertTrue(H({"heartbeat_at": (T0 - 20 * 60000) / 1000}, None, self.cfg, 1, T0)["stale"])  # seconds ok
+        # Artifact mode (serve off): the heartbeat is in meta/operator, not judged here at all.
+        self.assertEqual(H({"heartbeat_at": T0 - 60 * 60000}, self.res(False), off, 1, T0)["reasons"], [])
 
 
 class Collector(Base):
@@ -433,6 +580,15 @@ class Collector(Base):
         self.assertEqual(res["enabled"], False)
         self.assertEqual(res["operator"], {"watch": False})
         self.assertNotIn("mem", res)
+        # The disabled doc never changes, yet it is rewritten every minute so `at` stays fresh and
+        # the operator-watch input does not go stale (operator:stale would flap).
+        rcfg = {"operator_stale_minutes": 10, "interval": 15, "serve_enabled": True}
+        for t in range(16000, 200001, 16000):
+            _, _, res = self.collect(T0 + t)
+            self.assertLessEqual(T0 + t - res["at"], R.REWRITE_MS + 16000)
+            h = R.operator_health({"heartbeat_at": T0 + t}, res, rcfg, 1, T0 + t)
+            self.assertEqual(h["watch"], False, t)
+            self.assertTrue(h["stale"])
 
     def test_cli(self):
         self.collect(T0)
@@ -456,6 +612,14 @@ class Collector(Base):
                              capture_output=True, text=True, check=False).stdout
         self.assertIn("ok    platform linux", doc)
         self.assertIn("ok    all metrics available", doc)
+        # --refresh samples now but writes nothing: the collector's dwell state does not advance.
+        files = [os.path.join(self.home, f) for f in ("resources.json", "resources-state.json")]
+        before = [slurp(f) for f in files]
+        self.fp.mem(16384, 500)
+        env2 = dict(env, BOARD_NOW_MS=str(T0 + 20000))
+        out = subprocess.run([board, "resources", "--refresh"], env=env2, capture_output=True, text=True, check=False)
+        self.assertIn("mem 500 MB available", out.stdout)
+        self.assertEqual([slurp(f) for f in files], before)
 
 
 class Views(Base):

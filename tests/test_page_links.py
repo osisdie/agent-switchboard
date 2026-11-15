@@ -69,6 +69,7 @@ RES_JS = """() => ({
   oom: document.getElementById('sys-oom').textContent,
   rows: document.querySelectorAll('#res-body tr').length, idle: document.querySelectorAll('#res-body .idle').length,
   disks: document.querySelectorAll('#disk-body tr').length, nav: document.getElementById('nav-res').textContent,
+  disk0: (document.querySelector('#disk-body td') || {}).textContent,
   note: document.getElementById('res-idle-note').textContent,
   wide: document.documentElement.scrollWidth > window.innerWidth,
   banners: [...document.querySelectorAll('#banners .banner strong')].map((x) => x.textContent),
@@ -211,6 +212,7 @@ def main():
             check("a row per session plus orphaned teammates", r["rows"] == 4, r)
             check("idle teammates flagged", r["idle"] == 2, r)
             check("disks table", r["disks"] == 2, r)
+            check("disks by opaque id, not path", r["disk0"] == "disk1", r)
             check("nav badge counts idle teammates", r["nav"] == "2", r)
             check("idle note says the board stops nothing", "never stops a process" in r["note"], r)
             check("no critical banner at warn", not any("critical" in b for b in r["banners"]), r)

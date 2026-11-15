@@ -153,9 +153,10 @@ echo "resources:"
 eq "resources from the collector's sample" "$(body '.resources.level + "/" + (.resources.mem.total_mb | tostring)')" "ok/16384"
 eq "resources: the operator watch is reported" "$(body '.resources.operator.watch')" "false"
 # A richer sample: board_view() drops pids and paths; serve picks up the rewrite (signature).
-jq -n '{at: 1, enabled: true, platform: "linux", level: "warn", worst: "mem", levels: {mem: "warn"},
+jq -n '{at: 1, enabled: true, platform: "linux", level: "warn", worst: "mem",
+  levels: {mem: "warn", "disk:disk1": "ok"},
   mem: {total_mb: 16384, available_mb: 1900, available_pct: 12, psi_some_avg60: 2.5},
-  disks: [{mount: "/", total_mb: 1000, free_mb: 500, free_pct: 50, level: "ok", labels: ["$BOARD_HOME", "CP"], paths: ["/secret/path"]}],
+  disks: [{id: "disk1", mount: "/srv/secret", total_mb: 1000, free_mb: 500, free_pct: 50, level: "ok", labels: ["$BOARD_HOME", "CP"], paths: ["/secret/path"]}],
   sessions: [{code: "CP", pid: 4242, rss_mb: 400, cpu_pct: 3, classes: {test: {n: 1, rss_mb: 900, cpu_pct: 90}},
     children: [{class: "test", comm: "python3", pid: 4243, rss_mb: 900, cpu_pct: 90, age_s: 60, heavy: true, via: null}],
     teammates: [{name: "idle-one", pid: 4300, rss_mb: 300, cpu_pct: 0, age_s: 7200, idle_s: 3600, idle: true}],
@@ -167,7 +168,8 @@ eq "resources: session row" "$(body '.resources.sessions[0] | .code + "/" + (.rs
 eq "resources: idle teammate flagged" "$(body '.resources.sessions[0].teammates[0] | .name + "/" + (.idle|tostring)')" "idle-one/true"
 eq "resources: child class" "$(body '.resources.sessions[0].children[0].class')" "test"
 eq "resources: no pids" "$(body '[.resources | .. | objects | has("pid")] | any')" "false"
-eq "resources: disks carry labels, not paths" "$(body '.resources.disks[0] | (.labels | join(",")) + "/" + (has("paths") | tostring)')" "\$BOARD_HOME,CP/false"
+eq "resources: disks carry an id and labels, not paths" "$(body '.resources.disks[0] | .id + "/" + (.labels | join(",")) + "/" + (has("paths") or has("mount") | tostring)')" "disk1/\$BOARD_HOME,CP/false"
+eq "resources: no path anywhere" "$(body '[.resources | .. | strings | select(test("/"))] | length')" "0"
 eq "resources: unknown fields dropped" "$(body '.resources | has("cmdline")')" "false"
 
 eq "GET / 200" "$(req GET / -D "$T/hdr")" "200"

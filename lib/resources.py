@@ -4,8 +4,8 @@ docs/design/resources-and-scheduling.md). Python stdlib only (+ pyyaml through l
 
 Usage:
   resources.py show [--json|--mirror] [--refresh]   print the last sample (--mirror: the bucketed
-                                                    meta/resources document for the Artifact board)
-  resources.py sample                               take one sample now (ignores the interval)
+                                                    meta/resources document for the Artifact board;
+                                                    --refresh: sample now, write nothing)
   resources.py doctor                               which metrics this platform provides
 
 The collector calls step() on every run; it samples at most every `resources.interval` seconds
@@ -28,6 +28,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
@@ -51,6 +52,9 @@ DEFAULTS = {
     "process_classes": {},         # {class: regex} overrides / additions
 }
 OPERATOR_STALE_MINUTES = 10        # schedule.operator_stale_minutes
+DISK_TIMEOUT_S = 2.0               # all disk probes of one sample together
+DISK_HUNG_MS = 10 * 60 * 1000      # a path that timed out is not probed again for this long
+NETWORK_FS = re.compile(r"^(nfs\d?|cifs|smb\d?|smbfs|9p|fuse(\..*)?|fuseblk|sshfs|afs|ceph|glusterfs|lustre)$")
 # Lower-is-worse metrics leave a level at threshold * 4/3 (enter at 15% free, leave at 20%);
 # higher-is-worse ones at threshold * 3/4. A level changes after DWELL equal samples in a row.
 LEAVE_LOW = 4.0 / 3.0
@@ -63,11 +67,14 @@ HEAVY_RSS_MB = 1024
 HEAVY_CLASSES = ("test", "build", "browser")
 CLASS_ORDER = ("test", "build", "browser", "container")
 CLASS_RE = {
-    "test": r"\b(pytest|py\.test|jest|vitest|go test|cargo test|mvn|gradlew?)\b",
+    "test": r"\b(pytest|py\.test|jest|vitest|playwright test|go test|cargo test|mvn|gradlew?)\b",
     "build": r"\b(tsc|webpack|vite build|cargo build|docker build)\b",
-    "browser": r"(chrome|chromium|firefox|headless_shell|playwright)",
+    "browser": r"(chrome|chromium|firefox|headless_shell)",
     "container": r"\b(docker|containerd)\b",
 }
+# Matched on `comm` alone: an idle Playwright MCP server mentions "playwright"/"chrome" in its
+# argv but is not a browser; the browser processes it starts are.
+COMM_ONLY = ("browser",)
 ARGV_COMM_RE = re.compile(r"^(claude|node|bun|python)", re.I)   # whose argv we read outside session trees
 SHELLS = ("bash", "sh", "zsh", "dash", "fish")                     # a shell running `pytest` is not the test
 NAME_RE = re.compile(r"[^A-Za-z0-9._@-]")
@@ -130,7 +137,26 @@ def settings(cfg=None):
     out["teammate_idle_minutes"] = max(0.0, num(out.get("teammate_idle_minutes"), 30))
     serve = cfg.get("serve") if isinstance(cfg.get("serve"), dict) else {}
     out["serve_enabled"] = bool(serve.get("enabled"))
+    out["thresholds"], out["config_errors"] = clean_thresholds(out.get("thresholds"))
     return out
+
+
+def clean_thresholds(thr):
+    """Every threshold as [warn, high] floats. A bad entry falls back to its default and is
+    reported (resources.json `config_errors`, `board doctor`, stderr) instead of stopping the
+    sampler."""
+    out, errors = {}, []
+    thr = thr if isinstance(thr, dict) else {}
+    for key, default in DEFAULTS["thresholds"].items():
+        v = thr.get(key, default)
+        try:
+            if not isinstance(v, (list, tuple)) or len(v) != 2:
+                raise ValueError
+            out[key] = [float(v[0]), float(v[1])]
+        except (TypeError, ValueError):
+            errors.append("resources.thresholds.%s: %r is not [warn, high] numbers; using %s" % (key, v, default))
+            out[key] = list(default)
+    return out, errors
 
 
 def num(v, default):
@@ -371,7 +397,7 @@ def classify(p, classes):
     argv = p.get("argv") or []
     target = " ".join([p["comm"]] + [os.path.basename(a) for a in argv[:4]])
     for name, rx in classes:
-        if rx.search(target):
+        if rx.search(p["comm"] if name in COMM_ONLY else target):
             return name
     return "other"
 
@@ -390,7 +416,10 @@ def metric_candidate(value, thr, lower_is_worse, current):
     for lvl, t in (("high", thr[1]), ("warn", thr[0])):
         if t is None:
             continue
-        t = float(t)
+        try:
+            t = float(t)
+        except (TypeError, ValueError):  # settings() already replaced bad values; belt and braces
+            continue
         held = LEVELS.index(current) >= LEVELS.index(lvl)
         if lower_is_worse:
             if value <= (t * LEAVE_LOW if held else t):
@@ -401,24 +430,36 @@ def metric_candidate(value, thr, lower_is_worse, current):
 
 
 def step_level(st, cand):
-    """Dwell: the committed level follows the candidate after DWELL equal samples in a row.
-    `st` = {level, cand, n, high_n}; returns the level shown (critical after CRITICAL_AFTER at high)."""
+    """Dwell, per direction: DWELL samples in a row worse than the committed level move it up,
+    DWELL in a row better move it down, to the step of that streak closest to the committed level
+    (from ok, 7% then 9% available is warn; from high, 19% then 21% is warn). A sample at the
+    committed level ends both streaks. `st` = {level, up_n, up_to, down_n, down_to, high_n};
+    returns the level shown (critical after CRITICAL_AFTER samples at high)."""
     cur = st.get("level") or "ok"
-    if cand == cur:
-        st["cand"], st["n"] = cand, 0
+    ci, ki = LEVELS.index(cand), LEVELS.index(cur)
+    if ci > ki:
+        st["up_to"] = min(ci, st["up_to"]) if st.get("up_n") else ci
+        st["up_n"], st["down_n"] = st.get("up_n", 0) + 1, 0
+    elif ci < ki:
+        st["down_to"] = max(ci, st["down_to"]) if st.get("down_n") else ci
+        st["down_n"], st["up_n"] = st.get("down_n", 0) + 1, 0
     else:
-        st["n"] = st.get("n", 0) + 1 if st.get("cand") == cand else 1
-        st["cand"] = cand
-        if st["n"] >= DWELL:
-            cur, st["n"] = cand, 0
+        st["up_n"] = st["down_n"] = 0
+    if st.get("up_n", 0) >= DWELL:
+        cur, st["up_n"] = LEVELS[st["up_to"]], 0
+    elif st.get("down_n", 0) >= DWELL:
+        cur, st["down_n"] = LEVELS[st["down_to"]], 0
+    st.pop("cand", None)
+    st.pop("n", None)
     st["level"] = cur
     st["high_n"] = st.get("high_n", 0) + 1 if cur == "high" else 0
     return "critical" if cur == "high" and st["high_n"] >= CRITICAL_AFTER else cur
 
 
-def evaluate(values, thresholds, mstate):
+def evaluate(values, thresholds, mstate, prune=True):
     """values: {metric: [(value, threshold_key, lower_is_worse), ...]}. Mutates mstate
-    ({metric: dwell state}); returns {metric: level}. Metrics missing from `values` are dropped."""
+    ({metric: dwell state}); returns {metric: level}. With prune, the state of metrics missing
+    from `values` is dropped."""
     out = {}
     for metric, subs in values.items():
         st = mstate.setdefault(metric, {"level": "ok"})
@@ -429,8 +470,9 @@ def evaluate(values, thresholds, mstate):
             if LEVELS.index(c) > LEVELS.index(cand):
                 cand = c
         out[metric] = step_level(st, cand)
-    for gone in [m for m in mstate if m not in values]:
-        mstate.pop(gone, None)
+    if prune:
+        for gone in [m for m in mstate if m not in values]:
+            mstate.pop(gone, None)
     return out
 
 
@@ -462,38 +504,120 @@ def mount_of(path):
     return p
 
 
-def disk_targets(rcfg, home, sessions):
-    """[(path, label)]: BOARD_HOME and each session's cwd (auto), or the configured paths."""
-    spec = rcfg.get("disks", "auto")
-    if isinstance(spec, list):
-        return [(os.path.expanduser(str(p)), home_rel(os.path.expanduser(str(p)))) for p in spec if p]
-    out = [(home, "$BOARD_HOME")]
-    for s in sessions:
-        if s.get("cwd") and s.get("pid"):
-            out.append((os.path.expanduser(str(s["cwd"])), str(s.get("code"))))
+def read_mounts(root=None):
+    """[(mount point, fstype)] from <proc>/self/mountinfo, longest mount point first."""
+    out = []
+    for line in (read_text(os.path.join(root or proc_root(), "self", "mountinfo")) or "").splitlines():
+        if " - " not in line:
+            continue
+        left, right = line.split(" - ", 1)
+        f, r = left.split(), right.split()
+        if len(f) < 5 or not r:
+            continue
+        out.append((re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), f[4]), r[0]))
+    out.sort(key=lambda x: -len(x[0]))
     return out
 
 
-def sample_disks(rcfg, home, sessions):
-    by_mount = {}
-    for path, label in disk_targets(rcfg, home, sessions):
-        if not os.path.isdir(path):
+def fs_type(path, mounts):
+    """The filesystem type of PATH by mount-point prefix only: no syscall on PATH itself."""
+    p = os.path.abspath(path)
+    for mp, fst in mounts:
+        if p == mp or p.startswith(mp.rstrip("/") + "/"):
+            return fst
+    return None
+
+
+def _probe(path):
+    """(mount point, statvfs) of PATH, or None when PATH is not a directory."""
+    if not os.path.isdir(path):
+        return None
+    mnt = mount_of(path)
+    return mnt, statvfs(mnt)
+
+
+def probe_all(paths, timeout=None):
+    """{path: (mount, statvfs) | None | "timeout"}. Each path is probed in a daemon thread and the
+    whole batch waits at most `timeout`, so a hung network mount cannot stall the collector (or
+    operator:stale with it). NFS and FUSE waits are killable, so the process still exits."""
+    box, threads = {}, []
+    for path in paths:
+        def run(p=path):
+            try:
+                box[p] = _probe(p)
+            except OSError:
+                box[p] = None
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        threads.append(t)
+    deadline = time.monotonic() + (DISK_TIMEOUT_S if timeout is None else timeout)
+    for t in threads:
+        t.join(max(0.0, deadline - time.monotonic()))
+    return {p: box[p] if p in box else "timeout" for p in paths}
+
+
+def disk_targets(rcfg, home, sessions):
+    """[(path, label, explicit)]: BOARD_HOME and each live session's cwd (auto), or the
+    configured paths (labelled disks[0], disks[1], ... so no path reaches the board)."""
+    spec = rcfg.get("disks", "auto")
+    if isinstance(spec, list):
+        return [(os.path.expanduser(str(p)), "disks[%d]" % i, True) for i, p in enumerate(spec) if p]
+    out = [(home, "$BOARD_HOME", False)]
+    for s in sessions:
+        if s.get("cwd") and s.get("pid"):
+            out.append((os.path.expanduser(str(s["cwd"])), str(s.get("code")), False))
+    return out
+
+
+def _disk_id(state, key):
+    ids = state.setdefault("disk_ids", {})
+    if key not in ids:
+        used = {v for v in ids.values()}
+        n = 1
+        while "disk%d" % n in used:
+            n += 1
+        ids[key] = "disk%d" % n
+    return ids[key]
+
+
+def sample_disks(rcfg, home, sessions, state, now):
+    """Disks by mount, each with an opaque id (disk1, disk2, ... stable across samples) and the
+    labels of what lives there. Network and FUSE filesystems (nfs, cifs, 9p, fuse, ...) are
+    skipped unless configured explicitly; a path that does not answer within DISK_TIMEOUT_S is
+    reported `unresponsive` and left alone for DISK_HUNG_MS."""
+    mounts = read_mounts()
+    hung = state.setdefault("disk_hung", {})
+    for p in [p for p, t in hung.items() if now - int(t) >= DISK_HUNG_MS]:
+        hung.pop(p, None)
+    targets = []
+    for path, label, explicit in disk_targets(rcfg, home, sessions):
+        if not explicit and NETWORK_FS.match(fs_type(path, mounts) or ""):
             continue
-        try:
-            mnt = mount_of(path)
-            st = statvfs(mnt)
-        except OSError:
+        targets.append((path, label))
+    paths = sorted({p for p, _ in targets if p not in hung})
+    res = probe_all(paths) if paths else {}
+    by_mount, stuck = {}, {}
+    for path, label in targets:
+        r = "timeout" if path in hung else res.get(path)
+        if r == "timeout":
+            hung.setdefault(path, now)
+            d = stuck.setdefault(path, {"id": _disk_id(state, "path:" + path), "mount": None, "total_mb": None,
+                                        "free_mb": None, "free_pct": None, "labels": [], "unresponsive": True})
+        elif r is None:
             continue
-        d = by_mount.get(mnt)
-        if d is None:
-            total = st.f_blocks * st.f_frsize
-            free = st.f_bavail * st.f_frsize
-            d = by_mount[mnt] = {"mount": home_rel(mnt) if mnt != "/" else "/", "total_mb": mb(total),
-                                 "free_mb": mb(free), "free_pct": int(round(100.0 * free / total)) if total else None,
-                                 "labels": []}
+        else:
+            mnt, st = r
+            d = by_mount.get(mnt)
+            if d is None:
+                total = st.f_blocks * st.f_frsize
+                free = st.f_bavail * st.f_frsize
+                d = by_mount[mnt] = {"id": _disk_id(state, mnt), "mount": home_rel(mnt) if mnt != "/" else "/",
+                                     "total_mb": mb(total), "free_mb": mb(free),
+                                     "free_pct": int(round(100.0 * free / total)) if total else None, "labels": []}
         if label not in d["labels"]:
             d["labels"].append(label)
-    return sorted(by_mount.values(), key=lambda d: d["mount"])
+    out = list(by_mount.values()) + list(stuck.values())
+    return sorted(out, key=lambda d: (len(d["id"]), d["id"]))
 
 
 # ------------------------------------------------------------------ the sample
@@ -506,22 +630,23 @@ def _tree(procs):
 
 
 def _descendants(kids, pid, stop=()):
-    out, todo = [], list(kids.get(pid, []))
+    out, todo, seen = [], list(kids.get(pid, [])), {pid}
     while todo:
         c = todo.pop()
-        if c in stop:
+        if c in stop or c in seen:  # seen: a ppid loop (pid reuse between reads) cannot spin
             continue
+        seen.add(c)
         out.append(c)
         todo.extend(kids.get(c, []))
     return out
 
 
 def _cpu_pct(p, prev, elapsed_s):
-    if p.get("pcpu") is not None:
-        return p["pcpu"]
+    """CPU% over the interval from the cumulative CPU time (/proc stat ticks, or ps `time`).
+    Without a previous sample of this process: ps's own %cpu where there is one, else None."""
     old = prev.get(str(p["pid"]))
     if not old or elapsed_s <= 0 or abs(float(old.get("start") or 0) - float(p.get("start") or 0)) > 2:
-        return None
+        return p.get("pcpu")
     return max(0.0, (p["cpu_s"] - float(old.get("cpu_s") or 0)) / elapsed_s * 100.0)
 
 
@@ -701,11 +826,15 @@ def sample(rcfg, home, sessions, state, now):
     state["teammates"] = tracked.get("teammates", {})
 
     # -- disks
-    disks = sample_disks(rcfg, home, sessions)
+    disks = sample_disks(rcfg, home, sessions, state, now)
+    if any(d.get("unresponsive") for d in disks):
+        unavailable.append("disk")
 
     # -- oom
     prev_oom = state.get("oom_kills")
-    delta = (oom - prev_oom) if (oom is not None and isinstance(prev_oom, int) and oom >= prev_oom) else 0
+    delta = 0
+    if oom is not None and isinstance(prev_oom, int):
+        delta = oom - prev_oom if oom >= prev_oom else oom  # went backwards: a reboot, count from 0
     if delta > 0:
         state["last_oom_at"] = now
     state["oom_kills"] = oom
@@ -718,17 +847,25 @@ def sample(rcfg, home, sessions, state, now):
         values["mem"] = [(mem["available_pct"], "mem_available_pct", True),
                          (mem["available_mb"], "mem_available_mb", True),
                          (mem["psi_some_avg60"], "psi_mem_some_avg60", False)]
-    if swap["used_pct"] is not None:
-        values["swap"] = [(swap["used_pct"], "swap_used_pct", False)]
     if cpu["load_per_cpu"] is not None:
         values["load"] = [(cpu["load_per_cpu"], "load_per_cpu", False)]
     for d in disks:
-        values["disk:" + d["mount"]] = [(d["free_pct"], "disk_free_pct", True), (d["free_mb"], "disk_free_mb", True)]
-    levels = evaluate(values, thr, state.setdefault("metrics", {}))
+        if not d.get("unresponsive"):
+            values["disk:" + d["id"]] = [(d["free_pct"], "disk_free_pct", True), (d["free_mb"], "disk_free_mb", True)]
+    mstate = state.setdefault("metrics", {})
+    levels = evaluate(values, thr, mstate, prune=False)
+    if swap["used_pct"] is not None:
+        # Swap use alone is normal (idle pages swapped out): it only counts while memory itself,
+        # PSI included, is at warn or worse. Until then its candidate is ok.
+        pressed = levels.get("mem") in ("warn", "high", "critical")
+        levels.update(evaluate({"swap": [(swap["used_pct"] if pressed else None, "swap_used_pct", False)]},
+                               thr, mstate, prune=False))
+    for gone in [m for m in mstate if m not in levels]:
+        mstate.pop(gone, None)
     if oom_recent:
         levels["oom"] = "critical"
     for d in disks:
-        d["level"] = levels.get("disk:" + d["mount"], "ok")
+        d["level"] = levels.get("disk:" + d["id"]) if not d.get("unresponsive") else None
     level, worst = overall(levels)
 
     doc.update({
@@ -739,6 +876,7 @@ def sample(rcfg, home, sessions, state, now):
         "teammate_idle_minutes": rcfg["teammate_idle_minutes"],
         "operator": {"watch": watch if procs else None},
         "unavailable": sorted(set(unavailable)), "interval": rcfg["interval"],
+        "config_errors": rcfg.get("config_errors") or [],
     })
     state["at"] = now
     return doc
@@ -797,42 +935,65 @@ def digest(doc):
     return {"level": doc.get("level"), "worst": doc.get("worst")}
 
 
-def step(cfg, home, sessions, now=None, force=False):
-    """Called on every collector run. Samples when `interval` has passed (or force), writes
-    resources.json only when it changed (`at` aside) and returns the snapshot digest."""
+REWRITE_MS = 60 * 1000              # resources.json is rewritten at least this often (freshness)
+
+
+def _load_state(home):
+    state = read_json(paths(home)[1])
+    return state if isinstance(state, dict) else {}
+
+
+def _sample_doc(rcfg, home, sessions, state, now):
+    if rcfg.get("enabled") is False:
+        state.clear()
+        state["at"] = now
+        return disabled_doc(now)
+    for e in rcfg.get("config_errors") or []:
+        sys.stderr.write("resources: %s\n" % e)
+    return sample(rcfg, home, sessions, state, now)
+
+
+def step(cfg, home, sessions, now=None):
+    """Called on every collector run. Samples when `interval` has passed and returns the snapshot
+    digest. resources.json is rewritten when it changed (`at` aside), and at least every
+    REWRITE_MS, so its `at` always says whether the sampler (and the operator-watch check) is
+    alive, also with resources.enabled: false."""
     now = now if now is not None else now_ms()
     rcfg = settings(cfg)
     rpath, spath = paths(home)
-    state = read_json(spath)
-    state = state if isinstance(state, dict) else {}
+    state = _load_state(home)
     cur = read_json(rpath)
-    due = force or not state.get("at") or now - int(state.get("at") or 0) >= rcfg["interval"] * 1000 - 500 \
-        or now < int(state.get("at") or 0)
-    if not due:
+    last = int(state.get("at") or 0)
+    if last and last <= now < last + rcfg["interval"] * 1000 - 500:
         return digest(cur)
-    if rcfg.get("enabled") is False:
-        doc = disabled_doc(now)
-        state = {"at": now}
-    else:
-        doc = sample(rcfg, home, sessions, state, now)
+    doc = _sample_doc(rcfg, home, sessions, state, now)
     write_json_atomic(spath, state)
     old = dict(cur) if isinstance(cur, dict) else None
-    if old is not None:
-        old.pop("at", None)
+    old_at = int(old.pop("at", 0) or 0) if old is not None else 0
     new = dict(doc)
     new.pop("at", None)
-    if old != new:
+    if old != new or not old_at or now - old_at >= REWRITE_MS or now < old_at:
         write_json_atomic(rpath, doc, indent=1)
     return digest(doc)
+
+
+def preview(cfg, home, sessions, now=None):
+    """A fresh sample for `board resources --refresh`: CPU deltas against the collector's last
+    sample, but nothing is written, so the collector's dwell state does not advance."""
+    now = now if now is not None else now_ms()
+    return _sample_doc(settings(cfg), home, sessions, json.loads(json.dumps(_load_state(home))), now)
 
 
 # ------------------------------------------------------------------ operator health (J6)
 
 def operator_health(op, res, rcfg, pending_n, now):
-    """Is the board operator gone while something waits? -> {stale, reasons, heartbeat_at, watch}.
-    Stale: operator.json's heartbeat is older than operator_stale_minutes, or there is none (or
-    no `board-serve --watch` process) while the self-hosted board is enabled. Only counts when
-    pending_n > 0 (decisions waiting or answered, new messages)."""
+    """Is the local-mode operator gone while something waits? -> {stale, reasons, heartbeat_at, watch}.
+    Only with serve.enabled (the self-hosted board, whose operator writes operator.json and runs
+    `board-serve --watch`): stale when the heartbeat is older than operator_stale_minutes or
+    missing, or no --watch process exists. In Artifact mode the heartbeat lives in meta/operator,
+    which the collector cannot read, so nothing is judged (the page's banner covers it). Only
+    counts when pending_n > 0 (what --watch would hand the operator: answered questions, new
+    messages)."""
     hb = None
     if isinstance(op, dict):
         try:
@@ -847,12 +1008,13 @@ def operator_health(op, res, rcfg, pending_n, now):
         watch = res["operator"].get("watch") if fresh else None
     stale_ms = float(rcfg.get("operator_stale_minutes") or OPERATOR_STALE_MINUTES) * 60000
     reasons = []
-    if hb is not None and now - hb > stale_ms:
-        reasons.append("heartbeat %d min old" % ((now - hb) // 60000))
-    elif hb is None and rcfg.get("serve_enabled"):
-        reasons.append("no operator heartbeat (operator.json)")
-    if rcfg.get("serve_enabled") and watch is False:
-        reasons.append("board-serve --watch is not running")
+    if rcfg.get("serve_enabled"):
+        if hb is not None and now - hb > stale_ms:
+            reasons.append("heartbeat %d min old" % ((now - hb) // 60000))
+        elif hb is None:
+            reasons.append("no operator heartbeat (operator.json)")
+        if watch is False:
+            reasons.append("board-serve --watch is not running")
     return {"stale": bool(reasons) and pending_n > 0, "reasons": reasons, "heartbeat_at": hb, "watch": watch,
             "pending": pending_n}
 
@@ -866,7 +1028,8 @@ BOARD_TM_KEYS = ("name", "rss_mb", "cpu_pct", "age_s", "idle_s", "idle")
 
 
 def board_view(doc):
-    """The `resources` block of /api/state: no pids, no paths (disks list session codes)."""
+    """The `resources` block of /api/state: no pids and no paths. Disks are opaque ids (disk1, ...)
+    with the labels of what lives there ($BOARD_HOME, session codes)."""
     if not isinstance(doc, dict):
         return None
     if doc.get("enabled") is False:
@@ -879,8 +1042,8 @@ def board_view(doc):
         row["children"] = [{k: c.get(k) for k in BOARD_CHILD_KEYS} for c in s.get("children") or [] if isinstance(c, dict)]
         row["teammates"] = [{k: t.get(k) for k in BOARD_TM_KEYS} for t in s.get("teammates") or [] if isinstance(t, dict)]
         sessions.append(row)
-    disks = [{"mount": d.get("mount"), "total_mb": d.get("total_mb"), "free_mb": d.get("free_mb"),
-              "free_pct": d.get("free_pct"), "level": d.get("level"),
+    disks = [{"id": d.get("id"), "total_mb": d.get("total_mb"), "free_mb": d.get("free_mb"),
+              "free_pct": d.get("free_pct"), "level": d.get("level"), "unresponsive": bool(d.get("unresponsive")),
               "labels": [x for x in d.get("labels") or [] if isinstance(x, str)]}
              for d in doc.get("disks") or [] if isinstance(d, dict)]
     return {
@@ -988,9 +1151,15 @@ def show_text(doc, now):
             " · swap %s%% of %s" % (sw.get("used_pct"), fmt_mb(sw.get("total_mb"))) if sw.get("total_mb") else "",
             doc.get("oom_kills") if doc.get("oom_kills") is not None else "?"))
     for d in doc.get("disks") or []:
-        lines.append("disk %s  %s%% free (%s of %s) [%s]  %s" % (S(d.get("mount")), d.get("free_pct"), fmt_mb(d.get("free_mb")),
-                                                             fmt_mb(d.get("total_mb")), d.get("level"),
-                                                             ", ".join(S(x) for x in d.get("labels") or [])))
+        used = ", ".join(S(x) for x in d.get("labels") or [])
+        if d.get("unresponsive"):
+            lines.append("%s  not responding (skipped for 10 min)  %s" % (S(d.get("id")), used))
+            continue
+        lines.append("%s %s  %s%% free (%s of %s) [%s]  %s" % (S(d.get("id")), S(d.get("mount")), d.get("free_pct"),
+                                                          fmt_mb(d.get("free_mb")), fmt_mb(d.get("total_mb")),
+                                                          d.get("level"), used))
+    for e in doc.get("config_errors") or []:
+        lines.append("config: %s" % S(e))
     if doc.get("unavailable"):
         lines.append("unavailable on this platform: %s" % ", ".join(doc["unavailable"]))
     w = (doc.get("operator") or {}).get("watch")
@@ -1034,6 +1203,8 @@ def doctor(home, now):
     else:
         ok = scan_ps(now / 1000.0) is not None
         out.append("%s platform %s (ps%s)" % ("ok   " if ok else "FAIL ", plat, "" if ok else " not found"))
+    for e in rcfg.get("config_errors") or []:
+        out.append("FAIL  %s" % e)
     doc = read_json(paths(home)[0])
     if isinstance(doc, dict) and doc.get("enabled") is not False:
         miss = doc.get("unavailable") or []
@@ -1057,13 +1228,11 @@ def main(argv):
     cmd, rest = argv[0], argv[1:]
     home = fleet.ensure_home()
     now = now_ms()
-    if cmd == "sample" or (cmd == "show" and "--refresh" in rest):
-        snap = read_json(os.path.join(home, "snapshot.json")) or {}
-        step(fleet.load_fleet(), home, [s for s in snap.get("sessions") or [] if isinstance(s, dict)], now, force=True)
-        if cmd == "sample":
-            return 0
     if cmd == "show":
         doc = read_json(paths(home)[0])
+        if "--refresh" in rest:
+            snap = read_json(os.path.join(home, "snapshot.json")) or {}
+            doc = preview(fleet.load_fleet(), home, [s for s in snap.get("sessions") or [] if isinstance(s, dict)], now)
         if "--mirror" in rest:
             print(json.dumps(mirror_view(doc), ensure_ascii=False, sort_keys=True))
         elif "--json" in rest:

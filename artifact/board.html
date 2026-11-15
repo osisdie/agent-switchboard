@@ -1483,7 +1483,13 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   function fmtMb(v) { const n = Number(v); if (!isFinite(n)) return '?'; return n >= 1024 ? (n / 1024).toFixed(1) + ' GB' : Math.round(n) + ' MB'; }
   function fmtAge(s) { const n = Number(s); if (!isFinite(n) || s == null) return '—'; return n < 60 ? Math.round(n) + 's' : dur(n * 1000); }
   const METRIC_NAMES = { mem: 'memory', swap: 'swap', load: 'load', oom: 'OOM kill' };
-  const metricName = (m) => { const k = str(m); return k.startsWith('disk:') ? 'disk ' + k.slice(5) : METRIC_NAMES[k] || k || 'resources'; };
+  function metricName(m, r) {
+    const k = str(m);
+    if (!k.startsWith('disk:')) return METRIC_NAMES[k] || k || 'resources';
+    const d = r && objs(r.disks).find((x) => str(x.id) === k.slice(5));
+    const used = d && Array.isArray(d.labels) ? d.labels.map(str).filter(Boolean).join(', ') : '';
+    return 'disk ' + k.slice(5) + (used ? ' (' + used + ')' : '');
+  }
   function resView() {
     const r = S.resources;
     return (S.mode === 'live' || S.mode === 'demo') && r && typeof r === 'object' && r.enabled !== false ? r : null;
@@ -1515,7 +1521,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     const levels = r.levels && typeof r.levels === 'object' ? r.levels : {};
     const lvl = resLvl(r.level) || 'ok';
     const chip = $('#sys-lvl'); chip.className = 'lvl ' + lvl; chip.textContent = lvl;
-    chip.title = r.worst ? 'worst: ' + metricName(r.worst) : 'all within limits';
+    chip.title = r.worst ? 'worst: ' + metricName(r.worst, r) : 'all within limits';
     const oom = $('#sys-oom');
     oom.hidden = r.oom_kills == null;
     oom.textContent = 'OOM ' + (r.oom_kills == null ? '?' : r.oom_kills);
@@ -1528,8 +1534,8 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     const c = r.cpu || {};
     if (Array.isArray(c.load)) line.append(h('span', null, 'Load ', h('b', { text: Number(c.load[0]).toFixed(2) }), c.ncpu ? ' / ' + c.ncpu + ' cpu' : ''));
     if (c.pct != null) line.append(h('span', null, 'CPU ', h('b', { text: c.pct + '%' })));
-    const disks = objs(r.disks).slice().sort((a, b) => Number(a.free_pct) - Number(b.free_pct));
-    if (disks.length) line.append(h('span', null, 'Disk ' + str(disks[0].mount) + ' ', h('b', { text: disks[0].free_pct + '% free' })));
+    const disks = objs(r.disks).filter((d) => d.free_pct != null).sort((a, b) => Number(a.free_pct) - Number(b.free_pct));
+    if (disks.length) line.append(h('span', { title: (disks[0].labels || []).map(str).join(', ') }, 'Disk ', h('b', { text: disks[0].free_pct + '% free' })));
     if (r.heavy_running) line.append(h('span', null, h('b', { text: String(r.heavy_running) }), ' heavy'));
   }
   function renderResources() {
@@ -1553,7 +1559,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     }
     const meta = $('#res-meta'); meta.textContent = '';
     const lvl = resLvl(r.level) || 'ok';
-    meta.append(h('span', null, h('span', { class: 'lvl ' + lvl, text: lvl }), r.worst ? ' worst: ' + metricName(r.worst) : ''));
+    meta.append(h('span', null, h('span', { class: 'lvl ' + lvl, text: lvl }), r.worst ? ' worst: ' + metricName(r.worst, r) : ''));
     if (ts(r.at)) meta.append(h('span', null, 'sampled ', timeEl(r.at)));
     if (r.platform) meta.append(h('span', null, 'on ', h('b', { text: str(r.platform) })));
     meta.append(h('span', null, h('b', { text: String(r.heavy_running || 0) }), ' heavy job(s) running'));
@@ -1593,9 +1599,10 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     const dbody = $('#disk-body'); dbody.textContent = '';
     for (const d of objs(r.disks)) {
       const dl = resLvl(d.level) || 'ok';
-      dbody.append(h('tr', null, h('td', { class: 'mono', text: str(d.mount) }),
-        h('td', { text: (d.free_pct != null ? d.free_pct + '% · ' : '') + fmtMb(d.free_mb) }), h('td', { text: fmtMb(d.total_mb) }),
-        h('td', { text: (Array.isArray(d.labels) ? d.labels.map(str).join(', ') : '') || '—' }), h('td', null, h('span', { class: 'lvl ' + dl, text: dl }))));
+      const stuck = d.unresponsive === true;
+      dbody.append(h('tr', null, h('td', { class: 'mono', text: str(d.id) || '?' }),
+        h('td', { text: stuck ? 'not responding' : (d.free_pct != null ? d.free_pct + '% · ' : '') + fmtMb(d.free_mb) }), h('td', { text: stuck ? '—' : fmtMb(d.total_mb) }),
+        h('td', { text: (Array.isArray(d.labels) ? d.labels.map(str).join(', ') : '') || '—' }), h('td', null, stuck ? h('span', { class: 'lvl', text: 'skipped' }) : h('span', { class: 'lvl ' + dl, text: dl }))));
     }
     $('#disk-wrap').hidden = !dbody.children.length;
     const note = $('#res-idle-note');
@@ -1608,7 +1615,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     if (r && resLvl(r.level) === 'critical') {
       const groups = idleGroups(r);
       box.append(h('div', { class: 'banner down', role: 'alert' }, h('span', { class: 'lamp', 'aria-hidden': 'true' }),
-        h('strong', { text: 'System resources critical — ' + metricName(r.worst) }),
+        h('strong', { text: 'System resources critical — ' + metricName(r.worst, r) }),
         h('p', { text: (groups.length ? 'Reclaim idle teammates first (' + groups.map((g) => (g.code || 'orphaned') + ' ' + g.idle.length).join(', ') + '). ' : '') +
           'Hold new test runs and browsers until it recovers; sessions stop only processes they started.' }),
         h('a', { class: 'golink', href: '#resources', text: 'See resources →' })));
@@ -2625,12 +2632,12 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       channels: { slack: true, desktop: true, email: true, line: true, sns: false, webhook: false } };
     S.away = { since: now - 95 * min, by: 'OPS', said: 'Offline until tomorrow 09:00. Agree among yourselves; anything risky waits for me.' };
     S.resources = { enabled: true, at: now - 12000, platform: 'linux', level: 'warn', worst: 'mem',
-      levels: { mem: 'warn', swap: 'ok', load: 'ok', 'disk:/': 'ok', 'disk:/data': 'warn' },
+      levels: { mem: 'warn', swap: 'ok', load: 'ok', 'disk:disk1': 'ok', 'disk:disk2': 'warn' },
       cpu: { pct: 64, ncpu: 8, load: [5.1, 4.2, 3.9], load_per_cpu: 0.64 },
       mem: { total_mb: 16384, available_mb: 1980, available_pct: 12, psi_some_avg60: 4.2 }, swap: { total_mb: 4096, used_pct: 31 },
       oom_kills: 1, oom_recent: false, heavy_running: 2, unavailable: [], teammate_idle_minutes: 30, operator: { watch: true },
-      disks: [{ mount: '/', total_mb: 512000, free_mb: 201000, free_pct: 39, level: 'ok', labels: ['$BOARD_HOME', 'API', 'WEB', 'DOCS'] },
-        { mount: '/data', total_mb: 256000, free_mb: 20480, free_pct: 8, level: 'warn', labels: ['DATA'] }],
+      disks: [{ id: 'disk1', total_mb: 512000, free_mb: 201000, free_pct: 39, level: 'ok', labels: ['$BOARD_HOME', 'API', 'WEB', 'DOCS'] },
+        { id: 'disk2', total_mb: 256000, free_mb: 20480, free_pct: 8, level: 'warn', labels: ['DATA'] }],
       sessions: [
         { code: 'API', rss_mb: 420, cpu_pct: 6, tree_rss_mb: 1900, heavy_n: 1, classes: { test: { n: 1, rss_mb: 1250, cpu_pct: 96 }, other: { n: 3, rss_mb: 210, cpu_pct: 1 } },
           children: [{ class: 'test', comm: 'python3', rss_mb: 1250, cpu_pct: 96, age_s: 240, heavy: true, via: null }, { class: 'other', comm: 'node', rss_mb: 120, cpu_pct: 0, age_s: 7200, heavy: false, via: null }],
