@@ -29,7 +29,9 @@ REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 OUT = os.path.join(REPO, "docs", "assets", "screenshots")
 DEMO_TIME = dt.datetime(2026, 1, 15, 10, 30, tzinfo=dt.timezone.utc)
 MAX_BYTES = 200 * 1024
-SAME_TOLERANCE = (24, 0.001)  # (max channel difference, share of pixels that may differ at all)
+# (big difference, share of pixels that may differ by more than it, share that may differ at all):
+# a few anti-aliased pixels may move a lot; a real change moves thousands.
+SAME_TOLERANCE = (24, 0.0002, 0.001)
 DESKTOP = {"width": 1280, "height": 860}
 PHONE = {"width": 390, "height": 844}
 
@@ -64,20 +66,21 @@ WEBP_JS = """async ([b64, q]) => {
 }"""
 
 
-SAME_JS = """async ([oldB64, newB64, maxDiff, maxShare]) => {
+SAME_JS = """async ([oldB64, newB64, bigDiff, bigShare, maxShare]) => {
   const load = async (src) => { const i = new Image(); i.src = src; await i.decode(); return i; };
   const [a, b] = await Promise.all([load('data:image/webp;base64,' + oldB64), load('data:image/webp;base64,' + newB64)]);
   if (a.naturalWidth !== b.naturalWidth || a.naturalHeight !== b.naturalHeight) return false;
   const px = (img) => { const c = document.createElement('canvas'); c.width = img.naturalWidth; c.height = img.naturalHeight;
     const g = c.getContext('2d'); g.drawImage(img, 0, 0); return g.getImageData(0, 0, c.width, c.height).data; };
   const x = px(a), y = px(b);
-  let off = 0;
+  let off = 0, big = 0;
   for (let i = 0; i < x.length; i += 4) {
     const d = Math.max(Math.abs(x[i] - y[i]), Math.abs(x[i + 1] - y[i + 1]), Math.abs(x[i + 2] - y[i + 2]));
-    if (d > maxDiff) return false;
+    if (d > bigDiff) big++;
     if (d > 16) off++;
   }
-  return off <= maxShare * (x.length / 4);
+  const n = x.length / 4;
+  return big <= bigShare * n && off <= maxShare * n;
 }"""
 
 
