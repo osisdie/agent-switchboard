@@ -112,7 +112,7 @@ def main():
         r = subprocess.run([sys.executable, os.path.join(REPO, "scripts", "build-site.py"), site],
                            capture_output=True, text=True)
         check("build-site runs", r.returncode == 0, r.stderr[-400:])
-        for f in ["index.html", "demo.html", ".nojekyll", "icon.svg", "favicon.png"] + ["assets/screenshots/" + w for w in want]:
+        for f in ["index.html", "demo.html", ".nojekyll", "icon.svg", "favicon.png", "og-image.jpg"] + ["assets/screenshots/" + w for w in want]:
             check("  site/" + f, os.path.isfile(os.path.join(site, f)))
         with open(os.path.join(site, "demo.html"), "rb") as fh:
             demo = fh.read()

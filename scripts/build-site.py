@@ -6,6 +6,7 @@
   OUTDIR/index.html          a short landing page: what it is, the screenshots, links
   OUTDIR/demo.html           artifact/board.html with the demo adapter forced on
   OUTDIR/assets/screenshots  docs/assets/screenshots/*.webp (scripts/screenshots.py makes them)
+  OUTDIR/og-image.jpg        1200x630 share preview (docs/assets/og-image.jpg)
   OUTDIR/icon.svg, favicon.png, apple-touch-icon.png, .nojekyll
 
 The demo never reaches a server: its board-mode meta tag is "demo" (the page boots the demo
@@ -23,6 +24,9 @@ REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, os.path.join(REPO, "scripts"))
 SHOTS_DIR = os.path.join(REPO, "docs", "assets", "screenshots")
 REPO_URL = "https://github.com/osisdie/agent-switchboard"
+SITE_URL = "https://osisdie.github.io/agent-switchboard"
+OG_IMAGE = "og-image.jpg"
+OG_ALT = "The board in light mode: the needs-you count, usage and system meters, and the Deck panel"
 
 # The same small reset board-serve and the Artifact viewer put around the page.
 RESET_CSS = (":root{color-scheme:light;padding-top:env(safe-area-inset-top,0px);"
@@ -67,6 +71,18 @@ INDEX = """<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Switchboard: every Claude Code session on one panel</title>
 <meta name="description" content="A self-hosted board for resident Claude Code sessions: answer decisions and permission prompts, see who is working, send notes. Static demo with sample data.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Switchboard: every Claude Code session on one panel">
+<meta property="og:description" content="A self-hosted board for resident Claude Code sessions: answer decisions and permission prompts, see who is working, send notes. Static demo with sample data.">
+<meta property="og:url" content="%(site)s/">
+<meta property="og:image" content="%(site)s/%(og_image)s">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="%(og_alt)s">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Switchboard: every Claude Code session on one panel">
+<meta name="twitter:description" content="A self-hosted board for resident Claude Code sessions: answer decisions and permission prompts, see who is working, send notes. Static demo with sample data.">
+<meta name="twitter:image" content="%(site)s/%(og_image)s">
 <link rel="icon" href="icon.svg" type="image/svg+xml"><link rel="icon" href="favicon.png" sizes="32x32" type="image/png">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; base-uri 'none'; form-action 'none'">
 <style>
@@ -112,6 +128,7 @@ a { color: var(--cord); }
 <li><b>Sessions</b>One card per session: state, task title, repo and branch, what it is running now.</li>
 <li><b>Alerts</b>Slack, desktop, email and LINE with escalation, mutes and quiet hours.</li>
 <li><b>Owner away</b>Sessions settle cross-session questions by explicit consensus; red lines wait for you.</li>
+<li><b>Pomodoro</b>Each session and teammate runs a 25-minute focus tally; Today adds them up.</li>
 </ul>
 <h2>Screenshots</h2>
 <div class="gallery">
@@ -128,7 +145,8 @@ def index_html():
         src = "assets/screenshots/%s.webp" % name
         figs.append('<figure><a href="%s"><img src="%s" alt="%s" loading="lazy"></a><figcaption>%s</figcaption></figure>'
                     % (src, src, html.escape(alt), html.escape(alt)))
-    return INDEX % {"repo": REPO_URL, "repo_short": REPO_URL.replace("https://", ""), "figures": "\n".join(figs)}
+    return INDEX % {"repo": REPO_URL, "repo_short": REPO_URL.replace("https://", ""), "figures": "\n".join(figs),
+                    "site": SITE_URL, "og_image": OG_IMAGE, "og_alt": html.escape(OG_ALT, quote=True)}
 
 
 def build(out):
@@ -146,6 +164,10 @@ def build(out):
             missing.append(name)
     for f in ("icon.svg", "favicon.png", "apple-touch-icon.png"):
         shutil.copyfile(os.path.join(REPO, "artifact", f), os.path.join(out, f))
+    og_src = os.path.join(REPO, "docs", "assets", OG_IMAGE)
+    if not os.path.isfile(og_src):
+        sys.exit("build-site: missing %s" % og_src)
+    shutil.copyfile(og_src, os.path.join(out, OG_IMAGE))
     open(os.path.join(out, ".nojekyll"), "w").close()
     if missing:
         sys.exit("build-site: missing screenshots (run scripts/screenshots.py): %s" % ", ".join(missing))
