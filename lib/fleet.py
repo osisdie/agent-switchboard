@@ -45,6 +45,48 @@ DEFAULTS = {
         "focus_regex": r"(❯|>|›)",
         "submit_label": r"Submit answers",
     },
+    # Session actions (lib/actions.py): fixed slash commands typed into an idle session's empty
+    # prompt box, and what the pane must show before and after (Claude Code's own screens;
+    # adjust when they change).
+    "session_actions": {
+        "auto_apply": True,
+        "lines": 30,
+        "prompt_regex": r"^\u276f[ \u00a0]*$",
+        "rule_regex": r"^\u2500{8,}",
+        "busy_regex": r"esc to interrupt",
+        # The footer of Claude's dialogs and pickers ("Enter to select · Esc to continue",
+        # "Enter to confirm · Esc to cancel").
+        "dialog_regex": r"Enter to (select|confirm)",
+        # A vim-mode prompt (Enter does not submit there) or another mode line: refused.
+        "mode_regex": r"-- (NORMAL|VISUAL|VISUAL LINE) --",
+        "retry_minutes": 10,
+        "max_tries": 3,
+        "queue_hours": 12,
+        "rc_confirm_seconds": 10,
+        # Matched against the focused row of the dialog only (the text after the focus mark).
+        "rc_disconnect_label": r"^\s*\u276f?\s*Disconnect this session\s*$",
+        # Rows of the consent and Disconnect dialogs: each a whole row of its own.
+        "rc_consent_regex": r"^\s*Never mind\b",
+        "rc_consent_title_regex": r"^\s*Enable Remote Control\b",
+        "rc_qr_regex": r"^\s*Show QR code\b",
+        "rc_continue_regex": r"^\s*Continue\s*$",
+        "rc_unavailable_regex": r"Unknown command: /remote-control",
+        "compact_running_regex": r"Compacting conversation",
+        "compact_done_regex": r"\u23bf\s+Compacted",
+        "compact_empty_regex": r"Not enough messages to compact",
+        "compact_start_seconds": 15,
+        "compact_seconds": 600,
+        # Idle again with no "Compacting" line and no "Compacted" line for this long: interrupted.
+        "compact_idle_seconds": 5,
+        # How long a CLI call waits for another action on the same session before it only stores
+        # the request ("will apply when free").
+        "lock_wait_seconds": 20,
+    },
+    # Remote Control at start (bin/fleet-up): unset_do_not_track starts claude with
+    # `env -u DO_NOT_TRACK` (Claude Code ignores Remote Control while DO_NOT_TRACK is set).
+    "rc": {
+        "unset_do_not_track": False,
+    },
 }
 
 
@@ -98,6 +140,18 @@ LINK_PARAMS = (("d", DEC_ID_RE), ("m", MSG_ID_RE), ("c", CONS_ID_RE))
 LOCAL_HOSTS = ("127.0.0.1", "localhost")
 BOARD_PATH_RE = re.compile(r"[A-Za-z0-9._~/%-]*")
 HOST_LABEL_RE = re.compile(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?")
+
+
+def env_has(pid, name):
+    """Does process PID have NAME set (non-empty) in its environment? Reads only the names in
+    /proc/<pid>/environ of this user's own processes; never returns a value."""
+    try:
+        with open("/proc/%d/environ" % int(pid), "rb") as fh:
+            env = fh.read()
+    except (OSError, ValueError, TypeError):
+        return False
+    key = name.encode() + b"="
+    return any(item.startswith(key) and len(item) > len(key) for item in env.split(b"\0"))
 
 
 def safe_text(s):
@@ -238,6 +292,9 @@ def load_fleet():
     for s in data.get("sessions") or []:
         if not isinstance(s, dict) or not s.get("code"):
             continue
+        if str(s["code"]) == "all":  # reserved: `board rc on|off all` means every session
+            sys.stderr.write("fleet.yaml: session code \"all\" is reserved; entry skipped\n")
+            continue
         sessions.append({
             "code": str(s["code"]),
             "cwd": os.path.expanduser(str(s.get("cwd") or "~")),
@@ -247,17 +304,22 @@ def load_fleet():
             "resume": s.get("resume", True) is not False,
             "initial_prompt": str(s.get("initial_prompt") or ""),
             "aliases": [str(a) for a in (s.get("aliases") or [])],
+            # true/false: start it with or without --remote-control; None: the fleet default.
+            "remote_control": s["remote_control"] if isinstance(s.get("remote_control"), bool) else None,
         })
     # Top-level `aliases: {CODE: [alias, ...]}` is also accepted.
     top = data.get("aliases") or {}
     if isinstance(top, dict):
         for code, al in top.items():
+            if str(code) == "all":
+                continue
             match = [s for s in sessions if s["code"] == str(code)]
             if match:
                 match[0]["aliases"] = sorted(set(match[0]["aliases"]) | {str(a) for a in al or []})
             else:
                 sessions.append({"code": str(code), "cwd": None, "autostart": False, "resume_name": None,
-                                 "extra_args": "", "resume": True, "initial_prompt": "", "aliases": [str(a) for a in al or []], "listed": False})
+                                 "extra_args": "", "resume": True, "initial_prompt": "", "aliases": [str(a) for a in al or []],
+                                 "remote_control": None, "listed": False})
     cfg["sessions"] = sessions
     return cfg
 

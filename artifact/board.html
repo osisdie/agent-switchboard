@@ -330,6 +330,11 @@ dialog.notif { width: min(720px, calc(100vw - 24px)); }
 .schip.needs { background: var(--lamp-soft); color: var(--lamp-ink); }
 .schip.working { background: var(--work-soft); color: var(--work); }
 .schip.done { background: var(--ok-soft); color: var(--ok); }
+.rcchip { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 11px; font-weight: 600; padding: 0 6px; border: 1px solid var(--rule); border-radius: 9px; color: var(--muted); white-space: nowrap; }
+.rcchip.on { border-color: var(--cord); color: var(--cord); }
+.rcchip.pending { border-style: dashed; border-color: var(--lamp); color: var(--lamp-ink); }
+.rc-ctl, .act-ctl { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.rc-ctl .note, .act-ctl .note { flex-basis: 100%; }
 .stitle, .snow { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
 .stitle.none { color: var(--muted); font-style: italic; }
 .swhere { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--f-mono); font-size: 12px; color: var(--muted); }
@@ -1047,6 +1052,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     operator: null, ledger: null,
     away: null, consensus: [],   // owner-away record ({since, by, said}) | null; consensus items
     notify: null,                // notification controls (board-serve state.notify / meta/notify) | null
+    rc: null,                    // Remote Control choices (board-serve state.rc: {all, sessions}) | null
     resources: null,             // resources.json board view (local) | meta/resources (Artifact) | null
     replies: new Map(),
     got: { sessions: false, decisions: false, messages: false, tasks: false, approvals: false, operator: false, consensus: false },
@@ -1876,7 +1882,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     return 'sd-' + str(code).replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 40) + '-' + hsh.toString(36);
   }
   function cardSig(s) {
-    return JSON.stringify(s) + '|' + openCards.has(s.code) + '|' + sessionDecisions(s).map((d) => d.id + (d.question || '')).join(',');
+    return JSON.stringify(s) + '|' + JSON.stringify(rcView(s)) + '|' + S.busy.has('rc:' + s.code) + S.busy.has('compact:' + s.code) + (S.drafts.compactAsk === s.code) + rcEditor() + '|' + openCards.has(s.code) + '|' + sessionDecisions(s).map((d) => d.id + (d.question || '')).join(',');
   }
   // Card extras from board-serve (cards.json, lib/cards.py): teammates, meter, recent tool calls,
   // what it says (approvers only), branch, time in state. Absent in Artifact mode.
@@ -1935,6 +1941,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
         h('span', { class: 'code', text: s.code }),
         h('span', { class: 'schip ' + col, text: tr(STATE_LABEL[col]) }),
         npend ? h('span', { class: 'sbadge', title: tr('Waiting for you: {n}', { n: npend }), 'aria-label': tr('Waiting for you: {n}', { n: npend }), text: String(npend) }) : null,
+        rcChip(s),
         timeEl(s.updated_at)),
       h('span', { class: 'stitle' + (title || task || says ? '' : ' none'), text: title || task || says || tr('No title yet') }),
       where ? h('span', { class: 'swhere', text: where }) : null,
@@ -2026,6 +2033,9 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       if (s.tmux) wh.row('tmux', h('code', { text: str(s.tmux) }));
       const link = sessionLink(s.code, tr('Remote Control'));
       if (link) wh.row('Session', link);
+      const rv = rcView(s);
+      if (rv.running || rv.want) wh.row('Remote Control', rcControl(s, rv));
+      if (rv.running || compactView(s).doneAt) wh.row('Compact', compactControl(s));
       const aliases = (Array.isArray(s.aliases) ? s.aliases : []).map(str).filter((a) => a && lc(a) !== lc(s.code));
       if (aliases.length) wh.row('Also', aliases.join(', '));
       const t = ts(s.updated_at);
@@ -2034,6 +2044,165 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     }
     art.append(panel);
     return art;
+  }
+
+  /* ------------------------------------------------------- remote control */
+  // Remote Control per session (docs/contract.md, "Remote Control"). The chip on a card says
+  // whether it is on, or that a choice waits for the session to be idle ("pending"). Approvers
+  // change it on the self-hosted board (POST /api/rc runs `board rc`); read-only in the Artifact.
+  function rcView(s) {
+    const r = s.rc && typeof s.rc === 'object' ? s.rc : null;
+    const running = str(s.state) !== 'offline';
+    const on = !running ? null : r && typeof r.on === 'boolean' ? r.on : !!safeUrl(s.remote_url);
+    const P = S.rc && typeof S.rc === 'object' ? S.rc : null;
+    const ps = P && P.sessions && typeof P.sessions === 'object' ? P.sessions : {};
+    const okState = (v) => v === 'on' || v === 'off';
+    let want = null, explicit = false;
+    if (okState(ps[s.code])) { want = ps[s.code]; explicit = true; }
+    else if (P && okState(P.all)) { want = P.all; explicit = true; }
+    else if (r && okState(r.want)) { want = r.want; explicit = !P && (r.source === 'session' || r.source === 'all'); }
+    const blocked = running && !on && !!r && r.blocked === 'do_not_track';
+    // The server knows whether the board still tries (a choice made after the session started,
+    // tried at most once per session process); a choice just made here counts until it reports.
+    const mismatch = running && on !== null && explicit && (want === 'on') !== on && !str(s.code).includes('/') && !(blocked && want === 'on');
+    const reported = r && (P ? r.at != null && r.at === choiceAt(P, s.code) : true);
+    const pending = reported ? mismatch && !!r.pending : mismatch;
+    const last = r && r.last && typeof r.last === 'object' ? r.last : null;
+    return { running, on, want, explicit, pending, blocked, last: last && last.want === want ? str(last.result) : '' };
+  }
+  function choiceAt(P, code) {
+    const e = P && P.at && typeof P.at === 'object' ? P.at : null;
+    return e ? (e[code] != null ? e[code] : e.all) : null;
+  }
+  function rcEditor() { return S.demo || (awayEditor() && !!adapter && typeof adapter.setRc === 'function'); }
+  function rcChip(s) {
+    const v = rcView(s);
+    if (!v.running) return null;
+    if (v.blocked) {
+      const why = tr('RC unavailable: DO_NOT_TRACK is set');
+      return h('span', { class: 'rcchip off', title: why, 'aria-label': why, text: tr('RC unavailable') });
+    }
+    // On, with its "Open in Remote Control" link on the card: the link says it already.
+    if (v.on && !v.pending && safeUrl(s.remote_url)) return null;
+    const label = v.pending ? tr(v.want === 'on' ? 'Remote Control turns on when the session is idle' : 'Remote Control turns off when the session is idle')
+      : tr(v.on ? 'Remote Control is on' : 'Remote Control is off');
+    return h('span', { class: 'rcchip ' + (v.pending ? 'pending' : v.on ? 'on' : 'off'), title: label, 'aria-label': label,
+      text: v.pending ? tr(v.want === 'on' ? 'RC → on' : 'RC → off') : tr(v.on ? 'RC on' : 'RC off') });
+  }
+  const RC_LAST = {
+    refused: 'Last try: nothing was sent (the screen did not match). It is tried again later.',
+    partial: 'Last try stopped part-way: /remote-control may still be typed in the prompt. Clear it in the session.',
+    unconfirmed: 'Last try: sent, but the change was not confirmed.',
+    unavailable: 'Remote Control is not available in this session (for example, DO_NOT_TRACK is set). It applies at its next start.',
+    consent: 'Claude asks a one-time confirmation: run /remote-control in the session once.',
+    failed: 'Last try failed.',
+  };
+  function rcControl(s, v) {
+    const busy = S.busy.has('rc:' + s.code) || S.busy.has('rc:all');
+    const text = !v.running ? tr(v.want === 'off' ? 'Off at the next start' : 'On at the next start')
+      : v.blocked ? tr('RC unavailable: DO_NOT_TRACK is set')
+      : v.pending ? tr(v.want === 'on' ? 'Off now; turns on when the session is idle' : 'On now; turns off when the session is idle')
+      : tr(v.on ? 'On' : 'Off');
+    const cur = v.pending || !v.running ? (v.want || 'on') : (v.on ? 'on' : 'off');
+    const next = cur === 'on' ? 'off' : 'on';
+    const box = h('span', { class: 'rc-ctl' }, h('span', { class: 'rc-state', text }));
+    if (rcEditor()) {
+      box.append(h('button', { class: 'btn', type: 'button', disabled: busy || null, dataset: { rc: next },
+        'aria-label': tr(next === 'on' ? 'Turn Remote Control on for {code}' : 'Turn Remote Control off for {code}', { code: s.code }),
+        onclick: () => setRc(s.code, next), text: tr(next === 'on' ? 'Turn on' : 'Turn off') }));
+    }
+    if (v.pending && RC_LAST[v.last]) box.append(h('span', { class: 'note', text: tr(RC_LAST[v.last]) }));
+    return box;
+  }
+  function demoRc(code, state) {
+    S.rc = JSON.parse(JSON.stringify(S.rc || { all: null, sessions: {} }));
+    if (code === 'all') { S.rc.all = state; S.rc.sessions = {}; } else S.rc.sessions[code] = state;
+  }
+  function setRc(code, state) {
+    const key = 'rc:' + code;
+    if (S.demo) { demoRc(code, state); renderAll(); toast(tr('Demo: shown on this page only. Nothing was saved or sent.')); return; }
+    if (!isLocal() || !adapter.setRc || S.busy.has(key)) return;
+    S.busy.add(key); renderBoard(); renderNotif();
+    const call = code === 'all' ? adapter.setRc(code, state) : adapter.sessionAction(code, 'rc_' + state);
+    call.then((r) => {
+      if (r && r.rc && typeof r.rc === 'object') S.rc = r.rc;
+      toast(code === 'all' ? tr(state === 'on' ? 'Remote Control on for all sessions: idle ones now, busy ones when they are idle.' : 'Remote Control off for all sessions: idle ones now, busy ones when they are idle.')
+        : tr(state === 'on' ? 'Remote Control on for {code}: now if it is idle, else when it is.' : 'Remote Control off for {code}: now if it is idle, else when it is.', { code }));
+    }).catch((e) => handleWriteError(e)).finally(() => { S.busy.delete(key); renderAll(); });
+  }
+  // Compact: /compact typed into an idle session (board-serve queues it while the session is
+  // busy). Approvers, with a confirm step; the note says when it last ran from the board.
+  const COMPACT_LAST = {
+    nothing: 'Last try: Claude said there was not enough to compact.',
+    started: 'Last try: still compacting when the board stopped watching; it finishes in the session.',
+    unconfirmed: 'Last try: sent, but the compact was not seen starting.',
+    refused: 'Last try: nothing was sent (the screen did not match).',
+    partial: 'Last try stopped part-way: /compact may still be typed in the prompt. Clear it in the session.',
+    failed: 'Last try failed.',
+  };
+  function compactView(s) {
+    const c = s.compact && typeof s.compact === 'object' ? s.compact : {};
+    const q = c.queued && typeof c.queued === 'object' ? c.queued : null;
+    const last = c.last && typeof c.last === 'object' ? str(c.last.result) : '';
+    return { queued: !!q, doneAt: ts(c.done_at), last };
+  }
+  function compactControl(s) {
+    const v = compactView(s), running = str(s.state) !== 'offline';
+    const busy = S.busy.has('compact:' + s.code), ask = S.drafts.compactAsk === s.code;
+    const box = h('span', { class: 'act-ctl compact-ctl' });
+    box.append(h('span', { class: 'compact-state', text: v.queued ? tr('Queued: runs when the session is idle.')
+      : v.doneAt ? tr('Last compacted {when}', { when: rel(v.doneAt) }) : tr('Not compacted from the board yet.') }));
+    if (rcEditor() && running && !v.queued) {
+      if (ask) {
+        box.append(h('span', { class: 'note', text: tr('Compact {code}\'s conversation? Claude summarizes it to free context. It runs now if the session is idle, else when it is.', { code: s.code }) }),
+          h('button', { class: 'btn primary', type: 'button', disabled: busy || null, dataset: { compact: 'confirm' }, onclick: () => { delete S.drafts.compactAsk; compactSession(s.code); }, text: tr('Yes, compact') }),
+          h('button', { class: 'btn', type: 'button', dataset: { compact: 'cancel' }, onclick: () => { delete S.drafts.compactAsk; renderBoard(); }, text: tr('Cancel') }));
+      } else {
+        box.append(h('button', { class: 'btn', type: 'button', disabled: busy || null, dataset: { compact: 'ask' },
+          'aria-label': tr('Compact {code}', { code: s.code }), onclick: () => { S.drafts.compactAsk = s.code; renderBoard(); }, text: tr('Compact') }));
+      }
+    }
+    if (!v.queued && COMPACT_LAST[v.last]) box.append(h('span', { class: 'note', text: tr(COMPACT_LAST[v.last]) }));
+    return box;
+  }
+  function compactSession(code) {
+    const key = 'compact:' + code;
+    if (S.demo) {
+      S.sessions = S.sessions.map((x) => (x.code === code ? Object.assign({}, x, { compact: x.state === 'working' || x.state === 'needs-you'
+        ? { queued: { at: Date.now(), by: 'board:you' }, last: null, done_at: null } : { queued: null, last: { result: 'confirmed', at: Date.now() }, done_at: Date.now() } }) : x));
+      renderAll(); toast(tr('Demo: shown on this page only. Nothing was saved or sent.'));
+      return;
+    }
+    if (!isLocal() || !adapter.sessionAction || S.busy.has(key)) return;
+    S.busy.add(key); renderBoard();
+    adapter.sessionAction(code, 'compact').then(() => toast(tr('Compact for {code}: now if it is idle, else when it is.', { code })))
+      .catch((e) => handleWriteError(e)).finally(() => { S.busy.delete(key); renderAll(); });
+  }
+  // The "all sessions" switch in the Notifications dialog, with a confirm step.
+  function renderRcAll(box) {
+    const P = S.rc && typeof S.rc === 'object' ? S.rc : null;
+    const ed = rcEditor() && (S.demo || !!P), busy = S.busy.has('rc:all'), ask = S.drafts.rcAll;
+    const sec = h('section', { 'aria-labelledby': 'nf-h-rc', id: 'nf-rc' }, h('h3', { id: 'nf-h-rc', text: tr('Remote Control') }));
+    const all = P && (P.all === 'on' || P.all === 'off') ? P.all : null;
+    const own = P && P.sessions && typeof P.sessions === 'object' ? Object.keys(P.sessions).length : 0;
+    if (P || S.demo) {
+      sec.append(h('p', { class: 'nf-line', id: 'nf-rc-state', text: (all ? tr(all === 'on' ? 'All sessions: on.' : 'All sessions: off.') : tr('No choice for all sessions: each follows fleet.yaml (default on).'))
+        + (own ? ' ' + tr('{n} with their own choice.', { n: own }) : '') }));
+    }
+    if (!ed) {
+      sec.append(h('p', { class: 'note', id: 'nf-rc-readonly', text: tr(isLocal() ? 'Read-only: only approvers change Remote Control.' : 'Read-only here. Change it on the self-hosted board or with board rc.') }));
+    } else if (ask === 'on' || ask === 'off') {
+      sec.append(h('p', { class: 'nf-line', id: 'nf-rc-ask', text: tr(ask === 'on' ? 'Turn Remote Control on for every session? It replaces each session\'s own choice.' : 'Turn Remote Control off for every session? It replaces each session\'s own choice.') }),
+        h('div', { class: 'nf-line' },
+          h('button', { class: 'btn primary', type: 'button', id: 'nf-rc-confirm', disabled: busy || null, onclick: () => { delete S.drafts.rcAll; setRc('all', ask); }, text: tr(ask === 'on' ? 'Yes, all on' : 'Yes, all off') }),
+          h('button', { class: 'btn', type: 'button', id: 'nf-rc-cancel', onclick: () => { delete S.drafts.rcAll; renderNotif(); }, text: tr('Cancel') })));
+    } else {
+      sec.append(h('div', { class: 'nf-line' },
+        h('button', { class: 'btn', type: 'button', id: 'nf-rc-all-on', disabled: busy || null, onclick: () => { S.drafts.rcAll = 'on'; renderNotif(); }, text: tr('RC: all on') }),
+        h('button', { class: 'btn', type: 'button', id: 'nf-rc-all-off', disabled: busy || null, onclick: () => { S.drafts.rcAll = 'off'; renderNotif(); }, text: tr('RC: all off') })));
+    }
+    sec.append(h('p', { class: 'note', text: tr('A running session gets the change only when it is idle with an empty prompt (/remote-control is typed and checked on screen); a working session gets it later. fleet-up starts sessions with the choice.') }));
+    box.append(sec);
   }
 
   function renderBoard() {
@@ -2405,6 +2574,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     box.textContent = '';
     if (!N || typeof N !== 'object') {
       box.append(h('p', { class: 'note', text: tr(isLocal() ? 'The board server did not report notification settings.' : 'The operator has not mirrored the notification settings to this board yet (meta/notify). Use board mute status in a terminal.') }));
+      renderRcAll(box);
       return;
     }
     if (!ed) box.append(h('p', { class: 'note', id: 'notif-readonly', text: tr(isLocal() ? 'Read-only: only approvers change notification settings.' : 'Read-only here. Change them on the self-hosted board or with board mute / board notify-level.') }));
@@ -2467,6 +2637,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       h('p', { class: 'note', id: 'notif-watching', text: watching ? tr('You are watching now: push below {level} is held while this page stays open, visible and in use ({min} min idle ends it). Escalation timers keep running.', { level: trKnown(P.min_level || 'high', LEVELS), min: Math.round((P.idle_seconds || 900) / 60) })
         : tr('Counts only while a board page is open, visible and in use. Escalation timers keep running, so anything still open escalates normally once you stop watching.') })));
     box.append(h('p', { class: 'bt', text: tr('Urgent alerts (a production gate, a usage limit hit, anything left unanswered long enough to escalate to urgent) break through mutes and presence unless a mute includes urgent. The board itself always shows everything. Held pushes are logged; nothing is replayed when a mute ends, and an alert still open goes out at its next escalation step.') }));
+    renderRcAll(box);
   }
   function openNotif() {
     const d = $('#notif');
@@ -3342,6 +3513,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       S.away = st.owner_away && typeof st.owner_away === 'object' ? st.owner_away : null;
       S.consensus = arr(st.consensus);
       S.notify = st.notify && typeof st.notify === 'object' ? st.notify : null;
+      S.rc = st.rc && typeof st.rc === 'object' ? st.rc : null;
       S.resources = st.resources && typeof st.resources === 'object' ? st.resources : null;
       S.replies = new Map(Object.entries(st.replies && typeof st.replies === 'object' ? st.replies : {}).map(([k, v]) => [k, arr(v)]));
       S.me = str(st.me) || null; S.writable = st.writable !== false; S.userReady = true;
@@ -3399,6 +3571,10 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       setNotify(body) { return post('/api/notify-prefs', body); },
       // Approvers only; board-serve runs `board ack --by board:<identity> '*'` (the Deck's HITL key).
       ackAlerts() { return post('/api/alerts/ack', { scope: 'all' }); },
+      // Approvers only; board-serve runs `board rc on|off CODE|all --by board:<identity>`.
+      setRc(code, state) { return post('/api/rc', { code, state }); },
+      // Approvers only: an allowlisted session action (compact | rc_on | rc_off), never free text.
+      sessionAction(code, action) { return post('/api/sessions/' + encodeURIComponent(code) + '/action', { action }); },
       presence(visible, interactionAt, leaving) {
         return call('/api/presence', { method: 'POST', keepalive: !!leaving, headers: { 'Content-Type': 'application/json', 'X-Board': '1' },
           // A duration, not a time: board-serve applies it to its own clock.
@@ -3623,10 +3799,10 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       { code: 'API', aliases: ['API', 'backend'], state: 'needs-you', status: 'busy', task: 'Adding pagination to the orders endpoint', title: 'Paginate the orders endpoint', repo: 'orders-api', branch: 'feat/pagination', last_event: 'PermissionRequest', notification_type: 'permission_prompt', recent: [{ tool: 'Bash', summary: 'npm run migrate -- --env staging' }], tmux: 'API:@1.%3', remote_url: '#demo-session-api', pending: { tool_name: 'Bash', summary: 'npm run migrate -- --env staging', tool_use_id: 'toolu_demo1', decision_id: 'd-1-demo' }, card: { state_since: now - 4 * min, doing: 'The migration is ready; asking before it runs against staging.', prompt: 'Add cursor pagination to GET /orders', meter: { ctx_pct: 62, cost_usd: 3.41, model: 'Demo Model', at: now - min }, teammates: [], done: [{ tool: 'Bash', summary: 'npm test -- orders', ms: 18400, ok: true, at: now - 6 * min }, { tool: 'Edit', summary: '…/orders.ts', ms: 120, ok: true, at: now - 5 * min }], branch: { base: 'origin/main', ahead: 3, behind: 0, subject: 'feat: cursor pagination for orders' } }, updated_at: now - 4 * min },
       { code: 'WEB', aliases: ['WEB', 'frontend'], state: 'needs-you', status: 'idle', task: 'Redesigning the settings page layout', title: 'Settings page redesign', repo: 'web-app', branch: 'settings-layout', last_event: 'Stop', notification_type: null, recent: [], tmux: 'WEB:@2.%5', remote_url: '#demo-session-web', pending: null, updated_at: now - 9 * min },
       { code: 'CP', aliases: ['CP', 'pipeline'], state: 'needs-you', status: 'idle', task: 'Splitting the deploy pipeline into stages', title: 'Deploy pipeline split', repo: 'ci-config', branch: 'split-deploy', last_event: 'PreToolUse', notification_type: null, recent: [], tmux: 'CP:@1.%6', remote_url: '#demo-session-cp', pending: { tool_name: 'ExitPlanMode', summary: 'build first, then staging, then production', tool_use_id: 'toolu_demo11' }, updated_at: now - 1 * min },
-      { code: 'DOCS', aliases: ['DOCS'], state: 'working', status: 'busy', task: 'Writing the upgrade guide for v2', title: 'Upgrade guide for v2', repo: 'docs-site', branch: 'main', last_event: 'PreToolUse', notification_type: null, recent: [{ tool: 'Read', summary: '…/upgrade-v2.md' }, { tool: 'Edit', summary: '…/configuration.md' }], tmux: 'DOCS:@1.%8', remote_url: null, pending: null, card: { state_since: now - 22 * min, doing: 'Two teammates are drafting the configuration and migration chapters; I am merging their notes.', prompt: 'Write the v2 upgrade guide', meter: { ctx_pct: 34, cost_usd: 2.1, model: 'Demo Model', at: now - min }, teammates: [{ name: 'writer', title: 'Draft the configuration chapter', busy: true, idle: false, idle_s: 20, rss_mb: 310 }, { name: 'checker', title: 'Check every code sample builds', busy: false, idle: true, idle_s: 2400, rss_mb: 280 }], done: [{ tool: 'Bash', summary: 'npm run build:docs', ms: 52000, ok: false, at: now - 9 * min }, { tool: 'Read', summary: '…/upgrade-v2.md', ms: 40, ok: true, at: now - 2 * min }], branch: { base: 'origin/main', ahead: 1, behind: 4, subject: 'docs: upgrade guide outline' } }, updated_at: now - 1 * min },
+      { code: 'DOCS', aliases: ['DOCS'], state: 'working', status: 'busy', task: 'Writing the upgrade guide for v2', title: 'Upgrade guide for v2', repo: 'docs-site', branch: 'main', last_event: 'PreToolUse', notification_type: null, recent: [{ tool: 'Read', summary: '…/upgrade-v2.md' }, { tool: 'Edit', summary: '…/configuration.md' }], tmux: 'DOCS:@1.%8', remote_url: null, rc: { on: false, want: 'on', source: 'session', pending: true, last: null }, pending: null, card: { state_since: now - 22 * min, doing: 'Two teammates are drafting the configuration and migration chapters; I am merging their notes.', prompt: 'Write the v2 upgrade guide', meter: { ctx_pct: 34, cost_usd: 2.1, model: 'Demo Model', at: now - min }, teammates: [{ name: 'writer', title: 'Draft the configuration chapter', busy: true, idle: false, idle_s: 20, rss_mb: 310 }, { name: 'checker', title: 'Check every code sample builds', busy: false, idle: true, idle_s: 2400, rss_mb: 280 }], done: [{ tool: 'Bash', summary: 'npm run build:docs', ms: 52000, ok: false, at: now - 9 * min }, { tool: 'Read', summary: '…/upgrade-v2.md', ms: 40, ok: true, at: now - 2 * min }], branch: { base: 'origin/main', ahead: 1, behind: 4, subject: 'docs: upgrade guide outline' } }, updated_at: now - 1 * min },
       { code: 'OPS', aliases: ['OPS', 'infra'], state: 'working', status: 'busy', task: 'Rotating staging certificates', title: 'Rotate staging certificates', repo: 'infra', branch: 'cert-rotation', last_event: 'PreToolUse', notification_type: null, recent: [{ tool: 'Bash', summary: 'kubectl -n staging get certificates' }], tmux: 'OPS:@4.%11', remote_url: '#demo-session-ops', pending: null, card: { state_since: now - 3 * min, doing: 'Listing the certificates that expire this month.', meter: { ctx_pct: 18, cost_usd: 0.42, model: 'Demo Model', at: now - min }, teammates: [], done: [], branch: { base: 'origin/main', ahead: 0, behind: 0, subject: 'chore: bump cert-manager' } }, updated_at: now - 3 * min },
-      { code: 'QA', aliases: ['QA'], state: 'done', status: 'idle', task: 'Flaky test triage finished: 3 fixed, 1 quarantined', title: 'Flaky test triage', repo: 'web-app', branch: 'fix/flaky-upload', last_event: 'Stop', notification_type: 'idle_prompt', recent: [], tmux: 'QA:@1.%2', remote_url: null, pending: null, updated_at: now - 26 * min },
-      { code: 'DATA', aliases: ['DATA'], state: 'rest', status: 'idle', task: '', title: null, repo: 'warehouse', branch: 'main', last_event: 'SessionStart', notification_type: null, recent: [], tmux: 'DATA:@1.%14', remote_url: null, pending: null, updated_at: now - 70 * min },
+      { code: 'QA', aliases: ['QA'], state: 'done', status: 'idle', task: 'Flaky test triage finished: 3 fixed, 1 quarantined', title: 'Flaky test triage', repo: 'web-app', branch: 'fix/flaky-upload', last_event: 'Stop', notification_type: 'idle_prompt', recent: [], tmux: 'QA:@1.%2', remote_url: null, compact: { queued: null, last: { result: 'confirmed', at: now - 50 * min }, done_at: now - 50 * min }, pending: null, updated_at: now - 26 * min },
+      { code: 'DATA', aliases: ['DATA'], state: 'rest', status: 'idle', task: '', title: null, repo: 'warehouse', branch: 'main', last_event: 'SessionStart', notification_type: null, recent: [], tmux: 'DATA:@1.%14', remote_url: null, rc: { on: false, want: 'on', source: 'default', blocked: 'do_not_track', pending: false, last: null }, pending: null, updated_at: now - 70 * min },
       { code: 'MOBILE', aliases: ['MOBILE', 'app'], state: 'offline', status: 'idle', task: 'Release notes draft', title: null, repo: null, branch: null, last_event: null, notification_type: null, recent: [], tmux: null, remote_url: null, pending: null, updated_at: now - 5 * 60 * min },
     ];
     S.decisions = [
@@ -3667,6 +3843,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       { id: 'm-1-demo', to: 'DOCS', body: 'Add a section on the new config flags to the upgrade guide.', by: 'u_demo_editor', created_at: now - 40 * min, status: 'replied', relayed_to: ['DOCS'], relayed_at: now - 39 * min },
     ];
     S.replies = new Map([['m-1-demo', [{ id: 'r1', from: 'DOCS', body: 'Added under "Configuration changes", with a table of old and new flag names.', created_at: now - 31 * min }]]]);
+    S.rc = { all: null, sessions: { DOCS: 'on' } };
     S.notify = { mutes: { slack: { until: now + 135 * min, by: 'board:you', include_urgent: false } },
       min_level: { all: { level: 'info', source: 'default' }, email: { level: 'urgent', source: 'prefs' } },
       effective_min_level: { slack: 'info', desktop: 'info', email: 'urgent', line: 'info', sns: 'info', webhook: 'info' },
@@ -3979,6 +4156,62 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       "Shown on the self-hosted board only.": "只在自架看板上顯示。",
       "Nothing running.": "沒有執行中的工具。",
       "Remote Control": "Remote Control",
+      "RC unavailable": "RC 無法使用",
+      "RC unavailable: DO_NOT_TRACK is set": "RC 無法使用：設了 DO_NOT_TRACK",
+      "Last try: Claude said there was not enough to compact.": "上次嘗試：Claude 表示內容不足，無法壓縮。",
+      "Last try: still compacting when the board stopped watching; it finishes in the session.": "上次嘗試：看板停止觀察時仍在壓縮，會在 session 中完成。",
+      "Last try: sent, but the compact was not seen starting.": "上次嘗試：已送出，但沒有看到壓縮開始。",
+      "Last try: nothing was sent (the screen did not match).": "上次嘗試：沒有送出任何按鍵（畫面不符）。",
+      "Last try stopped part-way: /compact may still be typed in the prompt. Clear it in the session.": "上次嘗試中途停止：輸入框裡可能還留著 /compact，請到 session 中清掉。",
+      "Queued: runs when the session is idle.": "已排入：session 閒置時執行。",
+      "Last compacted {when}": "上次壓縮：{when}",
+      "Not compacted from the board yet.": "尚未從看板壓縮過。",
+      "Compact {code}'s conversation? Claude summarizes it to free context. It runs now if the session is idle, else when it is.": "要壓縮 {code} 的對話嗎？Claude 會把它摘要以釋放 context。session 閒置就立即執行，否則等它閒置。",
+      "Yes, compact": "是，壓縮",
+      "Compact {code}": "壓縮 {code}",
+      "Compact": "壓縮",
+      "Compact for {code}: now if it is idle, else when it is.": "{code} 的壓縮：閒置就立即執行，否則等它閒置。",
+      "Remote Control turns on when the session is idle": "Remote Control 會在 session 閒置時開啟",
+      "Remote Control turns off when the session is idle": "Remote Control 會在 session 閒置時關閉",
+      "Remote Control is on": "Remote Control 已開啟",
+      "Remote Control is off": "Remote Control 已關閉",
+      "RC → on": "RC → 開",
+      "RC → off": "RC → 關",
+      "RC on": "RC 開",
+      "RC off": "RC 關",
+      "Last try: nothing was sent (the screen did not match). It is tried again later.": "上次嘗試：沒有送出任何按鍵（畫面不符），稍後會再試。",
+      "Last try stopped part-way: /remote-control may still be typed in the prompt. Clear it in the session.": "上次嘗試中途停止：輸入框裡可能還留著 /remote-control，請到 session 中清掉。",
+      "Last try: sent, but the change was not confirmed.": "上次嘗試：已送出，但沒有確認到變更。",
+      "Remote Control is not available in this session (for example, DO_NOT_TRACK is set). It applies at its next start.": "這個 session 無法使用 Remote Control（例如設了 DO_NOT_TRACK），會在下次啟動時套用。",
+      "Claude asks a one-time confirmation: run /remote-control in the session once.": "Claude 要求一次性確認：請在 session 中執行一次 /remote-control。",
+      "Last try failed.": "上次嘗試失敗。",
+      "Off at the next start": "下次啟動時關閉",
+      "On at the next start": "下次啟動時開啟",
+      "Off now; turns on when the session is idle": "目前關閉；session 閒置時開啟",
+      "On now; turns off when the session is idle": "目前開啟；session 閒置時關閉",
+      "On": "開啟",
+      "Off": "關閉",
+      "Turn Remote Control on for {code}": "為 {code} 開啟 Remote Control",
+      "Turn Remote Control off for {code}": "為 {code} 關閉 Remote Control",
+      "Turn on": "開啟",
+      "Turn off": "關閉",
+      "Remote Control on for all sessions: idle ones now, busy ones when they are idle.": "所有 session 開啟 Remote Control：閒置的立即套用，忙碌的等閒置時套用。",
+      "Remote Control off for all sessions: idle ones now, busy ones when they are idle.": "所有 session 關閉 Remote Control：閒置的立即套用，忙碌的等閒置時套用。",
+      "Remote Control on for {code}: now if it is idle, else when it is.": "{code} 開啟 Remote Control：閒置就立即套用，否則等它閒置。",
+      "Remote Control off for {code}: now if it is idle, else when it is.": "{code} 關閉 Remote Control：閒置就立即套用，否則等它閒置。",
+      "All sessions: on.": "所有 session：開啟。",
+      "All sessions: off.": "所有 session：關閉。",
+      "No choice for all sessions: each follows fleet.yaml (default on).": "沒有對所有 session 的設定：各自依 fleet.yaml（預設開啟）。",
+      "{n} with their own choice.": "{n} 個有各自的設定。",
+      "Read-only: only approvers change Remote Control.": "唯讀：只有 approver 能變更 Remote Control。",
+      "Read-only here. Change it on the self-hosted board or with board rc.": "這裡是唯讀。請在自架看板或用 board rc 變更。",
+      "Turn Remote Control on for every session? It replaces each session's own choice.": "要為每個 session 開啟 Remote Control 嗎？這會取代各 session 自己的設定。",
+      "Turn Remote Control off for every session? It replaces each session's own choice.": "要為每個 session 關閉 Remote Control 嗎？這會取代各 session 自己的設定。",
+      "Yes, all on": "是，全部開啟",
+      "Yes, all off": "是，全部關閉",
+      "RC: all on": "RC：全部開啟",
+      "RC: all off": "RC：全部關閉",
+      "A running session gets the change only when it is idle with an empty prompt (/remote-control is typed and checked on screen); a working session gets it later. fleet-up starts sessions with the choice.": "執行中的 session 只在閒置且輸入框為空時套用（輸入 /remote-control 並在畫面上確認）；工作中的 session 之後再套用。fleet-up 會依這個設定啟動 session。",
       "Loading sessions…": "正在載入 session…",
       "Cards appear as soon as the board data answers.": "看板資料一回應，卡片就會出現。",
       "Session cards appear here once the page can reach the board.": "頁面連上看板後，session 卡片會出現在這裡。",

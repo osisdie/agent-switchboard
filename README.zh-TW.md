@@ -407,6 +407,42 @@ pane 標題裡的任務、執行中或閒置、記憶體用量）、已用的 co
 `[re <msgId>] …` 回覆，回覆會串在原訊息底下。**訊息只是資訊，絕不是核准。**
 向 session 要機密值的訊息會被攔下，不會轉送（見[機密防護](#secret-guardrails)）。
 
+### Session 動作：Remote Control 與壓縮
+
+Remote Control 讓你從 claude.ai/code 或 Claude app 打開 session。可以逐一 session 開關，也可以
+一次全部開關：
+
+```bash
+board rc off API                 # 這個 session：閒置就立即關閉，否則等它閒置
+board rc on all                  # 所有 session（會清掉各 session 自己的設定）
+board rc status                  # 每個 session 的期望值／實際值／待套用
+board rc clear API               # 忘掉設定：回到 fleet.yaml（預設開啟）
+```
+
+看板上每張執行中的 session 卡片都會顯示 Remote Control 是否開啟：開啟時卡片上有「在 Remote Control
+中開啟」連結，關閉時顯示 **RC 關** 標籤，在等 session 閒置才套用時則顯示虛線的 **RC → 開**。approver 可以在卡片詳細資料裡按「開啟／關閉」，也可以在通知對話框裡用
+「RC：全部開啟／全部關閉」（需要再確認一次）。
+
+怎麼套用到執行中的 session：Claude Code 沒有給執行中 session 用的開關，所以看板會像按權限提示
+一樣，把 `/remote-control` 輸入到它的 pane。只在 session 閒置、輸入框是空的、畫面上沒有其他東西
+時才會輸入；再看一次才按 Enter，並從 session registry 確認結果。工作中或 needs-you 的 session
+不會被碰，收集器會等它閒置再套用。關閉時會走 Claude 的「Disconnect this session」對話框，遇到
+任何意料之外的畫面就按 Escape。`fleet-up` 會依設定決定啟動時要不要加 `--remote-control`，
+`fleet.yaml` 裡的 `remote_control: true|false` 則是各 session 的預設值。對執行中的 session，
+看板每個設定只試一次，而且只在設定比 session 新的時候。之後在 session 裡手動做的變更（例如從手機
+中斷連線）優先，直到你再做一次設定；頁面上的開關或 `board rc` 一律會強制套用。
+
+**注意**：啟動 session 的環境如果設了 `DO_NOT_TRACK`，Claude Code 會忽略 `--remote-control`，
+也沒有 `/remote-control`。`board doctor` 會提出警告。
+在 `fleet.yaml` 設 `rc.unset_do_not_track: true`，fleet-up 就會用 `env -u DO_NOT_TRACK` 啟動它們
+（預設關閉）。session 設了它的卡片會顯示 **RC 無法使用**。
+
+壓縮也是同樣的做法。在卡片詳細資料裡按 **壓縮**（approver，需要再確認一次），或執行
+`board session API compact`，會在 session 閒置時輸入 `/compact`。session 忙碌時會先排入，等它閒置
+再執行；`board session API cancel` 可以取消。之後卡片會顯示看板上次壓縮這個 session 的時間。看板
+只會輸入一小份清單裡的固定指令（`/compact`、`/remote-control`），絕不輸入任意文字，而且每一次都有
+稽核紀錄。
+
 ### 個人選單、主題與語言
 
 看板右上角的頭像會打開一個小選單：
@@ -1002,10 +1038,12 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 |---|---|
 | `docs/contract.md` | 具約束力的資料契約：本機檔案、資料庫 collection、生命週期階段與關卡、轉發格式、降級模式 |
 | `hooks/board-hook.sh` | 生命週期 hook：寫入 `state/<session_id>.json`、附加到 `events.jsonl`，永遠以 exit 0 結束 |
-| `bin/board` | CLI：`ls`、`snapshot`、`ask`、`task new/stage/ls/show`、`decisions`、`answer`、`mark`、`limit`、`resources`、`press`、`notify`、`mute`、`unmute`、`notify-level`、`notify-presence`、`away`、`consensus`、`message`、`guard`、`doctor`。結束碼：2 = 用法錯誤（也包括 `answer --option` 不一致），3 = 拒絕按鍵，4 = 拒絕回答／投票，5 = 按鍵做到一半（已送出按鍵、沒有按 Enter） |
+| `bin/board` | CLI：`ls`、`snapshot`、`ask`、`task new/stage/ls/show`、`decisions`、`answer`、`mark`、`limit`、`resources`、`press`、`notify`、`mute`、`unmute`、`notify-level`、`notify-presence`、`rc`、`session`、`away`、`consensus`、`message`、`guard`、`doctor`。結束碼：2 = 用法錯誤（也包括 `answer --option` 不一致），3 = 拒絕按鍵，4 = 拒絕回答／投票，5 = 按鍵做到一半（已送出按鍵、沒有按 Enter） |
 | `bin/board-collect` | 不耗 token 的收集器：snapshot、diff，每一輪執行 `board-notify`；首次安裝時用 `--baseline` |
 | `bin/board-notify`、`lib/notify.py` | 告警：`send`、`ack`、`tick`、`test`、`status`、`gate`。轉接器（slack、desktop、email、line、sns、webhook）、等級、升級、確認、勿擾時段、去除重複 |
 | `lib/prefs.py` | 通知控制：靜音、最低等級、在場（`board mute`、`notify-level`、`notify-presence`），以及 `lib/notify.py` 套用的送出規則 |
+| `lib/rc.py` | Remote Control 開關：主人對單一或所有 session 的設定（`board rc`）、fleet-up 啟動時要不要加旗標，以及套用到閒置中的執行中 session（輸入 `/remote-control` 並在畫面上確認） |
+| `lib/actions.py` | Session 動作：在閒置的 session 輸入白名單內的斜線指令（`/compact`、`/remote-control`），附 press 式檢查、壓縮佇列與收集器的接手（`board session`） |
 | `hooks/board-statusline-tap.sh` | statusline 包裝器，把 5h／每週用量記錄到 `usage.json`，不改變你的 statusline |
 | `bin/fleet-up` | 依 `fleet.yaml` 啟動整組 session 的冪等啟動器（設定 `serve.enabled` 時也會啟動 `board-serve`） |
 | `bin/board-serve`、`lib/serve.py` | 自架看板：local 模式的頁面 + 建立在 `$BOARD_HOME` 上的 JSON／SSE API，只限 127.0.0.1；`--watch` 供 local 模式的 operator 使用 |
@@ -1027,7 +1065,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `lib/cards.py` | board-serve 用的卡片補充資訊（`cards.json`）：teammate 與其任務、session 用量、最近的工具呼叫、最後一則訊息與指示（僅核可者）、領先／落後、狀態持續時間 |
 | `lib/resources.py` | 資源取樣器（記憶體、磁碟、OOM、每個 session 的程序與 teammate），產生 `resources.json`、snapshot 摘要和 `board resources` |
 | `docs/design/` | 設計文件，例如 `resources-and-scheduling.md`（資源、排程器、經驗） |
-| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`）、資源取樣器（`test_resources.py`，fixture `/proc`）、機密防護（`test_guard.py`）、卡片補充資訊（`test_cards.py`），以及選用的頁面告警連結、通知控制、個人選單與主題、主畫面 app、session 卡片、用量提示框、語言切換與按鍵面板 headless 檢查（`test_page_links.py`、`test_page_notify.py`、`test_page_profile.py`、`test_page_pwa.py`、`test_page_cards.py`、`test_page_guard.py`（被攔下的訊息卡片）、`test_page_usage.py`、`test_page_i18n.py`、`test_page_deck.py`，以及截圖和 Pages 網站的 `test_site.py`：需要 python playwright，沒有就略過；CI 不執行） |
+| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`）、資源取樣器（`test_resources.py`，fixture `/proc`）、機密防護（`test_guard.py`）、卡片補充資訊（`test_cards.py`）、Remote Control（`test_rc.py`，用 `fake_tmux.py` 模擬 tmux 畫面），以及選用的頁面告警連結、通知控制、個人選單與主題、主畫面 app、session 卡片、用量提示框、語言切換與按鍵面板 headless 檢查（`test_page_links.py`、`test_page_notify.py`、`test_page_profile.py`、`test_page_pwa.py`、`test_page_cards.py`、`test_page_guard.py`（被攔下的訊息卡片）、`test_page_usage.py`、`test_page_i18n.py`、`test_page_deck.py`、`test_page_rc.py`（Remote Control 標籤與開關），以及截圖和 Pages 網站的 `test_site.py`：需要 python playwright，沒有就略過；CI 不執行） |
 | `CONTRIBUTING.md` | 開發環境設定、測試，以及讓 `README.zh-TW.md` 保持同步的規則 |
 | `fleet.example.yaml`、`.env.example` | 設定範例 |
 
