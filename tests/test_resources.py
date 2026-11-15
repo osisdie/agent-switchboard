@@ -162,6 +162,21 @@ class SystemMetrics(Base):
         # and the raw evaluator skips a bad value instead of raising
         self.assertEqual(R.metric_candidate(5, ["x", 8], True, "ok"), "high")
 
+    def test_bad_process_classes_do_not_stop_the_sampler(self):
+        self.tree()
+        for bad in (["test", "pytest"], "pytest", {"test": "("}, {"test": 5}):
+            cfg = R.settings({"resources": {"process_classes": bad}})
+            self.assertEqual(len(cfg["config_errors"]), 1, bad)
+            self.assertIn("process_classes", cfg["config_errors"][0])
+            cfg["disks"] = []
+            doc = R.sample(cfg, self.home, self.sessions, {}, T0)
+            cp = next(x for x in doc["sessions"] if x["code"] == "CP")
+            self.assertEqual({c["pid"]: c["class"] for c in cp["children"]}[102], "test")  # defaults still apply
+            self.assertEqual(doc["config_errors"], cfg["config_errors"])
+        self.assertEqual(R.compile_classes("x")[0][0], "test")  # the raw compiler tolerates it too
+        ok = R.settings({"resources": {"process_classes": {"container": r"\bpython3\b"}}})
+        self.assertEqual((ok["process_classes"], ok["config_errors"]), ({"container": r"\bpython3\b"}, []))
+
     def test_oom_delta_is_critical(self):
         self.run_sample(T0)
         self.fp.write("vmstat", "oom_kill 3\n")
@@ -457,6 +472,8 @@ class NonLinux(Base):
                      "  200     1  358400  0.0 00:00:10 1-02:00:00 /opt/claude/bin/claude --agent-id t1@team "
                      "--agent-name t1 --parent-session-id sid-cp --lead-verify-key " + SECRET + "\n"
                      "  300     1   10240  0.0 00:00:00 00:10 python3 /repo/lib/serve.py --watch\n"
+                     "  102   100  512000 40.0 00:01:00 03:00 /Applications/Google Chrome.app/Contents/MacOS/"
+                     "Google Chrome --type=renderer --lang=en\n"
                      "EOF\n")
         os.chmod(os.path.join(bindir, "ps"), 0o755)
         old = os.environ["PATH"]
@@ -472,8 +489,12 @@ class NonLinux(Base):
         self.assertIsNone(doc["mem"]["available_mb"])  # never 0
         cp = next(s for s in doc["sessions"] if s["code"] == "CP")
         self.assertEqual((cp["rss_mb"], cp["cpu_pct"]), (400, 3))
-        self.assertEqual(cp["children"][0]["class"], "test")
-        self.assertEqual(cp["children"][0]["age_s"], 300)
+        by = {c["pid"]: c for c in cp["children"]}
+        self.assertEqual(by[101]["class"], "test")
+        self.assertEqual(by[101]["age_s"], 300)
+        # an executable path with spaces (a macOS app bundle) keeps its whole name
+        self.assertEqual((by[102]["comm"], by[102]["class"]), ("Google Chrome", "browser"))
+        self.assertTrue(by[102]["heavy"])
         self.assertEqual(cp["teammates"][0]["name"], "t1")
         self.assertEqual(cp["teammates"][0]["age_s"], 26 * 3600)
         self.assertTrue(doc["operator"]["watch"])
@@ -571,6 +592,15 @@ class Collector(Base):
         self.assertEqual(res5["level"], "warn")
         self.assertEqual(snap5["resources"], {"level": "warn", "worst": "mem"})
         self.assertNotEqual(m5, m1)
+        # A new sample whose numbers only move inside the board's buckets is not written (so the
+        # board's SSE stays quiet) until the 60 s refresh.
+        rpath = os.path.join(self.home, "resources.json")
+        rm5 = os.stat(rpath).st_mtime_ns
+        self.fp.mem(16384, 1480)
+        _, _, r = self.collect(T0 + 64000)
+        self.assertEqual((r["at"], r["mem"]["available_mb"], os.stat(rpath).st_mtime_ns), (T0 + 48000, 1500, rm5))
+        _, _, r = self.collect(T0 + 112000)
+        self.assertEqual((r["at"], r["mem"]["available_mb"]), (T0 + 112000, 1480))
 
     def test_disabled(self):
         with open(os.path.join(self.env["BOARD_CONFIG_DIR"], "fleet.yaml"), "a") as fh:

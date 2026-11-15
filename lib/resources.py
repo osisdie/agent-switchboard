@@ -77,7 +77,7 @@ CLASS_RE = {
 COMM_ONLY = ("browser",)
 ARGV_COMM_RE = re.compile(r"^(claude|node|bun|python)", re.I)   # whose argv we read outside session trees
 SHELLS = ("bash", "sh", "zsh", "dash", "fish")                     # a shell running `pytest` is not the test
-NAME_RE = re.compile(r"[^A-Za-z0-9._@-]")
+NAME_RE = re.compile(r"[^A-Za-z0-9._@ -]")
 MIB = 1024 * 1024
 try:
     HZ = os.sysconf("SC_CLK_TCK")
@@ -138,8 +138,29 @@ def settings(cfg=None):
     serve = cfg.get("serve") if isinstance(cfg.get("serve"), dict) else {}
     out["serve_enabled"] = bool(serve.get("enabled"))
     out["thresholds"], out["config_errors"] = clean_thresholds(out.get("thresholds"))
+    out["process_classes"], errs = clean_classes(out.get("process_classes"))
+    out["config_errors"] += errs
     return out
 
+
+def clean_classes(pc):
+    """resources.process_classes as {class: regex}. Anything else (a list, a string) or a pattern
+    that does not compile is dropped and reported, never raised: a bad override must not stop the
+    sampler (and with it res:* and the operator-watch input)."""
+    if pc in (None, {}):
+        return {}, []
+    if not isinstance(pc, dict):
+        return {}, ["resources.process_classes: %r is not a map of class: regex; ignored" % (pc,)]
+    out, errors = {}, []
+    for k, v in pc.items():
+        try:
+            if not isinstance(v, str) or not v:
+                raise re.error("not a string")
+            re.compile(v)
+            out[str(k)] = v
+        except re.error as exc:
+            errors.append("resources.process_classes.%s: %r is not a valid regex (%s); ignored" % (k, v, exc))
+    return out, errors
 
 def clean_thresholds(thr):
     """Every threshold as [warn, high] floats. A bad entry falls back to its default and is
@@ -332,11 +353,14 @@ def scan_ps(now_s):
         try:
             age = parse_clock(f[5])
             argv = f[6].split()
+            # comm from the executable path, which may hold spaces ("/Applications/Google
+            # Chrome.app/.../Google Chrome --type=renderer"): everything before the first " -".
+            exe = f[6].split(" -", 1)[0].strip()
             out[int(f[0])] = {
                 "pid": int(f[0]), "ppid": int(f[1]), "rss_kb": int(f[2]), "pcpu": float(f[3]),
                 "cpu_s": parse_clock(f[4]) or 0.0, "age_s": age,
                 "start": round(now_s - age) if age is not None else None,
-                "comm": os.path.basename(argv[0])[:15] if argv else "?", "argv": argv,
+                "comm": os.path.basename(exe)[:15] if exe else "?", "argv": argv,
             }
         except ValueError:
             continue
@@ -374,7 +398,7 @@ def teammate_info(p):
 
 def compile_classes(overrides):
     pats = dict(CLASS_RE)
-    for k, v in (overrides or {}).items():
+    for k, v in (overrides if isinstance(overrides, dict) else {}).items():
         if isinstance(v, str) and v:
             pats[str(k)] = v
     order = list(CLASS_ORDER) + [k for k in pats if k not in CLASS_ORDER]
@@ -968,13 +992,26 @@ def step(cfg, home, sessions, now=None):
         return digest(cur)
     doc = _sample_doc(rcfg, home, sessions, state, now)
     write_json_atomic(spath, state)
-    old = dict(cur) if isinstance(cur, dict) else None
-    old_at = int(old.pop("at", 0) or 0) if old is not None else 0
-    new = dict(doc)
-    new.pop("at", None)
-    if old != new or not old_at or now - old_at >= REWRITE_MS or now < old_at:
+    old_at = int(cur.get("at") or 0) if isinstance(cur, dict) else 0
+    if _meaningful(cur) != _meaningful(doc) or not old_at or now - old_at >= REWRITE_MS or now < old_at:
         write_json_atomic(rpath, doc, indent=1)
     return digest(doc)
+
+
+def _meaningful(doc):
+    """What decides a rewrite: the bucketed board view (percentages to 5%, sizes to 100 MB, ages
+    to the minute; levels, worst, OOM, teammates and the operator watch exactly), without `at`.
+    So resources.json (and the board's SSE) change on real changes, plus the REWRITE_MS refresh."""
+    if not isinstance(doc, dict):
+        return None
+    v = mirror_view(doc) or {}
+    v.pop("at", None)
+
+    def minutes(x):
+        if isinstance(x, dict):
+            return {k: (int(x[k]) // 60 if k in ("age_s", "idle_s") and x[k] is not None else minutes(x[k])) for k in x}
+        return [minutes(i) for i in x] if isinstance(x, list) else x
+    return json.dumps([minutes(v), doc.get("config_errors") or []], sort_keys=True)
 
 
 def preview(cfg, home, sessions, now=None):

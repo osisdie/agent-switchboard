@@ -516,8 +516,10 @@ Claude Code's statusline input JSON carries `rate_limits.five_hour` and `rate_li
 ## Resources
 
 The collector (`lib/resources.py`, zero tokens) samples the machine every `resources.interval`
-seconds (default 15) into `$BOARD_HOME/resources.json`. It is rewritten when a rounded value
-changed, and at least every 60 s so its `at` shows the sampler is alive; `snapshot.json` carries
+seconds (default 15) into `$BOARD_HOME/resources.json`. It is rewritten when something changed
+beyond the board's buckets (percentages to 5%, sizes to 100 MB, ages to the minute; levels, OOM,
+teammates and the operator watch exactly), and at least every 60 s so its `at` shows the sampler
+is alive; `snapshot.json` carries
 only `{level, worst}`. The board shows it; **nothing in the board
 ever stops a process**.
 
@@ -562,7 +564,10 @@ ever stops a process**.
   test `pytest|jest|vitest|go test|cargo test|mvn|gradle`, build `tsc|webpack|vite build|cargo
   build|docker build`, container `docker|containerd`, and browser `chrome|chromium|firefox|headless_shell`
   matched on `comm` alone (an idle Playwright MCP server mentions them in its argv but is not a
-  browser; `playwright test` is a test); `resources.process_classes` overrides or adds patterns. **Heavy** = test,
+  browser; `playwright test` is a test); `resources.process_classes` (a map of class: regex) overrides or adds patterns; anything else,
+  or a pattern that does not compile, is ignored and listed in `config_errors`. On the `ps` path
+  `comm` is the base name of the executable path up to the first ` -`, so a path with spaces (a
+  macOS app bundle) stays whole. **Heavy** = test,
   build or browser, or RSS > 1 GiB; `heavy_running` counts heavy processes whose parent is not
   heavy (one browser = one).
 - **Privacy.** Command lines are matched and never stored (a teammate's argv carries keys): only
