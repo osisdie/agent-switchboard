@@ -486,6 +486,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 .avatar.lg { width: 44px; height: 44px; font-size: 16px; }
 .acct-panel { position: absolute; right: 0; top: calc(100% + 8px); width: min(340px, calc(100vw - 32px)); max-height: calc(100vh - 120px); max-height: calc(100dvh - 120px); overflow: auto; display: grid; gap: 16px; padding: 16px; border-radius: 10px; border: 1px solid var(--rule); background: var(--panel); color: var(--ink); box-shadow: 0 10px 30px rgb(0 0 0 / .18); }
 .acct-panel:focus { outline: none; }
+.acct-panel:focus-visible { outline: 2px solid var(--cord); outline-offset: 2px; }
 .acct-who { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .acct-who > div { min-width: 0; }
 .acct-name { margin: 0; font-weight: 600; font-size: 15px; overflow-wrap: anywhere; }
