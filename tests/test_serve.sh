@@ -284,9 +284,13 @@ eq "  reply" "$(body '"\(.notify.presence.reduce)/\(.notify.presence.min_level)"
 echo "presence:"
 PRF="$BOARD_HOME/presence.json"
 for b in '{}' '{"visible":"yes"}' \
-         '{"visible":true,"idle_ms":"1s"}' '{"visible":true,"idle_ms":1.5}' '{"visible":true,"idle_ms":false}'; do
+         '{"visible":true,"idle_ms":"1s"}' '{"visible":true,"idle_ms":1.5}' '{"visible":true,"idle_ms":false}' '{"visible":true,"idle_ms":86400001}'; do
   eq "bad heartbeat refused: $b" "$(post /api/presence "$b")" "400"
 done
+eq "a 4000-digit idle_ms refused" "$(post /api/presence "{\"visible\":true,\"idle_ms\":$(printf '9%.0s' $(seq 1 4000))}")" "400"
+eq "  an oversized idle_ms writes nothing" "$([ -e "$PRF" ] && echo written || echo none)" "none"
+eq "idle_ms of exactly a day is accepted" "$(post /api/presence '{"visible":true,"idle_ms":86400000}'; jq -r '.local.visible' "$PRF")" "200true"
+rm -f "$PRF"
 eq "presence without X-Board refused" "$(req POST /api/presence -H 'Content-Type: application/json' -H "$ORIGIN" --data-binary '{"visible":true}')" "403"
 eq "heartbeat: visible" "$(post /api/presence '{"visible":true,"idle_ms":0}')" "200"
 eq "  recorded under the server's identity" "$(jq -r '.local.visible|tostring' "$PRF")/$(jq -r '.local.via' "$PRF")" "true/loopback"
@@ -415,7 +419,7 @@ eq "empty approvers: notify-prefs refused" "$(post /api/notify-prefs '{"op":"mut
 eq "  error no_approvers" "$(body .error)" "no_approvers"
 eq "empty approvers: presence refused" "$(post /api/presence '{"visible":true}')" "403"
 eq "  error no_approvers" "$(body .error)" "no_approvers"
-[ -e "$BOARD_HOME/notify-prefs.json" ] || [ -e "$BOARD_HOME/presence.json" ] && bad "  nothing written" || ok "  nothing written"
+if [ -e "$BOARD_HOME/notify-prefs.json" ] || [ -e "$BOARD_HOME/presence.json" ]; then bad "  nothing written"; else ok "  nothing written"; fi
 write_cfg "" "[boss@example.com]"
 start
 eq "approvers without local: loopback answer refused" "$(post /api/decisions/d-1-q2/answer '{"answer":"A"}')" "403"
@@ -431,7 +435,7 @@ eq "  notify-prefs refused for a non-approver" "$(post /api/notify-prefs '{"op":
 eq "  error not_approver" "$(body .error)" "not_approver"
 eq "  refusal audited" "$(jq -s -r '[.[] | select(.type=="serve" and .action=="notify-prefs")] | last | .result + "/" + .reason + "/" + .channel' "$BOARD_HOME/events.jsonl")" "refused/not an approver/slack"
 eq "  presence refused for a non-approver" "$(post /api/presence '{"visible":true}')" "403"
-[ -e "$BOARD_HOME/notify-prefs.json" ] || [ -e "$BOARD_HOME/presence.json" ] && bad "  nothing written" || ok "  nothing written"
+if [ -e "$BOARD_HOME/notify-prefs.json" ] || [ -e "$BOARD_HOME/presence.json" ]; then bad "  nothing written"; else ok "  nothing written"; fi
 # MUST-FIX: a non-approver must never cancel an approver's answer that waits for the relay.
 dec d-1-q6 question
 BOARD_HOME="$BOARD_HOME" "$REPO/bin/board" answer d-1-q6 "ship it" --by boss@example.com >/dev/null
@@ -582,7 +586,7 @@ EOF
   eq "    error not_approver" "$(body .error)" "not_approver"
   eq "    audited with the token's email" "$(jq -s -r '[.[] | select(.type=="serve" and .action=="notify-prefs")] | last | .by + "/" + .via + "/" + .result' "$BOARD_HOME/events.jsonl")" "intruder@example.com/cf-jwt/refused"
   eq "  a viewer's presence heartbeat: 403" "$(tpost /api/presence '{"visible":true}' "${TUNNEL_HDRS[@]}" -H "$(jwt nobody)")" "403"
-  [ -e "$BOARD_HOME/notify-prefs.json" ] || [ -e "$BOARD_HOME/presence.json" ] && bad "    nothing written" || ok "    nothing written"
+  if [ -e "$BOARD_HOME/notify-prefs.json" ] || [ -e "$BOARD_HOME/presence.json" ]; then bad "    nothing written"; else ok "    nothing written"; fi
   eq "  --check lists the allowed emails" "$("$REPO/bin/board-serve" --check | grep -c '^emails .*intruder@example.com')" "1"
   eq "local listener still local with the tunnel on" "$(req GET /api/state >/dev/null; body .me)" "local"
   eq "local listener still refuses forwarded requests" "$(req GET /api/state -H "$(jwt good)")" "403"

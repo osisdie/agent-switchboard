@@ -59,6 +59,7 @@ DEFAULT_PORT = 39410
 MAX_BODY = 16 * 1024
 MAX_ANSWER = 500
 MAX_MESSAGE = 4000
+MAX_IDLE_MS = 24 * 3600 * 1000   # presence: idle_ms above a day is refused (400)
 MAX_SSE = 32            # per listener, so the tunnel can't starve the local browser
 MAX_CONN = 64           # concurrent connections per listener (SSE streams included)
 SOCKET_TIMEOUT_S = 60   # per-connection socket timeout (SSE writes every <= 25 s)
@@ -988,8 +989,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         visible, idle = body.get("visible"), body.get("idle_ms")
         if not isinstance(visible, bool):
             raise Refused(400, "bad_body", "visible must be true or false")
-        if idle is not None and (not isinstance(idle, int) or isinstance(idle, bool)):
-            raise Refused(400, "bad_body", "idle_ms must be milliseconds or null")
+        if idle is not None and (not isinstance(idle, int) or isinstance(idle, bool) or idle > MAX_IDLE_MS):
+            raise Refused(400, "bad_body", "idle_ms must be milliseconds (at most a day) or null")
         by = self.approver(ident, via, "presence")
         now = now_ms()
         seen = now - max(0, idle) if idle is not None else None
