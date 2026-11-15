@@ -1145,7 +1145,7 @@ git grep -niE "$(paste -sd'|' tmp-local/banned-terms.txt)"
 
 ## Related project
 
-A hardware key-deck dashboard (5 × 3 keys plus a wide key) that shows the same HITL and usage
+[ulanzi-lab](https://github.com/osisdie/ulanzi-lab) is a hardware key-deck dashboard (5 × 3 keys plus a wide key) that shows the same HITL and usage
 signals from the same Claude Code hooks: waiting sessions blink, a HITL key jumps to the longest
 wait, and a fleet strip shows usage and burn rate. The Deck panel borrows its layout and ideas; no
 assets are shared.

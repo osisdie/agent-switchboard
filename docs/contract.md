@@ -891,7 +891,7 @@ calls an existing approver-only route after a confirm step.
   (`switchboard.deck` = `collapsed`).
 - Out of scope on purpose: keys that type into a session (prompts, Enter, `/compact`, Esc). A
   session's prompt is answered on its decision card, by the existing rules.
-- Related project: a hardware key-deck dashboard (5 × 3 keys) that shows the same HITL and usage
+- Related project: [ulanzi-lab](https://github.com/osisdie/ulanzi-lab), a hardware key-deck dashboard (5 × 3 keys) that shows the same HITL and usage
   signals from the same hooks. The two run side by side (independent hooks, separate state; its hub listens on
   `127.0.0.1:39300`). The board never calls it.
 
