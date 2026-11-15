@@ -75,7 +75,7 @@ def episodes(prev, conds, now):
             continue                                  # never opened: forget it
         if e["clear"] >= CLOSE_AFTER:
             resolved.append({"id": jid, "rule": e.get("rule"), "since": e.get("since"), "resolved_at": now,
-                             "sessions": e.get("sessions") or [],
+                             "sessions": e.get("sessions") or [], "signals": e.get("signals") or {},
                              "lost_min": (now - int(e.get("since") or now)) * max(1, len(e.get("sessions") or [])) // 60000})
             continue
         out[jid] = e
@@ -172,11 +172,13 @@ def load_state(home):
     return {"jams": s.get("jams") if isinstance(s.get("jams"), dict) else {},
             "sent": s.get("sent") if isinstance(s.get("sent"), dict) else {},
             "batches": s.get("batches") if isinstance(s.get("batches"), dict) else {},
-            "resolved": s.get("resolved") if isinstance(s.get("resolved"), list) else []}
+            "resolved": s.get("resolved") if isinstance(s.get("resolved"), list) else [],
+            "lesson_on": s.get("lesson_on") if isinstance(s.get("lesson_on"), list) else []}
 
 
 def advance(doc, state, st, valid, now, quiet=False, paused=False, live=None):
-    """Fold the delivery and jam state into a fresh decision (in place); returns the new state."""
+    """Fold the delivery and jam state into a fresh decision (in place); returns (the new state,
+    the jam episodes resolved now)."""
     advs = doc["advisories"]
     ids = {a["id"] for a in advs}
     sent = {k: v for k, v in state["sent"].items() if k in ids and isinstance(v, dict)}
@@ -187,8 +189,8 @@ def advance(doc, state, st, valid, now, quiet=False, paused=False, live=None):
     conds = doc.pop("conditions", []) + j8(advs, sent, now)
     jams, opened, resolved = episodes(state["jams"], conds, now)
     doc["jams"] = opened
-    return {"jams": jams, "sent": sent, "batches": batches,
-            "resolved": (state["resolved"] + resolved)[-KEEP_RESOLVED:]}
+    return {"jams": jams, "sent": sent, "batches": batches, "lesson_on": state.get("lesson_on") or [],
+            "resolved": (state["resolved"] + resolved)[-KEEP_RESOLVED:]}, resolved
 
 
 def paused(home):

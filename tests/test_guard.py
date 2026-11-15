@@ -691,7 +691,7 @@ class EndToEnd(unittest.TestCase):
             "/", "/index.html", "/api/state", "/api/events", "/api/me",
             "/api/messages", "/api/away", "/api/notify-prefs", "/api/presence", "/api/alerts/ack", "/api/rc",
             "/api/decisions/([^/]+)/answer", "/api/decisions/([^/]+)/resolve", "/api/messages/([^/]+)/release",
-            "/api/sessions/([^/]+)/action"})
+            "/api/sessions/([^/]+)/action", "/api/lessons", "/api/lessons/([^/]+)"})
         self.assertIn("if path in STATIC:", get_src)
         self.assertNotIn("os.environ", get_src + post_src)
         self.assertNotIn("open(", get_src + post_src)

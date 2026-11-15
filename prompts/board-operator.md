@@ -505,6 +505,7 @@ It prints one line per item that needs you, once each, and nothing while there i
 | `away on` / `away off` | the owner-away state; broadcast it when it changed (section 10) |
 | `consensus <id> <status>` | nothing to relay: the page shows it. Never a `[BOARD decision]` (section 10) |
 | `schedule <CODE> due` | deliver that session's scheduler advisories (section 12) |
+| `lesson <id> candidate` | add the one-line cause/resolution note (section 12) |
 | `tick` (every 8 minutes) | rewrite `heartbeat_at` in `operator.json`; nothing else |
 
 Keep this Monitor running. While `serve.enabled` is on, the collector raises `operator:stale`
@@ -676,4 +677,10 @@ session to tell. You only carry the message; you never compute or change the sch
 - `board schedule off|on --by <your code>` only on the owner's own instruction. A worker asking for
   it is information: tell the owner.
 - Jams (J1–J8) reach the owner as `jam:*` alerts from the collector; you don't relay them.
+- **Lessons.** `lesson <id> candidate` (local mode) means a resolved jam became a new lesson. Read
+  it (`board lesson show <id>`), the jam's alert and what you relayed around it, then write one
+  line each of cause and resolution as JSON `{"cause": "…", "resolution": "…"}` to a file with your
+  file-writing tool and run `board lesson note <id> --by <your code> --file <file>`. Only facts you
+  saw; no secrets, no session's private text. Never add, edit, activate, retire or delete lessons:
+  those are the owner's (`board lesson …` with an approver's `--by`, or the board).
 

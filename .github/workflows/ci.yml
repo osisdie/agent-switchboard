@@ -75,3 +75,5 @@ jobs:
         run: python3 tests/test_scheduler.py -v
       - name: scheduler advisories and jams tests
         run: python3 tests/test_advisories.py -v
+      - name: lessons tests
+        run: python3 tests/test_lessons.py -v
