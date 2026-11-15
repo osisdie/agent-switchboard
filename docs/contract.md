@@ -8,7 +8,8 @@ This repo is generic. Do not write any machine-, company-, product- or person-sp
 $BOARD_HOME/
   state/<session_id>.json   # written by hooks/board-hook.sh, one per Claude Code session
   events.jsonl              # append-only audit log (hook events, presses, relays)
-  decisions/<id>.json       # written by `board ask` (kind=question) and by the hook (kind=permission)
+  decisions/<id>.json       # written by `board ask` (kind=question) and by the hook (kind=permission,
+                            # or kind=question source=pane for an AskUserQuestion picker)
   outbox/                   # reserved
   snapshot.json             # written by bin/board-collect (merged view, see below)
   alerts.json               # board-notify alert state {key: {level, first_at, last_at, acked_at}}; dedupe/repeat per
@@ -45,7 +46,7 @@ Map hook events to states like this:
 | `SessionEnd` | offline |
 | `SessionStart` | rest |
 
-`pending` is cleared on the next `PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit` or `Stop`. The hook writes the state file atomically (write to a temp file, then `mv`). It never blocks Claude, prints nothing to stdout and always exits 0. It does not record prompt text. The only input it captures is a ≤200-char summary of the pending tool's input. Token-like values (bearer tokens, Slack/GitHub/AWS keys, `password=`/`token=`/`secret=`/`api_key=` values, long base64/hex runs) are replaced by `[REDACTED]` before storing. `summary_truncated`, `summary_len` and `summary_sha256` describe the full input string. When a `PermissionRequest` carries no `tool_use_id` and more than one in-flight tool use could match it, the hook does not guess: `pending.ambiguous` is `true` and no permission decision is created. `$BOARD_HOME` is mode 0700 and its files 0600 (umask 077 in every writer).
+`pending` is cleared on the next `PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit` or `Stop`. The hook writes the state file atomically (write to a temp file, then `mv`). It never blocks Claude, prints nothing to stdout and always exits 0. It does not record prompt text. The only input it captures is a ≤200-char summary of the pending tool's input, and for `AskUserQuestion` its questions and options (redacted and clipped, see Pane questions). Token-like values (bearer tokens, Slack/GitHub/AWS keys, `password=`/`token=`/`secret=`/`api_key=` values, long base64/hex runs) are replaced by `[REDACTED]` before storing. `summary_truncated`, `summary_len` and `summary_sha256` describe the full input string. When a `PermissionRequest` carries no `tool_use_id` and more than one in-flight tool use could match it, the hook does not guess: `pending.ambiguous` is `true` and no permission decision is created. `$BOARD_HOME` is mode 0700 and its files 0600 (umask 077 in every writer).
 
 ### snapshot.json (collector output)
 ```json
@@ -113,6 +114,36 @@ Map hook events to states like this:
   "created_at": 0 }
 ```
 
+**Pane questions** (`kind: "question"`, `source: "pane"`): the hook's record of an
+`AskUserQuestion` picker. Claude Code sends `tool_input: {questions: [{question, header,
+multiSelect, options: [{label, description}]}]}` on `PreToolUse` (with `tool_use_id`) and again on
+`PermissionRequest` (without it). The hook treats that `PreToolUse` as the prompt (state
+`needs-you`, `pending` set) and creates one decision per `tool_use_id`:
+
+```json
+{ "id": "d-...", "kind": "question", "source": "pane", "from": null,
+  "question": "first question", "options": ["label", "..."],
+  "questions": [{ "question": "...", "header": "...", "multiSelect": false,
+                  "options": [{ "label": "...", "description": "..." }] }],
+  "questions_clipped": false, "pressable": true,
+  "tool_use_id": "toolu_...", "tool_name": "AskUserQuestion", "summary": "first question",
+  "summary_sha256": "...", "session_id": "...", "tmux_pane": "%3", "status": "pending", ... }
+```
+
+- Text is redacted like a summary, control characters become spaces, and fields are clipped:
+  question 300, header 40, label 80, description 160 characters (at most 6 questions and 10
+  options each). `questions_clipped` is true when a question, a label or a count was cut.
+- `options` is the label list of a single question (empty for several). `from` is filled with the
+  session code by the collector, which also marks the decision `stale` when the session no longer
+  shows that `tool_use_id` pending (the human answered in the pane, `PostToolUse`, `Stop`).
+- `pressable` = exactly one question, not `multiSelect`, nothing clipped, 1–8 options. Otherwise
+  the card is read-only ("answer in the session") and board-serve refuses answers (409
+  `answer_in_session`).
+- `board answer` adds `answer_index` (1-based option number when the answer equals a label, exact
+  or a unique case-insensitive match; else `null` = free text) and `relay`: `"press"` when
+  `pressable` and the answer is an option or one line of ≤200 printable characters, else
+  `"operator"` (sent as `[BOARD decision <id>] <answer> (by owner on board)`).
+
 ### Permission decisions: who may press
 
 - `board press` sends keys only after `board answer <id> allow|deny --by <id>` recorded an
@@ -125,6 +156,22 @@ Map hook events to states like this:
   the board. The page must **not offer one-click allow** for such a card (show "answer in the
   session's pane" instead); `board press` refuses unless `--allow-truncated` is passed by a human
   who read the full input in the pane.
+
+### Pane questions: who may press
+
+`board press <CODE> answer --expect <tool_use_id>` answers a pressable pane question:
+
+- exit 4 (nothing sent) unless an approver answered it, `relay` is `"press"` and `answer_index`
+  matches the answer again;
+- exit 3 (nothing sent, `stale`) unless the state still shows that `tool_use_id` and
+  `summary_sha256` pending in that pane, the last `press.lines` lines match `press.question_regex`
+  (default `Enter to select.*navigate`, the picker footer), and the start of the question (≥ 8
+  characters, whitespace ignored) or every option label in order is visible; the state is read
+  again right before any key.
+- Keys: an option sends its number (`1`–`8`), which selects it at once in the picker (measured on
+  Claude Code's picker: digits select, they do not only move). Free text sends the number of
+  "Type something" (options + 1), checks that this row is focused (`❯ N.`), types the text with
+  `send-keys -l`, checks the text is visible, then sends `Enter`. Any failed check stops there.
 
 ## Artifact db (written by the BOARD operator session via Artifact write_db; page reads/writes)
 
@@ -198,7 +245,7 @@ $BOARD_HOME/
 | `GET /api/me` | who is asking, from the verified identity and `fleet.yaml` only (never from request headers): see "Who am I" below. Same `Host` and identity checks as `/api/state` (no or bad JWT on the tunnel → 401, a forwarded request on the local listener → 403) |
 | `GET /icon.svg`, `/favicon.png`, `/favicon.ico` (the PNG), `/apple-touch-icon.png` (+ `-precomposed`), `/icons/icon-192.png`, `/icons/icon-512.png`, `/manifest.webmanifest` | a fixed map to files under `artifact/` (nothing else there is served; the request path is never joined onto a directory), with `image/svg+xml`, `image/png` or `application/manifest+json`, `Cache-Control: private, max-age=86400` and `Content-Security-Policy: default-src 'none'`. Same Host and identity checks as every route, so through the tunnel they need Access too. The page itself gets `manifest-src 'self'` in its CSP |
 | `GET /api/events` | `text/event-stream`: `event: state` with the full state at once and after every change (1 s mtime poll; only when the state differs), `: keepalive` every 25 s |
-| `POST /api/decisions/<id>/answer` `{answer}` | `<id>` must match `^d-[0-9]+-[a-z0-9]+$`. With empty `approvers` → 403 `no_approvers` (fails closed). The identity is then checked **before anything is written**, with the rule of `board answer` (`approvers`; for a production decision, gate or stage, `release_managers`, falling back to `approvers`): not allowed → 403 `not_approver`, audited, file untouched (so it can never cancel an approver's answer that waits for the relay). Otherwise `board answer <id> <answer> --by <identity>` (argv, no shell; an answer such as `--help` is recorded literally) → 200 `{status: "answered"}`. For `kind: "permission"` (`answer` = `allow`\|`deny`; `allow` with `summary_truncated` → 409 `review_in_session`), it then runs `board press <from> <answer> --expect <tool_use_id>` → 200 `{status: "relayed"}`; exit 3 → 409 `stale`; exit 4 → 403 `press_refused`. A decision already `relayed`/`stale`/`timeout` → 409 `gone`. |
+| `POST /api/decisions/<id>/answer` `{answer}` | `<id>` must match `^d-[0-9]+-[a-z0-9]+$`. With empty `approvers` → 403 `no_approvers` (fails closed). The identity is then checked **before anything is written**, with the rule of `board answer` (`approvers`; for a production decision, gate or stage, `release_managers`, falling back to `approvers`): not allowed → 403 `not_approver`, audited, file untouched (so it can never cancel an approver's answer that waits for the relay). Otherwise `board answer <id> <answer> --by <identity>` (argv, no shell; an answer such as `--help` is recorded literally) → 200 `{status: "answered"}`. For `kind: "permission"` (`answer` = `allow`\|`deny`; `allow` with `summary_truncated` → 409 `review_in_session`), it then runs `board press <from> <answer> --expect <tool_use_id>` → 200 `{status: "relayed"}`; exit 3 → 409 `stale`; exit 4 → 403 `press_refused`. A pane question (`source: "pane"`) that is not `pressable` → 409 `answer_in_session`, untouched; otherwise, when `board answer` set `relay: "press"`, it runs `board press <from> answer --expect <tool_use_id>` with the same results, and with `relay: "operator"` it returns 200 `{status: "answered"}` for the operator to relay. A decision already `relayed`/`stale`/`timeout` → 409 `gone`. |
 | `POST /api/messages` `{to, body}` | only for `approvers` ∪ `release_managers` (else 403 `not_approver`); writes `messages/<id>.json` (`^m-[0-9]+-[a-z0-9]+$`) with `status: "new"`, `by: <identity>` → 201 `{id}` |
 | `POST /api/notify-prefs` `{op, ...}` | Notification controls. `op` is `mute` `{channel, for?\|until?, include_urgent?}`, `unmute` `{channel}`, `level` `{channel, level}` or `presence` `{reduce, level?}`. `channel` is `slack`, `desktop`, `email`, `line`, `sns`, `webhook` or `all`; `for` matches `^[1-9][0-9]{0,4}[mhd]$` (at most 30 days); `until` is `HH:MM` or an ISO time in the next 30 days (a string of at most 64 characters); `include_urgent` and `reduce` are booleans; `level` is `info\|warn\|high\|urgent\|default` (`presence`: `warn\|high\|urgent`). Anything else → 400 `bad_op` / `bad_channel` / `bad_duration` / `bad_level` / `bad_body`, nothing run. Empty `approvers` → 403 `no_approvers`; identity not in `approvers` → 403 `not_approver`, audited. Otherwise `board mute\|unmute\|notify-level\|notify-presence … --by board:<identity>` (argv, no shell) → 200 `{status: "ok", notify}` (the new `notify` state). Failure → 500 `prefs_failed`. |
 | `POST /api/presence` `{visible, idle_ms?}` | The page's presence heartbeat. `visible` boolean; `idle_ms` integer ms since the viewer last clicked, tapped, scrolled or typed, at most 86400000 (a day), or null (else 400 `bad_body`). The server records `interaction_at = <server now> − max(0, idle_ms)`, so a page clock that runs fast changes nothing. Any time the page sends (`interaction_at` in the body) is ignored: without `idle_ms` the last interaction is unknown, so the viewer does not count as watching. Same approver rule as `/api/notify-prefs`. Recorded in `presence.json` under the listener's verified identity, never one from the body → 200 `{status: "ok", visible}`. Audited only when the identity's `visible` changes. |
