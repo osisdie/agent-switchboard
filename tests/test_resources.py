@@ -200,6 +200,10 @@ class Processes(Base):
         by = {s["code"]: [t["name"] for t in s["teammates"]] for s in doc["sessions"]}
         self.assertEqual(by["API"], ["w"])
         self.assertIn("child", by["CP"])
+        # A teammate that also shows up as a registry session is listed once, as a teammate.
+        self.sessions.append({"code": "CP/w", "pid": 220, "session_id": "sid-w", "aliases": ["CP/w"]})
+        doc = self.run_sample(T0 + 15000)
+        self.assertEqual([s["code"] for s in doc["sessions"]], ["CP", "API"])
 
     def test_class_override(self):
         self.tree()

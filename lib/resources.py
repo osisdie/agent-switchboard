@@ -623,6 +623,7 @@ def sample(rcfg, home, sessions, state, now):
             teammates[p["pid"]] = (code, tm)
     classes = compile_classes(rcfg.get("process_classes"))
     tm_pids = set(teammates)
+    live = [s for s in live if s["pid"] not in tm_pids]  # a teammate that also registered: count it once
 
     def child_row(pid, via=None):
         p = procs[pid]
