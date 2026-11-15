@@ -69,3 +69,5 @@ jobs:
         run: python3 tests/test_cards.py -v
       - name: remote control tests
         run: python3 tests/test_rc.py -v
+      - name: pomodoro tests
+        run: python3 tests/test_pomodoro.py -v
