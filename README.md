@@ -450,8 +450,9 @@ board rc status                  # wanted / actual / pending per session
 board rc clear API               # forget the choice: fleet.yaml decides again (default on)
 ```
 
-On the board, every running session card shows an RC chip: **RC on**, **RC off**, or a dashed
-**RC → on** while the change waits for the session to be idle. Approvers get Turn on / Turn off in
+On the board, every running session card shows whether Remote Control is on: the card's "Open in
+Remote Control" link when it is, an **RC off** chip when it is not, or a dashed **RC → on** while
+the change waits for the session to be idle. Approvers get Turn on / Turn off in
 the card's details, and "RC: all on / all off" (with a confirm step) in the Notifications dialog.
 
 How it reaches a running session: Claude Code has no switch for a running session, so the board

@@ -1323,8 +1323,10 @@ through fleet-up. The session code `all` is reserved (`fleet.yaml` entries named
 skipped). board-serve checks who is asking before it looks at the request body, so a refused
 probe is audited whatever it sent.
 
-**The page.** Each running session card shows an RC chip: `RC on`, `RC off`, `RC unavailable`
-(DO_NOT_TRACK), or a dashed `RC → on|off` when a choice waits for the session to be idle. In the
+**The page.** Each running session card shows the Remote Control state: the card's "Open in Remote
+Control" link when it is on (an `RC on` chip only when there is no link), an `RC off` or `RC
+unavailable` (DO_NOT_TRACK) chip, or a dashed `RC → on|off` when a choice waits for the session to
+be idle. The chip shrinks before it pushes the time under the link. In the
 card's details, approvers get Turn on / Turn off and Compact (with a confirm step). There is also
 a note: "Queued: runs when the session is idle" or "Last compacted …". The Notifications dialog
 has "RC: all on / all off" with a confirm step. Everyone else sees the page read-only, and the

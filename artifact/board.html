@@ -330,7 +330,7 @@ dialog.notif { width: min(720px, calc(100vw - 24px)); }
 .schip.needs { background: var(--lamp-soft); color: var(--lamp-ink); }
 .schip.working { background: var(--work-soft); color: var(--work); }
 .schip.done { background: var(--ok-soft); color: var(--ok); }
-.rcchip { flex: none; font-size: 11px; font-weight: 600; padding: 0 6px; border: 1px solid var(--rule); border-radius: 9px; color: var(--muted); white-space: nowrap; }
+.rcchip { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 11px; font-weight: 600; padding: 0 6px; border: 1px solid var(--rule); border-radius: 9px; color: var(--muted); white-space: nowrap; }
 .rcchip.on { border-color: var(--cord); color: var(--cord); }
 .rcchip.pending { border-style: dashed; border-color: var(--lamp); color: var(--lamp-ink); }
 .rc-ctl, .act-ctl { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
@@ -2082,6 +2082,8 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       const why = tr('RC unavailable: DO_NOT_TRACK is set');
       return h('span', { class: 'rcchip off', title: why, 'aria-label': why, text: tr('RC unavailable') });
     }
+    // On, with its "Open in Remote Control" link on the card: the link says it already.
+    if (v.on && !v.pending && safeUrl(s.remote_url)) return null;
     const label = v.pending ? tr(v.want === 'on' ? 'Remote Control turns on when the session is idle' : 'Remote Control turns off when the session is idle')
       : tr(v.on ? 'Remote Control is on' : 'Remote Control is off');
     return h('span', { class: 'rcchip ' + (v.pending ? 'pending' : v.on ? 'on' : 'off'), title: label, 'aria-label': label,

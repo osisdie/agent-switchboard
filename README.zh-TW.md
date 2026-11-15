@@ -419,8 +419,8 @@ board rc status                  # 每個 session 的期望值／實際值／待
 board rc clear API               # 忘掉設定：回到 fleet.yaml（預設開啟）
 ```
 
-看板上每張執行中的 session 卡片都有 RC 標籤：**RC 開**、**RC 關**，或是在等 session 閒置才套用時
-顯示虛線的 **RC → 開**。approver 可以在卡片詳細資料裡按「開啟／關閉」，也可以在通知對話框裡用
+看板上每張執行中的 session 卡片都會顯示 Remote Control 是否開啟：開啟時卡片上有「在 Remote Control
+中開啟」連結，關閉時顯示 **RC 關** 標籤，在等 session 閒置才套用時則顯示虛線的 **RC → 開**。approver 可以在卡片詳細資料裡按「開啟／關閉」，也可以在通知對話框裡用
 「RC：全部開啟／全部關閉」（需要再確認一次）。
 
 怎麼套用到執行中的 session：Claude Code 沒有給執行中 session 用的開關，所以看板會像按權限提示
