@@ -225,12 +225,12 @@ def main():
             k = pg.evaluate(KEY_JS)
             check("key in Chinese", k and k["text"].startswith("🍅 今日") and "專注 9 小時 28 分" in k["text"] and k["label"].startswith("AI 團隊：19 🍅"), k)
             r = pg.evaluate(ROWS_JS)
-            check("card rows in Chinese", "今日 🍅×5" in r["DOCS"]["text"] and "隊友 +5 🍅" in r["DOCS"]["text"] and r["API"]["label"] == "API · 番茄鐘 9:00 / 25:00 (暫停中) · 今日 3 🍅", (r["DOCS"], r["API"]["label"]))
+            check("card rows in Chinese", "今日 🍅×5" in r["DOCS"]["text"] and "teammate +5 🍅" in r["DOCS"]["text"] and r["API"]["label"] == "API · 番茄鐘 9:00 / 25:00 (暫停中) · 今日 3 🍅", (r["DOCS"], r["API"]["label"]))
             pg.click("#deck-grid .dkey.pomo")
             pg.wait_for_timeout(300)
             pn = pg.evaluate(PANEL_JS)
             check("panel in Chinese", "番茄鐘" in pn["title"] and "今日各 session" in pn["text"].lower() and "最近 14 天" in pn["text"]
-                  and "AI 團隊：19 🍅" in pn["text"] and "隊友 5 🍅" in pn["text"] and "每個 session 和每位隊友都有自己的番茄鐘" in pn["text"], pn["text"][:300])
+                  and "AI 團隊：19 🍅" in pn["text"] and "teammate 5 🍅" in pn["text"] and "每個 session 和每個 teammate 都有自己的番茄鐘" in pn["text"], pn["text"][:300])
             left = [w for w in ("sessions today", "last 14 days", "focus", "today is", "a pomodoro", "close") if w in pn["text"].lower()]
             check("  no English left in the panel", not left, left)
             pg.close()

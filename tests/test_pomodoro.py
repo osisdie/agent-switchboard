@@ -555,6 +555,25 @@ class Teammates(unittest.TestCase):
         bad = {"at": T0, "sessions": [{"code": "bad code!", "teammates": [{"name": "a", "idle_s": 0}]}]}
         self.assertEqual(pomodoro.teammate_states(bad, T0, ACC), {})
 
+    def test_pane_spinner_counts_at_zero_cpu(self):
+        # a long model turn: 0% CPU, idle_s 300 by the sampler, but the pane shows the spinner
+        res = res_doc(T0, {"dev": 300, "rev": 300})
+        cards_doc = {"sessions": {"API": {"teammates": [{"name": "dev", "busy": True, "idle": False},
+                                                        {"name": "rev", "busy": False, "idle": False}]}}}
+        busy = pomodoro.busy_from_cards(cards_doc)
+        self.assertEqual(busy, {("API", "dev")})
+        self.assertEqual(pomodoro.teammate_states(res, T0, ACC, busy), {"API/dev": "working", "API/rev": "rest"})
+        self.assertEqual(pomodoro.busy_from_cards(None), set())
+        write_res(res)
+        t = T0
+        pomodoro.run({"pomodoro": {"timezone": "UTC"}}, HOME, [{"code": "API", "state": "rest"}], t, busy=busy)
+        while t < T0 + 25 * MIN:
+            t += 20 * SEC
+            write_res(res_doc(t, {"dev": 300, "rev": 300}))
+            doc, _ = pomodoro.run({"pomodoro": {"timezone": "UTC"}}, HOME, [{"code": "API", "state": "rest"}], t, busy=busy)
+        self.assertEqual(done_on(doc, DAY, "API/dev"), 1)
+        self.assertEqual(done_on(doc, DAY, "API/rev"), 0)
+
     def feed(self, minutes, lead, tms, start, tick=3 * SEC, cfg=None):
         """Run the collector with the lead's state and its teammates' idle_s, resources.json fresh."""
         cfg = cfg or {"pomodoro": {"timezone": "UTC"}}

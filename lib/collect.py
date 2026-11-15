@@ -730,13 +730,15 @@ def main(argv):
             "limit": limit.active(), "owner_away": away.away_record(home),
             "consensus": away.consensus_items(home, now),
             "resources": resources_digest(cfg, home, sessions, verbose)}
+    cdoc = None
     try:  # card extras (lib/cards.py): cards.json, read by board-serve only, never in the snapshot
-        cards.step(cfg, home, sessions, now, panes, clean_text, clean_title, hosts)
+        cdoc = cards.step(cfg, home, sessions, now, panes, clean_text, clean_title, hosts)
     except Exception as exc:  # noqa: BLE001 - never breaks the collector
         if verbose:
             print("cards: %s: %s" % (type(exc).__name__, exc))
     try:  # pomodoro tallies (lib/pomodoro.py): pomodoro.json, zero tokens
-        pomodoro.run(cfg, home, sessions, now, notify_ok=not ({"--no-notify", "--baseline"} & set(argv)))
+        pomodoro.run(cfg, home, sessions, now, notify_ok=not ({"--no-notify", "--baseline"} & set(argv)),
+                     busy=pomodoro.busy_from_cards(cdoc))  # the teammates' pane spinners, already read
     except Exception as exc:  # noqa: BLE001 - never breaks the collector
         if verbose:
             print("pomodoro: %s: %s" % (type(exc).__name__, exc))

@@ -1078,7 +1078,9 @@ data it already has: zero tokens, no transcript read.
 **Streams.** One per top-level session (key = its code), focused while the snapshot's `state` is
 `working`; and one per teammate (key `CODE/teammate-name`, the name reduced to `[A-Za-z0-9_.-]`, at
 most 64 characters), focused while `resources.json` reports it active: `idle` is not true and
-`idle_s` is known and below `pomodoro.teammate_idle_s` (default 60), so `working`, otherwise `rest`.
+`idle_s` is known and below `pomodoro.teammate_idle_s` (default 60), **or** its pane title shows the
+working spinner (`busy` on the card, `lib/cards.py`; true through a long model turn at ~0% CPU), so
+`working`, otherwise `rest`.
 A lead's stream counts only its own state, never its teammates' work. When `resources.json` is
 missing, disabled or older than 2 minutes plus two `resources.interval`s, and when a teammate is no
 longer listed, its stream is `gone`.

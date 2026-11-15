@@ -565,7 +565,7 @@ pomodoro. Here every Claude session, teammates included, presses its own while i
 Today adds them all up.
 
 - **One pomodoro = 25 minutes of focus.** A session focuses while it is working; a teammate while
-  the resources sampler sees it active (idle under a minute). A lead counts only its own work.
+  the resources sampler sees it active (idle under a minute) or its pane shows the working spinner. A lead counts only its own work.
   Each 25 minutes adds one to that stream's tally and the rest carries over, so 50 minutes of work
   counts as 2.
 - **Breaks don't reset it** (`mode: accumulate`, the default): agents pause between prompts all the

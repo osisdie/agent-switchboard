@@ -3,8 +3,9 @@
 
 Every focused stream runs its own pomodoro. A stream is a top-level session (key = its code,
 focused while its state is `working`) or one of its teammates (key "CODE/teammate-name", focused
-while resources.json reports it active: not idle and idle_s below pomodoro.teammate_idle_s, default
-60). A lead's stream counts only its own state, never its teammates' work. The collector feeds
+while either signal says it works: resources.json reports it active (not idle, idle_s below
+pomodoro.teammate_idle_s, default 60), or its pane title shows the working spinner (cards.json
+`busy`, which stays true through a long model turn at ~0% CPU)). A lead's stream counts only its own state, never its teammates' work. The collector feeds
 every run's states into step(); nothing here reads a transcript or calls a model (zero tokens).
 
 Timer rules (per stream; FOCUS = pomodoro.focus_minutes, default 25; GRACE =
@@ -123,11 +124,24 @@ def safe_name(name):
     return n if NAME_RE.match(n) else ""
 
 
-def teammate_states(res, now, st):
+def busy_from_cards(doc):
+    """{(code, safe name)} of the teammates whose pane shows the working spinner, from the document
+    cards.step just built (lib/cards.py teammates(): `busy` true). No extra process or read."""
+    out = set()
+    for code, c in ((doc or {}).get("sessions") or {}).items() if isinstance(doc, dict) else ():
+        for t in (c.get("teammates") or []) if isinstance(c, dict) else ():
+            if isinstance(t, dict) and t.get("busy") is True and safe_name(t.get("name")):
+                out.add((code, safe_name(t.get("name"))))
+    return out
+
+
+def teammate_states(res, now, st, spinning=None):
     """{"CODE/name": "working" | "rest"} from resources.json, or None when it has no usable teammate
     data (missing, disabled, or older than RES_STALE_MS plus two sample intervals): every teammate
-    stream then pauses. Focused = not idle, and idle_s known and below teammate_idle_ms. Only
-    codes, names and states leave here."""
+    stream then pauses. Focused = either signal: not idle with idle_s known and below
+    teammate_idle_ms (CPU), or (code, name) in `spinning` (the pane's working spinner, see
+    busy_from_cards: a long model turn idles the CPU). Only codes, names and states leave here."""
+    spinning = spinning or set()
     if not isinstance(res, dict) or res.get("enabled") is False or not isinstance(res.get("sessions"), list):
         return None
     at = res.get("at")
@@ -144,7 +158,7 @@ def teammate_states(res, now, st):
                 continue
             idle_s = t.get("idle_s")
             busy = (t.get("idle") is not True and isinstance(idle_s, (int, float)) and not isinstance(idle_s, bool)
-                    and idle_s * 1000 < st.get("teammate_idle_ms", 60000))
+                    and idle_s * 1000 < st.get("teammate_idle_ms", 60000)) or (code, name) in spinning
             key = code + "/" + name
             if busy or key not in out:    # two teammates with one name: one stream, busy if either is
                 out[key] = FOCUS if busy else "rest"
@@ -363,10 +377,11 @@ def _coarse(doc):
             json.dumps(doc.get("notified"), sort_keys=True), json.dumps(doc.get("settings"), sort_keys=True))
 
 
-def run(cfg, home, rows, now, notify_ok=True, send=None, res=False):
+def run(cfg, home, rows, now, notify_ok=True, send=None, res=False, busy=None):
     """The collector's step: read pomodoro.json, advance it with this run's session states and the
-    teammates' activity in resources.json (`res`; False = read it from `home`), write it when
-    needed, notify a milestone. Returns (doc, events)."""
+    teammates' activity in resources.json (`res`; False = read it from `home`) and their pane
+    spinners (`busy`, see busy_from_cards), write it when needed, notify a milestone.
+    Returns (doc, events)."""
     st = settings(cfg)
     old = read_doc(home)
     if not st["enabled"]:
@@ -384,7 +399,7 @@ def run(cfg, home, rows, now, notify_ok=True, send=None, res=False):
                 res = json.load(fh)
         except (OSError, ValueError):
             res = None
-    states.update(teammate_states(res, now, st) or {})   # no data: every teammate stream is gone (paused)
+    states.update(teammate_states(res, now, st, busy) or {})   # no data: every teammate stream is gone (paused)
     doc, events = step(old, states, now, st)
     total, reached = milestone(doc, now, st)
     doc["settings"] = {"focus_ms": st["focus_ms"], "grace_ms": st["grace_ms"], "tz": st["tz"], "mode": st["mode"]}
