@@ -981,20 +981,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
         """The board page's heartbeat: this approver has the board open (visible or not). The
         identity is the listener's verified one; only visible and how long ago the viewer last
         interacted come from the page. idle_ms (a duration) is turned into a time with the
-        server's clock, so a page whose clock runs fast can't keep "watching" alive. The older
-        interaction_at (the page's clock) is accepted only up to 5 s ahead, else it is unknown.
-        Audited when visibility changes, not on every heartbeat."""
-        visible, seen, idle = body.get("visible"), body.get("interaction_at"), body.get("idle_ms")
+        server's clock, so a page whose clock runs fast can't keep "watching" alive. A time sent
+        by the page (interaction_at) is ignored: without idle_ms the interaction is unknown, so
+        the viewer does not count as watching. Audited when visibility changes, not on every
+        heartbeat."""
+        visible, idle = body.get("visible"), body.get("idle_ms")
         if not isinstance(visible, bool):
             raise Refused(400, "bad_body", "visible must be true or false")
         if idle is not None and (not isinstance(idle, int) or isinstance(idle, bool)):
             raise Refused(400, "bad_body", "idle_ms must be milliseconds or null")
-        if seen is not None and (not isinstance(seen, int) or isinstance(seen, bool) or seen < 0):
-            raise Refused(400, "bad_body", "interaction_at must be epoch ms or null")
         by = self.approver(ident, via, "presence")
         now = now_ms()
-        if idle is not None:
-            seen = now - max(0, idle)
+        seen = now - max(0, idle) if idle is not None else None
         changed = prefs.record_presence(self.server.home, by, visible, seen, via, now)
         if changed:
             self.audit(ident, via, "presence", visible=visible, result="ok")

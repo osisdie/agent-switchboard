@@ -414,8 +414,8 @@ def set_presence(home, reduce, level, by, now=None):
 def record_presence(home, ident, visible, interaction_at, via, now=None):
     """A heartbeat from the board page of IDENTITY (board-serve's verified identity). Returns
     True when the visible state changed (worth an audit line), False for a routine heartbeat.
-    interaction_at is in the server's clock (board-serve derives it from the page's idle_ms). A
-    time more than FUTURE_SKEW_MS ahead is unknown (None: not watching), a smaller lead is now."""
+    interaction_at is in the server's clock (board-serve derives it from the page's idle_ms).
+    Internal guard: a time more than FUTURE_SKEW_MS ahead is unknown (None: not watching)."""
     now = now if now is not None else now_ms()
     seen = interaction_at if isinstance(interaction_at, int) and not isinstance(interaction_at, bool) else None
     if seen is not None:

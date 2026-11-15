@@ -283,23 +283,25 @@ eq "presence on at urgent" "$(post /api/notify-prefs '{"op":"presence","reduce":
 eq "  reply" "$(body '"\(.notify.presence.reduce)/\(.notify.presence.min_level)"')" "true/urgent"
 echo "presence:"
 PRF="$BOARD_HOME/presence.json"
-for b in '{}' '{"visible":"yes"}' '{"visible":true,"interaction_at":"now"}' '{"visible":true,"interaction_at":-5}' '{"visible":true,"interaction_at":true}' \
+for b in '{}' '{"visible":"yes"}' \
          '{"visible":true,"idle_ms":"1s"}' '{"visible":true,"idle_ms":1.5}' '{"visible":true,"idle_ms":false}'; do
   eq "bad heartbeat refused: $b" "$(post /api/presence "$b")" "400"
 done
 eq "presence without X-Board refused" "$(req POST /api/presence -H 'Content-Type: application/json' -H "$ORIGIN" --data-binary '{"visible":true}')" "403"
-eq "heartbeat: visible" "$(post /api/presence "{\"visible\":true,\"interaction_at\":$(date +%s)000}")" "200"
+eq "heartbeat: visible" "$(post /api/presence '{"visible":true,"idle_ms":0}')" "200"
 eq "  recorded under the server's identity" "$(jq -r '.local.visible|tostring' "$PRF")/$(jq -r '.local.via' "$PRF")" "true/loopback"
 eq "  presence.json 0600" "$(stat -c %a "$PRF")" "600"
 eq "  watching now (board mute status)" "$("$REPO/bin/board" mute status --json | jq -r '.presence.present | join(",")')" "local"
 n_pres() { jq -s '[.[] | select(.type=="serve" and .action=="presence")] | length' "$BOARD_HOME/events.jsonl"; }
 before="$(n_pres)"
-post /api/presence '{"visible":true,"interaction_at":null}' >/dev/null
+post /api/presence '{"visible":true,"idle_ms":500}' >/dev/null
 eq "  a routine heartbeat is not audited" "$(n_pres)" "$before"
 watching() { "$REPO/bin/board" mute status --json | jq -r '.presence.present | join(",")'; }
-eq "  a far-future interaction is unknown" "$(post /api/presence '{"visible":true,"interaction_at":99999999999999}'; jq -r '.local.interaction_at' "$PRF")" "200null"
-eq "  page clock 1 h ahead (interaction_at): not watching" "$(post /api/presence "{\"visible\":true,\"interaction_at\":$(( $(date +%s) + 3600 ))000}" >/dev/null; watching)" ""
-eq "  interaction_at up to 5 s ahead is now" "$(post /api/presence "{\"visible\":true,\"interaction_at\":$(( $(date +%s) + 3 ))000}" >/dev/null; watching)" "local"
+# A time from the page is never trusted (its clock may run fast): interaction_at is ignored.
+for at in "$(date +%s)000" "$(( $(date +%s) + 3600 ))000" "$(( $(date +%s) - 4200 + 3600 ))000" '"now"' 'true'; do
+  eq "  interaction_at in the body is ignored ($at): unknown, not watching" \
+    "$(post /api/presence "{\"visible\":true,\"interaction_at\":$at}"; jq -r '.local.interaction_at' "$PRF"; watching)" "200null"
+done
 eq "  idle_ms 1 s: watching" "$(post /api/presence '{"visible":true,"idle_ms":1000}' >/dev/null; watching)" "local"
 t0="$(date +%s%3N)"; post /api/presence '{"visible":true,"idle_ms":60000}' >/dev/null
 eq "  idle_ms is applied to the server's clock" "$(jq -r --argjson t "$t0" '(.local.interaction_at - ($t - 60000)) | (. >= 0 and . < 5000)' "$PRF")" "true"
