@@ -411,7 +411,9 @@ st="$(slack_text)"
 has "id failing the strict pattern -> root link" "$st" "<$BL/>"
 hasnt "odd id never in the link" "$st" "?d="
 
-for bad_url in http://board.example.com https://user:pw@board.example.com "$BL/?x=1" "$BL/#top" "javascript:alert(1)" "$BL/a b"; do
+for bad_url in http://board.example.com https://user:pw@board.example.com "$BL/?x=1" "$BL/#top" "javascript:alert(1)" "$BL/a b" \
+    https://-h.example.com https://h-.example.com https://h..example.com https://board.example.com. \
+    https://board.example.com:0 "https://bo_ard.example.com"; do
   export BOARD_PUBLIC_URL="$bad_url"
   reset_calls
   "$N" send --level info --key "decision:$DID-x" --title "bad base" >/dev/null
@@ -423,6 +425,26 @@ has "board-url-check says why" "$out" "env BOARD_PUBLIC_URL rejected"
 export BOARD_PUBLIC_URL=http://127.0.0.1:39410
 eq "http allowed for 127.0.0.1" "$(python3 "$REPO/lib/fleet.py" board-link "$DID")" "http://127.0.0.1:39410/?d=$DID"
 unset BOARD_PUBLIC_URL
+out="$(python3 - "$REPO/lib" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import fleet
+B = "https://board.example.com"
+for i in ("d-1-ab", "d-1-ab\n", "c-2-x\n", "m-3-y\n", "\nd-1-ab", "d-1-AB"):
+    print(repr(i), fleet.board_link(B, i))
+for u in ("https://a-b.example.com/x/", "https://board.example.com:8443", "https://xn--bcher-kva.example"):
+    print(u, fleet.check_board_url(u)[0])
+PY
+)"
+has "id ok -> ?d=" "$out" "'d-1-ab' https://board.example.com/?d=d-1-ab"
+has "id + trailing newline -> root, not ?d=" "$out" "'d-1-ab\\n' https://board.example.com/"$'\n'
+has "consensus id + newline -> root" "$out" "'c-2-x\\n' https://board.example.com/"$'\n'
+hasnt "no link ever carries a newline id" "$out" "=d-1-ab\\n"
+has "leading newline -> root" "$out" "'\\nd-1-ab' https://board.example.com/"$'\n'
+has "upper-case id -> root" "$out" "'d-1-AB' https://board.example.com/"
+has "inner hyphen host accepted" "$out" "https://a-b.example.com/x/ https://a-b.example.com/x"
+has "explicit port kept" "$out" "https://board.example.com:8443 https://board.example.com:8443"
+has "punycode host accepted" "$out" "https://xn--bcher-kva.example https://xn--bcher-kva.example"
 eq "unset: board-link prints nothing" "$(python3 "$REPO/lib/fleet.py" board-link "$DID")" ""
 printf 'board_url: https://yaml.example.com\n' >"$BOARD_CONFIG_DIR/fleet.yaml"
 eq "fleet.yaml board_url" "$(python3 "$REPO/lib/fleet.py" board-link "$DID")" "https://yaml.example.com/?d=$DID"

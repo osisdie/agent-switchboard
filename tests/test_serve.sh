@@ -197,6 +197,7 @@ big="$(python3 -c 'import json; print(json.dumps({"to":"CP","body":"x"*20000}))'
 eq "POST over the size limit refused" "$(post /api/messages "$big")" "413"
 eq "POST non-JSON refused" "$(post /api/messages 'not json')" "400"
 eq "bad to refused" "$(post /api/messages '{"to":"../x","body":"x"}')" "400"
+eq "to with a trailing newline refused" "$(post /api/messages '{"to":"CP\n","body":"x"}')" "400"
 eq "no message written by refused POSTs" "$(find "$BOARD_HOME/messages" -maxdepth 1 -name '*.json' | wc -l | tr -d ' ')" "1"
 
 # ---------------------------------------------------------------- messages

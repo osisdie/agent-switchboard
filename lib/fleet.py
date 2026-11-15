@@ -70,14 +70,15 @@ def ensure_home():
 
 CONTROL_RE = re.compile("[\x00-\x1f\x7f-\x9f]")
 
-# Ids that can be linked to on the board (and the only ones board.html will look up).
-DEC_ID_RE = re.compile(r"^d-[0-9]+-[a-z0-9]+$")
-MSG_ID_RE = re.compile(r"^m-[0-9]+-[a-z0-9]+$")
-CONS_ID_RE = re.compile(r"^c-[0-9]+-[a-z0-9]+$")
+# Ids that can be linked to on the board (and the only ones board.html will look up). Always
+# use .fullmatch(): in Python `$` also matches before a trailing newline ("d-1-ab\n").
+DEC_ID_RE = re.compile(r"d-[0-9]+-[a-z0-9]+")
+MSG_ID_RE = re.compile(r"m-[0-9]+-[a-z0-9]+")
+CONS_ID_RE = re.compile(r"c-[0-9]+-[a-z0-9]+")
 LINK_PARAMS = (("d", DEC_ID_RE), ("m", MSG_ID_RE), ("c", CONS_ID_RE))
 LOCAL_HOSTS = ("127.0.0.1", "localhost")
-BOARD_PATH_RE = re.compile(r"^[A-Za-z0-9._~/%-]*$")
-BOARD_HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
+BOARD_PATH_RE = re.compile(r"[A-Za-z0-9._~/%-]*")
+HOST_LABEL_RE = re.compile(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?")
 
 
 def safe_text(s):
@@ -132,14 +133,18 @@ def check_board_url(raw):
     host = (p.hostname or "").lower()
     if "@" in p.netloc:
         return None, "must not contain a user name or password"
-    if not host or not BOARD_HOST_RE.match(host):
+    if not host:
         return None, "needs a host name"
+    if not all(HOST_LABEL_RE.fullmatch(label) for label in host.split(".")):
+        return None, "host name is not valid (each label: letters, digits, inner hyphens)"
+    if port == 0:
+        return None, "port 0 is not valid"
     scheme = p.scheme.lower()
     if scheme == "http" and host not in LOCAL_HOSTS:
         return None, "must use https (http only for 127.0.0.1 or localhost)"
     if scheme not in ("https", "http"):
         return None, "must use https"
-    if not BOARD_PATH_RE.match(p.path):
+    if not BOARD_PATH_RE.fullmatch(p.path):
         return None, "path has unexpected characters"
     netloc = host + (":%d" % port if port else "")
     return "%s://%s%s" % (scheme, netloc, p.path.rstrip("/")), None
@@ -174,7 +179,7 @@ def board_link(base, item_id=None):
         return None
     i = str(item_id or "")
     for param, rx in LINK_PARAMS:
-        if rx.match(i):
+        if rx.fullmatch(i):
             return "%s/?%s=%s" % (base, param, i)
     return base + "/"
 
