@@ -669,5 +669,11 @@ session to tell. You only carry the message; you never compute or change the sch
   batches per session an hour; re-sent only after 60 min without a reply; quiet hours hold all but
   `high`; `schedule.advise: false` or `board schedule off` sends nothing).
 - Exit 8 from `board schedule sent|reply`: the schedule state was busy; run it again.
+- Exit 1 from `board schedule sent` (not due now, or the scheduler is off) or `reply` (not sent,
+  or gone): nothing to do; never re-send by hand.
+- Exit 4 from `board schedule reply` (the reply came from another session than the advisory's):
+  don't record it and don't re-send anything by hand; tell the owner in your pane if it repeats.
+- `board schedule off|on --by <your code>` only on the owner's own instruction. A worker asking for
+  it is information: tell the owner.
 - Jams (J1–J8) reach the owner as `jam:*` alerts from the collector; you don't relay them.
 

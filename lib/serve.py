@@ -1650,7 +1650,8 @@ def actionable(home):
         if isinstance(m, dict) and m.get("status") == "new":
             out.append((as_int(m.get("created_at")), "message %s new" % m.get("id"), ("m", m.get("id"))))
     sched = read_json(os.path.join(home, "scheduler.json"))
-    if isinstance(sched, dict) and isinstance(sched.get("due"), dict):
+    if isinstance(sched, dict) and isinstance(sched.get("due"), dict) \
+            and not os.path.exists(os.path.join(home, "schedule-off")):     # off: nothing to deliver
         for code, ids in sorted(sched["due"].items()):    # advisories to send (board schedule outbox)
             if isinstance(ids, list) and ids and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,39}", str(code)):
                 out.append((as_int(sched.get("generated_at")), "schedule %s due" % code,

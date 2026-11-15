@@ -1045,13 +1045,16 @@ def jam_alerts(doc):
     if not isinstance(doc, dict) or not doc.get("enabled"):
         return out
     for j in doc.get("jams") or []:
-        if not isinstance(j, dict) or j.get("alert") not in ("info", "warn", "high") or not isinstance(j.get("id"), str):
+        if not isinstance(j, dict) or j.get("alert") not in ("info", "warn", "high"):
             continue
-        rule = str(j.get("rule"))
-        scope = j["id"][len("j-%s-" % rule):] if j["id"].startswith("j-%s-" % rule) else j["id"]
-        who = ", ".join(str(x) for x in j.get("sessions") or [])
-        out.append({"level": j["alert"], "key": "jam:%s:%s" % (rule, scope), "kind": "jam", "escalate": False,
-                    "repeat": False, "title": "Jam %s: %s" % (rule, j.get("text") or ""),
+        m = re.fullmatch(r"j-(J[0-9][a-z]?)-([A-Za-z0-9][A-Za-z0-9._-]{0,39})", str(j.get("id")))
+        if not m:
+            continue                       # keys, titles and subjects only ever carry plain tokens
+        who = ", ".join(x for x in j.get("sessions") or [] if isinstance(x, str)
+                        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,39}", x))
+        text = " ".join(re.sub("[\x00-\x1f\x7f-\x9f]", " ", str(j.get("text") or "")).split())[:200]
+        out.append({"level": j["alert"], "key": "jam:%s:%s" % m.groups(), "kind": "jam", "escalate": False,
+                    "repeat": False, "title": "Jam %s: %s" % (m.group(1), text),
                     "body": ("Sessions: %s." % who) if who else ""})
     return out
 

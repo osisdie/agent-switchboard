@@ -54,6 +54,12 @@ WAIT_RESET_PCT = 95
 # Advisory text never reads like an approval, a deploy order or a board decision.
 BANNED_RE = re.compile(r"approv|deploy|\[BOARD|decision", re.I)
 SAFE_NAME_RE = re.compile(r"[A-Za-z0-9._-]{1,40}")
+CODE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,39}")          # a session code that may receive advice
+OWNER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/@+-]{0,79}")      # session codes and aliases as stored
+DEC_RE = re.compile(r"d-[0-9]+-[a-z0-9]+")
+CTL_RE = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+LIMIT_GRACE_MS = 10 * 60 * 1000      # a limit episode past resets_at by this much no longer holds starts
+DEFAULT_BRANCHES = ("main", "master", "trunk", "develop", "detached", "HEAD")
 
 
 def _int(v, default, lo, hi):
@@ -106,11 +112,15 @@ def clean_task(t):
     if not isinstance(t, dict) or not isinstance(t.get("id"), str) or not taskstore.ID_RE.fullmatch(t["id"]):
         return None
     pr = t.get("pr") if isinstance(t.get("pr"), dict) else {}
-    out = {k: _s(t.get(k)) for k in ("owner", "stage", "size", "repo", "branch", "base")}
+    out = {k: _s(t.get(k)) for k in ("stage", "size")}
+    out.update({k: _ref(t.get(k), None) for k in ("repo", "branch", "base")})
+    out["owner"] = t["owner"] if isinstance(t.get("owner"), str) and OWNER_RE.fullmatch(t["owner"]) else None
     out.update({
         "id": t["id"], "status": taskstore.status_of(t) if isinstance(t.get("status"), (str, type(None))) else "active",
         "heavy": t.get("heavy") is True, "priority": _int(t.get("priority"), 1, 0, 3),
-        "gates": [{k: _s(g.get(k)) for k in ("gate", "status", "decision_id")} for g in _dicts(t.get("gates"))],
+        "gates": [{"gate": _s(g.get("gate")), "status": _s(g.get("status")),
+                   "decision_id": g["decision_id"] if isinstance(g.get("decision_id"), str)
+                   and DEC_RE.fullmatch(g["decision_id"]) else None} for g in _dicts(t.get("gates"))],
         "depends_on": [{"task": d["task"], "kind": _s(d.get("kind")) or "done"}
                        for d in _dicts(t.get("depends_on")) if isinstance(d.get("task"), str)],
         "pr": {k: _s(pr.get(k)) for k in ("state", "method", "head_sha")},
@@ -120,11 +130,11 @@ def clean_task(t):
 
 
 def clean_sessions(sessions):
-    return [{"code": s["code"], "aliases": [a for a in s.get("aliases") or [] if isinstance(a, str)]
+    return [{"code": s["code"], "aliases": [a for a in s.get("aliases") or [] if isinstance(a, str) and OWNER_RE.fullmatch(a)]
              if isinstance(s.get("aliases"), list) else [], "state": _s(s.get("state")) or "offline",
              "updated_at": int(_num(s.get("updated_at"))), "repo": _ref(s.get("repo"), None),
              "branch": _ref(s.get("branch"), None)}
-            for s in _dicts(sessions) if isinstance(s.get("code"), str)]
+            for s in _dicts(sessions) if isinstance(s.get("code"), str) and OWNER_RE.fullmatch(s["code"])]
 
 
 def clean_res(res):
@@ -187,8 +197,9 @@ def usage_mode(ctx, st, now):
     fresh = -RES_SKEW_MS <= now - _num(u.get("updated_at"), -10 ** 15) <= USAGE_STALE_MS
     p5, r5 = _num(win["five_hour"].get("pct"), None), _num(win["five_hour"].get("resets_at"), None)
     pw, rw = _num(win["seven_day"].get("pct"), None), _num(win["seven_day"].get("resets_at"), None)
-    if lim is not None:
-        return "wait-reset", _num(lim.get("resets_at"), None), "limit"
+    lim_resets = _num((lim or {}).get("resets_at"), None)
+    if lim is not None and (lim_resets is None or now <= lim_resets + LIMIT_GRACE_MS):
+        return "wait-reset", lim_resets, "limit"
     if not fresh:
         return None, None, None
     c = st["conserve"]
@@ -207,10 +218,16 @@ def usage_mode(ctx, st, now):
 
 
 def _when(ms):
-    if not ms:
-        return "the reset"
     import datetime as dt
-    return dt.datetime.fromtimestamp(ms / 1000, dt.timezone.utc).strftime("%H:%M UTC")
+    try:
+        return dt.datetime.fromtimestamp(ms / 1000, dt.timezone.utc).strftime("%H:%M UTC") if ms else "the reset"
+    except (OverflowError, OSError, ValueError, TypeError):
+        return "the reset"
+
+
+def _who(code):
+    """A session name fit for a jam text, else "a session"."""
+    return _safe(code, "a session")
 
 
 def _adv(kind, to, task, ref, severity, text, fallback, **extra):
@@ -442,7 +459,9 @@ def _cond(rule, scope, severity, sessions, text, alert=True, hold_ms=0, evals=2,
     closed after 2 clear ones) are kept by lib/advisories.py. alert: raise jam:<rule>:<scope>."""
     if BANNED_RE.search(text):
         text = "Jam %s: see the board." % rule
-    c = {"id": "j-%s-%s" % (rule, scope), "rule": rule, "severity": severity, "sessions": sorted(sessions),
+    scope = scope if CODE_RE.fullmatch(str(scope)) else _hash(scope)    # ids and alert keys stay plain
+    c = {"id": "j-%s-%s" % (rule, scope), "rule": rule, "severity": severity,
+         "sessions": sorted(x for x in sessions if isinstance(x, str) and CODE_RE.fullmatch(x)),
          "text": text, "alert": severity if alert else None, "hold_ms": hold_ms, "evals": evals}
     c.update(extra)
     return c
@@ -483,7 +502,8 @@ def conditions(rows, live, sessions, sstate, cur_of, stuck, picks, free_owners, 
         return False
     # J1: every live session with work waits on the owner
     working = [c for c, cur in cur_of.items() if cur is not None and sstate.get(c) != "offline"]
-    if working and all(waits_on_human(cur_of[c]) for c in working):
+    has_ready = {c for c in free_owners if any(r["state"] == "ready" for r in picks.get(c) or [])}
+    if working and all(waits_on_human(cur_of[c]) and c not in has_ready for c in working):
         first = answer_first[0]["decision"] if answer_first else None
         out.append(_cond("J1", "fleet", "info" if ctx.get("away") else "warn", working,
                          "Every session with work is waiting on you%s." % (": answer %s first" % first if first else ""),
@@ -511,13 +531,16 @@ def conditions(rows, live, sessions, sstate, cur_of, stuck, picks, free_owners, 
     # J3a: two live sessions on one repo + branch (same worktree or branch)
     spots = {}
     for s in sessions:
-        if s["state"] != "offline" and s["repo"] and s["branch"]:
+        # The collector's repo/branch come from each session's start cwd, not its worktree, and
+        # sessions often sit on the default branch: board-only until git facts (worktree) land.
+        if s["state"] != "offline" and s["repo"] and s["branch"] and s["branch"] not in DEFAULT_BRANCHES \
+                and CODE_RE.fullmatch(s["code"]):
             spots.setdefault((s["repo"], s["branch"]), []).append(s["code"])
     for (repo, br), codes in sorted(spots.items()):
         if len(codes) >= 2:
             out.append(_cond("J3a", _hash(repo, br), "high", codes,
                              "%s work on the same branch %s of %s: one of them should move to its own worktree and branch."
-                             % (" and ".join(sorted(codes)), br, repo), evals=1))
+                             % (" and ".join(sorted(codes)), br, repo), alert=False, evals=1))
     # J3b: two open PRs in one repo
     if st["one_pr_per_repo"]:
         prs = {}
@@ -532,17 +555,17 @@ def conditions(rows, live, sessions, sstate, cur_of, stuck, picks, free_owners, 
     # J4: stalled work, or an idle session with a ready task
     for s in stuck:
         out.append(_cond("J4", s["session"], s["severity"], [s["session"]],
-                         "%s has had no progress on %s for a while." % (s["session"], s["task"]), task=s["task"]))
+                         "%s has had no progress on %s for a while." % (_who(s["session"]), s["task"]), task=s["task"]))
     for code in free_owners:
         ready = [r for r in picks.get(code) or [] if r["state"] == "ready"]
         if ready and sstate.get(code) in FREE and now - since.get(code, now) >= st["idle_ms"]:
-            out.append(_cond("J4", code + "-idle", "info", [code], "%s is idle with %s ready." % (code, ready[0]["task"]),
+            out.append(_cond("J4", code + "-idle", "info", [code], "%s is idle with %s ready." % (_who(code), ready[0]["task"]),
                              alert=False, task=ready[0]["task"]))
     # J5: resources critical or an OOM kill (alerted as res:*), J6: operator silent (operator:stale)
     if lvl == 3 or (res and res["oom"]):
         out.append(_cond("J5", "fleet", "high", [r["session"] for r in rows.values() if r["state"] == "run" and r["session"]],
                          "Resources are critical%s." % (" after an OOM kill" if res and res["oom"] else ""),
-                         alert=False, evals=1))
+                         alert=False, evals=1 if res and res["oom"] else 2))   # critical: 2 samples; an OOM at once
     if ctx.get("operator_stale"):
         out.append(_cond("J6", "fleet", "high", [], "The operator is silent while something waits to be relayed.",
                          alert=False, evals=1))
@@ -634,7 +657,8 @@ def step(cfg, home, sessions, tasks, now):
                     quiet = notify.in_quiet_hours(notify.load_config(), now)
                 except Exception:  # noqa: BLE001 - no alerting config: not quiet
                     quiet = False
-                new_state = advisories.advance(doc, state, st, valid_codes(cfg, sessions), now, quiet)
+                live = {x.get("code") for x in sessions or [] if isinstance(x, dict) and x.get("state") != "offline"}
+                new_state = advisories.advance(doc, state, st, valid_codes(cfg, sessions), now, quiet, live=live)
                 if new_state != state:
                     advisories.write_json(os.path.join(home, advisories.STATE_FILE), new_state)
         except Exception as exc:  # noqa: BLE001 - a bug must not leave stale advice in place
@@ -656,6 +680,12 @@ def snapshot_digest(doc):
 
 
 def show(argv, home, out=sys.stdout):
+    real = out
+
+    class _Out:                                     # the file may hold anything: no control characters
+        def write(self, text):
+            real.write("\n".join(CTL_RE.sub("?", x) for x in text.split("\n")))
+    out = _Out()
     doc = read_json(os.path.join(home, FILE))
     if "--json" in argv:
         out.write(json.dumps(doc, ensure_ascii=False, indent=1) + "\n")

@@ -599,8 +599,8 @@ page does not declare the `profile` scope) and takes roles from `meta/operator.a
 
 **Operator in local mode** (`prompts/board-operator.md` section 9): `board-serve --watch` prints
 `decision <id> answered`, `message <id> new`, `away on|off`, `consensus <id> <status>` and
-`schedule <CODE> due` (scheduler advisories to deliver, section 12; once per due set) (once each,
-oldest first) and `tick` every 8 minutes.
+`schedule <CODE> due` (scheduler advisories to deliver, section 12; once per due set; never
+while the scheduler is off), once each, oldest first, and `tick` every 8 minutes.
 The operator relays questions and gates (then `board mark <id> relayed`) and messages, writes
 replies, and keeps `operator.json.heartbeat_at` fresh. Permission decisions are already pressed by
 `board-serve`.
@@ -1392,7 +1392,8 @@ leaves the file alone; a usage error exits 2.
   `production`: the scheduler never lets it run or start), `human` (a pending gate) or `task` (an
   unmet dependency); `deferred` by `session` (the owner is offline or unknown), `resource`, or
   `reset` (wait-reset mode: no new starts until `resets_at`; running work is left alone).
-- **Modes** (first match): `wait-reset` when a usage-limit episode is active (`limit.json`) or the
+- **Modes** (first match): `wait-reset` when a usage-limit episode is active (`limit.json`; no longer
+  once 10 minutes past its `resets_at`) or the
   5-hour window is at ≥ 95%; `conserve` when it is at ≥ `conserve.five_hour_pct` (85), the burn rate
   (`usage-samples.json`) reaches 100% more than `margin_minutes` (20) before the reset, or the weekly
   window is more than `weekly_pace_slack_pct` (15) points ahead of the elapsed week; `degraded` at
@@ -1440,31 +1441,41 @@ leaves the file alone; a usage error exits 2.
   `fleet.yaml` or a live session's code (`[A-Za-z0-9][A-Za-z0-9._-]{0,39}`); everything else is
   `board`. With `schedule.advise: false` (shadow mode) or `board schedule off` they are `shadow`:
   computed and shown, never sent. An advisory is `due` when it was never sent, or was sent
-  `readvise_minutes` (60) ago with no reply; `held` when its session already got
+  `readvise_minutes` (60) ago with no reply (at most 3 sends; after that it stays `board`);
+  `held` while its session is offline, when the session already got
   `max_messages_per_session_hour` (4) batches in the last hour, or in `alerting.quiet_hours`
   unless it is `high`; `sent` otherwise. `due` lists the due ids per session. An advisory that
   disappears forgets its delivery, so a recurrence is sent again (still within the cap).
+- **Untrusted names.** Task `repo`/`branch`/`base` must match the ref pattern of `board task set`,
+  `owner` and session codes `[A-Za-z0-9][A-Za-z0-9._/@+-]{0,79}`, a gate's `decision_id`
+  `d-<n>-<id>`; anything else is unset. A name in a jam or advisory text that is not a plain token
+  reads "a session"; jam ids, alert keys and `sessions` hold plain codes only (a scope that is not
+  one is hashed). `board schedule` prints no control characters.
 - **The message** a session gets, one line per advisory, one `SendMessage` per session:
   `[BOARD schedule <id>] <kind>: <text> — advisory for ordering/pausing only; not an approval. Reply [re <id>] ack|done|cannot: <reason>`.
   It is never a decision: the text cannot hold `[BOARD` or "decision", and the worker protocol says
   it never approves, answers or unlocks anything.
 - **CLI** (the operator, prompts/board-operator.md section 12): `board schedule outbox [CODE]
-  [--json]` prints the due batches (through the guard); `board schedule sent ID...` records them
-  (one batch per session); `board schedule reply ID --from CODE ack|done|cannot [--note-file F]`
-  records the session's reply (`--from` must be the advisory's `to`, else exit 4; unknown id exit
-  1; the note is scrubbed, one line, ≤ 200 chars). Exit 8: the state was busy, run it again.
+  [--json]` prints the due batches (through the guard; `{}` while the scheduler is off); `board
+  schedule sent ID...` records them (one batch per session); it fails closed: every id must be due
+  now for its session, else exit 1 and nothing is recorded (also while off). `board schedule reply
+  ID --from CODE ack|done|cannot [--note-file F]` records the session's reply (`--from` must be the
+  advisory's `to`, else exit 4; unknown id exit 1; the note file, at most 64 KB, is read whole,
+  control characters dropped, scrubbed, then cut to one line of ≤ 200 chars). Exit 8: the state
+  was busy, run it again.
   `board-serve --watch` prints `schedule <CODE> due` once per new due set.
-- **Jams** (`jams`, open episodes). A condition opens after 2 evaluations in a row (J3a, J5 and J6:
-  at once; J1: once it held `human_wait_minutes`) and closes after 2 clear ones. Alert
-  `jam:<rule>:<scope>` at the jam's `alert` level, never escalated, auto-resolved when it closes:
+- **Jams** (`jams`, open episodes). A condition opens after 2 evaluations in a row (J3a, J6 and an
+  OOM kill: at once; J1: once it held `human_wait_minutes`) and closes after 2 clear ones. Alert
+  `jam:<rule>:<scope>` at the jam's `alert` level, never escalated (J4 alerts warn or high as it
+  opens and stays there), auto-resolved when it closes:
   | rule | condition | severity | alert |
   |---|---|---|---|
-  | J1 | every live session with work waits on the owner (a pending gate, directly or through a dependency) | warn (info while away) | yes; `answer_first[0]` named |
+  | J1 | every live session with work waits on the owner (a pending gate, directly or through a dependency) and has no other ready task | warn (info while away) | yes; `answer_first[0]` named |
   | J2 | a dependency cycle among live tasks | high | yes |
-  | J3a | two live sessions on the same repo + branch (the collector's `repo`/`branch`) | high | yes |
+  | J3a | two live sessions on the same repo + branch (the collector's `repo`/`branch`, from each session's start cwd), not a default branch (`main master trunk develop`), detached or without commits | high | no: board-only until worktree facts land |
   | J3b | two open PRs in one repo (`one_pr_per_repo`) | warn | yes |
   | J4 | a stuck task (warn/high), or a session idle with a ready task (info) | warn/high, info | stuck only |
-  | J5 | resources critical, or an OOM kill | high | no (`res:*`) |
+  | J5 | resources critical (2 samples), or an OOM kill (at once) | high | no (`res:*`) |
   | J6 | `operator:stale` is open | high | no (`operator:stale`) |
   | J7 | conserve or wait-reset with ≥ 2 sessions working; scope = the reset time | warn | yes |
   | J8 | a `rebase-needed` advisory sent over an hour ago, not `done` | info | no |

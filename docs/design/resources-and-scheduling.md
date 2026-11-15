@@ -328,7 +328,13 @@ The scheduler ships in three steps instead of section 7's PRs 2–4: (1) task mo
   `operator:stale` already do); J4's idle case and J8 stay on the board. No `--watch` jam lines:
   nothing for the operator to do until lessons (2b).
 - **Modes** follow section 2. While the owner is away J1 is info; tasks are not moved to
-  `deferred{owner-return}`.
+  `deferred{owner-return}`. A limit episode stops holding starts 10 minutes after its `resets_at`.
+- **Review fixes.** J3a is board-only (the collector's branch is the start cwd's, not the
+  worktree's) and skips default, detached and commit-less branches. J5 needs 2 samples at critical
+  (an OOM opens it at once). Jam alerts never escalate; J4 alerts at the level it opens with. J1
+  does not count a session that has another ready task. Advice to an offline session is held; an
+  unanswered advisory is sent at most 3 times. `board schedule off` stops the outbox, `sent` and
+  the `--watch` line at once.
 - **Deploy dependencies** (owner decision): met only when the task reached `maintain` or is
   `done`; an approved production gate alone no longer counts (section 2's gate 3 said it did).
 - **Not yet:** lessons (2b), git facts for stacked branches (rebase-needed still follows `base` ==

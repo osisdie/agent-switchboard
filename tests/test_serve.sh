@@ -1126,6 +1126,9 @@ grep -q '^message m-1-a ' <<<"$w" && bad "--watch skips replied messages" "$w" |
 echo '{"enabled":true,"generated_at":5,"due":{"CP":["a-0123456789ab"],"X/y":["a-0123456789ac"],"API":[]},"advisories":[]}' > "$BOARD_HOME/scheduler.json"
 w="$("$REPO/bin/board-serve" --watch --once)"
 eq "--watch: schedule CODE due, for valid codes with ids only" "$(grep '^schedule ' <<<"$w" | tr '\n' ',')" "schedule CP due,"
+echo '{"at":1,"by":"x"}' > "$BOARD_HOME/schedule-off"
+eq "--watch: nothing to deliver while the scheduler is off" "$("$REPO/bin/board-serve" --watch --once | grep -c '^schedule ')" "0"
+rm -f "$BOARD_HOME/schedule-off"
 if [ -f "$T/scheduler.keep" ]; then mv "$T/scheduler.keep" "$BOARD_HOME/scheduler.json"; else rm -f "$BOARD_HOME/scheduler.json"; fi
 "$REPO/bin/board-serve" --watch --tick 1 > "$T/watch.out" & wpid=$!
 # Wait (bounded) for the watcher's first pass instead of a fixed sleep: under load it may start late.

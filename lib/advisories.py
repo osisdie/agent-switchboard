@@ -34,7 +34,9 @@ OFF_FILE = "schedule-off"
 LOCK_FILE = "schedule.lock"
 SEND_KINDS = ("pause", "defer", "finish-first", "rebase-needed", "wait-for-reset", "free-resources", "stop-own-heavy")
 REPLIES = ("ack", "done", "cannot")
-CODE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,39}")
+CODE_RE = scheduler.CODE_RE
+MAX_SENDS = 3                      # an advisory nobody answers is sent at most this often, then board-only
+NOTE_READ_MAX = 64 * 1024
 ADV_RE = re.compile(r"a-[0-9a-f]{12}")
 SUFFIX = " — advisory for ordering/pausing only; not an approval. Reply [re %s] ack|done|cannot: <reason>"
 KEEP_RESOLVED = 50
@@ -83,8 +85,9 @@ def episodes(prev, conds, now):
     return out, opened, resolved
 
 
-def deliver(advisories, sent, batches, st, valid, now, quiet=False, paused=False):
-    """Mark each advisory's delivery and return {code: [due ids]}. Pure."""
+def deliver(advisories, sent, batches, st, valid, now, quiet=False, paused=False, live=None):
+    """Mark each advisory's delivery and return {code: [due ids]}. Pure. `live`: the codes of
+    sessions that are not offline (None: all valid ones); advice for an offline session is held."""
     due = {}
     for a in advisories:
         s = sent.get(a["id"]) if isinstance(sent.get(a["id"]), dict) else None
@@ -96,7 +99,9 @@ def deliver(advisories, sent, batches, st, valid, now, quiet=False, paused=False
                 d["state"] = "shadow"
             elif s and (s.get("reply") or now - int(s.get("sent_at") or 0) < st["readvise_ms"]):
                 d["state"] = "sent"
-            elif quiet and a["severity"] != "high":
+            elif s and int(s.get("n") or 0) >= MAX_SENDS:
+                d["state"] = "board"                    # sent MAX_SENDS times, never answered: stop
+            elif (live is not None and a["to"] not in live) or (quiet and a["severity"] != "high"):
                 d["state"] = "held"
             else:
                 recent = [t for t in batches.get(a["to"]) or [] if now - t < 3600 * 1000]
@@ -139,7 +144,12 @@ def write_json(path, data):
 
 
 @contextlib.contextmanager
-def locked(home, wait_s=5.0):
+def locked(home, wait_s=None):
+    if wait_s is None:                      # BOARD_SCHEDULE_LOCK_WAIT: tests shorten the CLI's wait
+        try:
+            wait_s = float(os.environ.get("BOARD_SCHEDULE_LOCK_WAIT") or 5)
+        except ValueError:
+            wait_s = 5.0
     fd = os.open(os.path.join(home, LOCK_FILE), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     try:
         end = time.monotonic() + wait_s
@@ -165,7 +175,7 @@ def load_state(home):
             "resolved": s.get("resolved") if isinstance(s.get("resolved"), list) else []}
 
 
-def advance(doc, state, st, valid, now, quiet=False, paused=False):
+def advance(doc, state, st, valid, now, quiet=False, paused=False, live=None):
     """Fold the delivery and jam state into a fresh decision (in place); returns the new state."""
     advs = doc["advisories"]
     ids = {a["id"] for a in advs}
@@ -173,7 +183,7 @@ def advance(doc, state, st, valid, now, quiet=False, paused=False):
     batches = {c: [t for t in ts if isinstance(t, int) and now - t < 3600 * 1000]
                for c, ts in state["batches"].items() if isinstance(ts, list)}
     batches = {c: ts for c, ts in batches.items() if ts}
-    doc["due"] = deliver(advs, sent, batches, st, valid, now, quiet, paused)
+    doc["due"] = deliver(advs, sent, batches, st, valid, now, quiet, paused, live)
     conds = doc.pop("conditions", []) + j8(advs, sent, now)
     jams, opened, resolved = episodes(state["jams"], conds, now)
     doc["jams"] = opened
@@ -200,7 +210,7 @@ def _log(home, ev):
 
 
 def cmd_outbox(home, args):
-    doc = read_json(os.path.join(home, scheduler.FILE)) or {}
+    doc = {} if paused(home) else (read_json(os.path.join(home, scheduler.FILE)) or {})   # off: nothing goes
     want = [a for a in args if not a.startswith("--")]
     by_id = {a.get("id"): a for a in doc.get("advisories") or [] if isinstance(a, dict)}
     out = {}
@@ -223,22 +233,27 @@ def cmd_sent(home, ids):
         return _usage("sent: advisory ids (a-<12 hex>)")
     now = now_ms()
     with locked(home):
+        if paused(home):
+            sys.stderr.write("board: schedule sent: the scheduler is off (board schedule off); nothing recorded\n")
+            return 1
         doc = read_json(os.path.join(home, scheduler.FILE)) or {}
         by_id = {a.get("id"): a for a in doc.get("advisories") or [] if isinstance(a, dict)}
-        missing = [i for i in ids if i not in by_id]
+        due = doc.get("due") if isinstance(doc.get("due"), dict) else {}
+        # fails closed: only what the outbox printed (due now, for its own session) is recorded
+        missing = [i for i in ids if i not in by_id or i not in (due.get(by_id[i].get("to")) or [])]
         if missing:
-            sys.stderr.write("board: schedule sent: not a current advisory: %s\n" % " ".join(missing))
+            sys.stderr.write("board: schedule sent: not due now: %s; nothing recorded\n" % " ".join(missing))
             return 1
         state = load_state(home)
         for code in sorted({by_id[i]["to"] for i in ids}):
-            state["batches"].setdefault(code, []).append(now)
+            ts = state["batches"].get(code)
+            state["batches"][code] = (ts if isinstance(ts, list) else []) + [now]
         for i in ids:
             a = by_id[i]
             s = state["sent"].get(i) if isinstance(state["sent"].get(i), dict) else {}
             state["sent"][i] = {"to": a["to"], "kind": a["kind"], "sent_at": now, "n": int(s.get("n") or 0) + 1,
                                 "reply": None}
             a["delivery"] = {"state": "sent", "sent_at": now, "n": state["sent"][i]["n"], "reply": None}
-            due = doc.get("due") or {}
             if i in due.get(a["to"], []):
                 due[a["to"]].remove(i)
                 if not due[a["to"]]:
@@ -260,13 +275,17 @@ def cmd_reply(home, args):
         if len(rest) != 2 or rest[0] != "--note-file":
             return _usage("reply: only --note-file F may follow")
         try:
-            with open(rest[1], encoding="utf-8") as fh:
-                raw = fh.read(4000)
+            with open(rest[1], encoding="utf-8", errors="replace") as fh:
+                raw = fh.read(NOTE_READ_MAX + 1)
         except OSError:
             sys.stderr.write("board: schedule reply: cannot read %s\n" % rest[1])
             return 1
+        if len(raw) > NOTE_READ_MAX:
+            sys.stderr.write("board: schedule reply: the note file is over %d bytes\n" % NOTE_READ_MAX)
+            return 2
         import guard
-        note = guard.scrub(" ".join(raw.split()))[:200]
+        # whole text first (controls out, scrubbed), then cut: a secret is never split at the cap
+        note = guard.scrub(" ".join(scheduler.CTL_RE.sub(" ", raw).split()))[:200].strip() or None
     now = now_ms()
     with locked(home):
         state = load_state(home)

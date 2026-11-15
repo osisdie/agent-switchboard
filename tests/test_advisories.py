@@ -89,6 +89,14 @@ class Modes(unittest.TestCase):
         [a] = [a for a in d["advisories"] if a["kind"] == "wait-for-reset"]
         self.assertEqual((a["to"], a["task"]), ("WEB", "t-new"))
 
+    def test_limit_past_its_reset_and_huge_times(self):
+        late = {"limit": {"hit_at": NOW - 3 * HOUR, "resets_at": NOW - 11 * MIN}}
+        self.assertEqual(self.mode(**late)["mode"], "normal")
+        self.assertEqual(self.mode(limit={"hit_at": NOW, "resets_at": NOW - 9 * MIN})["mode"], "wait-reset")
+        d = decide([task("t-a")], [sess("API")], ctx={"limit": {"hit_at": NOW, "resets_at": 1e20}})
+        self.assertEqual(d["mode"], "wait-reset")
+        self.assertIn("before the reset", [a for a in d["advisories"] if a["kind"] == "wait-for-reset"][0]["text"])
+
     def test_conserve_prefers_nearly_finished_work(self):
         ts = [task("t-plan", stage="plan", priority=3), task("t-test", stage="test", priority=0)]
         self.assertEqual(decide(ts, [sess("API")])["start"], ["t-plan"])
@@ -109,6 +117,8 @@ class Jams(unittest.TestCase):
         self.assertEqual(conds(decide(ts, ss, ctx={"away": True}), "J1")[0]["severity"], "info")
         ts.append(task("t-free", owner="QA"))
         self.assertEqual(conds(decide(ts, ss + [sess("QA")]), "J1"), [])
+        ts[-1] = task("t-other", owner="WEB", ago=30 * MIN)           # WEB could take another task
+        self.assertEqual(conds(decide(ts, ss), "J1"), [])
 
     def test_j2_cycle(self):
         ts = [task("t-a", depends_on=[{"task": "t-b"}]), task("t-b", owner="WEB", depends_on=[{"task": "t-a"}])]
@@ -117,9 +127,11 @@ class Jams(unittest.TestCase):
 
     def test_j3a_same_branch_and_j3b_two_prs(self):
         ss = [sess("API", "working", repo="shop", branch="feat/x"), sess("WEB", "done", repo="shop", branch="feat/x"),
-              sess("OPS", "working", repo="shop", branch="main")]
-        [j] = conds(decide([], ss), "J3a")
-        self.assertEqual((j["sessions"], j["evals"]), (["API", "WEB"], 1))
+              sess("OPS", "working", repo="shop", branch="main"), sess("QA", "working", repo="shop", branch="main"),
+              sess("T1", "working", repo="shop", branch="detached"), sess("T2", "working", repo="shop", branch="detached"),
+              sess("API/helper", "working", repo="shop", branch="feat/x")]
+        [j] = conds(decide([], ss), "J3a")                       # default, detached and odd codes skipped
+        self.assertEqual((j["sessions"], j["evals"], j["alert"]), (["API", "WEB"], 1, None))   # board-only
         pr = {"url": "https://example.test/1", "state": "open"}
         ts = [task("t-a", repo="shop", pr=pr), task("t-b", owner="WEB", repo="shop", pr=pr)]
         [j] = conds(decide(ts, [sess("API"), sess("WEB")]), "J3b")
@@ -130,8 +142,8 @@ class Jams(unittest.TestCase):
                    [sess("API", "working"), sess("WEB", "rest", 40 * MIN)])
         self.assertEqual(sorted((c["id"], c["severity"], c["alert"]) for c in conds(d, "J4")),
                          [("j-J4-API", "high", "high"), ("j-J4-WEB-idle", "info", None)])
-        self.assertEqual(conds(decide([], [], res("critical")), "J5")[0]["alert"], None)
-        self.assertEqual(len(conds(decide([], [], res("ok", oom_recent=True)), "J5")), 1)
+        self.assertEqual([(c["alert"], c["evals"]) for c in conds(decide([], [], res("critical")), "J5")], [(None, 2)])
+        self.assertEqual([c["evals"] for c in conds(decide([], [], res("ok", oom_recent=True)), "J5")], [1])
         self.assertEqual(len(conds(decide([], [], ctx={"operator_stale": True}), "J6")), 1)
         ss = [sess("API", "working"), sess("WEB", "working")]
         [j] = conds(decide([], ss, ctx={"usage": usage(p5=90, r5=NOW + HOUR)}), "J7")
@@ -199,6 +211,14 @@ class Delivery(unittest.TestCase):
         self.assertEqual(self.run_(batches={"API": [NOW - 70 * MIN] * 4})[1][0], "due")
         self.assertEqual(self.run_(quiet=True)[1][:3], ["held", "board", "due"])     # high still goes
 
+    def test_offline_held_and_send_cap(self):
+        self.assertEqual(self.run_()[1][:3], ["due", "board", "due"])
+        a = self.advs()
+        advisories.deliver(a, {}, {}, ST, {"API", "WEB"}, NOW, live={"WEB"})
+        self.assertEqual([x["delivery"]["state"] for x in a][:3], ["held", "board", "due"])   # API offline
+        sent = {"a-000000000000": {"to": "API", "sent_at": NOW - 61 * MIN, "n": 3, "reply": None}}
+        self.assertEqual(self.run_(sent=sent)[1][0], "board")                    # sent 3 times: board-only
+
     def test_j8(self):
         a = [{"id": "a-000000000009", "to": "WEB", "kind": "rebase-needed", "task": "t-x", "severity": "warn", "text": "t"}]
         sent = {"a-000000000009": {"to": "WEB", "sent_at": NOW - 61 * MIN, "reply": "ack"}}
@@ -206,6 +226,39 @@ class Delivery(unittest.TestCase):
         self.assertEqual((c["rule"], c["alert"]), ("J8", None))
         sent["a-000000000009"]["reply"] = "done"
         self.assertEqual(advisories.j8(a, sent, NOW), [])
+
+
+class Hostile(unittest.TestCase):
+    BAD = ["A\r\nB", "x\x1b[31mred", "o\x1b]8;;http://e.test\x07l", "\x9bz"]
+
+    def test_control_characters_never_reach_texts_ids_or_keys(self):
+        import notify
+        for bad in self.BAD:
+            ts = [task("t-a", owner=bad, repo=bad, branch=bad, gates=[{"status": "pending", "decision_id": bad}],
+                       pr={"url": "https://e.test/1", "state": "open"}),
+                  task("t-b", owner="API", repo="shop", ago=100 * MIN,
+                       gates=[{"status": "pending", "decision_id": "d-1-ok"}])]
+            ss = [sess(bad, "working", repo=bad, branch=bad), sess("API", "working", repo="shop", branch="feat/a"),
+                  sess("API" + bad, "rest", 40 * MIN)]
+            d = decide(ts, ss, res("critical", oom_recent=True), {"usage": usage(p5=90)})
+            def strings(x):
+                if isinstance(x, dict):
+                    return [t for k, v in x.items() for t in [str(k)] + strings(v)]
+                if isinstance(x, list):
+                    return [t for v in x for t in strings(v)]
+                return [x] if isinstance(x, str) else []
+            for text in strings({k: d[k] for k in ("conditions", "advisories", "answer_first", "queue", "start")}):
+                self.assertNotRegex(text, "[\x00-\x1f\x7f-\x9f]")
+            st, opened, _ = advisories.episodes({}, d["conditions"], NOW)
+            st, opened, _ = advisories.episodes(st, d["conditions"], NOW + 1)
+            for a in notify.jam_alerts({"enabled": True, "jams": opened}):
+                self.assertRegex(a["key"], r"^jam:J[0-9a-z]+:[A-Za-z0-9._-]+$")
+                self.assertNotRegex(a["title"] + a["body"], "[\x00-\x1f\x7f-\x9f]")
+            hostile = {"enabled": True, "jams": [{"id": "j-J2-x\r\nBcc: e@x", "alert": "high", "text": "t"},
+                                                 {"id": "j-J2-ok", "alert": "high", "text": "a\r\nb\x1b[0m",
+                                                  "sessions": ["A\nB", "API"]}]}
+            [a] = notify.jam_alerts(hostile)
+            self.assertEqual((a["key"], a["title"], a["body"]), ("jam:J2:ok", "Jam J2: a b [0m", "Sessions: API."))
 
 
 class Text(unittest.TestCase):
@@ -247,10 +300,10 @@ class Step(unittest.TestCase):
         doc, wrote = self.step()
         self.assertTrue(wrote)
         [aid] = doc["due"]["API"]
-        self.assertEqual(scheduler.snapshot_digest(doc), {"mode": "degraded", "due": ["API"], "jams": 1})
-        self.assertEqual([j["rule"] for j in doc["jams"]], ["J5"])           # J5 opens on its first evaluation
+        self.assertEqual(scheduler.snapshot_digest(doc), {"mode": "degraded", "due": ["API"], "jams": 0})
         path = os.path.join(self.home, advisories.STATE_FILE)
         doc, _ = self.step(NOW + 3000)
+        self.assertEqual([j["rule"] for j in doc["jams"]], ["J5"])           # critical: 2 samples
         self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
         def text():
             with open(path, encoding="utf-8") as fh:
@@ -278,6 +331,49 @@ class Step(unittest.TestCase):
         self.assertEqual(scheduler.snapshot_digest(doc), {"mode": "off", "due": [], "jams": 0})
         run("on", "--by", "owner")
         self.assertEqual(self.step(NOW + 11000)[0]["mode"], "degraded")
+
+    def test_off_gates_outbox_and_sent_at_once(self):
+        import subprocess
+        doc, _ = self.step()
+        [aid] = doc["due"]["API"]
+        env = dict(os.environ, BOARD_HOME=self.home, BOARD_NOW_MS=str(NOW + 1000), BOARD_SCHEDULE_LOCK_WAIT="0.3")
+        run = lambda *a: subprocess.run([sys.executable, os.path.join(REPO, "lib", "advisories.py")] + list(a),  # noqa: E731
+                                        env=env, capture_output=True, text=True)
+        self.assertEqual(run("sent", "a-ffffffffffff").returncode, 1)          # not due: nothing recorded
+        self.assertEqual(run("off", "--by", "owner").returncode, 0)
+        self.assertEqual(json.loads(run("outbox", "--json").stdout), {})      # before any collector pass
+        self.assertEqual(run("sent", aid).returncode, 1)
+        run("on", "--by", "owner")
+        with advisories.locked(self.home, wait_s=1):
+            self.assertEqual(run("sent", aid).returncode, 8)
+            self.assertEqual(run("reply", aid, "--from", "API", "ack").returncode, 8)
+        self.assertEqual(run("sent", aid).returncode, 0)
+        note = os.path.join(self.home, "note.txt")
+        with open(note, "w") as fh:
+            fh.write("busy\x1b[31m with\r\n tests " + "x" * 300)
+        self.assertEqual(run("reply", aid, "--from", "API", "cannot", "--note-file", note).returncode, 0)
+        rec = advisories.load_state(self.home)["sent"][aid]
+        self.assertEqual((rec["reply"], rec["note"][:16], len(rec["note"])), ("cannot", "busy [31m with t", 200))
+
+    def test_sync_jams_opens_and_resolves(self):
+        import notify
+        os.environ["BOARD_HOME"] = self.home
+        try:
+            path = os.path.join(self.home, "scheduler.json")
+            with open(path, "w") as fh:
+                json.dump({"enabled": True, "jams": [{"id": "j-J2-ab", "rule": "J2", "alert": "high", "text": "c",
+                                                      "sessions": ["API"]}]}, fh)
+            data = {}
+            notify._sync_jams(data, NOW)                                     # noqa: SLF001
+            self.assertEqual((data["jam:J2:ab"]["level"], data["jam:J2:ab"]["resolved"]), ("high", False))
+            notify._sync_jams(data, NOW + 1)                                 # noqa: SLF001
+            self.assertEqual(data["jam:J2:ab"]["first_at"], NOW)             # not reopened
+            with open(path, "w") as fh:
+                json.dump({"enabled": True, "jams": []}, fh)
+            notify._sync_jams(data, NOW + 2)                                 # noqa: SLF001
+            self.assertEqual((data["jam:J2:ab"]["resolved"], data["jam:J2:ab"]["acked_by"]), (True, "auto"))
+        finally:
+            os.environ["BOARD_HOME"] = os.path.join(TMP, "home")
 
     def test_jam_alerts(self):
         import notify
