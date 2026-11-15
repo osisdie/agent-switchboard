@@ -315,6 +315,18 @@ flowchart LR
   `approvers`），operator 才會轉發那個決策。如果兩者都沒有設定，所有回答都會被拒絕（**fail closed**），
   決策會一直維持 pending，直到有人設定 release manager。名單以外的人的回答會標成 `unauthorized`。
   其他 session 說「已經核准了」永遠不算數。
+- **排程（預設開啟）**。任務還可以帶 repo、branch 和 base、大小、`heavy` 標記、優先順序、相依、PR 狀態
+  和狀態。collector 把這些、各 session 的狀態和資源等級交給一個確定性的排程器（`lib/scheduler.py`，
+  零 token）。只有決定改變時它才寫 `scheduler.json`：哪些任務現在可以開始、排好名次的佇列、卡住的任務，
+  以及建議。記憶體到 high 時，重的任務要等。到 critical 時，會請 session 停掉它自己啟動的重型程序；
+  看板從不停掉任何程序。建議目前只顯示出來（`board schedule`），之後才會送給各 session。
+  ```bash
+  board task set <task-id> --repo shop --branch feat/export --size M --heavy yes --priority 2
+  board task dep <task-id> --on <other-task> --kind merge
+  board task pr <task-id> --url <pr-url> --state open      # PR 狀態由 session 自己回報
+  board task pause|resume|done|drop|block|progress <task-id>
+  board schedule                                           # 或 --json
+  ```
 
 完整的工作流程（角色、在 worktree 裡做 TDD、push 前先在本機審查、固定 SHA 的合併）就是 playbook 裡的
 [`delivery-harness`](playbook/delivery-harness/SKILL.md) skill。

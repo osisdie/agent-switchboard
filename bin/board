@@ -27,6 +27,13 @@
 #   board task ls [--json] | board task show ID
 #                                              stages: plan design build test deploy production
 #                                              maintain; artifacts: intent spec plan evals review
+#   board task set ID [--repo R] [--branch B] [--base B] [--size S|M|L] [--heavy yes|no] [--priority 0-3]
+#   board task dep ID --on TASK [--kind merge|deploy|done] | --remove TASK
+#   board task pr ID --url URL --state open|merged|closed [--head SHA] [--method squash|merge|rebase]
+#   board task done|pause|resume|drop|block|progress ID
+#                                              scheduling fields (lib/tasks.py), all optional
+#   board schedule [--json]                    the scheduler's decision (scheduler.json): what may
+#                                              start now, the queue, stuck tasks, advisories
 #   board limit [--json|--clear]               show (or end) the current usage-limit episode
 #   board resources [--json|--mirror] [--refresh]
 #                                              system resources, per-session processes and
@@ -221,7 +228,9 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
         echo "                 [--task ID] [--stage S] [--gate G] [--artifact REF]"
         echo "  create a decision and print its id. With --task/--gate it is a gate decision"
         echo "  (defaults: stage = the task's stage, gate = owner, options = approve / request changes)."
-        echo "  stages: $STAGES" ;;
+        echo "  stages: $STAGES"
+        echo "  exit 8: the task was busy (or its gate could not be written); nothing was created, run"
+        echo "  the same ask again." ;;
     decisions) echo "usage: board decisions [--status pending|answered|relayed|stale|timeout|unauthorized|answered_in_pane] [--json]" ;;
     answer) echo "usage: board answer ID ANSWER|--answer-file PATH --by WHO [--option N]"
         echo "  --option N (pane question): the clicked option; refused (exit 2) unless its label is ANSWER." 
@@ -230,6 +239,8 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
         echo "         [{\"question_index\": 0, \"option\": 2}, {\"question_index\": 1, \"text\": \"...\"}];"
         echo "         text becomes one line of <= $FREE_TEXT_MAX printable characters, else exit 2)"
         echo "  a free-text answer that asks for a secret value is refused (exit 6, nothing written)."
+        echo "  exit 8: the gate's task was busy (nothing recorded) or was not updated (answer kept);"
+        echo "  run the same answer again, and relay it only once it exits 0."
         echo "  mark a decision answered. WHO must be in approvers (production gate or stage:"
         echo "  release_managers, falling back to approvers). Otherwise the decision is marked"
         echo "  unauthorized and the command exits 4. No approvers configured = refused (fails closed)."
@@ -266,17 +277,27 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
         echo "  once, then is checked again. Exit 7 (nothing sent but that key): the state still shows the"
         echo "  prompt waiting but the pane shows no prompt / picker; the decision is pending again, with a"
         echo "  press_note (a prompt about other input on screen is still exit 3, stale)." ;;
-    task) echo "usage: board task new|stage|ls|show ..."
+    task) echo "usage: board task new|stage|ls|show|set|dep|pr|done|pause|resume|drop|block|progress ..."
         echo "  board task new --owner CODE \"title\" [--stage S]"
         echo "  board task stage ID STAGE [--artifact key=ref]..."
         echo "  board task ls [--json]"
         echo "  board task show ID"
+        echo "  board task set ID [--repo R] [--branch B] [--base B] [--size S|M|L] [--heavy yes|no] [--priority 0-3]"
+        echo "  board task dep ID --on TASK [--kind merge|deploy|done] | --remove TASK"
+        echo "  board task pr ID --url URL --state open|merged|closed [--head SHA] [--method squash|merge|rebase]"
+        echo "  board task done|pause|resume|drop|block|progress ID"
         echo "  stages: $STAGES; artifact keys: $ARTIFACT_KEYS" ;;
     "task new") echo "usage: board task new --owner CODE \"title\" [--stage S]   (prints the task id)" ;;
     "task stage") echo "usage: board task stage ID STAGE [--artifact key=ref]..."
         echo "  stages: $STAGES; artifact keys: $ARTIFACT_KEYS" ;;
     "task ls") echo "usage: board task ls [--json]" ;;
     "task show") echo "usage: board task show ID" ;;
+    "task set"|"task dep"|"task pr"|"task done"|"task pause"|"task resume"|"task drop"|"task block"|"task progress")
+        python3 "$REPO/lib/tasks.py" --help | sed -n 's/^  tasks.py /usage: board task /p; s/^   *\(\[\|[a-z]\)/    \1/p' ;;
+    schedule) echo "usage: board schedule [--json]"
+        echo "  the scheduler's last decision (\$BOARD_HOME/scheduler.json, written by the collector when it"
+        echo "  changes): mode, resources level, heavy slots, the tasks that may start now, the ranked queue"
+        echo "  (run ready queued deferred blocked paused), stuck tasks and advisories. Read-only." ;;
     limit) echo "usage: board limit [--json|--clear]"
         echo "  show (or end) the current usage-limit episode (\$BOARD_HOME/limit.json)" ;;
     resources) echo "usage: board resources [--json|--mirror] [--refresh]"
@@ -420,6 +441,30 @@ task_path() {
   echo "$BOARD_HOME/tasks/$1.json"
 }
 
+# Task files are rewritten under tasks/<id>.json.lock (the lock lib/tasks.py takes too), so a gate
+# added by `board ask` and a field set by `board task` never overwrite each other.
+task_lock() {  # task_lock PATH — take the task's lock on fd 7; 1 (and a message) on timeout
+  command -v flock >/dev/null 2>&1 || die "flock is required (util-linux)"
+  exec 7>>"$1.lock" || die "cannot open $1.lock"
+  flock -w "${BOARD_TASK_LOCK_WAIT:-10}" 7 && return 0   # the wait is shortened by tests only
+  exec 7>&-
+  echo "board: task $(basename "$1" .json) is busy (locked)" >&2
+  return 1
+}
+task_unlock() { flock -u 7 2>/dev/null; exec 7>&-; }
+task_jq() {  # task_jq PATH JQ-ARGS... — rewrite a task file; the caller holds its lock
+  local tf="$1" out
+  shift
+  out="$(jq "$@" "$tf")" && write_atomic "$tf" "$out"
+}
+task_write() {  # task_write PATH JQ-ARGS... — task_jq under the lock
+  task_lock "$1" || return 1
+  local rc=0
+  task_jq "$@" || rc=$?
+  task_unlock
+  return "$rc"
+}
+
 new_id() {  # new_id PREFIX NOW_MS
   printf '%s-%s-%04x%04x\n' "$1" "$(( $2 / 1000 ))" "$RANDOM" "$RANDOM"
 }
@@ -466,8 +511,10 @@ cmd_ask() {
     opts_json="[]"
   fi
   mkdir -p "$BOARD_HOME/decisions"
-  # The secret guard scrubs the question, options and context before they are stored.
-  write_atomic "$(dec_path "$id")" "$(jq -n --arg id "$id" --arg from "$from" --arg q "$question" \
+  # The secret guard scrubs the question, options and context before they are stored. Built before
+  # the task lock is taken, so nothing but jq runs while it is held.
+  local dec_json
+  dec_json="$(jq -n --arg id "$id" --arg from "$from" --arg q "$question" \
     --arg ctx "$context" --argjson opts "$opts_json" --argjson now "$now" \
     --arg task "$task" --arg stage "$stage" --arg gate "$gate" --arg art "$artifact" '
     def nz: if . == "" then null else . end;
@@ -478,11 +525,26 @@ cmd_ask() {
     + (if $task != "" or $gate != "" or $stage != "" then
          { task_id: ($task | nz), stage: ($stage | nz), gate: ($gate | nz), artifact_ref: ($art | nz) }
        else {} end)' | { python3 "$GUARD" scrub-json || [ $? = 3 ]; })"
+  # A failed guard or jq would leave nothing to store: never write an empty or broken decision.
+  if [ -z "$dec_json" ] || ! jq -e 'type == "object" and .id != null' >/dev/null 2>&1 <<<"$dec_json"; then
+    die "ask: could not build the decision; nothing was created"
+  fi
+  # Lock first: while ask waits for the task, no decision exists that the collector could pick up
+  # and alert on, and a timeout leaves nothing behind (exit 8: run the same ask again).
   if [ -n "$tf" ]; then
-    write_atomic "$tf" "$(jq --arg id "$id" --arg stage "$stage" --arg gate "$gate" --argjson now "$now" '
+    task_lock "$tf" || { echo "board: ask: nothing was created; run the same ask again" >&2; exit 8; }
+  fi
+  write_atomic "$(dec_path "$id")" "$dec_json"
+  if [ -n "$tf" ]; then
+    task_jq "$tf" --arg id "$id" --arg stage "$stage" --arg gate "$gate" --argjson now "$now" '
       .gates = ((.gates // []) + [{ stage: $stage, gate: $gate, status: "pending", decision_id: $id,
                                     approved_by: null, approved_at: null }])
-      | .updated_at = $now' "$tf")"
+      | .updated_at = $now' || {
+      rm -f "$(dec_path "$id")"   # fail closed: no decision without its gate on the task
+      echo "board: ask: could not record the gate on task $task; nothing was created; run the same ask again" >&2
+      exit 8
+    }
+    task_unlock
   fi
   log_event "$(jq -cn --arg id "$id" --arg from "$from" --arg task "$task" --arg gate "$gate" --argjson now "$now" \
     '{ts: $now, type: "ask", id: $id, from: $from} + (if $task == "" then {} else {task_id: $task} end)
@@ -725,6 +787,16 @@ cmd_answer() {
     echo "board answer: refused by the secret guard ($held); nothing recorded" >&2
     exit 6
   fi
+  # A gate on a task: take the task's lock first, so a busy task leaves the decision as it was.
+  local lock_tf=""
+  if [ "$(jq -r '(.source // "") != "pane" and (.gate // "") != "" and (.task_id // "") != ""' "$f")" = true ]; then
+    lock_tf="$(task_path "$(jq -r '.task_id' "$f")")"
+    if [ -f "$lock_tf" ]; then
+      task_lock "$lock_tf" || { echo "board answer: nothing recorded; run the same answer again" >&2; exit 8; }
+    else
+      lock_tf=""
+    fi
+  fi
   update_decision "$id" '.status = "answered" | .answer = $a | .answered_by = $by | .answered_at = $now | .updated_at = $now
       | del(.press_note, .press_note_at, .status_reason)' \
     --arg a "$answer" --arg by "$by" --argjson now "$now"
@@ -747,7 +819,7 @@ cmd_answer() {
     return 0
   fi
 
-  local gate task_id
+  local gate task_id task_failed=0
   gate="$(jq -r '.gate // empty' "$f")"
   task_id="$(jq -r '.task_id // empty' "$f")"
   if [ -n "$gate" ]; then
@@ -761,18 +833,23 @@ cmd_answer() {
         relayed_at: null}' "$f")"
     if [ -n "$task_id" ]; then
       local tf; tf="$(task_path "$task_id")"
-      if [ -f "$tf" ]; then
-        write_atomic "$tf" "$(jq --arg id "$id" --arg result "$result" --arg by "$by" --argjson now "$now" '
+      if [ -n "$lock_tf" ]; then
+        task_jq "$tf" --arg id "$id" --arg result "$result" --arg by "$by" --argjson now "$now" '
           .gates = [ (.gates // [])[] | if .decision_id == $id then
                        .status = $result
                        | .approved_by = (if $result == "approved" then $by else null end)
                        | .approved_at = (if $result == "approved" then $now else null end)
                        | .answered_by = $by
                      else . end ]
-          | .updated_at = $now' "$tf")"
+          | .updated_at = $now' || {
+          echo "board: answer: $id is answered, but task $task_id was not updated; run the same answer again" >&2
+          task_failed=1
+        }
+        task_unlock
       fi
     fi
     echo "$id answered ($gate gate $result)"
+    [ "$task_failed" = 0 ] || exit 8
   else
     echo "$id answered"
   fi
@@ -951,6 +1028,7 @@ cmd_task() {
     ls) task_ls "$@" ;;
     show) [ -n "${1:-}" ] || { sub_usage task show >&2; exit 2; }
           local tf; tf="$(task_path "$1")"; [ -f "$tf" ] || die "no such task: $1"; jq . "$tf" ;;
+    set|dep|pr|done|pause|resume|drop|block|progress) python3 "$REPO/lib/tasks.py" "$sub" "$@" ;;
     *) sub_usage task >&2; exit 2 ;;
   esac
 }
@@ -976,7 +1054,7 @@ task_new() {
     --arg stage "$stage" --argjson now "$now" '
     { id: $id, title: $title, owner: $owner, stage: $stage,
       artifacts: { intent: null, spec: null, plan: null, evals: null, review: null },
-      gates: [], created_at: $now, updated_at: $now }')"
+      gates: [], created_at: $now, updated_at: $now, schema_version: 1 }')"
   log_event "$(jq -cn --arg id "$id" --arg owner "$owner" --arg stage "$stage" --argjson now "$now" \
     '{ts: $now, type: "task", id: $id, owner: $owner, stage: $stage, action: "new"}')"
   echo "$id"
@@ -1004,8 +1082,8 @@ task_stage() {
     arts_json="$(jq -c --arg k "$key" --arg v "${a#*=}" '.[$k] = $v' <<<"$arts_json")"
   done
   local now; now="$(now_ms)"
-  write_atomic "$tf" "$(jq --arg stage "$stage" --argjson arts "$arts_json" --argjson now "$now" \
-    '.stage = $stage | .artifacts = ((.artifacts // {}) + $arts) | .updated_at = $now' "$tf")"
+  task_write "$tf" --arg stage "$stage" --argjson arts "$arts_json" --argjson now "$now" \
+    '.stage = $stage | .artifacts = ((.artifacts // {}) + $arts) | .updated_at = $now' || die "task stage: could not update $id"
   log_event "$(jq -cn --arg id "$id" --arg stage "$stage" --argjson arts "$arts_json" --argjson now "$now" \
     '{ts: $now, type: "task", id: $id, stage: $stage, artifacts: $arts, action: "stage"}')"
   echo "$id $stage"
@@ -1022,11 +1100,11 @@ task_ls() {
   local all; all="$(jq -s 'sort_by(.updated_at)' "${files[@]}")"
   if [ "$json" = 1 ]; then echo "$all"; return 0; fi
   {
-    printf 'ID\tOWNER\tSTAGE\tGATES\tARTIFACTS\tTITLE\n'
+    printf 'ID\tOWNER\tSTAGE\tGATES\tARTIFACTS\tTITLE\tSTATUS\n'
     jq -r "$JQ_SAFE"'.[] | [ .id, .owner, .stage,
       ((.gates // []) | if length == 0 then "-" else map(.stage + "/" + .gate + ":" + .status) | join(",") end),
       ((.artifacts // {}) | to_entries | map(select(.value != null) | .key) | if length == 0 then "-" else join(",") end),
-      (.title | gsub("[\t\n]"; " ") | .[0:50]) ] | map(safe) | @tsv' <<<"$all"
+      (.title | gsub("[\t\n]"; " ") | .[0:50]), ((.status // "active") | tostring) ] | map(safe) | @tsv' <<<"$all"
   } | column -t -s $'\t'
 }
 
@@ -2275,7 +2353,7 @@ case "$sub" in
   # leading -h/--help asks for help.
   answer)
     case "${1:-}" in -h|--help) sub_usage answer; exit 0 ;; esac ;;
-  ls|snapshot|ask|decisions|mark|resolve|press|limit|notify|doctor|ack|unmute|notify-level|notify-presence|resources|rc|session|pomodoro)
+  ls|snapshot|ask|decisions|mark|resolve|press|limit|notify|doctor|ack|unmute|notify-level|notify-presence|resources|rc|session|pomodoro|schedule)
     if wants_help "$@"; then sub_usage "$sub"; exit 0; fi ;;
   # proposals, notes and the owner's words are free text: only -h/--help right after the
   # subcommand (or instead of it) asks for help.
@@ -2284,7 +2362,8 @@ case "$sub" in
     case "${2:-}" in -h|--help) sub_usage "$sub" "$1"; exit 0 ;; esac ;;
   task)
     if wants_help "$@"; then
-      case "${1:-}" in new|stage|ls|show) sub_usage task "$1" ;; *) sub_usage task ;; esac
+      case "${1:-}" in new|stage|ls|show|set|dep|pr|done|pause|resume|drop|block|progress) sub_usage task "$1" ;;
+        *) sub_usage task ;; esac
       exit 0
     fi ;;
 esac
@@ -2301,6 +2380,7 @@ case "$sub" in
   limit) cmd_limit "$@" ;;
   resources) cmd_resources "$@" ;;
   pomodoro) guarded cmd_pomodoro "$@" ;;
+  schedule) guarded python3 "$REPO/lib/scheduler.py" show "$@" ;;
   notify) cmd_notify "$@" ;;
   ack) [ $# -gt 0 ] || { sub_usage ack >&2; exit 2; }; exec "$REPO/bin/board-notify" ack "$@" ;;
   doctor) cmd_doctor "$@" ;;
