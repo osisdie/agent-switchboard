@@ -44,6 +44,17 @@ SAME_TOLERANCE = {
     "big_share": 0.0002,   # share of the image that may be big pixels
     "small_share": 0.001,  # share of the image that may differ at all
 }
+# Generous: a loaded machine (CI, a shared box) can take tens of seconds for one page.
+LOAD_TIMEOUT_MS = 180_000
+# The page is ready once the demo has rendered (its DEMO DATA tag shows), the fonts in use have
+# loaded (or failed: offline, the fallback is final) and two frames have been painted since.
+# Waiting for "networkidle" instead timed out under load: Chromium never saw 500 ms without a
+# connection open while the web-font requests were still crawling.
+READY_JS = """() => {
+  const tag = document.getElementById('demo-tag');
+  return document.readyState === 'complete' && !!tag && !tag.hidden && document.fonts.status === 'loaded';
+}"""
+SETTLE_JS = "() => document.fonts.ready.then(() => new Promise((ok) => requestAnimationFrame(() => requestAnimationFrame(ok))))"
 DESKTOP = {"width": 1280, "height": 860}
 PHONE = {"width": 390, "height": 844}
 
@@ -138,6 +149,7 @@ def shoot(page, name):
         return page.screenshot()
     if name == "session-card":
         page.click('article[aria-label="Session API"] .scard-toggle')
+        page.locator('article[aria-label="Session API"] .scard-toggle[aria-expanded="true"]').wait_for()
         page.wait_for_timeout(150)
         return page.screenshot(full_page=True, clip=union(page, ["#board .sec-head", "#board-cols"]))
     if name == "deck":
@@ -146,16 +158,19 @@ def shoot(page, name):
         return page.screenshot(full_page=True, clip=union(page, ["#decisions .sec-head", "#dec-d-1-demo", "#dec-d-2-demo"]))
     if name == "notifications":
         page.click("#notif-btn")
+        page.locator("#notif").wait_for(state="visible")
         page.wait_for_timeout(250)
         return page.locator("#notif").screenshot()
     if name == "resources":
         return page.locator("#resources").screenshot()
     if name == "usage-popover":
         page.hover("#usage")
+        page.locator("#usage-pop").wait_for(state="visible")
         page.wait_for_timeout(200)
         return page.screenshot(full_page=True, clip=union(page, ["#usage", "#usage-pop"], pad=16))
     if name == "profile-menu":
         page.click("#acct-btn")
+        page.locator("#acct-panel").wait_for(state="visible")
         page.wait_for_timeout(200)
         return page.screenshot(full_page=True, clip=union(page, ["#acct-btn", "#acct-panel"], pad=16))
     raise KeyError(name)
@@ -205,9 +220,10 @@ def main(argv):
             if name == "pwa-standalone":
                 cdp = ctx.new_cdp_session(page)
                 cdp.send("Emulation.setSafeAreaInsetsOverride", {"insets": {"top": 59, "bottom": 34, "left": 0, "right": 0}})
-            page.goto(page_url)
-            page.wait_for_load_state("networkidle")
-            page.evaluate("() => document.fonts.ready")
+            page.set_default_timeout(LOAD_TIMEOUT_MS)
+            page.goto(page_url, wait_until="load")
+            page.wait_for_function(READY_JS, polling=100)
+            page.evaluate(SETTLE_JS)
             if args.eval:
                 page.evaluate(args.eval)
             page.wait_for_timeout(300)
