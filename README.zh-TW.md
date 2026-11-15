@@ -107,8 +107,9 @@ operator 把卡片寫到看板 → 你按下 **Allow** → operator 執行 `boar
 
 - 支援 **Remote Control**（`--remote-control`）的 Claude Code CLI，並登入一個可以發布 Artifact 的
   claude.ai 帳號
-- `tmux`、`jq`、裝了 `pyyaml` 的 `python3` 3.9+；只有 tunnel 監聽器需要 `cryptography` 模組；
-  `inotify-tools` 可有可無（沒有的話，收集器每 5 秒輪詢一次）
+- `tmux`、`jq`、`curl`、`flock`（util-linux）、`column`（Debian／Ubuntu 上在 bsdextrautils），以及
+  裝了 `pyyaml` 的 `python3` 3.9+；只有 tunnel 監聽器需要 `cryptography` 模組；`inotify-tools`
+  可有可無（沒有的話，收集器每 5 秒輪詢一次）。`board doctor` 會檢查這些項目
 - Linux 或 WSL2（macOS 未經測試）
 
 **安裝**
@@ -753,7 +754,8 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 - `.githooks/commit-msg` 對 commit **訊息**執行同樣的機密與 banned terms 檢查。
 - 如果 `tmp-local/banned-terms.txt` 不存在，**兩個 hook 都會略過 banned terms 檢查**（並顯示警告），
   但仍執行機密檢查。每個 clone 都要建立這份清單。
-- `.github/workflows/ci.yml` 會在每次 push 和 pull request 時執行 gitleaks、shellcheck 和測試，所以沒經過
+- `.github/workflows/ci.yml` 會在每次 push 和 pull request 時執行 gitleaks、shellcheck、測試和 README
+  同步檢查（`readme-sync`），所以沒經過
   hook 的 commit 依然會被抓到。Actions 都以 commit SHA 固定版本。屬於組織的 fork 需要一個免費的
   `GITLEAKS_LICENSE` secret。
 - `tmp-local/banned-terms.txt` 每行一個詞或樣式。它被 gitignore，因為**這份清單本身就很敏感**：它正好列出你要隱藏的東西。
@@ -777,13 +779,14 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `prompts/board-operator.md` | `BOARD` operator session 的常駐指示 |
 | `snippets/worker-protocol.md` | 貼進每個 worker session `CLAUDE.md` 的區塊 |
 | `playbook/` | 執行多個 Claude Code session 的經驗：SDLC delivery harness、協作、發布、repo 衛生、CLAUDE.md 範本 |
-| `scripts/` | `install.sh`、`setup-dev.sh`（git hook + gitleaks）、`expose-cloudflare.sh`（tunnel + Access 步驟） |
+| `scripts/` | `install.sh`、`setup-dev.sh`（git hook + gitleaks）、`expose-cloudflare.sh`（tunnel + Access 步驟）、`check-readme-sync.py`（README 翻譯結構與粗體檢查，在 CI 執行） |
 | `.githooks/pre-commit` | 拒絕 `tmp*/` 路徑；對暫存變更執行 gitleaks + banned terms 檢查 |
 | `.githooks/commit-msg` | 檢查 commit 訊息裡的機密樣式與 banned terms |
-| `.github/workflows/ci.yml` | CI：gitleaks、shellcheck、測試 |
+| `.github/workflows/ci.yml` | CI：gitleaks、shellcheck、測試、readme-sync |
 | `.gitleaks.toml` | gitleaks 預設規則，加上針對測試 fixture 的小範圍允許清單 |
 | `lib/away.py` | 為 snapshot 和 `board-serve` 讀取 owner-away 模式與共識項目 |
 | `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`），以及選用的頁面告警連結 headless 檢查（`test_page_links.py`：需要 python playwright，沒有就略過；CI 不執行） |
+| `CONTRIBUTING.md` | 開發環境設定、測試，以及讓 `README.zh-TW.md` 保持同步的規則 |
 | `fleet.example.yaml`、`.env.example` | 設定範例 |
 
 ## `tmp-local/` 慣例

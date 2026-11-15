@@ -107,8 +107,9 @@ the operator runs `board press` → the key is sent to that pane only if both gu
 
 - Claude Code CLI with **Remote Control** (`--remote-control`), logged in to a claude.ai account
   that can publish Artifacts
-- `tmux`, `jq`, `python3` 3.9+ with `pyyaml`; the `cryptography` module only for the tunnel
-  listener; optionally `inotify-tools` (the collector polls every 5 s without it)
+- `tmux`, `jq`, `curl`, `flock` (util-linux), `column` (bsdextrautils on Debian/Ubuntu), and
+  `python3` 3.9+ with `pyyaml`; the `cryptography` module only for the tunnel listener; optionally
+  `inotify-tools` (the collector polls every 5 s without it). `board doctor` checks them
 - Linux or WSL2 (macOS is untested)
 
 **Install**
@@ -815,8 +816,8 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 - `.githooks/commit-msg` runs the same secret and banned-terms checks on the commit **message**.
 - If `tmp-local/banned-terms.txt` is missing, **both hooks skip the banned-terms check** (with a
   warning) and still run the secret checks. Create the list in every clone.
-- `.github/workflows/ci.yml` runs gitleaks, shellcheck and the tests on every push and pull
-  request, so a commit made without the hook is still caught. Actions are pinned by commit SHA.
+- `.github/workflows/ci.yml` runs gitleaks, shellcheck, the tests and the README sync check
+  (`readme-sync`) on every push and pull request, so a commit made without the hook is still caught. Actions are pinned by commit SHA.
   Organization-owned forks need a free `GITLEAKS_LICENSE` secret.
 - `tmp-local/banned-terms.txt` holds one term or pattern per line. It is gitignored, because **the
   list itself is sensitive**: it names exactly what you are hiding.
@@ -841,13 +842,14 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `prompts/board-operator.md` | Standing instructions for the `BOARD` operator session |
 | `snippets/worker-protocol.md` | Paste-in block for every worker session's `CLAUDE.md` |
 | `playbook/` | Lessons for running many Claude Code sessions: SDLC delivery harness, collaboration, publishing, repo hygiene, CLAUDE.md template |
-| `scripts/` | `install.sh`, `setup-dev.sh` (git hooks + gitleaks), `expose-cloudflare.sh` (tunnel + Access steps) |
+| `scripts/` | `install.sh`, `setup-dev.sh` (git hooks + gitleaks), `expose-cloudflare.sh` (tunnel + Access steps), `check-readme-sync.py` (README translation structure + bold check, run in CI) |
 | `.githooks/pre-commit` | refuses `tmp*/` paths; gitleaks on staged changes + banned-terms check |
 | `.githooks/commit-msg` | secret patterns + banned terms in the commit message |
-| `.github/workflows/ci.yml` | CI: gitleaks, shellcheck, tests |
+| `.github/workflows/ci.yml` | CI: gitleaks, shellcheck, tests, readme-sync |
 | `.gitleaks.toml` | gitleaks default rules plus a narrow allowlist for test fixtures |
 | `lib/away.py` | Reads owner-away mode and consensus items for the snapshot and `board-serve` |
 | `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), and the optional headless check of the page's alert links (`test_page_links.py`: needs python playwright, skips without it; not run in CI) |
+| `CONTRIBUTING.md` | Dev setup, tests, and the rule for keeping `README.zh-TW.md` in sync |
 | `fleet.example.yaml`, `.env.example` | Example config |
 
 ## `tmp-local/` convention
