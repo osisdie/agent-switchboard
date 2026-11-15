@@ -220,6 +220,11 @@ db.
   - **exit 3** (guard failed: the prompt changed or isn't on screen; no keys were sent) →
     `status: "stale"` in the db. `board press` has already marked the local file. The page then
     tells the human to handle it in the session. Do not retry.
+  - **exit 7** (the prompt still waits but is not on screen, e.g. the session's TUI is scrolled
+    up; at most the scroll key was sent) → the local file is `pending` again with a `press_note`.
+    Keep the db decision open, set `context: "the session's screen is scrolled; answer again or in
+    the session"`, and press again on the next tick at most twice; then leave it open with that
+    context. Never mark it `stale` yourself: the collector does once the session moves on.
   - any other exit → leave it open and note the error in `context`. Retry next tick, and after 3
     failures mark it `stale`.
 - **`kind: "question"` with `source: "pane"`** (an AskUserQuestion picker in that session):
