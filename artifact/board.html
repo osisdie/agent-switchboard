@@ -56,6 +56,10 @@
   --gate-ink: #eef2f7;
   --gate-muted: #a9b4c3;
   --gate-line: #18212c;
+  /* Deck keys: dark key faces in both themes (a hardware key deck), bright state inks on them. */
+  --dk-face: #1b2430; --dk-edge: #2c3846; --dk-ink: #eef2f7; --dk-muted: #a9b4c3;
+  --dk-work: #54c4d5; --dk-ok: #63cf8d; --dk-off: #8b95a4; --dk-amber: #ffb84a;
+  --dk-q: #b493ff; --dk-plan: #ff9a5c; --dk-perm: #ff7b6e; --dk-on-ink: #10151c;
   --f-display: "Archivo", "Arial Narrow", system-ui, sans-serif;
   --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --f-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -74,6 +78,7 @@
     --shadow: 0 1px 0 rgb(255 255 255 / .03);
     --gate-bg: #05080b; --gate-ink: #e5eaf1; --gate-muted: #98a4b5; --gate-line: #3a4656;
     --heat: #ff9a5c; --heat-soft: #3a2014;
+    --dk-face: #222c38; --dk-edge: #34414f;
   }
 }
 :root[data-theme="dark"] {
@@ -86,6 +91,7 @@
   --shadow: 0 1px 0 rgb(255 255 255 / .03);
   --gate-bg: #05080b; --gate-ink: #e5eaf1; --gate-muted: #98a4b5; --gate-line: #3a4656;
   --heat: #ff9a5c; --heat-soft: #3a2014;
+  --dk-face: #222c38; --dk-edge: #34414f;
 }
 
 * { box-sizing: border-box; }
@@ -623,6 +629,116 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 .res-tbl tr.orphan td:first-child { color: var(--muted); font-style: italic; }
 .sys[hidden], .res-meta[hidden], .oom[hidden] { display: none; }
 @media (max-width: 480px) { .sys { width: 100%; } }
+
+/* ---------- deck: a key-deck panel (5 x 3 keys and a wide strip) ---------- */
+.deck { display: grid; gap: 10px; }
+.deck-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
+.deck-head h2 { font-size: 24px; font-weight: 720; font-stretch: 85%; }
+.deck-head .hint { color: var(--muted); font-size: 14px; flex: 1 1 260px; }
+.deck-head .icon-btn { align-self: center; }
+.deck-body { position: relative; max-width: 860px; }
+.deck-grid { position: relative; overflow: hidden; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; padding: 10px; border-radius: 12px; background: color-mix(in srgb, var(--dk-face) 12%, var(--panel)); border: 1px solid var(--rule); }
+.dcell { position: relative; min-width: 0; display: grid; }
+.dkey { position: relative; display: grid; align-content: space-between; gap: 2px; min-width: 0; min-height: 104px; aspect-ratio: 1 / .86; padding: 9px 10px; border-radius: 10px; border: 1px solid var(--dk-edge); background: var(--dk-face); color: var(--dk-ink); font: inherit; font-size: 12px; line-height: 1.25; text-align: left; cursor: pointer; overflow: hidden; box-shadow: 0 2px 0 rgb(0 0 0 / .35), inset 0 1px 0 rgb(255 255 255 / .06); -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+.dkey:hover { border-color: var(--dk-muted); }
+.dkey:active { transform: translateY(1px); box-shadow: 0 1px 0 rgb(0 0 0 / .35); }
+.dkey:focus-visible { outline: 3px solid var(--cord); outline-offset: 2px; }
+.dkey.empty { cursor: default; opacity: .45; box-shadow: none; }
+.dkey .k-lab { font-family: var(--f-mono); font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--dk-muted); display: flex; justify-content: space-between; gap: 6px; white-space: nowrap; overflow: hidden; }
+.dkey .k-big { font-family: var(--f-display); font-size: 30px; font-weight: 780; font-stretch: 80%; line-height: 1; font-variant-numeric: tabular-nums; }
+.dkey .k-code { font-family: var(--f-display); font-size: 19px; font-weight: 740; font-stretch: 82%; line-height: 1.05; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dkey .k-sub { color: var(--dk-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.dkey .k-title { color: var(--dk-ink); opacity: .86; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; word-break: break-word; }
+.dkey .k-ok { color: var(--dk-ok); }
+.dkey .k-warn { color: var(--dk-amber); }
+.dkey .k-bad { color: var(--dk-perm); }
+.dkey .k-state { display: inline-flex; align-items: center; gap: 5px; }
+.dkey .k-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dk-off); flex: none; }
+.dkey.st-working .k-dot { background: var(--dk-work); }
+.dkey.st-done .k-dot { background: var(--dk-ok); }
+.dkey.st-offline .k-dot { background: transparent; box-shadow: inset 0 0 0 2px var(--dk-off); }
+.dkey.st-offline { opacity: .7; }
+.dkey.st-working { box-shadow: inset 0 -3px 0 var(--dk-work), 0 2px 0 rgb(0 0 0 / .35); }
+.dkey.st-done { box-shadow: inset 0 -3px 0 var(--dk-ok), 0 2px 0 rgb(0 0 0 / .35); }
+/* waiting: the key blinks in the colour of what it waits for */
+.dkey.w-question { --kc: var(--dk-q); }
+.dkey.w-plan { --kc: var(--dk-plan); }
+.dkey.w-permission { --kc: var(--dk-perm); }
+.dkey.waiting { border-color: var(--kc); box-shadow: inset 0 0 0 2px var(--kc), 0 0 14px color-mix(in srgb, var(--kc) 45%, transparent); animation: dk-blink 1s steps(1, end) infinite; }
+.dkey.waiting .k-dot { background: var(--kc); }
+@keyframes dk-blink { 0% { background: color-mix(in srgb, var(--kc) 40%, var(--dk-face)); } 50% { background: var(--dk-face); } }
+.dkey.waiting .k-bang { display: inline-block; font-weight: 800; color: var(--kc); }
+@media (prefers-reduced-motion: reduce) {
+  .dkey.waiting { animation: none; background: color-mix(in srgb, var(--kc) 30%, var(--dk-face)); }
+  .dkey:active { transform: none; }
+}
+.dkey .k-bang { display: none; margin-right: 3px; }
+/* the HITL key */
+.dkey.hitl.clear .k-big { color: var(--dk-ok); }
+.dkey.hitl.hot .k-big { color: var(--kc, var(--dk-amber)); }
+/* usage rings */
+.dkey .k-ring { display: flex; align-items: center; gap: 8px; }
+.dkey .k-ring svg { flex: none; width: 44px; height: 44px; }
+.dkey .k-ring .trk { stroke: var(--dk-edge); }
+.dkey .k-ring .val { stroke: var(--dk-ok); transition: stroke-dasharray .4s; }
+.dkey.lv-amber .k-ring .val { stroke: var(--dk-amber); }
+.dkey.lv-orange .k-ring .val { stroke: var(--dk-plan); }
+.dkey.lv-red .k-ring .val { stroke: var(--dk-perm); }
+.dkey .k-ring .pct { font-family: var(--f-display); font-size: 22px; font-weight: 760; font-stretch: 82%; }
+.dkey.stale { opacity: .55; filter: saturate(.4); }
+.dkey .k-bars { display: grid; gap: 4px; }
+.dkey .k-bars.stale .k-bar { opacity: .55; }
+.dkey .k-bar { display: grid; grid-template-columns: 34px 1fr 32px; align-items: center; gap: 5px; font-size: 11px; color: var(--dk-muted); }
+.dkey .k-bar > span:nth-child(2) { height: 6px; border-radius: 3px; background: var(--dk-edge); overflow: hidden; }
+.dkey .k-bar i { display: block; height: 100%; background: var(--dk-ok); }
+.dkey .k-bar.lv-amber i { background: var(--dk-amber); }
+.dkey .k-bar.lv-orange i { background: var(--dk-plan); }
+.dkey .k-bar.lv-red i { background: var(--dk-perm); }
+.dkey .k-oom { font-family: var(--f-mono); font-size: 10.5px; padding: 0 5px; border-radius: 8px; background: var(--dk-edge); color: var(--dk-muted); }
+.dkey .k-oom.hot { background: var(--dk-perm); color: var(--dk-on-ink); }
+.dkey.lvl-warn .k-lvl { color: var(--dk-amber); }
+.dkey.lvl-high .k-lvl { color: var(--dk-plan); }
+.dkey.lvl-critical .k-lvl { color: var(--dk-perm); }
+.dkey.lvl-ok .k-lvl { color: var(--dk-ok); }
+.dkey .k-lvl { font-family: var(--f-display); font-size: 20px; font-weight: 760; font-stretch: 82%; text-transform: uppercase; }
+.dkey.on .k-big, .dkey.on .k-code { color: var(--dk-amber); }
+/* the wide strip: the fleet, the 5h / 7d bars and the burn rate */
+.dcell.wide { grid-column: 1 / -1; }
+.dkey.wide { aspect-ratio: auto; min-height: 0; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); align-content: center; gap: 8px 16px; }
+.dkey.wide .k-lab { grid-column: 1 / -1; }
+.dkey.wide .k-fleet { display: flex; flex-wrap: wrap; gap: 6px; align-content: start; min-width: 0; }
+.dkey .k-pill { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border-radius: 999px; background: var(--dk-edge); font-family: var(--f-mono); font-size: 11.5px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dkey .k-pill.waiting { animation: none; box-shadow: inset 0 0 0 2px var(--kc); }
+.dkey .k-pill.w-question { --kc: var(--dk-q); }
+.dkey .k-pill.w-plan { --kc: var(--dk-plan); }
+.dkey .k-pill.w-permission { --kc: var(--dk-perm); }
+.dkey .k-pill.st-working .k-dot { background: var(--dk-work); }
+.dkey .k-pill.st-done .k-dot { background: var(--dk-ok); }
+.dkey .k-pill.waiting .k-dot { background: var(--kc); }
+.dkey .k-pill.st-offline .k-dot { background: transparent; box-shadow: inset 0 0 0 2px var(--dk-off); }
+/* a key's second action: a small button in its corner (never inside the key's own button) */
+.dsec { position: absolute; z-index: 1; top: 5px; right: 5px; display: inline-flex; align-items: center; justify-content: center; min-width: 30px; height: 30px; padding: 0 7px; border-radius: 8px; border: 1px solid var(--dk-edge); background: color-mix(in srgb, var(--dk-face) 80%, #000); color: var(--dk-ink); font: inherit; font-size: 11px; font-weight: 600; text-decoration: none; cursor: pointer; }
+.dsec:hover { border-color: var(--dk-muted); }
+.dcell.has-sec .k-lab { padding-right: 34px; }
+/* the alert wave: a ring in the waiting colour from the key that started waiting */
+.dwave { position: absolute; z-index: 2; width: 60px; height: 60px; margin: -30px 0 0 -30px; border-radius: 50%; pointer-events: none; background: radial-gradient(circle, transparent 50%, var(--kc) 58%, transparent 70%); opacity: 0; animation: dk-wave 1.6s ease-out 1 forwards; }
+.dwave.w-question { --kc: var(--dk-q); } .dwave.w-plan { --kc: var(--dk-plan); } .dwave.w-permission { --kc: var(--dk-perm); }
+@keyframes dk-wave { 0% { transform: scale(.3); opacity: .95; } 100% { transform: scale(var(--s, 14)); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .dwave { display: none; } }
+.deck-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin-top: 8px; padding: 10px 12px; border-radius: var(--r); border: 1px solid color-mix(in srgb, var(--lamp) 40%, var(--rule)); background: var(--lamp-soft); color: var(--lamp-ink); }
+.deck-confirm .q { flex: 1 1 240px; font-weight: 600; }
+.deck-confirm .note { flex-basis: 100%; margin: 0; font-size: 13px; }
+.deck.collapsed .deck-body, .deck-confirm[hidden] { display: none; }
+@media (max-width: 620px) {
+  .deck-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; padding: 8px; }
+  .dkey { aspect-ratio: 1 / .95; min-height: 96px; padding: 8px; }
+  .dkey .k-big { font-size: 26px; }
+  .dkey .k-code { font-size: 16px; }
+  .dkey .k-ring { gap: 5px; }
+  .dkey .k-ring svg { width: 32px; height: 32px; }
+  .dkey .k-ring .pct { font-size: 18px; }
+  .dkey.wide { grid-template-columns: minmax(0, 1fr); }
+}
 </style>
 
 <div class="wrap">
@@ -648,6 +764,13 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
             <label><input type="radio" name="sb-theme" value="system"><span data-i18n>System</span></label>
           </div>
           <p class="acct-note" id="acct-theme-note" hidden data-i18n>Following the theme set in the claude.ai viewer. Change it there.</p>
+        </fieldset>
+        <fieldset class="acct-sec" id="acct-deck">
+          <legend data-i18n>Deck panel</legend>
+          <div class="seg seg2">
+            <label><input type="radio" name="sb-deck" value="shown"><span data-i18n>Shown</span></label>
+            <label><input type="radio" name="sb-deck" value="collapsed"><span data-i18n>Collapsed</span></label>
+          </div>
         </fieldset>
         <fieldset class="acct-sec" id="acct-lang">
           <legend data-i18n>Language</legend>
@@ -697,6 +820,18 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       </a>
     </div>
   </header>
+
+  <section class="deck" id="deck" aria-labelledby="h-deck">
+    <div class="deck-head">
+      <h2 id="h-deck" data-i18n>Deck</h2>
+      <span class="hint" data-i18n>Big keys for a glance. A key jumps to what it shows; nothing here types into a session.</span>
+      <button class="icon-btn" id="deck-toggle" type="button" aria-expanded="true" aria-controls="deck-body"><span id="deck-toggle-t" data-i18n>Hide deck</span></button>
+    </div>
+    <div class="deck-body" id="deck-body">
+      <div class="deck-grid" id="deck-grid" role="group" aria-label="Deck keys" data-i18n-attr="aria-label"></div>
+      <div class="deck-confirm" id="deck-confirm" role="group" aria-labelledby="deck-confirm-q" hidden></div>
+    </div>
+  </section>
 
   <nav class="secnav" id="secnav" aria-label="Sections" data-i18n-attr="aria-label">
     <div class="secnav-in">
@@ -902,6 +1037,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     myAnswers: new Map(),        // claude mode: decisionId -> my answers/<me>/d/<id> doc
     canSend: 'off',
     confirm: null,               // { id, choice }
+    deckConfirm: null,           // the Deck's pending confirm step: { what, at }
     busy: new Set(),
     drafts: {},
   };
@@ -1658,6 +1794,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     const last = recent[recent.length - 1];
     if (col === 'offline') return { text: ts(s.updated_at) ? tr('Offline, last seen {ago}', { ago: rel(ts(s.updated_at)) }) : tr('Offline') };
     if (col === 'needs') {
+      if (p && str(p.tool_name) === 'ExitPlanMode') return { waiting: true, text: tr('Waiting: plan approval') + (p.summary ? ' · ' + clip(p.summary, 120) : '') };
       if (p) return { waiting: true, text: tr('Waiting: permission for {tool}', { tool: str(p.tool_name) || tr('a tool') }) + (p.summary ? ' · ' + clip(p.summary, 120) : '') };
       const q = sessionDecisions(s).find((d) => d.kind !== 'permission');
       return { waiting: true, text: q ? tr('Waiting: {what}', { what: clip(q.question, 120) }) : tr('Waiting for you in the session') };
@@ -2219,7 +2356,380 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   document.addEventListener('visibilitychange', () => { beat(); if ($('#notif').open) renderNotif(); });
   addEventListener('pagehide', () => beat(true));
 
-  function renderAll() { renderHeader(); renderBanners(); renderNotif(); renderDecisions(); renderConsensus(); renderTasks(); renderBoard(); renderMessages(); renderApprovals(); renderResources(); if ($('#info').open) renderLedger(); openLinked(); }
+  /* ----------------------------------------------------------------- deck */
+  // A key-deck panel near the top: 5 x 3 keys and a wide strip, all from data the board already
+  // has. A key only navigates (scroll and focus a card, open a dialog or a Remote Control link) or,
+  // for approvers on the self-hosted board, calls an existing approver-only route after a confirm
+  // step: acknowledge all alerts, mute all push for an hour / unmute, owner-away on / off. Nothing
+  // here types into a session.
+  const DECK_KEY = 'switchboard.deck';
+  const DECK_SLOTS = 8;
+  const USAGE_STALE_MS = 15 * 60 * 1000;
+  const CYCLE_MS = 5000;
+  const LONG_PRESS_MS = 800;
+  const WAIT_LABEL = { question: 'question', plan: 'plan', permission: 'permission' };
+  let deckCollapsed = (() => { try { return localStorage.getItem(DECK_KEY) === 'collapsed'; } catch (e) { return false; } })();
+  let deckCycle = null;            // HITL press cycling: { i, at }
+  let deckWaiting = null;          // codes waiting at the last render (null before the first one)
+  const reducedMotion = () => !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+
+  // What a decision waits for: a permission prompt, a plan (ExitPlanMode or a lifecycle gate), or a question.
+  function decKind(d) {
+    if (str(d.tool_name) === 'ExitPlanMode' || isGateDecision(d)) return 'plan';
+    return d.kind === 'permission' ? 'permission' : 'question';
+  }
+  function waitKind(s) {
+    const p = s.pending && typeof s.pending === 'object' ? s.pending : null;
+    if (p) return str(p.tool_name) === 'ExitPlanMode' ? 'plan' : 'permission';
+    const d = sessionDecisions(s).sort((a, b) => ts(a.created_at) - ts(b.created_at))[0];
+    return d ? decKind(d) : 'question';
+  }
+  // Everything a human is waiting on, longest wait first: open decisions, then sessions that wait
+  // in the pane without a decision on the board.
+  function hitlTargets() {
+    const out = pendingDecisions().map((d) => ({ dec: d, who: lc(d.from), since: ts(d.created_at) || Date.now(), kind: decKind(d) }));
+    const fromCodes = new Set(out.map((t) => t.who));
+    for (const s of S.sessions) {
+      if (s.state !== 'needs-you') continue;
+      if (fromCodes.has(lc(s.code)) || (s.aliases || []).some((a) => fromCodes.has(lc(a)))) continue;
+      out.push({ session: s, who: lc(s.code), since: ts(s.updated_at) || Date.now(), kind: waitKind(s) });
+    }
+    return out.sort((a, b) => a.since - b.since);
+  }
+  // The S1-S8 keys: the first eight sessions in board order, offline ones last (stable slots).
+  function deckSessions() {
+    const on = S.sessions.filter((s) => colOf(s) !== 'offline'), off = S.sessions.filter((s) => colOf(s) === 'offline');
+    return on.concat(off).slice(0, DECK_SLOTS);
+  }
+  function compactDur(ms) {
+    if (!(ms > 0)) return tr('now');
+    const m = Math.floor(ms / 60000); if (m < 60) return tr('{m}m', { m: Math.max(1, m) });
+    const hh = Math.floor(m / 60); if (hh < 48) return tr('{h}h {m}m', { h: hh, m: m % 60 });
+    return tr('{d}d {h}h', { d: Math.floor(hh / 24), h: hh % 24 });
+  }
+  function usageStale() {
+    const upd = ts(S.operator && S.operator.usage && S.operator.usage.updated_at);
+    return !upd || Date.now() - upd > USAGE_STALE_MS;
+  }
+  // The burn rate (board-serve: operator.usage.burn from the collector's sample buffer).
+  function burnView() {
+    const live = S.mode === 'live' || S.mode === 'demo';
+    const b = live && S.operator && S.operator.usage && S.operator.usage.burn;
+    if (!b || typeof b !== 'object') return { status: 'none', text: tr('pace —'), sub: tr('no burn data') };
+    const rate = Number(b.pct_per_hour);
+    const sub = isFinite(rate) && b.pct_per_hour != null ? tr('{r}%/h', { r: (rate > 0 ? '+' : '') + (Math.round(rate * 10) / 10) }) : '';
+    if (b.status === 'stale' || (b.status !== 'unknown' && usageStale())) return { status: 'stale', text: tr('pace stale'), sub: tr('no recent usage report') };
+    if (b.status === 'danger') {
+      const left = ts(b.hit_at) - Date.now();
+      return { status: 'danger', big: left > 60000 ? '⚠ ' + compactDur(left) : '⚠', line: tr(left > 60000 ? 'to the 5h limit' : 'at the limit'),
+        text: left > 60000 ? tr('⚠ {in} to limit', { in: compactDur(left) }) : tr('⚠ at the limit'), sub };
+    }
+    if (b.status === 'ok') return { status: 'ok', text: tr('pace OK'), sub };
+    return { status: 'unknown', text: tr('pace …'), sub: tr('needs 5 min of samples') };
+  }
+  const canDeckAct = () => awayEditor() && (S.demo || isLocal());
+
+  /* key view models: plain data (the reconcile signature), then built into buttons */
+  function deckModels() {
+    const live = S.mode === 'live' || S.mode === 'demo';
+    const now = Date.now();
+    const act = canDeckAct();
+    const out = [];
+    const targets = live ? hitlTargets() : [];
+    const who = new Set(targets.map((t) => t.who));
+    out.push({ key: 'hitl', live, n: who.size, items: targets.length, longest: targets.length ? compactDur(now - targets[0].since) : '', kind: targets.length ? targets[0].kind : null, ack: act && live });
+    const slots = live ? deckSessions() : [];
+    const sess = (i) => {
+      const s = slots[i];
+      if (!s) return { key: 's' + (i + 1), slot: i + 1, empty: true };
+      const col = colOf(s), waiting = col === 'needs';
+      return { key: 's' + (i + 1), slot: i + 1, code: str(s.code), col, waiting, kind: waiting ? waitKind(s) : null,
+        since: ts(s.updated_at) ? compactDur(now - ts(s.updated_at)) : '', title: str(s.title) || str(s.task), rc: safeUrl(s.remote_url) };
+    };
+    const ring = (w) => {
+      const u = live ? usageOf(w.key) : null;
+      return { key: 'u-' + w.short, win: w.short, pct: u ? u.pct : null, level: u ? usageLevel(u.pct) : null, stale: !!u && usageStale(),
+        resets: u && u.resets ? (u.resets > now ? compactDur(u.resets - now) : tr('due')) : '' };
+    };
+    const r = resView();
+    const sys = { key: 'sys', has: !!r };
+    if (r) {
+      const m = r.mem || {}, sw = r.swap || {}, lv = r.levels && typeof r.levels === 'object' ? r.levels : {};
+      Object.assign(sys, { level: resLvl(r.level) || 'ok', mem: m.available_pct == null ? null : Math.round(100 - Number(m.available_pct)), memLvl: BAR_LVL[resLvl(lv.mem)] || 'ok',
+        swap: sw.used_pct == null ? null : Math.round(Number(sw.used_pct)), swapLvl: BAR_LVL[resLvl(lv.swap)] || 'ok', oom: r.oom_kills == null ? null : r.oom_kills, oomHot: !!r.oom_recent });
+    }
+    const muted = activeMutes(), all = muted.find((m) => m.target === 'all');
+    const quiet = { key: 'quiet', known: !!S.notify, n: muted.length, all: !!all, until: all ? untilText(all.until) : '', act: act && notifEditor() };
+    const away = { key: 'away', known: live, on: !!S.away, since: S.away && ts(S.away.since) ? hhmm(ts(S.away.since)) : '', by: S.away ? str(S.away.by) : '', act };
+    // Row by row on five columns; three columns on a phone keep the same order.
+    out.push(sess(0), sess(1), sess(2), sess(3));
+    out.push(ring(WINDOWS[0]), sess(4), sess(5), sess(6), sess(7));
+    out.push(ring(WINDOWS[1]), Object.assign({ key: 'burn' }, burnView()), sys, quiet, away);
+    const fleet = live ? S.sessions.slice().sort((a, b) => {
+      const rank = (s) => ({ needs: 0, working: 1, done: 2, offline: 3 }[colOf(s)]);
+      return rank(a) - rank(b) || (colOf(a) === 'needs' ? ts(a.updated_at) - ts(b.updated_at) : ts(b.updated_at) - ts(a.updated_at));
+    }).slice(0, 4).map((s) => ({ code: str(s.code), col: colOf(s), kind: colOf(s) === 'needs' ? waitKind(s) : null })) : [];
+    out.push({ key: 'wide', fleet, more: Math.max(0, (live ? S.sessions.length : 0) - 4), u5: ring(WINDOWS[0]), u7: ring(WINDOWS[1]), burn: burnView() });
+    return out;
+  }
+
+  function ringSvg(pct) {
+    const r = 17, c = 2 * Math.PI * r, svg = document.createElementNS(SVGNS, 'svg');
+    svg.setAttribute('viewBox', '0 0 44 44'); svg.setAttribute('width', '44'); svg.setAttribute('height', '44'); svg.setAttribute('aria-hidden', 'true');
+    const v = pct == null ? 0 : Math.max(0, Math.min(100, pct)) / 100 * c;
+    svg.innerHTML = '<circle class="trk" cx="22" cy="22" r="' + r + '" fill="none" stroke-width="6"/>'
+      + '<circle class="val" cx="22" cy="22" r="' + r + '" fill="none" stroke-width="6" stroke-linecap="round" transform="rotate(-90 22 22)" stroke-dasharray="' + v.toFixed(1) + ' ' + c.toFixed(1) + '"/>';
+    return svg;
+  }
+  function deckBar(label, pct, lvl) {
+    return h('span', { class: 'k-bar lv-' + (lvl || 'ok') }, h('span', { text: label }), h('span', null, h('i', { style: 'width:' + (pct == null ? 0 : pct) + '%' })), h('span', { text: pct == null ? '—' : pct + '%' }));
+  }
+  function keyBtn(cls, label, onclick, ...kids) {
+    return h('button', { class: 'dkey ' + cls, type: 'button', 'aria-label': label, dataset: { focus: 'main' }, onclick }, ...kids);
+  }
+  function secBtn(text, label, onclick) {
+    return h('button', { class: 'dsec', type: 'button', 'aria-label': label, title: label, dataset: { focus: 'sec' }, onclick, text });
+  }
+  function buildDeckKey(m) {
+    const cell = h('div', { class: 'dcell' + (m.key === 'wide' ? ' wide' : ''), dataset: { deck: m.key } });
+    let key = null, sec = null;
+    if (m.key === 'hitl') {
+      const clear = m.live && m.items === 0;
+      const label = !m.live ? tr('Waiting: not known yet') : clear ? tr('Nothing is waiting') : tr('{n} waiting, longest {t}. Press to jump to the longest wait; press again within 5 seconds for the next.', { n: m.n, t: m.longest });
+      key = keyBtn('hitl' + (clear ? ' clear' : m.items ? ' hot waiting w-' + m.kind : ''), label, () => hitlPress(),
+        h('span', { class: 'k-lab' }, h('span', { text: tr('Waiting') }), m.items ? h('span', { text: tr(WAIT_LABEL[m.kind]) }) : null),
+        h('span', { class: 'k-big', text: !m.live ? '—' : clear ? '✓' : String(m.n) }),
+        h('span', { class: 'k-sub', text: !m.live ? '' : clear ? tr('all clear') : tr('longest {t}', { t: m.longest }) }));
+      if (m.ack) {
+        sec = secBtn('✓✓', tr('Acknowledge all open alerts'), () => askDeck('ack'));
+        let timer = null, fired = false;
+        const stop = () => { clearTimeout(timer); timer = null; };
+        key.addEventListener('pointerdown', (e) => { if (e.button !== 0) return; fired = false; stop(); timer = setTimeout(() => { fired = true; timer = null; askDeck('ack'); }, LONG_PRESS_MS); });
+        for (const ev of ['pointerup', 'pointerleave', 'pointercancel']) key.addEventListener(ev, stop);
+        key.addEventListener('click', (e) => { if (fired) { fired = false; e.stopImmediatePropagation(); e.preventDefault(); } }, { capture: true });
+        key.addEventListener('contextmenu', (e) => e.preventDefault());
+      }
+    } else if (/^s\d$/.test(m.key)) {
+      if (m.empty) {
+        cell.append(h('div', { class: 'dkey empty', 'aria-hidden': 'true' }, h('span', { class: 'k-lab', text: 'S' + m.slot })));
+        return cell;
+      }
+      const state = m.waiting ? tr(WAIT_LABEL[m.kind]) : tr(STATE_LABEL[m.col]);
+      const label = tr('S{n} {code}: {state} for {t}. {title}', { n: m.slot, code: m.code, state: m.waiting ? tr('waiting for a {kind}', { kind: state }) : state, t: m.since || '—', title: m.title });
+      key = keyBtn('sess st-' + m.col + (m.waiting ? ' waiting w-' + m.kind : ''), label, () => sessionPress(m.code),
+        h('span', { class: 'k-lab', text: 'S' + m.slot }),
+        h('span', { class: 'k-code' }, h('span', { class: 'k-bang', 'aria-hidden': 'true', text: '!' }), m.code),
+        h('span', { class: 'k-state' }, h('span', { class: 'k-dot', 'aria-hidden': 'true' }), h('span', { class: 'k-sub', text: state + (m.since ? ' · ' + m.since : '') })),
+        h('span', { class: 'k-title', text: m.title || tr('No title yet') }));
+      if (m.rc) sec = h('a', { class: 'dsec', href: m.rc, target: m.rc.startsWith('#') ? null : '_blank', rel: 'noopener noreferrer', dataset: { focus: 'sec' },
+        'aria-label': tr('Open {code} in Remote Control', { code: m.code }), title: tr('Open in Remote Control'), text: '↗' });
+    } else if (m.key.startsWith('u-')) {
+      const name = m.win === '5h' ? tr('5-hour usage') : tr('Weekly usage');
+      const label = m.pct == null ? tr('{name}: not reported', { name }) : tr('{name}: {pct}%, resets in {in}', { name, pct: m.pct, in: m.resets || '—' }) + (m.stale ? ' · ' + tr('stale') : '');
+      key = keyBtn('usage lv-' + (m.level || 'ok') + (m.stale ? ' stale' : ''), label, () => usagePress(),
+        h('span', { class: 'k-lab' }, h('span', { text: m.win }), m.stale ? h('span', { text: tr('stale') }) : null),
+        h('span', { class: 'k-ring' }, ringSvg(m.pct), h('span', { class: 'pct', text: m.pct == null ? '—' : m.pct + '%' })),
+        h('span', { class: 'k-sub', text: m.pct == null ? tr('not reported') : m.resets ? tr('↻ {in}', { in: m.resets }) : tr('reset time unknown') }));
+    } else if (m.key === 'burn') {
+      const cls = { danger: 'k-bad', ok: 'k-ok', stale: '', unknown: '', none: '' }[m.status];
+      key = keyBtn('burn st-' + m.status + (m.status === 'stale' ? ' stale' : ''), tr('Burn rate: {text}', { text: m.text }) + (m.sub ? ' · ' + m.sub : ''), () => usagePress(),
+        h('span', { class: 'k-lab', text: tr('5h burn') }),
+        h('span', { class: 'k-code ' + cls, text: m.big || m.text }),
+        h('span', { class: 'k-sub', text: [m.line, m.sub].filter(Boolean).join(' · ') || ' ' }));
+    } else if (m.key === 'sys') {
+      const label = m.has ? tr('System: {lvl}', { lvl: trKnown(m.level, RES_LEVELS) }) + (m.mem != null ? ' · ' + tr('memory {pct}%', { pct: m.mem }) : '') : tr('System: no resource data yet');
+      key = keyBtn('sys lvl-' + (m.level || 'ok'), label, () => goSection('resources'),
+        h('span', { class: 'k-lab' }, h('span', { text: tr('System') }), m.oom != null ? h('span', { class: 'k-oom' + (m.oomHot ? ' hot' : ''), text: 'OOM ' + m.oom }) : null),
+        h('span', { class: 'k-lvl', text: m.has ? trKnown(m.level, RES_LEVELS) : '—' }),
+        h('span', { class: 'k-bars' }, deckBar(tr('Mem'), m.mem, m.memLvl), deckBar(tr('Swap'), m.swap, m.swapLvl)));
+    } else if (m.key === 'quiet') {
+      const text = !m.known ? '—' : m.all ? tr('All muted') : m.n ? tr('{n} muted', { n: m.n }) : tr('Push on');
+      const sub = !m.known ? tr('not reported') : m.all ? m.until : m.n ? tr('some channels') : tr('nothing muted');
+      key = keyBtn('quiet' + (m.n ? ' on' : ''), tr('Notifications: {text}. Press for the settings.', { text: text + (sub ? ' · ' + sub : '') }), () => openNotif(),
+        h('span', { class: 'k-lab', text: tr('Quiet') }),
+        h('span', { class: 'k-code', text }),
+        h('span', { class: 'k-sub', text: sub }));
+      if (m.act) sec = m.all ? secBtn(tr('Unmute'), tr('Unmute all push'), () => askDeck('unmute')) : secBtn(tr('1h'), tr('Mute all push for 1 hour'), () => askDeck('mute'));
+    } else if (m.key === 'away') {
+      const text = !m.known ? '—' : m.on ? tr('Away') : tr('Here');
+      const sub = m.on ? tr('since {at}', { at: m.since || '—' }) : m.known ? tr('owner present') : '';
+      key = keyBtn('away' + (m.on ? ' on' : ''), tr('Owner: {text}. Press for consensus.', { text: text + (sub ? ' · ' + sub : '') }), () => goSection('consensus'),
+        h('span', { class: 'k-lab', text: tr('Owner') }),
+        h('span', { class: 'k-code', text }),
+        h('span', { class: 'k-sub', text: sub }));
+      if (m.act && m.known) sec = m.on ? secBtn(tr('Back'), tr('Turn owner-away off'), () => askDeck('away-off')) : secBtn(tr('Away'), tr('Turn owner-away on'), () => askDeck('away-on'));
+    } else if (m.key === 'wide') {
+      const pills = m.fleet.map((f) => h('span', { class: 'k-pill st-' + f.col + (f.kind ? ' waiting w-' + f.kind : '') },
+        h('span', { class: 'k-dot', 'aria-hidden': 'true' }), f.code + ' · ' + (f.kind ? tr(WAIT_LABEL[f.kind]) : tr(STATE_LABEL[f.col]))));
+      if (m.more) pills.push(h('span', { class: 'k-pill', text: tr('+{n} more', { n: m.more }) }));
+      const bcls = { danger: 'k-bad', ok: 'k-ok' }[m.burn.status] || '';
+      const fleetText = m.fleet.map((f) => f.code + ' ' + (f.kind ? tr(WAIT_LABEL[f.kind]) : tr(STATE_LABEL[f.col]))).join(', ');
+      key = keyBtn('wide', tr('Fleet: {list}. Press for the board.', { list: fleetText || tr('no sessions') }), () => goSection('board'),
+        h('span', { class: 'k-lab' }, h('span', { text: tr('Fleet') }), h('span', { text: tr('{n} sessions', { n: m.fleet.length + m.more }) })),
+        h('span', { class: 'k-fleet' }, pills.length ? pills : h('span', { class: 'k-sub', text: tr('no sessions') })),
+        h('span', { class: 'k-bars' + (m.u5.stale ? ' stale' : '') }, deckBar('5h', m.u5.pct, m.u5.level), deckBar('7d', m.u7.pct, m.u7.level),
+          h('span', { class: 'k-sub ' + bcls, text: m.burn.text + (m.burn.sub ? ' · ' + m.burn.sub : '') })));
+    }
+    cell.append(key);
+    if (sec) { cell.classList.add('has-sec'); cell.append(sec); }
+    return cell;
+  }
+
+  function renderDeck() {
+    const deck = $('#deck');
+    deck.classList.toggle('collapsed', deckCollapsed);
+    const tgl = $('#deck-toggle');
+    tgl.setAttribute('aria-expanded', deckCollapsed ? 'false' : 'true');
+    $('#deck-toggle-t').textContent = tr(deckCollapsed ? 'Show deck' : 'Hide deck');
+    for (const inp of document.querySelectorAll('input[name="sb-deck"]')) inp.checked = inp.value === (deckCollapsed ? 'collapsed' : 'shown');
+    const models = deckModels();
+    if (!canDeckAct() && S.deckConfirm) S.deckConfirm = null;
+    renderDeckConfirm();
+    waveCheck(models);
+    if (deckCollapsed) return;
+    reconcile($('#deck-grid'), models, (m) => m.key, (m) => JSON.stringify(m) + '|' + (S.busy.has('ack') || S.busy.has('notify') || S.busy.has('away') ? 'b' : ''), buildDeckKey);
+  }
+  function setDeckCollapsed(v) {
+    deckCollapsed = !!v;
+    try { if (v) localStorage.setItem(DECK_KEY, 'collapsed'); else localStorage.removeItem(DECK_KEY); } catch (e) { /* this page view only */ }
+    if (v) S.deckConfirm = null;
+    renderDeck();
+  }
+  $('#deck-toggle').addEventListener('click', () => setDeckCollapsed(!deckCollapsed));
+  window.addEventListener('storage', (e) => { if (e.key === DECK_KEY) { deckCollapsed = e.newValue === 'collapsed'; renderDeck(); } });
+
+  /* navigation */
+  function revealCard(card, focusEl) {
+    card.classList.remove('linked'); void card.offsetWidth; card.classList.add('linked');
+    setTimeout(() => card.classList.remove('linked'), 2600);
+    card.scrollIntoView({ block: 'center', behavior: reducedMotion() ? 'auto' : 'smooth' });
+    const field = focusEl || card.querySelector('.free input');
+    if (field) field.focus({ preventScroll: true });
+    else { card.tabIndex = -1; card.focus({ preventScroll: true }); }
+  }
+  function revealSession(code) {
+    openCards.add(code); renderBoard();
+    const panel = document.getElementById(panelId(code));
+    const card = panel && panel.closest('article');
+    if (!card) { toast(tr('{code} has no card on the board.', { code })); return; }
+    revealCard(card, card.querySelector('.scard-toggle'));
+  }
+  function revealTarget(t) {
+    if (t.dec) {
+      const card = document.getElementById('dec-' + t.dec.id);
+      if (card) { revealCard(card); return; }
+    }
+    if (t.session) revealSession(t.session.code);
+    else if (t.dec) goSection('decisions');
+  }
+  function hitlPress() {
+    const targets = hitlTargets();
+    if (!targets.length) { deckCycle = null; toast(tr('Nothing is waiting.')); return; }
+    const again = deckCycle && Date.now() - deckCycle.at < CYCLE_MS;
+    const i = again ? (deckCycle.i + 1) % targets.length : 0;
+    deckCycle = { i, at: Date.now() };
+    revealTarget(targets[i]);
+    if (targets.length > 1) toast(tr('Waiting {i} of {n}: {who}', { i: i + 1, n: targets.length, who: targets[i].dec ? str(targets[i].dec.from) : str(targets[i].session.code) }));
+  }
+  function sessionPress(code) {
+    const s = findSession(code);
+    if (!s) return;
+    const d = sessionDecisions(s).sort((a, b) => ts(a.created_at) - ts(b.created_at))[0];
+    const p = s.pending && typeof s.pending === 'object' ? s.pending : null;
+    const id = d ? d.id : p && p.decision_id ? str(p.decision_id) : null;
+    const card = id ? document.getElementById('dec-' + id) : null;
+    if (card) revealCard(card); else revealSession(s.code);
+  }
+  function usagePress() {
+    const u = $('#usage');
+    u.scrollIntoView({ block: 'center', behavior: reducedMotion() ? 'auto' : 'smooth' });
+    u.focus({ preventScroll: true });  // focus opens the usage popover
+  }
+  function goSection(id) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.scrollIntoView({ block: 'start', behavior: reducedMotion() ? 'auto' : 'smooth' });
+    const head = el.querySelector('h2') || el;
+    head.tabIndex = -1; head.focus({ preventScroll: true });
+  }
+
+  /* actions: approvers on the self-hosted board (and the demo), each after a confirm step */
+  const DECK_ASK = {
+    ack: { q: 'Acknowledge all open alerts?', note: 'Escalation stops for every open alert. The board still shows everything, and a condition that opens again alerts again.', yes: 'Yes, acknowledge all' },
+    mute: { q: 'Mute all push for 1 hour?', note: 'Urgent alerts still break through. The board still shows everything.', yes: 'Yes, mute 1 hour' },
+    unmute: { q: 'Unmute all push?', note: 'Every channel delivers again at its own level.', yes: 'Yes, unmute' },
+    'away-on': { q: 'Mark the owner away?', note: 'Sessions may decide among themselves by explicit consensus. Red lines and board asks still wait for the owner.', yes: 'Yes, I\'m away' },
+    'away-off': { q: 'Mark the owner back?', note: 'Away mode ends; pending consensus items come back to the owner.', yes: 'Yes, I\'m back' },
+  };
+  function askDeck(what) {
+    if (!canDeckAct() || !DECK_ASK[what]) return;
+    const mine = S.deckConfirm = { what, at: Date.now() };
+    renderDeckConfirm();
+    const no = $('#deck-confirm-no');
+    if (no) no.focus({ preventScroll: true });
+    setTimeout(() => { if (S.deckConfirm === mine) { S.deckConfirm = null; renderDeckConfirm(); } }, 10000);
+  }
+  function renderDeckConfirm() {
+    const box = $('#deck-confirm'), c = S.deckConfirm, a = c && DECK_ASK[c.what];
+    box.hidden = !a || deckCollapsed;
+    if (box.hidden) { box.textContent = ''; box.dataset.what = ''; return; }
+    if (box.dataset.what === c.what + '|' + LANG) return;
+    box.dataset.what = c.what + '|' + LANG;
+    box.textContent = '';
+    box.append(h('span', { class: 'q', id: 'deck-confirm-q', text: tr(a.q) }),
+      h('button', { class: 'btn solid allow', type: 'button', id: 'deck-confirm-yes', onclick: () => runDeck(c.what), text: tr(a.yes) }),
+      h('button', { class: 'btn', type: 'button', id: 'deck-confirm-no', onclick: () => { S.deckConfirm = null; renderDeckConfirm(); const k = $('#deck-grid .dkey.hitl'); if (k && c.what === 'ack') k.focus(); }, text: tr('Cancel') }),
+      h('p', { class: 'note', text: tr(a.note) }));
+  }
+  function runDeck(what) {
+    S.deckConfirm = null; renderDeckConfirm();
+    if (!canDeckAct()) return;
+    if (what === 'ack') ackAll();
+    else if (what === 'mute') setNotify({ op: 'mute', channel: 'all', for: '1h', include_urgent: false });
+    else if (what === 'unmute') setNotify({ op: 'unmute', channel: 'all' });
+    else if (what === 'away-on') setAway('on', '');
+    else if (what === 'away-off') setAway('off');
+  }
+  function ackAll() {
+    if (S.demo) { toast(tr('Demo: shown on this page only. Nothing was saved or sent.')); return; }
+    if (!isLocal() || !adapter.ackAlerts || S.busy.has('ack')) return;
+    S.busy.add('ack'); renderDeck();
+    adapter.ackAlerts().then((r) => {
+      const n = Number(r && r.acked) || 0;
+      toast(n ? tr(n === 1 ? 'Acknowledged 1 open alert.' : 'Acknowledged {n} open alerts.', { n }) : tr('No open alerts to acknowledge.'));
+    }).catch((e) => handleWriteError(e)).finally(() => { S.busy.delete('ack'); renderDeck(); });
+  }
+
+  /* the alert wave: once, from the key of a session that just started waiting */
+  function waveCheck(models) {
+    const live = S.mode === 'live' || S.mode === 'demo';
+    if (!live) return;
+    const now = new Map(S.sessions.filter((s) => colOf(s) === 'needs').map((s) => [s.code, s]));
+    const before = deckWaiting;
+    deckWaiting = new Set(now.keys());
+    if (!before || deckCollapsed || reducedMotion()) return;
+    const fresh = [...now.keys()].filter((c) => !before.has(c));
+    if (!fresh.length) return;
+    const s = now.get(fresh[0]);
+    const slot = models.find((m) => m.code === s.code);
+    requestAnimationFrame(() => startWave(slot ? slot.key : 'hitl', waitKind(s)));
+  }
+  function startWave(fromKey, kind) {
+    const grid = $('#deck-grid');
+    const cell = grid.querySelector('[data-deck="' + fromKey + '"]') || grid.querySelector('[data-deck="hitl"]');
+    if (!cell) return;
+    for (const w of grid.querySelectorAll('.dwave')) w.remove();
+    const g = grid.getBoundingClientRect(), r = cell.getBoundingClientRect();
+    const x = r.left - g.left + r.width / 2, y = r.top - g.top + r.height / 2;
+    const far = Math.max(Math.hypot(x, y), Math.hypot(g.width - x, y), Math.hypot(x, g.height - y), Math.hypot(g.width - x, g.height - y));
+    const w = h('div', { class: 'dwave w-' + kind, 'aria-hidden': 'true', dataset: { from: fromKey }, style: 'left:' + x + 'px;top:' + y + 'px;--s:' + (far * 2 / 60 + 1).toFixed(1) });
+    grid.append(w);
+    const done = () => w.remove();
+    w.addEventListener('animationend', done, { once: true });
+    setTimeout(done, 2500);
+  }
+
+  function renderAll() { renderHeader(); renderBanners(); renderNotif(); renderDecisions(); renderConsensus(); renderTasks(); renderBoard(); renderMessages(); renderApprovals(); renderResources(); renderDeck(); if ($('#info').open) renderLedger(); openLinked(); }
 
   /* ----------------------------------------------------------- deep links */
   // Alerts link to <board>/?d=<decision id> (m= message, c= consensus); a #<id> or #dec-<id> hash
@@ -2309,6 +2819,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     if (code === 'review_in_session') { toast(tr('Only part of this request is shown here, so it can only be allowed in the session.'), true); return; }
     if (code === 'no_approvers') { toast(tr('Nobody is listed as an approver on this board, so no answer is accepted.'), true); return; }
     if (code === 'away_failed') { toast(tr('The board server could not change owner-away mode.'), true); return; }
+    if (code === 'ack_failed') { toast(tr('The board server could not acknowledge the alerts.'), true); return; }
     if (code === 'prefs_failed') { toast(tr('The board server could not change the notification settings.'), true); return; }
     if (code === 'bad_duration' || code === 'bad_level' || code === 'bad_channel' || code === 'bad_op') { toast(tr('Not saved: {why}', { why: e.message || tr('the board server refused that setting.') }), true); return; }
     if (code === 'not_held' || code === 'confirm_required') { toast(tr('Not released: {why}', { why: e.message || tr('the message is not held.') }), true); return; }
@@ -2727,6 +3238,8 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       setAway(state, said) { return post('/api/away', { state, said }); },
       // Approvers only; board-serve runs `board mute|unmute|notify-level|notify-presence --by board:<identity>`.
       setNotify(body) { return post('/api/notify-prefs', body); },
+      // Approvers only; board-serve runs `board ack --by board:<identity> '*'` (the Deck's HITL key).
+      ackAlerts() { return post('/api/alerts/ack', { scope: 'all' }); },
       presence(visible, interactionAt, leaving) {
         return call('/api/presence', { method: 'POST', keepalive: !!leaving, headers: { 'Content-Type': 'application/json', 'X-Board': '1' },
           // A duration, not a time: board-serve applies it to its own clock.
@@ -2919,6 +3432,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   acctPanel.addEventListener('change', (e) => {
     if (e.target.name === 'sb-theme') setTheme(e.target.value);
     else if (e.target.name === 'sb-lang') setLang(e.target.value);
+    else if (e.target.name === 'sb-deck') setDeckCollapsed(e.target.value === 'collapsed');
   });
   function renderLang() {
     for (const inp of document.querySelectorAll('input[name="sb-lang"]')) inp.checked = inp.value === LANG;
@@ -2944,10 +3458,12 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     S.operator = { heartbeat_at: now - (frozen ? 47 : 2) * min, version: 'demo', owner_id: 'u_demo_you', approver_ids: ['u_demo_you', 'u_demo_lead'],
       operator_session: 'BOARD', account_hint: 'primary team account',
       limit: frozen ? { hit_at: now - 48 * min, kind: '5h', resets_at: now + 115 * min, note: 'demo' } : null,
-      usage: { five_hour: { pct: frozen ? 100 : 91, resets_at: now + 95 * min }, seven_day: { pct: 63, resets_at: now + (3 * 24 * 60 + 260) * min }, updated_at: now - 1 * min } };
+      usage: { five_hour: { pct: frozen ? 100 : 91, resets_at: now + 95 * min }, seven_day: { pct: 63, resets_at: now + (3 * 24 * 60 + 260) * min }, updated_at: now - 1 * min,
+        burn: frozen ? { status: 'stale', pct_per_hour: null, hit_at: null, n: 0 } : { status: 'danger', pct_per_hour: 6, hit_at: now + 90 * min, n: 58 } } };
     S.sessions = [
       { code: 'API', aliases: ['API', 'backend'], state: 'needs-you', status: 'busy', task: 'Adding pagination to the orders endpoint', title: 'Paginate the orders endpoint', repo: 'orders-api', branch: 'feat/pagination', last_event: 'PermissionRequest', notification_type: 'permission_prompt', recent: [{ tool: 'Bash', summary: 'npm run migrate -- --env staging' }], tmux: 'API:@1.%3', remote_url: '#demo-session-api', pending: { tool_name: 'Bash', summary: 'npm run migrate -- --env staging', tool_use_id: 'toolu_demo1', decision_id: 'd-1-demo' }, updated_at: now - 4 * min },
       { code: 'WEB', aliases: ['WEB', 'frontend'], state: 'needs-you', status: 'idle', task: 'Redesigning the settings page layout', title: 'Settings page redesign', repo: 'web-app', branch: 'settings-layout', last_event: 'Stop', notification_type: null, recent: [], tmux: 'WEB:@2.%5', remote_url: '#demo-session-web', pending: null, updated_at: now - 9 * min },
+      { code: 'CP', aliases: ['CP', 'pipeline'], state: 'needs-you', status: 'idle', task: 'Splitting the deploy pipeline into stages', title: 'Deploy pipeline split', repo: 'ci-config', branch: 'split-deploy', last_event: 'PreToolUse', notification_type: null, recent: [], tmux: 'CP:@1.%6', remote_url: '#demo-session-cp', pending: { tool_name: 'ExitPlanMode', summary: 'build first, then staging, then production', tool_use_id: 'toolu_demo11' }, updated_at: now - 1 * min },
       { code: 'DOCS', aliases: ['DOCS'], state: 'working', status: 'busy', task: 'Writing the upgrade guide for v2', title: 'Upgrade guide for v2', repo: 'docs-site', branch: 'main', last_event: 'PreToolUse', notification_type: null, recent: [{ tool: 'Read', summary: '…/upgrade-v2.md' }, { tool: 'Edit', summary: '…/configuration.md' }], tmux: 'DOCS:@1.%8', remote_url: null, pending: null, updated_at: now - 1 * min },
       { code: 'OPS', aliases: ['OPS', 'infra'], state: 'working', status: 'busy', task: 'Rotating staging certificates', title: 'Rotate staging certificates', repo: 'infra', branch: 'cert-rotation', last_event: 'PreToolUse', notification_type: null, recent: [{ tool: 'Bash', summary: 'kubectl -n staging get certificates' }], tmux: 'OPS:@4.%11', remote_url: '#demo-session-ops', pending: null, updated_at: now - 3 * min },
       { code: 'QA', aliases: ['QA'], state: 'done', status: 'idle', task: 'Flaky test triage finished: 3 fixed, 1 quarantined', title: 'Flaky test triage', repo: 'web-app', branch: 'fix/flaky-upload', last_event: 'Stop', notification_type: 'idle_prompt', recent: [], tmux: 'QA:@1.%2', remote_url: null, pending: null, updated_at: now - 26 * min },
@@ -3033,7 +3549,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   setInterval(() => {
     for (const t of document.querySelectorAll('time[data-ts]')) t.textContent = rel(Number(t.dataset.ts));
     const off = operatorOffline();
-    if (off !== wasOffline) { wasOffline = off; renderAll(); } else { renderHeader(); renderBanners(); }
+    if (off !== wasOffline) { wasOffline = off; renderAll(); } else { renderHeader(); renderBanners(); renderDeck(); }
   }, 30000);
   setInterval(() => { if (room) refreshCanSend(); }, 20000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden && room) refreshCanSend(); });
@@ -3685,6 +4201,92 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       "Reload": "重新載入",
       "Reload when you are ready; nothing you are typing is lost until then.": "準備好再重新載入；在那之前，你正在輸入的內容都不會遺失。",
       "Couldn't save ({code}). Reload the page; if it keeps happening, check board-serve.": "無法保存（{code}）。請重新載入頁面；如果一直發生，請檢查 board-serve。",
+      "Deck": "按鍵面板",
+      "Big keys for a glance. A key jumps to what it shows; nothing here types into a session.": "一眼看完的大按鍵。按一下就跳到它顯示的地方；這裡不會對任何 session 打字。",
+      "Hide deck": "收起面板",
+      "Show deck": "展開面板",
+      "Deck keys": "面板按鍵",
+      "Deck panel": "按鍵面板",
+      "Shown": "展開",
+      "Collapsed": "收起",
+      "Waiting": "等待中",
+      "Waiting: not known yet": "等待中：還不知道",
+      "Nothing is waiting": "沒有在等的事",
+      "Nothing is waiting.": "沒有在等的事。",
+      "{n} waiting, longest {t}. Press to jump to the longest wait; press again within 5 seconds for the next.": "{n} 個在等，最久 {t}。按一下跳到等最久的；5 秒內再按跳到下一個。",
+      "all clear": "全部清空",
+      "longest {t}": "最久 {t}",
+      "question": "問題",
+      "plan": "計畫",
+      "permission": "權限",
+      "Acknowledge all open alerts": "確認所有未處理的警示",
+      "Acknowledge all open alerts?": "確認所有未處理的警示？",
+      "Escalation stops for every open alert. The board still shows everything, and a condition that opens again alerts again.": "所有未處理警示都停止升級。看板仍顯示所有內容；狀況再次出現時會再發警示。",
+      "Yes, acknowledge all": "是，全部確認",
+      "Acknowledged 1 open alert.": "已確認 1 則警示。",
+      "Acknowledged {n} open alerts.": "已確認 {n} 則警示。",
+      "No open alerts to acknowledge.": "沒有需要確認的警示。",
+      "The board server could not acknowledge the alerts.": "看板伺服器無法確認這些警示。",
+      "Waiting {i} of {n}: {who}": "等待中第 {i}／{n} 個：{who}",
+      "{code} has no card on the board.": "{code} 在看板上沒有卡片。",
+      "waiting for a {kind}": "在等{kind}",
+      "S{n} {code}: {state} for {t}. {title}": "S{n} {code}：{state}，已 {t}。{title}",
+      "{name}: not reported": "{name}：未回報",
+      "{name}: {pct}%, resets in {in}": "{name}：{pct}%，{in} 後重設",
+      "stale": "過時",
+      "due": "已到",
+      "↻ {in}": "↻ {in}",
+      "5h burn": "5h 消耗",
+      "Burn rate: {text}": "消耗速度：{text}",
+      "pace OK": "速度 OK",
+      "pace stale": "資料過時",
+      "pace —": "速度 —",
+      "pace …": "速度 …",
+      "no burn data": "沒有消耗資料",
+      "no recent usage report": "最近沒有用量回報",
+      "needs 5 min of samples": "需要 5 分鐘的樣本",
+      "⚠ {in} to limit": "⚠ {in} 後到上限",
+      "⚠ at the limit": "⚠ 已到上限",
+      "to the 5h limit": "後到 5h 上限",
+      "at the limit": "已到上限",
+      "{r}%/h": "{r}%/小時",
+      "System: {lvl}": "系統：{lvl}",
+      "System: no resource data yet": "系統：還沒有資源資料",
+      "memory {pct}%": "記憶體 {pct}%",
+      "Quiet": "勿擾",
+      "Push on": "推播開啟",
+      "nothing muted": "沒有靜音",
+      "some channels": "部分管道",
+      "Notifications: {text}. Press for the settings.": "通知：{text}。按一下開啟設定。",
+      "1h": "1 小時",
+      "Mute all push for 1 hour": "全部推播靜音 1 小時",
+      "Mute all push for 1 hour?": "全部推播靜音 1 小時？",
+      "Yes, mute 1 hour": "是，靜音 1 小時",
+      "Unmute all push": "全部推播取消靜音",
+      "Unmute all push?": "全部推播取消靜音？",
+      "Every channel delivers again at its own level.": "每個管道恢復依自己的等級送出。",
+      "Yes, unmute": "是，取消靜音",
+      "Owner": "主人",
+      "Away": "不在",
+      "Here": "在",
+      "owner present": "主人在線",
+      "since {at}": "自 {at} 起",
+      "Owner: {text}. Press for consensus.": "主人：{text}。按一下前往共識。",
+      "Back": "回來",
+      "Turn owner-away on": "開啟主人不在模式",
+      "Turn owner-away off": "關閉主人不在模式",
+      "Mark the owner away?": "標記主人不在？",
+      "Sessions may decide among themselves by explicit consensus. Red lines and board asks still wait for the owner.": "sessions 可以用明確的共識自行決定。紅線與看板提問仍等主人處理。",
+      "Yes, I'm away": "是，我不在",
+      "Mark the owner back?": "標記主人回來？",
+      "Away mode ends; pending consensus items come back to the owner.": "不在模式結束；待決的共識項目回到主人手上。",
+      "Yes, I'm back": "是，我回來了",
+      "Fleet": "全體",
+      "Fleet: {list}. Press for the board.": "全體：{list}。按一下前往看板。",
+      "{n} sessions": "{n} 個 session",
+      "Waiting: plan approval": "等待中：計畫核可",
+      "+{n} more": "還有 {n} 個",
+      "no sessions": "沒有 session",
     };
   }
 })();
