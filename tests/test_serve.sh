@@ -73,7 +73,7 @@ cat > "$T/bin/tmux" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >> "$FAKE_TMUX_LOG"
 case "$1" in
-  display-message) echo CP ;;
+  display-message) case "$*" in *pane_current_command*) echo claude ;; *) echo CP ;; esac ;;
   list-panes) printf '%%42\t✳ Clean the build in /secret/path/build\n' ;;
   capture-pane) cat "$FAKE_TMUX_SCREEN" ;;
   send-keys) exit 0 ;;
@@ -603,12 +603,25 @@ eq "answering a relayed decision again 409" "$(post /api/decisions/d-1-perm/answ
 jq '.pending.tool_use_id = "tu_2" | .pending.summary_sha256 = "sha-2"' "$BOARD_HOME/state/$SID.json" > "$T/st" && mv "$T/st" "$BOARD_HOME/state/$SID.json"
 dec d-1-permb permission "{\"from\":null,\"session_id\":\"$SID\",\"tool_use_id\":\"tu_2\",\"tool_name\":\"Bash\",\"summary\":\"rm -rf build\",\"summary_sha256\":\"sha-2\"}"
 echo '$ just a shell' > "$FAKE_TMUX_SCREEN"
-eq "stale permission (prompt gone from the pane) 409" "$(post /api/decisions/d-1-permb/answer '{"answer":"allow"}')" "409"
-eq "  error stale" "$(body .error)" "stale"
+eq "prompt not on screen while the state still waits on it: 409" "$(post /api/decisions/d-1-permb/answer '{"answer":"allow"}')" "409"
+eq "  error screen_not_ready (not stale)" "$(body .error)" "screen_not_ready"
 grep -qE 'pane|%4|board press|tmux' "$T/body" && bad "  no board/tmux internals in the error" "$(cat "$T/body")" || ok "  no board/tmux internals in the error"
 grep -q 'board press d-1-permb' "$T/serve.err" && ok "  details logged on stderr" || bad "  details logged on stderr"
-grep -q 'send-keys' "$FAKE_TMUX_LOG" && bad "  no keys sent on stale" "$(cat "$FAKE_TMUX_LOG")" || ok "  no keys sent on stale"
-eq "  decision file stale" "$(jq -r .status "$BOARD_HOME/decisions/d-1-permb.json")" "stale"
+grep -q 'send-keys' "$FAKE_TMUX_LOG" && bad "  no keys sent" "$(cat "$FAKE_TMUX_LOG")" || ok "  no keys sent"
+eq "  decision pending again, with a press_note" "$(jq -r '.status + "/" + (.press_note != null | tostring)' "$BOARD_HOME/decisions/d-1-permb.json")" "pending/true"
+eq "  the page gets press_note" "$(req GET /api/state >/dev/null; body '.decisions[] | select(.id=="d-1-permb") | .press_note != null')" "true"
+# The TUI scrolled up: board press sends C-End once; the screen still shows no prompt -> 409 again.
+printf 'older output\n  4 new messages (ctrl+End) ↓\n' > "$FAKE_TMUX_SCREEN"
+: > "$FAKE_TMUX_LOG"
+eq "scrolled pane, still no prompt after the scroll key: 409" "$(post /api/decisions/d-1-permb/answer '{"answer":"allow"}')" "409"
+eq "  error screen_not_ready" "$(body .error)" "screen_not_ready"
+eq "  only the scroll key was sent" "$(grep '^send-keys' "$FAKE_TMUX_LOG" | tr '\n' '|')" "send-keys -t %42 C-End|"
+# The session moved on: the collector marks it stale.
+jq '.pending.tool_use_id = "tu_3" | .pending.summary_sha256 = "sha-3"' "$BOARD_HOME/state/$SID.json" > "$T/st" && mv "$T/st" "$BOARD_HOME/state/$SID.json"
+"$REPO/bin/board-collect" --once --no-notify >/dev/null 2>&1
+eq "  stale once the session moved on" "$(jq -r .status "$BOARD_HOME/decisions/d-1-permb.json")" "stale"
+for _ in $(seq 1 20); do req GET /api/state >/dev/null; [ "$(body '.decisions[] | select(.id=="d-1-permb") | .status')" = stale ] && break; sleep 0.1; done
+eq "  the page gets status_reason moved_on" "$(body '.decisions[] | select(.id=="d-1-permb") | .status_reason')" "moved_on"
 
 # ---------------------------------------------------------------- resolve (answered in the session)
 echo "resolve:"

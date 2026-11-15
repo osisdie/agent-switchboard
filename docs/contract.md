@@ -287,7 +287,8 @@ multiSelect, options: [{label, description}]}]}` on `PreToolUse` (with `tool_use
 - `board press` sends keys only after `board answer <id> allow|deny --by <id>` recorded an
   approver's answer with that same action (exit 4 otherwise), and only while the hook state still
   shows that `tool_use_id` (and `summary_sha256`) pending, the pane shows a permission prompt, and
-  the start of the summary is visible in the pane (exit 3 otherwise, decision `stale`).
+  the start of the summary is visible in the pane (exit 3 otherwise, decision `stale`; exit 7 when
+  no prompt is on screen at all, see "A scrolled pane").
 - **No approvers configured fails closed** for every decision, not only production. A decision is a
   production decision when `gate` or `stage`, trimmed and lowercased, is `"production"`.
 - **Truncated summaries:** when `summary_truncated` is true the human cannot see the whole input on
@@ -318,6 +319,41 @@ multiSelect, options: [{label, description}]}]}` on `PreToolUse` (with `tool_use
   unchanged (same `tool_use_id` and `summary_sha256`), before it sends `Enter`. Text visible
   anywhere else (a description, scrollback) does not count: Enter outside the picker would send
   the text to the session as a prompt.
+- **Claude Code in the pane.** Before any key, the pane's `#{pane_current_command}` must match
+  `press.tui_command_regex` (default `^(claude(\.exe)?|node|[0-9]+(\.[0-9]+){2})$`: `claude`, `claude.exe`, `node`, or a version number
+  `X.Y.Z`, the native installer's binary, named after its version; empty = not
+  checked), else exit 3 (`stale`, `status_reason: "screen"`): a TUI that crashed back to a shell
+  would read the keys, the scroll key included, as readline input.
+- **A scrolled pane (exit 7).** When the last lines match neither `press.prompt_regex` /
+  `press.question_regex` but one of the last 2 non-blank lines matches `press.scrolled_regex`
+  (default `^[[:space:]]*[0-9]+ new messages? .*ctrl\+End.*$`, a whole line: the TUI's "4 new messages (ctrl+End) ↓"; a line the session writes,
+  such as "3 new messages for you" or "see below ↓", does not match), press sends
+  `press.scroll_key` (default `C-End`, scroll to the bottom; it never submits in Claude Code's TUI)
+  once, logs
+  `result: "scroll"`, waits `BOARD_PRESS_SETTLE` and captures again; every later check uses the new
+  capture. If the prompt / picker is still not visible while the state still shows the same
+  `tool_use_id` and `summary_sha256` waiting, it exits 7: nothing sent but the scroll key, attempt
+  logged `result: "not_visible"`, and the decision goes back to `pending` with `answer`,
+  `answered_by`, `answered_at`, `answer_index` and `relay` cleared and `press_note` /
+  `press_note_at` set (a `mark` event with `status: "pending"`). board-serve answers 409
+  `screen_not_ready`. The collector marks it `stale` once the session moved on (PostToolUse, Stop or a
+  different pending prompt). If the state changed meanwhile it is exit 3 and `stale` as before. A
+  prompt on screen about other input is still exit 3. On the page, the decision card shows the note
+  and its buttons; a session card whose prompt still waits but whose decision is no longer pending
+  shows "Answer in the session (screen scrolled)" (or "... the board can no longer press this
+  prompt" without a `press_note`) instead of a link.
+- **Not delivered.** A decision whose answer was recorded but never reached the session carries
+  `status_reason`, a fixed code (never free text): `screen` (press refused, exit 3), `partial`
+  (exit 5), `moved_on` (the collector marked it stale: the session moved on), `timeout`,
+  `not_approver` (unauthorized), `unknown_session` (no snapshot, row, pane or hook state for the
+  session), `config` (press settings incomplete), `operator` (`board mark ID stale --reason
+  operator`). `screen` is only for what the pane shows; a hook state past the prompt is `moved_on`.
+  `board answer` clears `status_reason` and `press_note` when it records an approver's answer. Relayed clears it; exit 7 removes it (pending again). board-serve passes it to the
+  page and, for a record from before the code, derives `screen` / `partial` / `not_approver` from
+  the last `mark` / `unauthorized` event's reason prefix (never its text). The page's Recent
+  decisions log shows such a decision (an answer, status `stale` / `timeout` / `unauthorized`) with a
+  `not delivered` (or `partial`) chip and "Not delivered: <reason> → <answer>"; a session card whose
+  prompt still waits says "Your answer was not delivered (<reason>). Answer in the session."
 - **exit 5** (partial): a check failed after the first key. Some keys were sent, Enter was not
   pressed; the decision becomes `stale` with reason `press partial: ...`, the attempt is logged
   with `result: "partial"`, and board-serve answers 409 `partial` ("keys were sent but Enter was
@@ -435,7 +471,7 @@ $BOARD_HOME/
 | `GET /api/me` | who is asking, from the verified identity and `fleet.yaml` only (never from request headers): see "Who am I" below. Same `Host` and identity checks as `/api/state` (no or bad JWT on the tunnel → 401, a forwarded request on the local listener → 403) |
 | `GET /icon.svg`, `/favicon.png`, `/favicon.ico` (the PNG), `/apple-touch-icon.png` (+ `-precomposed`), `/icons/icon-192.png`, `/icons/icon-512.png`, `/manifest.webmanifest` | a fixed map to files under `artifact/` (nothing else there is served; the request path is never joined onto a directory), with `image/svg+xml`, `image/png` or `application/manifest+json`, `Cache-Control: private, max-age=86400` and `Content-Security-Policy: default-src 'none'`. Same Host and identity checks as every route, so through the tunnel they need Access too. The page itself gets `manifest-src 'self'` in its CSP |
 | `GET /api/events` | `text/event-stream`: `event: state` with the full state at once and after every change (1 s mtime poll; only when the state differs), `: keepalive` every 25 s |
-| `POST /api/decisions/<id>/answer` `{answer}` | `<id>` must match `^d-[0-9]+-[a-z0-9]+$`. With empty `approvers` → 403 `no_approvers` (fails closed). The identity is then checked **before anything is written**, with the rule of `board answer` (`approvers`; for a production decision, gate or stage, `release_managers`, falling back to `approvers`): not allowed → 403 `not_approver`, audited, file untouched (so it can never cancel an approver's answer that waits for the relay). Otherwise `board answer <id> --answer-file <tmp> --by <identity>` (argv, no shell; the answer goes by a 0600 file under `$BOARD_HOME` that is removed afterwards, so `-`, `--help` or `--answer-file` typed as an answer are recorded literally) → 200 `{status: "answered"}`. For `kind: "permission"` (`answer` = `allow`\|`deny`; `allow` with `summary_truncated` → 409 `review_in_session`), it then runs `board press <from> <answer> --expect <tool_use_id>` → 200 `{status: "relayed"}`; exit 3 → 409 `stale`; exit 4 → 403 `press_refused`. A pane question (`source: "pane"`) that is not `pressable` → 409 `answer_in_session`, untouched. A pressable form of several questions takes `{options: [i, j, ...]}` instead of `answer` (2–4 numbers, one per question, 1–8, no `answer`/`option`); a wrong count, a number out of its question's range, a boolean, free text, or `options` on any other decision → 400 `bad_options`, untouched. It runs `board answer <id> --options i,j --by <identity>`, then `board press` like below; an optional `option` (1–10, a pane question's clicked button) goes to `board answer --option` (mismatch → 400 `bad_option`, untouched; `option` on any other decision → 400); otherwise, when `board answer` set `relay: "press"`, it runs `board press <from> answer --expect <tool_use_id>` with the same results (plus exit 5 → 409 `partial`), and with `relay: "operator"` it returns 200 `{status: "answered"}` for the operator to relay. A decision already `relayed`/`stale`/`timeout` → 409 `gone`. |
+| `POST /api/decisions/<id>/answer` `{answer}` | `<id>` must match `^d-[0-9]+-[a-z0-9]+$`. With empty `approvers` → 403 `no_approvers` (fails closed). The identity is then checked **before anything is written**, with the rule of `board answer` (`approvers`; for a production decision, gate or stage, `release_managers`, falling back to `approvers`): not allowed → 403 `not_approver`, audited, file untouched (so it can never cancel an approver's answer that waits for the relay). Otherwise `board answer <id> --answer-file <tmp> --by <identity>` (argv, no shell; the answer goes by a 0600 file under `$BOARD_HOME` that is removed afterwards, so `-`, `--help` or `--answer-file` typed as an answer are recorded literally) → 200 `{status: "answered"}`. For `kind: "permission"` (`answer` = `allow`\|`deny`; `allow` with `summary_truncated` → 409 `review_in_session`), it then runs `board press <from> <answer> --expect <tool_use_id>` → 200 `{status: "relayed"}`; exit 3 → 409 `stale`; exit 4 → 403 `press_refused`; exit 7 → 409 `screen_not_ready` (the decision is pending again). A pane question (`source: "pane"`) that is not `pressable` → 409 `answer_in_session`, untouched. A pressable form of several questions takes `{options: [i, j, ...]}` instead of `answer` (2–4 numbers, one per question, 1–8, no `answer`/`option`); a wrong count, a number out of its question's range, a boolean, free text, or `options` on any other decision → 400 `bad_options`, untouched. It runs `board answer <id> --options i,j --by <identity>`, then `board press` like below; an optional `option` (1–10, a pane question's clicked button) goes to `board answer --option` (mismatch → 400 `bad_option`, untouched; `option` on any other decision → 400); otherwise, when `board answer` set `relay: "press"`, it runs `board press <from> answer --expect <tool_use_id>` with the same results (plus exit 5 → 409 `partial`), and with `relay: "operator"` it returns 200 `{status: "answered"}` for the operator to relay. A decision already `relayed`/`stale`/`timeout` → 409 `gone`. |
 | `POST /api/messages` `{to, body}` | only for `approvers` ∪ `release_managers` (else 403 `not_approver`); writes `messages/<id>.json` (`^m-[0-9]+-[a-z0-9]+$`) with `by: <identity>`, the body scrubbed, and `status: "new"`, or `"held"` when the secret guard flags it → 201 `{id, status, reason?}` (see "Secret guardrails") |
 | `POST /api/messages/<id>/release` `{confirm: "release"}` | releases a `held` message. Approvers only (empty `approvers` → 403 `no_approvers`; else 403 `not_approver`, audited). Without the confirm body → 400 `confirm_required`; unknown id → 404; not held → 409 `not_held`. A channel other than the two verified listeners (a future API key) → 403 `release_refused`; with more than one approver, the message's own sender → 403 `self_release` (except `local`: on the loopback listener the identity is always `local`, the owner at this machine). Sets `status: "new"`, `released_by`, `released_at` → 200 `{id, status: "new"}`, audited (`message-release`) |
 | `POST /api/notify-prefs` `{op, ...}` | Notification controls. `op` is `mute` `{channel, for?\|until?, include_urgent?}`, `unmute` `{channel}`, `level` `{channel, level}` or `presence` `{reduce, level?}`. `channel` is `slack`, `desktop`, `email`, `line`, `sns`, `webhook` or `all`; `for` matches `^[1-9][0-9]{0,4}[mhd]$` (at most 30 days); `until` is `HH:MM` or an ISO time in the next 30 days (a string of at most 64 characters); `include_urgent` and `reduce` are booleans; `level` is `info\|warn\|high\|urgent\|default` (`presence`: `warn\|high\|urgent`). Anything else → 400 `bad_op` / `bad_channel` / `bad_duration` / `bad_level` / `bad_body`, nothing run. Empty `approvers` → 403 `no_approvers`; identity not in `approvers` → 403 `not_approver`, audited. Otherwise `board mute\|unmute\|notify-level\|notify-presence … --by board:<identity>` (argv, no shell) → 200 `{status: "ok", notify}` (the new `notify` state). Failure → 500 `prefs_failed`. |

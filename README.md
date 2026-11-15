@@ -395,7 +395,8 @@ to the Artifact or put in an alert. Turn the prompt off with `cards: {show_promp
   2. **Same prompt** (otherwise exit 3). The hook's state file still shows the same pending
      `tool_use_id` and the same `summary_sha256` (a hash of the full input). If someone already
      answered in the pane, or a new prompt replaced it, they differ.
-  3. **Prompt on screen** (otherwise exit 3). `tmux capture-pane` shows that the last lines of the pane
+  3. **Prompt on screen** (otherwise exit 3, or exit 7 when no prompt is visible at all; see "A
+     scrolled pane" below). `tmux capture-pane` shows that the last lines of the pane
      really are a permission prompt, and that the start of the summary is visible there. The pattern
      and keys are configurable (`press:` in `fleet.yaml`), because the prompt UI changes between
      Claude Code versions.
@@ -407,6 +408,21 @@ to the Artifact or put in an alert. Turn the prompt off with `cards: {show_promp
   If a screen check fails, no key is sent and the card becomes **stale** ("handle it in the
   session"). If the hook can't tell which tool call a prompt belongs to (`ambiguous`), it creates no
   card at all. Every press attempt is logged to `events.jsonl`.
+
+  **A scrolled pane.** When new messages arrive above an open prompt, Claude Code's TUI can stay
+  scrolled up, and its last line shows "4 new messages (ctrl+End) ↓" instead of the prompt. If one
+  of the last 2 non-blank lines is that line as a whole (`press.scrolled_regex`, default
+  `^[[:space:]]*[0-9]+ new messages? .*ctrl\+End.*$`; text the session itself writes, such as "3 new messages for you" or "see below ↓", never
+  matches), and the pane runs Claude Code (`press.tui_command_regex`, default `^(claude(\.exe)?|node|[0-9]+(\.[0-9]+){2})$`: `claude`, `claude.exe`, `node`, or a version number such as `2.1.3`, the native installer's binary),
+  `board press` sends `press.scroll_key` (`C-End`, which only scrolls to the bottom and never
+  submits in Claude Code's TUI) once, then runs every check on a fresh capture. If no
+  prompt is visible even then, while the hook state still shows the same prompt waiting, it exits 7:
+  only that key was sent, and the decision goes back to **pending** with a note, so you can answer it
+  again from the board. It becomes stale only once the session has moved on. A session card whose
+  prompt still waits but whose decision went stale says "Answer in the session" instead of linking
+  to a dead card. In Recent decisions, an answer that was recorded but never delivered (refused at
+  the press, stopped part-way, the session moved on) gets a red "not delivered" chip and reads
+  "Not delivered: <reason> → <answer>", so it never looks relayed.
 
   **The risk, honestly:** this is screen automation. The guards make a wrong keystroke unlikely, but
   not impossible: a prompt can change between the check and the keystroke, or a future UI can look

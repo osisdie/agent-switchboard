@@ -273,6 +273,8 @@ dialog.notif { width: min(720px, calc(100vw - 24px)); }
 .code-chip { font-family: var(--f-mono); font-weight: 600; font-size: 13px; color: var(--ink); background: var(--off-soft); padding: 1px 7px; border-radius: 3px; }
 .dcard h3 { font-size: 18px; font-weight: 650; font-stretch: 92%; line-height: 1.3; overflow-wrap: anywhere; }
 .dcard .ctx { margin: 0; color: var(--muted); font-size: 14px; overflow-wrap: anywhere; }
+.dcard .ctx.press-note { color: var(--lamp-ink); }
+.sdetail .note.in-session { color: var(--lamp-ink); }
 .cmd { margin: 0; font-family: var(--f-mono); font-size: 13px; line-height: 1.45; padding: 10px 12px; border-radius: 5px; background: var(--paper); border: 1px solid var(--rule); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; }
 .cmd b { color: var(--cord); font-weight: 600; }
 .opts { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -308,6 +310,8 @@ dialog.notif { width: min(720px, calc(100vw - 24px)); }
 .dcard .note.maybe { color: var(--lamp-ink); }
 .dcard .resolve-row { display: flex; justify-content: flex-end; }
 .btn.linkish { min-height: 32px; padding: 4px 10px; font-size: 13px; border-style: dashed; color: var(--muted); }
+.status.undelivered { background: var(--deny-soft); color: var(--deny); }
+.history .undeliv { color: var(--deny); font-weight: 600; }
 .status.pending { background: var(--lamp-soft); color: var(--lamp-ink); }
 
 /* ---------- board ---------- */
@@ -1830,6 +1834,7 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
     const shortNote = (q) => (shortened(q) ? h('span', { class: 'pq-short', text: ' ' + tr('(shortened)') }) : null);
     card.append(h('h3', null, h('span', { class: 'pq-asks', text: tr('{who} asks:', { who }) }), list.length === 1 ? str(list[0].question) : tr('{n} questions', { n: list.length }),
       list.length === 1 ? shortNote(list[0]) : null));
+    if (d.status === 'pending' && d.press_note) card.append(pressNote());
     list.forEach((q, qi) => {
       const opts = (Array.isArray(q.options) ? q.options : []).map((o) => (o && typeof o === 'object' ? o : { label: str(o) }));
       const box = h('section', { class: 'pq-q', 'aria-label': tr('Question {n}', { n: qi + 1 }) });
@@ -1934,6 +1939,8 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
     const title = str(d.question) || (isPerm ? tr('{tool} wants to run', { tool: str(d.tool_name) || tr('A tool') }) : isGate ? tr('Approve {stage}?', { stage: stageName(d.stage || d.gate) }) : tr('Question'));
     card.append(h('h3', { text: title }));
     if (d.context) card.append(h('p', { class: 'ctx', text: str(d.context) }));
+    // The last press found the session's screen scrolled: nothing was pressed, it can be answered again.
+    if (d.status === 'pending' && d.press_note) card.append(pressNote());
     if (isPerm) {
       card.append(h('pre', { class: 'cmd' }, h('b', { text: str(d.tool_name) || 'tool' }), d.summary ? '\n' + str(d.summary) : ''));
     }
@@ -2031,6 +2038,23 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
     setTimeout(() => { if (S.confirm === myConfirm) { S.confirm = null; renderDecisions(); } }, 8000);
   }
 
+  // A decision with a recorded answer whose status is not relayed: the answer never reached the
+  // session (the press was refused, stopped part-way, the session moved on, or a non-approver).
+  function notDelivered(d) {
+    return d.answer != null && d.answer !== '' && ['stale', 'timeout', 'unauthorized'].includes(str(d.status));
+  }
+  const REASONS = {
+    screen: 'the prompt was not on the session\'s screen',
+    partial: 'typed into the question, but Enter was not pressed',
+    moved_on: 'the session moved on before it arrived',
+    timeout: 'it expired before it was sent',
+    not_approver: 'answered by someone who is not an approver',
+    unknown_session: 'the session was not found',
+    operator: 'the operator could not deliver it',
+    config: 'the board\'s press settings are incomplete',
+  };
+  // Only the fixed codes are worded; anything else (free text a db record may carry) never reaches the page.
+  const reasonText = (d) => (typeof d.status_reason === 'string' && Object.hasOwn(REASONS, d.status_reason) ? tr(REASONS[d.status_reason]) : tr('reason not recorded'));
   function renderDecisions() {
     const pend = pendingDecisions();
     $('#dec-empty').hidden = pend.length > 0;
@@ -2051,13 +2075,19 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
     const hist = $('#dec-history');
     hist.hidden = past.length === 0;
     $('#dec-history-sum').textContent = tr('Recent decisions ({n}) · answered, relayed or expired', { n: past.length });
-    reconcile($('#dec-history-list'), past, (d) => d.id, (d) => JSON.stringify(d), (d) => h('li', null,
-      h('span', { class: 'status ' + str(d.status), text: d.status === 'answered_in_pane' ? tr('answered in session') : str(d.status) || 'unknown' }),
-      h('span', { class: 'what' },
-        h('span', { class: 'code-chip', text: str(d.from) || '?' }), ' ',
-        str(d.question) || (d.kind === 'permission' ? tr('{tool} permission', { tool: str(d.tool_name) || 'tool' }) : isGateDecision(d) ? tr('{stage} gate', { stage: stageName(d.stage || d.gate) }) : tr('Question')),
-        d.answer != null && d.answer !== '' ? h('span', null, ' → ', h('span', { class: 'ans', text: str(d.answer) })) : null),
-      timeEl(d.answered_at || d.relayed_at || d.created_at)));
+    reconcile($('#dec-history-list'), past, (d) => d.id, (d) => JSON.stringify(d), (d) => {
+      // An answer that was recorded but never reached the session must not read as delivered.
+      const nd = notDelivered(d);
+      return h('li', { class: nd ? 'undelivered' : null },
+        nd ? h('span', { class: 'status undelivered', text: d.status_reason === 'partial' ? tr('partial') : tr('not delivered') })
+          : h('span', { class: 'status ' + str(d.status), text: d.status === 'answered_in_pane' ? tr('answered in session') : str(d.status) || 'unknown' }),
+        h('span', { class: 'what' },
+          h('span', { class: 'code-chip', text: str(d.from) || '?' }), ' ',
+          str(d.question) || (d.kind === 'permission' ? tr('{tool} permission', { tool: str(d.tool_name) || 'tool' }) : isGateDecision(d) ? tr('{stage} gate', { stage: stageName(d.stage || d.gate) }) : tr('Question')),
+          nd ? h('span', { class: 'undeliv' }, ' ', tr('Not delivered: {why}', { why: reasonText(d) })) : null,
+          d.answer != null && d.answer !== '' ? h('span', null, ' → ', h('span', { class: 'ans', text: str(d.answer) })) : null),
+        timeEl(d.answered_at || d.relayed_at || d.created_at));
+    });
   }
 
   /* ----------------------------------------------------------- lifecycle */
@@ -2320,12 +2350,24 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
       // Pending
       const decs = sessionDecisions(s);
       const p = s.pending && typeof s.pending === 'object' ? s.pending : null;
-      if (p && p.decision_id && !decs.some((d) => d.id === p.decision_id)) decs.push({ id: str(p.decision_id), kind: 'permission', tool_name: p.tool_name });
-      if (decs.length) {
+      // The prompt the session waits on, when its decision is no longer pending (a press found the
+      // screen scrolled, or it went stale) while the session still shows that prompt: no dead link,
+      // a note to answer it in the session.
+      const waitDec = p && p.decision_id && !decs.some((d) => d.id === p.decision_id) ? S.decisions.find((d) => d.id === p.decision_id) : null;
+      if (p && p.decision_id && !decs.some((d) => d.id === p.decision_id) && !waitDec) decs.push({ id: str(p.decision_id), kind: 'permission', tool_name: p.tool_name });
+      const inSession = waitDec && col === 'needs' && waitDec.status !== 'pending' && waitDec.status !== 'answered'
+        ? h('span', { class: 'note in-session', text: notDelivered(waitDec)
+            ? tr('Your answer was not delivered ({why}). Answer in the session.', { why: reasonText(waitDec) })
+            : waitDec.press_note ? tr('Answer in the session (screen scrolled)') : tr('Answer in the session: the board can no longer press this prompt') }) : null;
+      if (decs.length || inSession) {
         const pe = section('Pending', 'pending');
-        const nq = decs.filter((d) => d.kind !== 'permission').length;
-        pe.row('Waiting', tr('{d} decisions, {q} questions', { d: decs.length - nq, q: nq }));
-        pe.row('Open', h('ul', null, decs.map((d) => h('li', null, h('a', { href: '#dec-' + str(d.id), text: d.kind === 'permission' ? tr('Permission: {tool}', { tool: str(d.tool_name) || tr('a tool') }) : clip(d.question, 100) || tr('A question') })))));
+        if (decs.length) {
+          const nq = decs.filter((d) => d.kind !== 'permission').length;
+          pe.row('Waiting', tr('{d} decisions, {q} questions', { d: decs.length - nq, q: nq }));
+          pe.row('Open', h('ul', null, decs.map((d) => h('li', null, h('a', { href: '#dec-' + str(d.id), text: d.kind === 'permission' ? tr('Permission: {tool}', { tool: str(d.tool_name) || tr('a tool') }) : clip(d.question, 100) || tr('A question') }),
+            d.press_note ? h('span', { class: 'note', text: ' · ' + tr('screen was scrolled; try again') }) : null))));
+        }
+        if (inSession) pe.row('In session', inSession);
         pe.add();
       }
       // Where
@@ -3717,6 +3759,8 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
     toast(okText + ' · ' + (operatorOffline() ? tr('queued until the operator returns.') : sent ? tr('Sent to operator.') : queuedText()));
     return true;
   }
+  // The last press found the session's screen scrolled: nothing was pressed, it can be answered again.
+  const pressNote = () => h('p', { class: 'ctx press-note', text: tr('The session\'s screen was scrolled, so nothing was pressed. Try again, or answer in the session.') });
   function handleWriteError(e, gone) {
     const code = e && e.code;
     // Local adapter (board-serve) answers; never produced by the claude.ai db.
@@ -3730,6 +3774,7 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
     if (code === 'not_held' || code === 'confirm_required') { toast(tr('Not released: {why}', { why: e.message || tr('the message is not held.') }), true); return; }
     if (code === 'stale') { toast(tr('That prompt is no longer showing, so nothing was pressed. Handle it in the session.'), true); return; }
     if (code === 'not_a_board_ask') { toast(tr('Only a question asked with board ask can be closed this way.'), true); return; }
+    if (code === 'screen_not_ready') { toast(tr('The session\'s screen is scrolled, so nothing was pressed. Try again, or answer in the session.'), true); return; }
     if (code === 'partial') { toast(tr('Your text was typed into the question but Enter was not pressed. Finish it in the session.'), true); return; }
     if (code === 'answer_in_session') { toast(tr('This question can only be answered in the session.'), true); return; }
     if (code === 'bad_option') { toast(tr('Not sent: that option no longer matches the question. Reload and try again.'), true); return; }
@@ -5273,6 +5318,25 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
       "{name}: not reported": "{name}：未回報",
       "{name}: {pct}%, resets in {in}": "{name}：{pct}%，{in} 後重設",
       "stale": "過時",
+      "Answer in the session (screen scrolled)": "請在 session 中回答（畫面已捲動）",
+      "In session": "在 session 中",
+      "not delivered": "未送達",
+      "partial": "未完成",
+      "Not delivered: {why}": "未送達：{why}",
+      "Your answer was not delivered ({why}). Answer in the session.": "你的回答未送達（{why}）。請在 session 中回答。",
+      "the prompt was not on the session's screen": "session 的畫面上看不到這個提示",
+      "typed into the question, but Enter was not pressed": "已輸入到問題中，但沒有按下 Enter",
+      "the session moved on before it arrived": "送達前 session 已經往下走了",
+      "it expired before it was sent": "送出前就已過期",
+      "answered by someone who is not an approver": "回答者不是核可者",
+      "the session was not found": "找不到這個 session",
+      "the operator could not deliver it": "operator 無法送達",
+      "the board's press settings are incomplete": "看板的按鍵設定不完整",
+      "reason not recorded": "沒有記錄原因",
+      "Answer in the session: the board can no longer press this prompt": "請在 session 中回答：看板已無法替這個提示按鍵",
+      "screen was scrolled; try again": "畫面曾捲動，請再試一次",
+      "The session's screen was scrolled, so nothing was pressed. Try again, or answer in the session.": "session 的畫面曾捲動，所以沒有按下任何鍵。請再試一次，或在 session 中回答。",
+      "The session's screen is scrolled, so nothing was pressed. Try again, or answer in the session.": "session 的畫面已捲動，所以沒有按下任何鍵。請再試一次，或在 session 中回答。",
       "due": "已到",
       "↻ {in}": "↻ {in}",
       "5h burn": "5h 消耗",

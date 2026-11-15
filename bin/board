@@ -13,7 +13,7 @@
 #                                              mark a decision answered (mirrors the board db);
 #                                              WHO must be in approvers (release_managers for
 #                                              gate:production), else it is marked unauthorized
-#   board mark ID relayed|stale|timeout|unauthorized
+#   board mark ID relayed|stale|timeout|unauthorized [--reason CODE]
 #                                              set a decision's status
 #   board resolve ID --in-pane --from CODE|--by WHO [--note-file F]
 #                                              close a board ask that was answered in the pane
@@ -87,11 +87,14 @@
 #             4 refused: not authorized (answer: not an approver; press: no approver's answer;
 #             consensus: not a participant, or --from is not this tmux session),
 #             5 press stopped part-way (free text: some keys sent, Enter not pressed),
-#             6 refused by the secret guard (`answer`, `away --said`: asks for a secret value);
+#             6 refused by the secret guard (`answer`, `away --said`: asks for a secret value),
+#             7 press refused: the prompt still waits but is not on screen (e.g. the pane is
+#             scrolled up); no keys sent but the scroll key, the decision is pending again;
 #             `rc`: 3 refused (nothing sent), 5 stopped part-way, 6 sent but not confirmed.
 set -u
 
 REPO="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+PRESS_SCREEN_NOTE="The session's screen is scrolled or covered; try again, or answer in the session."
 BOARD_HOME="${BOARD_HOME:-$HOME/.agent-switchboard}"
 export BOARD_HOME
 # Set only inline by board press (relayed over stale, see mark_status); never from the environment.
@@ -214,7 +217,9 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
         for w in "${APPROVE_WORDS[@]}"; do out="${out:+$out, }$w"; done
         echo "    $out"
         echo "  anything else (e.g. \"request changes\") records the gate as rejected." ;;
-    mark) echo "usage: board mark ID relayed|stale|timeout|unauthorized" ;;
+    mark) echo "usage: board mark ID relayed|stale|timeout|unauthorized [--reason CODE]"
+        echo "  CODE (why an answer was not delivered, shown on the board): screen, partial, moved_on,"
+        echo "  timeout, not_approver, unknown_session, operator, config" ;;
     resolve) echo "usage: board resolve ID --in-pane --from CODE|--by WHO [--note-file F]"
         echo "  close a board ask (kind question, not a pane question, not a gate) that was answered in"
         echo "  the session's pane or another session: status answered_in_pane (final). --from: the"
@@ -235,7 +240,11 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
         echo "  approver. An option label sends its number key; other text (one line, <= $FREE_TEXT_MAX"
         echo "  chars) picks \"Type something\", types it literally and presses Enter. The pane must show"
         echo "  the picker (press.question_regex) with the start of the question (or every option label)."
-        echo "  Exit 5: free text stopped part-way (keys sent, Enter not pressed; finish in the session)." ;;
+        echo "  Exit 5: free text stopped part-way (keys sent, Enter not pressed; finish in the session)."
+        echo "  A pane scrolled up (a last-2-line match of press.scrolled_regex) gets press.scroll_key (C-End)"
+        echo "  once, then is checked again. Exit 7 (nothing sent but that key): the state still shows the"
+        echo "  prompt waiting but the pane shows no prompt / picker; the decision is pending again, with a"
+        echo "  press_note (a prompt about other input on screen is still exit 3, stale)." ;;
     task) echo "usage: board task new|stage|ls|show ..."
         echo "  board task new --owner CODE \"title\" [--stage S]"
         echo "  board task stage ID STAGE [--artifact key=ref]..."
@@ -603,7 +612,8 @@ cmd_answer() {
       echo "board answer: refused — $by may not answer $id; it keeps its approver's answer" >&2
       exit 4
     fi
-    update_decision "$id" '.status = "unauthorized" | .answer = $a | .answered_by = $by | .answered_at = $now | .updated_at = $now' \
+    update_decision "$id" '.status = "unauthorized" | .answer = $a | .answered_by = $by | .answered_at = $now | .updated_at = $now
+        | .status_reason = "not_approver"' \
       --arg a "$answer" --arg by "$by" --argjson now "$now"
     log_event "$(jq -cn --arg id "$id" --arg by "$by" --argjson now "$now" '{ts: $now, type: "unauthorized", id: $id, by: $by}')"
     echo "board answer: refused — $by may not answer $id (not in $(if is_production "$f"; then echo release_managers/approvers; else echo approvers; fi)); marked unauthorized" >&2
@@ -625,7 +635,8 @@ cmd_answer() {
     echo "board answer: refused by the secret guard ($held); nothing recorded" >&2
     exit 6
   fi
-  update_decision "$id" '.status = "answered" | .answer = $a | .answered_by = $by | .answered_at = $now | .updated_at = $now' \
+  update_decision "$id" '.status = "answered" | .answer = $a | .answered_by = $by | .answered_at = $now | .updated_at = $now
+      | del(.press_note, .press_note_at, .status_reason)' \
     --arg a "$answer" --arg by "$by" --argjson now "$now"
   log_event "$(jq -cn --arg id "$id" --arg by "$by" --argjson now "$now" '{ts: $now, type: "answer", id: $id, by: $by}')"
 
@@ -682,8 +693,10 @@ cmd_answer() {
 # status it already has is a no-op. Returns 1 (nothing written) when refused. One exception:
 # board press, whose keys went in, marks relayed over stale (MARK_OVER_STALE=1): the collector may
 # have marked it stale between the key press and this mark.
-mark_status() {  # mark_status ID STATUS [reason]
-  local id="$1" st="$2" reason="${3:-}" now cur
+# mark_status ID STATUS [reason] [code] — code: a fixed status_reason the board shows when an answer
+# was not delivered (screen, partial, moved_on, unknown_session, config, ...); relayed clears it.
+mark_status() {
+  local id="$1" st="$2" reason="${3:-}" code="${4:-}" now cur
   cur="$(jq -r '.status // empty' "$(dec_path "$id")" 2>/dev/null)"
   case "$cur" in
     relayed|stale|timeout|answered_in_pane)
@@ -697,8 +710,9 @@ mark_status() {  # mark_status ID STATUS [reason]
       return 1 ;;
   esac
   now="$(now_ms)"
-  update_decision "$id" '.status = $st | .updated_at = $now | (if $st == "relayed" then .relayed_at = $now else . end)' \
-    --arg st "$st" --argjson now "$now"
+  update_decision "$id" '.status = $st | .updated_at = $now | (if $st == "relayed" then .relayed_at = $now else . end)
+      | (if $st == "relayed" then del(.status_reason) elif $code != "" then .status_reason = $code else . end)' \
+    --arg st "$st" --argjson now "$now" --arg code "$code"
   log_event "$(jq -cn --arg id "$id" --arg st "$st" --arg r "$reason" --argjson now "$now" \
     '{ts: $now, type: "mark", id: $id, status: $st} + (if $r == "" then {} else {reason: $r} end)')"
 }
@@ -822,13 +836,17 @@ cmd_resolve() {
 
 cmd_mark() {
   need_jq
-  local id="${1:-}" st="${2:-}"
+  local id="${1:-}" st="${2:-}" code=""
   case "$st" in
     relayed|stale|timeout|unauthorized) ;;
     *) sub_usage mark >&2; exit 2 ;;
   esac
+  if [ "${3:-}" = --reason ]; then
+    code="${4:-}"
+    case "$code" in screen|partial|moved_on|timeout|not_approver|unknown_session|operator|config) ;; *) sub_usage mark >&2; exit 2 ;; esac
+  fi
   [ -f "$(dec_path "$id")" ] || die "no such decision: $id"
-  mark_status "$id" "$st" || exit 1
+  mark_status "$id" "$st" "" "$code" || exit 1
   echo "$id $st"
 }
 
@@ -984,17 +1002,46 @@ cmd_press() {
     exit 4
   }
   # The screen / state no longer matches (no keys sent, decision marked stale): exit 3.
+  # refuse MESSAGE [PANE] [CODE] — CODE is the decision's status_reason: screen (the default: what
+  # the pane shows), moved_on (the hook state is past this prompt), unknown_session (no snapshot,
+  # row, pane or hook state for the session), config (press settings).
   refuse() {
     echo "board press: refused — $1" >&2
     attempt refused "$1" "${2:-}"
-    [ -n "$dec_id" ] && mark_status "$dec_id" stale "press refused: $1" >/dev/null 2>&1
+    [ -n "$dec_id" ] && mark_status "$dec_id" stale "press refused: $1" "${3:-screen}" >/dev/null 2>&1
     exit 3
+  }
+  # The state still shows this prompt waiting, but no prompt or picker is on screen at all (the TUI
+  # is scrolled up, an overlay covers it): exit 7. (A prompt on screen about other input is a
+  # mismatch: refuse, exit 3.) The decision goes back to pending, its answer cleared and a
+  # note set, so the board can press it again; it only becomes stale once the session moved on
+  # (state read again here; the collector also marks it stale on PostToolUse / Stop / a new prompt).
+  refuse_screen() {
+    if [ -z "$dec_id" ] || [ -z "${sf:-}" ] \
+       || [ "$(jq -r '[.state, (.pending.tool_use_id // ""), (.pending.summary_sha256 // "")] | join(" ")' "$sf" 2>/dev/null)" \
+            != "needs-you $expect ${st_sha:-}" ]; then
+      refuse "$1; the session has moved on" "${2:-}" moved_on
+    fi
+    # Only from answered: a decision the collector already closed (stale, ...) is never reopened.
+    if [ "$(jq -r '.status // empty' "$(dec_path "$dec_id")" 2>/dev/null)" != answered ]; then
+      refuse "$1; the decision is no longer answered" "${2:-}" moved_on
+    fi
+    echo "board press: refused — $1; the prompt still waits: answer it again or in the session" >&2
+    attempt not_visible "$1" "${2:-}"
+    local n; n="$(now_ms)"
+    update_decision "$dec_id" '.status = "pending" | .answer = null | .answered_by = null | .answered_at = null
+        | .answer_index = null | .answer_options = null | .relay = null | .press_note = $note | .press_note_at = $now
+        | .updated_at = $now | del(.status_reason)' \
+      --arg note "$PRESS_SCREEN_NOTE" --argjson now "$n" >/dev/null 2>&1
+    log_event "$(jq -cn --arg id "$dec_id" --arg r "$1" --argjson now "$n" \
+      '{ts: $now, type: "mark", id: $id, status: "pending", reason: ("press not visible: " + $r)}')"
+    exit 7
   }
   # Stopped after some keys were sent (free text: Enter not pressed): exit 5, decision stale.
   partial() {
     echo "board press: stopped — $1; keys sent, Enter not pressed: finish in the session" >&2
     attempt partial "$1" "${2:-}"
-    [ -n "$dec_id" ] && mark_status "$dec_id" stale "press partial: $1" >/dev/null 2>&1
+    [ -n "$dec_id" ] && mark_status "$dec_id" stale "press partial: $1" partial >/dev/null 2>&1
     exit 5
   }
 
@@ -1057,63 +1104,89 @@ cmd_press() {
   else
     if [ "$action" = allow ]; then keys_json="$(cfg_get press.allow_keys)"; else keys_json="$(cfg_get press.deny_keys)"; fi
     while IFS= read -r key; do [ -n "$key" ] && keys+=("$key"); done < <(jq -r '.[]' <<<"$keys_json" 2>/dev/null)
-    [ ${#keys[@]} -gt 0 ] || refuse "no keys configured for $action"
+    [ ${#keys[@]} -gt 0 ] || refuse "no keys configured for $action" "" config
   fi
 
   refresh
   local snap="$BOARD_HOME/snapshot.json"
-  [ -f "$snap" ] || refuse "no snapshot"
+  [ -f "$snap" ] || refuse "no snapshot" "" unknown_session
   local row
   row="$(jq -c --arg c "$code" '[ .sessions[] | select(.code == $c or ((.aliases // []) | index($c))) ] | first // empty' "$snap")"
-  [ -n "$row" ] || refuse "unknown session $code"
+  [ -n "$row" ] || refuse "unknown session $code" "" unknown_session
   local sid pane tmux_target
   sid="$(jq -r '.session_id // empty' <<<"$row")"
   pane="$(jq -r '.tmux_pane // empty' <<<"$row")"
   tmux_target="$(jq -r '.tmux // empty' <<<"$row")"
-  [ -n "$sid" ] || refuse "session $code is not running"
-  [ -n "$pane" ] || refuse "session $code has no tmux pane"
+  [ -n "$sid" ] || refuse "session $code is not running" "" unknown_session
+  [ -n "$pane" ] || refuse "session $code has no tmux pane" "" unknown_session
 
   local sf="$BOARD_HOME/state/$sid.json"
-  [ -f "$sf" ] || refuse "no hook state for $code (is the hook installed?)" "$pane"
+  [ -f "$sf" ] || refuse "no hook state for $code (is the hook installed?)" "$pane" unknown_session
   local st_state st_pending st_pane st_sha
   st_state="$(jq -r '.state // empty' "$sf")"
   st_pending="$(jq -r '.pending.tool_use_id // empty' "$sf")"
   st_pane="$(jq -r '.tmux_pane // empty' "$sf")"
   st_sha="$(jq -r '.pending.summary_sha256 // empty' "$sf")"
-  [ "$st_state" = "needs-you" ] || refuse "$code state is '$st_state', not needs-you" "$pane"
-  [ "$st_pending" = "$expect" ] || refuse "pending tool_use_id is '${st_pending:-none}', expected '$expect'" "$pane"
+  [ "$st_state" = "needs-you" ] || refuse "$code state is '$st_state', not needs-you" "$pane" moved_on
+  [ "$st_pending" = "$expect" ] || refuse "pending tool_use_id is '${st_pending:-none}', expected '$expect'" "$pane" moved_on
   if [ -z "$d_sha" ] || [ -z "$st_sha" ]; then
-    refuse "no input hash on the decision or the pending prompt; cannot bind the press to it" "$pane"
+    refuse "no input hash on the decision or the pending prompt; cannot bind the press to it" "$pane" config
   fi
-  [ "$st_sha" = "$d_sha" ] || refuse "pending input differs from the decision's (sha256 mismatch)" "$pane"
+  [ "$st_sha" = "$d_sha" ] || refuse "pending input differs from the decision's (sha256 mismatch)" "$pane" moved_on
   if [ -n "$st_pane" ] && [ "$st_pane" != "$pane" ]; then
-    refuse "pane mismatch: hook saw $st_pane, registry says $pane" "$pane"
+    refuse "pane mismatch: hook saw $st_pane, registry says $pane" "$pane" unknown_session
   fi
   if [ -n "$tmux_target" ]; then
     local pane_sess
-    pane_sess="$(tmux display-message -p -t "$pane" '#{session_name}' 2>/dev/null)" || refuse "tmux pane $pane not found" "$pane"
-    [ "$pane_sess" = "${tmux_target%%:*}" ] || refuse "pane $pane belongs to tmux session '$pane_sess', expected '${tmux_target%%:*}'" "$pane"
+    pane_sess="$(tmux display-message -p -t "$pane" '#{session_name}' 2>/dev/null)" || refuse "tmux pane $pane not found" "$pane" unknown_session
+    [ "$pane_sess" = "${tmux_target%%:*}" ] || refuse "pane $pane belongs to tmux session '$pane_sess', expected '${tmux_target%%:*}'" "$pane" unknown_session
   fi
 
   local regex lines full screen
   if [ "$action" = answer ]; then regex="$(cfg_get press.question_regex)"; else regex="$(cfg_get press.prompt_regex)"; fi
-  [ -n "$regex" ] || refuse "no press regex configured for $action" "$pane"
+  [ -n "$regex" ] || refuse "no press regex configured for $action" "$pane" config
+  # The pane must run the TUI (press.tui_command_regex against #{pane_current_command}: claude,
+  # claude.exe, node, or the native installer's binary named X.Y.Z): a TUI that crashed back to a
+  # shell would read the keys, the scroll key included, as readline input. Empty: not checked.
+  local tui_re pane_cmd
+  tui_re="$(cfg_get press.tui_command_regex)"
+  if [ -n "$tui_re" ]; then
+    pane_cmd="$(tmux display-message -p -t "$pane" '#{pane_current_command}' 2>/dev/null)" || pane_cmd=""
+    grep -Eq -- "$tui_re" <<<"$pane_cmd" || refuse "pane $pane runs '${pane_cmd:-unknown}', not Claude Code" "$pane"
+  fi
   lines="$(cfg_get press.lines 30)"
   case "$lines" in ''|*[!0-9]*) lines=30 ;; esac
   full="$(tmux capture-pane -p -t "$pane" 2>/dev/null)" || refuse "capture-pane failed for $pane" "$pane"
   screen="$(sed -e :a -e '/^[[:space:]]*$/{$d;N;ba' -e '}' <<<"$full" | tail -n "$lines")"
+  # The TUI scrolled up (new messages arrived above an open prompt): one of its last 2 non-blank
+  # lines is the whole-line press.scrolled_regex ("4 new messages (ctrl+End) ↓") instead of the
+  # prompt. Send the one key that scrolls to the bottom (press.scroll_key, C-End: never submits
+  # anything in Claude Code's TUI), once, then look again. Every check below runs on the new capture.
+  if ! grep -Eq -- "$regex" <<<"$screen"; then
+    local scrolled_re scroll_key
+    scrolled_re="$(cfg_get press.scrolled_regex)"
+    scroll_key="$(cfg_get press.scroll_key)"
+    if [ -n "$scrolled_re" ] && [ -n "$scroll_key" ] \
+       && tail -n 2 <<<"$screen" | grep -Eq -- "$scrolled_re"; then
+      attempt scroll "pane scrolled up: sent $scroll_key" "$pane"
+      tmux send-keys -t "$pane" "$scroll_key" || refuse "send-keys failed (scroll key)" "$pane"
+      sleep "${BOARD_PRESS_SETTLE:-0.3}"
+      full="$(tmux capture-pane -p -t "$pane" 2>/dev/null)" || refuse "capture-pane failed for $pane" "$pane"
+      screen="$(sed -e :a -e '/^[[:space:]]*$/{$d;N;ba' -e '}' <<<"$full" | tail -n "$lines")"
+    fi
+  fi
   local ft_label=""
   if [ "$action" = answer ]; then
-    grep -Eq -- "$regex" <<<"$screen" || refuse "no question picker visible in pane $pane" "$pane"
+    grep -Eq -- "$regex" <<<"$screen" || refuse_screen "no question picker visible in pane $pane" "$pane"
     if [ -n "$q_text" ]; then
       # The row the free-text key goes to must be the picker's "Type something" row.
       ft_label="$(cfg_get press.free_text_label)"
-      [ -n "$ft_label" ] || refuse "no press.free_text_label configured" "$pane"
+      [ -n "$ft_label" ] || refuse "no press.free_text_label configured" "$pane" config
       grep -Eq -- "^[[:space:]]*($(cfg_get press.focus_regex))?[[:space:]]*${keys[0]}\.[[:space:]]*($ft_label)" <<<"$screen" \
         || refuse "row ${keys[0]} of the picker is not \"Type something\"" "$pane"
     fi
   else
-    grep -Eq -- "$regex" <<<"$screen" || refuse "no permission prompt visible in pane $pane" "$pane"
+    grep -Eq -- "$regex" <<<"$screen" || refuse_screen "no permission prompt visible in pane $pane" "$pane"
   fi
 
   # 4. The prompt on screen must be about this input: the start of the summary (whitespace
@@ -1172,7 +1245,7 @@ cmd_press() {
   # 5. Last look at the state right before typing: abort if the pending prompt changed.
   if [ "$(jq -r '[.state, (.pending.tool_use_id // ""), (.pending.summary_sha256 // "")] | join(" ")' "$sf")" \
        != "needs-you $expect $st_sha" ]; then
-    refuse "pending prompt changed while checking" "$pane"
+    refuse "pending prompt changed while checking" "$pane" moved_on
   fi
 
   if [ "$multi" = 1 ]; then
@@ -1263,15 +1336,15 @@ press_multi() {
   # label is plain text, matched literally (never a pattern).
   for name in tabbar_regex review_regex question_regex focus_regex; do
     case "$name" in tabbar_regex) re="$tabbar" ;; review_regex) re="$review" ;; question_regex) re="$footer" ;; *) re="$focus" ;; esac
-    [ -n "$re" ] || refuse "press.$name is not configured" "$pane"
-    grep -Eq -- "$re" <<<'' 2>/dev/null; [ $? -le 1 ] || refuse "press.$name is not a valid pattern (grep -E)" "$pane"
+    [ -n "$re" ] || refuse "press.$name is not configured" "$pane" config
+    grep -Eq -- "$re" <<<'' 2>/dev/null; [ $? -le 1 ] || refuse "press.$name is not a valid pattern (grep -E)" "$pane" config
     case "$name" in tabbar_regex|focus_regex)
       SB_RE="$re" awk 'BEGIN { if ("" ~ ENVIRON["SB_RE"]) x = 1 }' 2>/dev/null \
-        || refuse "press.$name is not a valid pattern (awk)" "$pane" ;;
+        || refuse "press.$name is not a valid pattern (awk)" "$pane" config ;;
     esac
   done
   if [ -z "$submit" ] || [ "${#submit}" -gt 80 ] || [[ $submit =~ [[:cntrl:]] ]]; then
-    refuse "press.submit_label must be plain text (1-80 characters)" "$pane"
+    refuse "press.submit_label must be plain text (1-80 characters)" "$pane" config
   fi
   n="$(jq -r '.questions | length' "$df")"
   fail() { if [ "$sent" = 0 ]; then refuse "$1" "$pane"; else partial "$1" "$pane"; fi; }

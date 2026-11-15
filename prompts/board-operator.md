@@ -218,8 +218,16 @@ db.
     page never offers Allow for such a decision. Otherwise treat it like an unauthorized answer.
   - exit 0 → `status: "relayed"` (db). `board press` has already marked the local file.
   - **exit 3** (guard failed: the prompt changed or isn't on screen; no keys were sent) →
-    `status: "stale"` in the db. `board press` has already marked the local file. The page then
-    tells the human to handle it in the session. Do not retry.
+    `status: "stale"` in the db. `board press` has already marked the local file (with
+    `status_reason: "screen"`; copy it to the db). The page then tells the human the answer was
+    not delivered and to handle it in the session. Do not retry. When you give up on a relay
+    yourself, use `board mark <id> stale --reason operator`.
+  - **exit 7** (the prompt still waits but is not on screen, e.g. the session's TUI is scrolled
+    up; at most the scroll key was sent) → the local file is `pending` again with a `press_note`
+    and no answer. Set the db decision to `status: "pending"`, clear its `answer` and
+    `answered_by`, and set `context: "the session's screen is scrolled; answer again or in the
+    session"`. Do **not** press again on your own: wait until a human answers it again on the
+    board. Never mark it `stale` yourself: the collector does once the session moves on.
   - any other exit → leave it open and note the error in `context`. Retry next tick, and after 3
     failures mark it `stale`.
 - **`kind: "question"` with `source: "pane"`** (an AskUserQuestion picker in that session):
@@ -227,8 +235,8 @@ db.
   ```bash
   board press <CODE> answer --expect <tool_use_id>
   ```
-  and handle the exits like a permission press (0 → `relayed`; 3 → `stale`, no retry; other → note
-  it in `context`).
+  and handle the exits like a permission press (0 → `relayed`; 3 → `stale`, no retry; 7 → back to
+  `pending` as above, no re-press until a human answers again; other → note it in `context`).
   - **exit 5** (partial: text was typed into the picker, Enter was not pressed) → `status: "stale"`
     in the db with `context: "keys sent, Enter not pressed — finish in the session"`. `board press`
     has already marked the local file. Never retry, never send a message for it.

@@ -122,7 +122,7 @@ DECISION_KEYS = ("id", "kind", "from", "question", "options", "context", "tool_u
                  "hint", "hint_at", "resolved_by", "resolved_via", "resolved_at", "resolve_note",
                  "created_at", "updated_at", "task_id", "stage", "gate", "artifact_ref",
                  "escalation_level", "notified_via", "summary_truncated",
-                 "labels_clipped", "answer_options",
+                 "labels_clipped", "answer_options", "press_note", "status_reason",
                  # pane questions (an AskUserQuestion picker): source "pane"
                  "source", "questions", "questions_clipped", "pressable", "answer_index", "relay")
 OPERATOR_KEYS = ("heartbeat_at", "version", "operator_session", "account_hint")
@@ -383,6 +383,7 @@ class StateBuilder:
         self.ev_offset = 0
         self.ev_inode = None
         self.approvals = []
+        self.mark_reasons = {}  # decision id -> status_reason code, from mark / unauthorized events
         self.lock = threading.Lock()
 
     def p(self, *parts):
@@ -420,7 +421,7 @@ class StateBuilder:
             self.ev_offset, self.approvals = 0, []
             return
         if st.st_ino != self.ev_inode or st.st_size < self.ev_offset:
-            self.ev_inode, self.ev_offset, self.approvals = st.st_ino, 0, []
+            self.ev_inode, self.ev_offset, self.approvals, self.mark_reasons = st.st_ino, 0, [], {}
         if st.st_size == self.ev_offset:
             return
         with open(path, "rb") as fh:
@@ -429,20 +430,31 @@ class StateBuilder:
         end = chunk.rfind(b"\n") + 1  # only whole lines; a partial last line is read next time
         self.ev_offset += end
         for line in chunk[:end].splitlines():
-            if b'"approval"' not in line:
+            if b'"approval"' not in line and b'"mark"' not in line and b'"unauthorized"' not in line:
                 continue
             try:
                 ev = json.loads(line)
             except ValueError:
                 continue
-            if isinstance(ev, dict) and ev.get("type") == "approval":
+            if not isinstance(ev, dict):
+                continue
+            if ev.get("type") == "approval":
                 self.approvals.append(ev)
+            elif ev.get("type") in ("mark", "unauthorized") and isinstance(ev.get("id"), str):
+                code = mark_reason_code(ev)
+                if code:
+                    self.mark_reasons[ev["id"]] = code
+                elif ev.get("type") == "mark":
+                    self.mark_reasons.pop(ev["id"], None)
         self.approvals = self.approvals[-500:]
+        if len(self.mark_reasons) > 2000:
+            self.mark_reasons = dict(list(self.mark_reasons.items())[-1000:])
 
     def build(self, cfg):
         with self.lock:
             self._read_approvals()
             approvals_raw = list(self.approvals)
+            mark_reasons = dict(self.mark_reasons)
         snap = read_json(self.p("snapshot.json")) or {}
         tasks = []
         for path in glob.glob(self.p("tasks", "*.json")):
@@ -472,6 +484,12 @@ class StateBuilder:
             if not isinstance(d, dict) or not d.get("id"):
                 continue
             row = {k: d[k] for k in DECISION_KEYS if k in d}
+            # Why an answer was not delivered: the record's own code, else (a record from before the
+            # code existed) the last mark/press event's reason, as a fixed code, never its text.
+            if row.get("status") in UNDELIVERED and not row.get("status_reason") and d["id"] in mark_reasons:
+                row["status_reason"] = mark_reasons[d["id"]]
+            if row.get("status_reason") not in REASON_CODES:
+                row.pop("status_reason", None)
             if not row.get("from") and d.get("session_id") in by_sid:
                 row["from"] = by_sid[d["session_id"]]
             decisions.append(row)
@@ -551,6 +569,25 @@ def cards_for(sessions, approver):
             s = dict(s, card=card)
         out.append(s)
     return out
+
+
+# Why a recorded answer was not delivered (decision status_reason; the page words them).
+REASON_CODES = ("screen", "partial", "moved_on", "timeout", "not_approver", "unknown_session", "operator", "config")
+UNDELIVERED = ("stale", "timeout", "unauthorized")
+
+
+def mark_reason_code(ev):
+    """A status_reason code for a mark / unauthorized event, from its fixed reason prefixes."""
+    if ev.get("type") == "unauthorized":
+        return "not_approver" if not ev.get("reason") else None
+    r = str(ev.get("reason") or "")
+    if ev.get("status") != "stale":
+        return None
+    if r.startswith("press partial:"):
+        return "partial"
+    if r.startswith("press refused:"):
+        return "screen"
+    return None
 
 
 def notify_state(home):
@@ -1109,7 +1146,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.audit(ident, via, "answer", id=did, result="answered")
                 return self.send_json(200, {"id": did, "status": "answered"})
             if not code or not dec.get("tool_use_id"):
-                self.board("mark", did, "stale")
+                self.board("mark", did, "stale", "--reason", "unknown_session")
                 self.audit(ident, via, "press", id=did, result="stale", reason="no session or tool_use_id")
                 raise Refused(409, "stale", "the session for this prompt is unknown")
             rc, out, err = self.board("press", str(code), "answer" if pane_q else answer,
@@ -1122,6 +1159,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if rc == 3:
                 self.audit(ident, via, "press", id=did, code=code, key=answer, result="stale")
                 raise Refused(409, "stale", "the prompt is no longer showing; answer it in the session")
+            if rc == 7:  # the prompt still waits but is not on screen (scrolled): pending again
+                self.audit(ident, via, "press", id=did, code=code, key=answer, result="not_visible")
+                raise Refused(409, "screen_not_ready",
+                              "the session's screen is scrolled or covered, so the prompt is not visible; "
+                              "try again, or answer in the session")
             if rc == 5:  # free text typed into the picker, Enter not pressed
                 self.audit(ident, via, "press", id=did, code=code, key=answer, result="partial")
                 raise Refused(409, "partial", "keys were sent but Enter was not pressed; finish in the session")
