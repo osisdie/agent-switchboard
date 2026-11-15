@@ -35,6 +35,13 @@ jobs:
             bin/board-notify hooks/board-statusline-tap.sh tests/test_notify.sh \
             bin/board-serve scripts/expose-cloudflare.sh tests/test_serve.sh tests/test_away.sh
 
+  readme-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: README translations keep the heading structure
+        run: python3 scripts/check-readme-sync.py README.md README.zh-TW.md
+
   tests:
     runs-on: ubuntu-latest
     steps:
