@@ -273,9 +273,10 @@ update() {
           # A form of 1-4 single-select questions, each with 1-8 options whose labels are whole and
           # unique (case-insensitive: a label answer must be unambiguous). Several questions are
           # answered one option each and pressed question by question (board press), which tells
-          # them apart by their text: no start of a question (as stored, whitespace removed) may begin
+          # them apart by their text: no start of a question (as stored, whitespace removed, Unicode
+          # spaces too, as board press removes them) may begin
           # another, or a screen still on one question could pass for the next.
-          | [ $qs[] | .question // "" | tostring | split("…")[0] | split("[REDACTED")[0] | gsub("\\s"; "") ] as $qkeys
+          | [ $qs[] | .question // "" | tostring | split("…")[0] | split("[REDACTED")[0] | gsub("[\\s\u0085\u00a0\u1680\u2000-\u200b\u2028\u2029\u202f\u205f\u3000\ufeff]"; "") ] as $qkeys
           | (($qs | length) >= 1 and ($qs | length) <= 4 and ($labels_clipped | not)
              and all($qs[]; (.multiSelect | not)
                      and (.options | length) >= 1 and (.options | length) <= 8

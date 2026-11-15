@@ -276,9 +276,11 @@ time: a digit picks an option and moves to the next question; after the last one
   when `pressable`. Any other answer to a form (free text) relays by message (`"operator"`), and
   `board press` refuses it (exit 4).
 - `board press <CODE> answer --expect <tool_use_id>`, with the same approver, state and hash
-  checks as one question. `press.tabbar_regex`, `press.review_regex` and `press.question_regex`
-  must be valid extended regexes and `press.submit_label` plain text (matched literally), checked
-  before any key. Only the lines after the last tab bar count: the prompt above the form can
+  checks as one question. `press.tabbar_regex`, `press.review_regex`, `press.question_regex` and
+  `press.focus_regex` (the focused-row marker, default `(❯|>|›)`, shared with single questions)
+  must be valid extended regexes (the tab bar and focus ones for awk too), and `press.submit_label` plain text (matched literally), checked
+  before any key. Whitespace is removed the same way from the screen and the stored text, Unicode spaces included
+  (NBSP, U+2000–U+200B, U+3000, ...). Only the lines after the last tab bar count: the prompt above the form can
   repeat the questions. For each question in order: the first text after the tab bar is that
   question (all of it, or its stored start when clipped), then its labels in order, then the
   picker footer (`press.question_regex`); after a digit, the screen must also differ from the one
@@ -286,7 +288,7 @@ time: a digit picks an option and moves to the next question; after the last one
   20, `BOARD_PRESS_SETTLE` seconds apart), and the state is re-read before each. On the review
   screen (`press.review_regex`): every question's start in order, exactly one `→` line per
   question, each equal to the chosen label (whitespace ignored), and exactly one row containing
-  `press.submit_label`: the focused `❯ N.` row, after the answers, followed only by numbered rows;
+  `press.submit_label`: the focused (`press.focus_regex`) `N.` row, after the answers, followed only by numbered rows;
   then its digit N. **Enter is never sent.** A mismatch before the first digit → exit 3, nothing
   sent; after it → exit 5 (partial), `stale`, logged `partial`.
 

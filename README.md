@@ -168,7 +168,7 @@ your `statusLine` and removes the symlinks.
   | `remote_url_prefix` | `https://claude.ai/code/` | prefix for each session's Remote Control link |
   | `serve.enabled`, `serve.port` | `false`, `39410` | self-hosted board: `fleet-up` starts `board-serve`; the local listener (identity `local`) |
   | `serve.tunnel.*` | off | `enabled`, `port` (port + 1), `hostname`, `team_domain`, `aud`: the listener cloudflared points at; identity = the email of a verified Cloudflare Access token |
-  | `press.prompt_regex`, `press.question_regex`, `press.free_text_label`, `press.tabbar_regex`, `press.review_regex`, `press.submit_label`, `press.lines`, `press.allow_keys`, `press.deny_keys` | see example | the screen checks and keys used by `board press` (`question_regex`: the AskUserQuestion picker; `tabbar_regex`, `review_regex`, `submit_label`: a form of several questions) |
+  | `press.prompt_regex`, `press.question_regex`, `press.free_text_label`, `press.tabbar_regex`, `press.review_regex`, `press.submit_label`, `press.focus_regex`, `press.lines`, `press.allow_keys`, `press.deny_keys` | see example | the screen checks and keys used by `board press` (`question_regex`: the AskUserQuestion picker; `tabbar_regex`, `review_regex`, `submit_label`: a form of several questions) |
 
 - `.env`: alert channels (Slack, email, LINE, SNS, webhook; all optional, see
   [Alerting & escalation](#alerting--escalation)). Start from `.env.example`.

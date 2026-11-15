@@ -960,6 +960,41 @@ seqpress tu_mi "$(mq_q1)" "$(mq_q1)" "$(mq_q2)" "$(mq_review Blue Large)"
 eq "submit_label is literal text: '.*' matches no row -> exit 5, nothing submitted" "$?/$(keys_sent)" "5/send-keys -t %42 2|send-keys -t %42 2|"
 qdone tu_mi
 cp "$T/fleet.yaml.mq" "$BOARD_CONFIG_DIR/fleet.yaml"
+d="$(askq tu_mj "$Q2F")"; "$B" answer "$d" --options 2,2 --by user-1 >/dev/null
+printf 'press:\n  tabbar_regex: "(unclosed"\n' >> "$BOARD_CONFIG_DIR/fleet.yaml"
+seqpress tu_mj "$(mq_q1)" "$(mq_q1)"
+eq "an invalid press.tabbar_regex -> exit 3 before any key, named" "$?/$(keys_sent)/$(jq -s -r '[.[] | select(.type=="press")] | last | .reason' "$BOARD_HOME/events.jsonl")" "3//press.tabbar_regex is not a valid pattern (grep -E)"
+qdone tu_mj
+cp "$T/fleet.yaml.mq" "$BOARD_CONFIG_DIR/fleet.yaml"
+
+# Whitespace is removed the same way on both sides, Unicode spaces too: a question stored with a
+# no-break space and an ideographic space matches the screen that shows plain spaces.
+QNB="$(jq -c '.[0].question = "Which color\u00a0for the\u3000banner?"' <<<"$Q2F")"
+d="$(askq tu_mk "$QNB")"; "$B" answer "$d" --options 2,2 --by user-1 >/dev/null
+eq "Unicode spaces in a question: still pressable" "$(dj "$d" .pressable)" "true"
+seqpress tu_mk "$(mq_q1)" "$(mq_q1)" "$(mq_q2)" "$(mq_review Blue Large)"
+eq "...matched with plain spaces on screen -> ok, digits then Submit" "$?/$(keys_sent)" "0/send-keys -t %42 2|send-keys -t %42 2|send-keys -t %42 1|"
+qdone tu_mk
+QNB2="$(jq -c '.[1].question = .[0].question + "\u00a0Explain."' <<<"$Q2F")"
+d="$(askq tu_ml "$QNB2")"
+eq "one question begins another across a no-break space -> not pressable" "$(dj "$d" .pressable)" "false"
+qdone tu_ml
+
+# The focused-row markers are the single questions' ones, and configurable (press.focus_regex).
+d="$(askq tu_mm "$Q2F")"; "$B" answer "$d" --options 2,2 --by user-1 >/dev/null
+seqpress tu_mm "$(mq_q1)" "$(mq_q1)" "$(mq_q2)" "$(mq_review Blue Large | sed 's/^❯ 1. Submit answers/› 1. Submit answers/')"
+eq "Submit focused with › -> ok" "$?/$(keys_sent)" "0/send-keys -t %42 2|send-keys -t %42 2|send-keys -t %42 1|"
+qdone tu_mm
+d="$(askq tu_mn "$Q2F")"; "$B" answer "$d" --options 2,2 --by user-1 >/dev/null
+printf 'press:\n  focus_regex: "»"\n' >> "$BOARD_CONFIG_DIR/fleet.yaml"
+seqpress tu_mn "$(mq_q1)" "$(mq_q1)" "$(mq_q2)" "$(mq_review Blue Large | sed 's/^❯ 1. Submit answers/» 1. Submit answers/')"
+eq "press.focus_regex: » marks the focused row -> ok" "$?/$(keys_sent)" "0/send-keys -t %42 2|send-keys -t %42 2|send-keys -t %42 1|"
+qdone tu_mn
+d="$(askq tu_mo "$Q2F")"; "$B" answer "$d" --options 2,2 --by user-1 >/dev/null
+seqpress tu_mo "$(mq_q1)" "$(mq_q1)" "$(mq_q2)" "$(mq_review Blue Large)"
+eq "...and ❯ no longer does -> exit 5, nothing submitted" "$?/$(keys_sent)" "5/send-keys -t %42 2|send-keys -t %42 2|"
+qdone tu_mo
+cp "$T/fleet.yaml.mq" "$BOARD_CONFIG_DIR/fleet.yaml"
 
 # One label cut short -> read-only, even with a short question.
 CLIPL="$(jq -cn --arg l "Option $(printf 'l%.0s' $(seq 1 100))" '[{question: "Which one?", header: "Pick", options: [{label: $l, description: ""}, {label: "No", description: ""}], multiSelect: false}]')"

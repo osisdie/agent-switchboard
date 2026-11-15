@@ -159,7 +159,7 @@ JQ_PANE_ANSWER='
       elif any($qs[]; .multiSelect == true) then "multi-select"
       elif any($qs[]; ([ .options[].label | tostring | trim | ascii_downcase ] | unique | length) != (.options | length))
         then "repeated labels"
-      elif ([ $qs[] | .question // "" | tostring | split("…")[0] | split("[REDACTED")[0] | gsub("\\s"; "") ] as $k
+      elif ([ $qs[] | .question // "" | tostring | split("…")[0] | split("[REDACTED")[0] | gsub("[\\s\u0085\u00a0\u1680\u2000-\u200b\u2028\u2029\u202f\u205f\u3000\ufeff]"; "") ] as $k
             | any(range(0; $k | length) as $a | range(0; $k | length) as $b | select($a != $b) | [$a, $b];
                   . as $p | $k[$p[1]] | startswith($k[$p[0]])))
         then "questions start alike"
@@ -915,7 +915,7 @@ cmd_press() {
       # The row the free-text key goes to must be the picker's "Type something" row.
       ft_label="$(cfg_get press.free_text_label)"
       [ -n "$ft_label" ] || refuse "no press.free_text_label configured" "$pane"
-      grep -Eq -- "^[[:space:]]*(❯|>|›)?[[:space:]]*${keys[0]}\.[[:space:]]*($ft_label)" <<<"$screen" \
+      grep -Eq -- "^[[:space:]]*($(cfg_get press.focus_regex))?[[:space:]]*${keys[0]}\.[[:space:]]*($ft_label)" <<<"$screen" \
         || refuse "row ${keys[0]} of the picker is not \"Type something\"" "$pane"
     fi
   else
@@ -1009,7 +1009,8 @@ cmd_press() {
 # since Enter outside the picker would send the text to the session as a prompt.
 press_free_text() {
   local pane="$1" sf="$2" key="$3" text="$4" sha="$5" lines="$6" label="$7" scr send want row ok
-  local focus="^[[:space:]]*(❯|>|›)[[:space:]]*$key\\."
+  local focus
+  focus="^[[:space:]]*($(cfg_get press.focus_regex))[[:space:]]*$key\\."
   same_prompt() {
     [ "$(jq -r '[.state, (.pending.tool_use_id // ""), (.pending.summary_sha256 // "")] | join(" ")' "$sf")" \
       = "needs-you $expect $sha" ]
@@ -1054,16 +1055,26 @@ press_free_text() {
 # must show, the hook state must still be this prompt, then its option digit. Then the review
 # screen must list every question with the chosen label, and its submit row's digit is pressed.
 # Never Enter. A check that fails before the first key exits 3; after it, 5 (partial, stale).
+# nows — the text on stdin without whitespace, ASCII or Unicode (NBSP, the U+2000 spaces, ideographic
+# space, zero-width space, BOM; the set the hook's jq removes): how press_multi compares the screen
+# with the stored questions, on both sides alike.
+nows() { LC_ALL=C sed -E 's/[[:space:]]|\xc2[\x85\xa0]|\xe1\x9a\x80|\xe2\x80[\x80-\x8b\xa8\xa9\xaf]|\xe2\x81\x9f|\xe3\x80\x80|\xef\xbb\xbf//g' | tr -d '\n'; }
 press_multi() {
   local pane="$1" sf="$2" df="$3" sha="$4" lines="$5"
-  local tabbar review submit footer n i t tries key sent=0 raw="" prev="" why="" digit re
+  local tabbar review submit footer focus n i t tries key sent=0 raw="" prev="" why="" digit name
   tabbar="$(cfg_get press.tabbar_regex)"; review="$(cfg_get press.review_regex)"
-  submit="$(cfg_get press.submit_label)"; footer="$(cfg_get press.question_regex)"
-  # Configured patterns are checked before any key: each must be a valid extended regex (grep -E
-  # exits 2 on a bad one), and the submit label is plain text, matched literally (never a pattern).
-  for re in "$tabbar" "$review" "$footer"; do
-    [ -n "$re" ] || refuse "press.tabbar_regex, press.review_regex or press.question_regex is not configured" "$pane"
-    grep -Eq -- "$re" <<<'' 2>/dev/null; [ $? -le 1 ] || refuse "a press.*_regex setting is not a valid pattern" "$pane"
+  submit="$(cfg_get press.submit_label)"; footer="$(cfg_get press.question_regex)"; focus="$(cfg_get press.focus_regex)"
+  # Configured patterns are checked before any key: each must be a valid extended regex for grep -E
+  # (exit 2 on a bad one) and, where awk uses it (tab bar, focus markers), for awk too; the submit
+  # label is plain text, matched literally (never a pattern).
+  for name in tabbar_regex review_regex question_regex focus_regex; do
+    case "$name" in tabbar_regex) re="$tabbar" ;; review_regex) re="$review" ;; question_regex) re="$footer" ;; *) re="$focus" ;; esac
+    [ -n "$re" ] || refuse "press.$name is not configured" "$pane"
+    grep -Eq -- "$re" <<<'' 2>/dev/null; [ $? -le 1 ] || refuse "press.$name is not a valid pattern (grep -E)" "$pane"
+    case "$name" in tabbar_regex|focus_regex)
+      SB_RE="$re" awk 'BEGIN { if ("" ~ ENVIRON["SB_RE"]) x = 1 }' 2>/dev/null \
+        || refuse "press.$name is not a valid pattern (awk)" "$pane" ;;
+    esac
   done
   if [ -z "$submit" ] || [ "${#submit}" -gt 80 ] || [[ $submit =~ [[:cntrl:]] ]]; then
     refuse "press.submit_label must be plain text (1-80 characters)" "$pane"
@@ -1080,7 +1091,7 @@ press_multi() {
                                  END { if (!found) exit 1; printf "%s", buf }'
   }
   qkey() {  # question I as stored, up to any clip "…" or [REDACTED], no whitespace (the hook's qkey)
-    jq -r --argjson i "$1" '.questions[$i].question // "" | split("…")[0] | split("[REDACTED")[0] | gsub("\\s"; "")' "$df"
+    jq -r --argjson i "$1" '.questions[$i].question // "" | split("…")[0] | split("[REDACTED")[0]' "$df" | nows
   }
   # check_question I — RAW is a fresh capture showing question I: after the tab bar, its text comes
   # first (all of it, or the stored start of a clipped one), then its labels in order, then the
@@ -1089,13 +1100,13 @@ press_multi() {
     local q flat rest lab
     raw="$(form_region)" || { why="no question form visible for question $(($1 + 1))"; return 1; }
     [ "$1" -gt 0 ] && [ "$raw" = "$prev" ] && { why="question $(($1 + 1)) did not appear (the screen did not change)"; return 1; }
-    q="$(qkey "$1")"; flat="$(tr -d '[:space:]' <<<"$raw")"
-    [ "${#q}" -ge 8 ] || [ "$(jq -r --argjson i "$1" '.questions[$i].question // "" | gsub("\\s"; "")' "$df")" = "$q" ] \
+    q="$(qkey "$1")"; flat="$(nows <<<"$raw")"
+    [ "${#q}" -ge 8 ] || [ "$(jq -r --argjson i "$1" '.questions[$i].question // ""' "$df" | nows)" = "$q" ] \
       || { why="too little of question $(($1 + 1)) to check on screen"; return 1; }
     [ -n "$q" ] && [[ $flat == "$q"* ]] || { why="question $(($1 + 1)) is not the one showing"; return 1; }
     rest="${flat#"$q"}"
     while IFS= read -r lab; do
-      lab="$(tr -d '[:space:]' <<<"$lab")"
+      lab="$(nows <<<"$lab")"
       [ -n "$lab" ] || continue
       [[ $rest == *"$lab"* ]] || { why="the options of question $(($1 + 1)) are not showing"; return 1; }
       rest="${rest#*"$lab"}"
@@ -1110,7 +1121,7 @@ press_multi() {
     raw="$(form_region)" || { why="no review screen after the last question"; return 1; }
     [ "$raw" != "$prev" ] || { why="the review screen did not appear (the screen did not change)"; return 1; }
     grep -Eq -- "$review" <<<"$raw" || { why="the review screen did not appear"; return 1; }
-    flat="$(tr -d '[:space:]' <<<"$raw")"; rest="$flat"
+    flat="$(nows <<<"$raw")"; rest="$flat"
     for ((t = 0; t < n; t++)); do
       q="$(qkey "$t")"
       [[ $rest == *"$q"* ]] || { why="the review screen does not show question $((t + 1))"; return 1; }
@@ -1118,25 +1129,25 @@ press_multi() {
     done
     # "→ Redwood" never passes for "Red", and a label the screen wrapped fails safe.
     local -a shown=()
-    while IFS= read -r seg; do shown+=("$(tr -d '[:space:]' <<<"${seg#*→}")"); done < <(grep -E '^[[:space:]]*→' <<<"$raw")
+    while IFS= read -r seg; do shown+=("$(nows <<<"${seg#*→}")"); done < <(grep -E '^[[:space:]]*→' <<<"$raw")
     [ "${#shown[@]}" = "$n" ] || { why="the review screen shows ${#shown[@]} answers for $n questions"; return 1; }
     for ((t = 0; t < n; t++)); do
       lbl="$(jq -r --argjson i "$t" '.questions[$i].options[.answer_options[$i] - 1].label' "$df")"
-      [ "${shown[$t]}" = "$(tr -d '[:space:]' <<<"$lbl")" ] \
+      [ "${shown[$t]}" = "$(nows <<<"$lbl")" ] \
         || { why="the review screen shows another answer for question $((t + 1))"; return 1; }
     done
-    digit="$(SB_SUBMIT="$submit" awk '
-      BEGIN { lab = ENVIRON["SB_SUBMIT"] }
+    digit="$(SB_SUBMIT="$submit" SB_FOCUS="$focus" awk '
+      BEGIN { lab = ENVIRON["SB_SUBMIT"]; fre = "^[[:space:]]*(" ENVIRON["SB_FOCUS"] ")[[:space:]]*[1-9]\\.[[:space:]]*" }
       { l[NR] = $0; if ($0 ~ /^[[:space:]]*→/) last = NR; if (index($0, lab)) { cnt++; row = NR } }
       END {
         if (cnt != 1 || row <= last) exit 1
         s = l[row]
-        if (!match(s, /^[[:space:]]*❯[[:space:]]*[1-9]\.[[:space:]]*/)) exit 1
-        rest = substr(s, RLENGTH + 1); sub(/[[:space:]]+$/, "", rest)
-        if (rest != lab) exit 1
+        if (!match(s, fre)) exit 1
+        pre = substr(s, 1, RLENGTH); rest = substr(s, RLENGTH + 1); sub(/[[:space:]]+$/, "", rest)
+        if (rest != lab || !match(pre, /[1-9]\.[[:space:]]*$/)) exit 1
         for (i = row + 1; i <= NR; i++)
           if (l[i] !~ /^[[:space:]]*$/ && l[i] !~ /^[[:space:]]*[1-9]\.[[:space:]]/) exit 1
-        d = s; sub(/^[[:space:]]*❯[[:space:]]*/, "", d); print substr(d, 1, 1)
+        print substr(pre, RSTART, 1)
       }' <<<"$raw")" \
       && [ -n "$digit" ] || { why="no single focused \"$submit\" row at the end of the review screen"; return 1; }
   }

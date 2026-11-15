@@ -167,7 +167,7 @@ scripts/setup-dev.sh           # only if you'll commit to this repo: pre-commit 
   | `remote_url_prefix` | `https://claude.ai/code/` | 每個 session 的 Remote Control 連結前綴 |
   | `serve.enabled`、`serve.port` | `false`、`39410` | 自架看板：由 `fleet-up` 啟動 `board-serve`；本機監聽器（身分為 `local`） |
   | `serve.tunnel.*` | 關閉 | `enabled`、`port`（port + 1）、`hostname`、`team_domain`、`aud`：cloudflared 指向的監聽器；身分 = 經過驗證的 Cloudflare Access token 裡的 email |
-  | `press.prompt_regex`、`press.question_regex`、`press.free_text_label`、`press.tabbar_regex`、`press.review_regex`、`press.submit_label`、`press.lines`、`press.allow_keys`、`press.deny_keys` | 見範例 | `board press` 用的畫面檢查與按鍵（`question_regex`：AskUserQuestion 選單；`tabbar_regex`、`review_regex`、`submit_label`：多題表單） |
+  | `press.prompt_regex`、`press.question_regex`、`press.free_text_label`、`press.tabbar_regex`、`press.review_regex`、`press.submit_label`、`press.focus_regex`、`press.lines`、`press.allow_keys`、`press.deny_keys` | 見範例 | `board press` 用的畫面檢查與按鍵（`question_regex`：AskUserQuestion 選單；`tabbar_regex`、`review_regex`、`submit_label`：多題表單） |
 
 - `.env`：告警管道（Slack、email、LINE、SNS、webhook，全部選用，見
   [告警與升級](#alerting--escalation)）。從 `.env.example` 開始改。

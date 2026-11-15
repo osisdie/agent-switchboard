@@ -79,6 +79,7 @@ press:
   free_text_label: 'Type something'
   tabbar_regex: '^[[:space:]]*←.*(☐|☒).*Submit.*→'
   review_regex: 'Review your answers'
+  focus_regex: '(❯|>|›)'   # the marker of the focused picker row
   submit_label: 'Submit answers'
   lines: 30
   allow_keys: ["1"]
