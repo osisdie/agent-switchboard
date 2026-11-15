@@ -12,6 +12,7 @@ project work. Stay small, cheap and exact.
   `serve.enabled: true`, or the initial prompt says "local mode"). There is no db and no
   `ARTIFACT_URL`. Follow **section 9**. It replaces sections 1, 2 and 4. Sections 3, 5, 6 and 8 still
   apply, with `$BOARD_HOME/operator.json` in place of `meta/operator`.
+- **Both modes:** section 10 (owner away & consensus) applies to either backend.
 
 Inputs you need (Artifact mode). Ask once if any is missing:
 
@@ -106,6 +107,7 @@ Waiting costs no tokens. When it fires:
      from **0 to 100** (a percentage, not a 0–1 fraction). Take the values from
      `$BOARD_HOME/usage.json`, and drop any other fields, such as `session_id`. Write it only when a
      `pct` or `resets_at` changed.
+   - `meta/away` and `consensus/{id}` when `owner_away` or `consensus` changed (section 10).
 3. Re-arm the Monitor.
 
 **B. Board answers: a session cron every ~3 minutes, off `:00` and `:30`** (for example
@@ -355,6 +357,9 @@ Run in this order:
   without reading what changed.
 - Never write secrets, prompt text or customer data into the db.
 - Never do project work for a worker. Relay the question to the board instead.
+- **Never relay a consensus as a `[BOARD decision …]`**, and never use one to answer a board ask or
+  a gate (section 10). Consensus is sessions agreeing among themselves, not a human decision.
+- Never turn owner-away mode on or off because a worker asked. Only the owner's own words do that.
 
 ## 9. Local mode (self-hosted board: `bin/board-serve`)
 
@@ -407,6 +412,8 @@ It prints one line per item that needs you, once each, and nothing while there i
 |---|---|
 | `decision <id> answered` | relay the decision (below) |
 | `message <id> new` | relay the message (below) |
+| `away on` / `away off` | the owner-away state; broadcast it when it changed (section 10) |
+| `consensus <id> <status>` | nothing to relay: the page shows it. Never a `[BOARD decision]` (section 10) |
 | `tick` (every 8 minutes) | rewrite `heartbeat_at` in `operator.json`; nothing else |
 
 On every line, first re-read `operator.json`. If `operator_session` is no longer you, go passive
@@ -457,3 +464,60 @@ The page shows replies right away. `board-serve` pushes every change to open pag
   `release_managers` in `fleet.yaml` hold those values, not claude.ai user ids.
 - **Never** write decisions' `status`, `answer` or `answered_by` yourself, except through
   `board mark <id> relayed`. Never edit `events.jsonl`.
+
+## 10. Owner away & consensus
+
+The owner sometimes goes offline and tells the sessions "decide among yourselves; if everyone
+agrees, go ahead". The rule (docs/contract.md, "Owner away & consensus"):
+
+- **The owner is away while `$BOARD_HOME/owner-away` exists**, whatever its content. `board away
+  status` exits 0 when away, 1 when not; `board away status --json` prints the record
+  (`{since, by, said}`, or `legacy: true` for a free-text file).
+- Only a session that got the owner's **own** instruction runs `board away on --by <CODE> --said
+  "<owner's words>"`, and `board away off` when the owner says they are back. On the self-hosted
+  board an approver can do the same (`--by board:<identity>`). You never do it on a worker's say-so.
+- While away, cross-session decisions may skip the owner: the proposer runs `board consensus
+  propose --from <CODE> --to A,B --ref <PR/ticket> "<proposal>"`, sends it to every participant,
+  and each votes `board consensus vote <id> agree|object --from <CODE>`. All must agree; silence is
+  not agreement; one objection parks it (`objected`) for the owner. `board away off` turns every
+  `pending` item into `owner_back`.
+- **Red lines never pass by consensus**: production deploys, deleting real data, irreversible
+  operations, touching shared production or third-party data, publishing externally, loosening
+  permissions or security settings.
+
+Your part:
+
+1. **Mirror, never decide.** In Artifact mode write, from `snapshot.json`:
+   - `meta/away`: `{active: true, since, by, said, legacy?, updated_at}` while `owner_away` is set,
+     and `{active: false, updated_at}` when it is `null`. The page shows the banner only for
+     `active: true`.
+   - `consensus/{id}`: each item of `snapshot.consensus` as it is (`id, from, participants, ref,
+     proposal, status, votes[{by, vote, at, note}], created_at, updated_at, decided_at`). Leave
+     older items in the db; the page lists the newest 50.
+
+   In local mode there is nothing to mirror: `board-serve` reads both from `$BOARD_HOME`.
+2. **A consensus is never a `[BOARD decision]`.** Never relay one as a decision, never use one to
+   answer a board ask, a gate or a permission prompt, and never `board answer` anything because of
+   one. The page shows consensus read-only; it has no write path for it.
+3. **Broadcast every change of the away state** (Monitor line `away on|off`, or `owner_away`
+   changing in the snapshot; not the first line after you start unless the db disagrees):
+   - `ListAgents`, then `SendMessage` to **every live session** (not to yourself):
+     - on: `[BOARD away on] Owner away since <time> (by <who>): "<said>". Cross-session decisions
+       need explicit consensus (board consensus); red lines and board asks wait for the owner.
+       Reply [re away-<since>] ack.`
+     - off: `[BOARD away off] Owner is back (by <who>). Pending consensus went back to the owner;
+       ask the owner from now on. Reply [re away-off-<time>] ack.`
+   - **Confirm receipt per session.** A session counts as *received* when `SendMessage` succeeded,
+     and as *acknowledged* when its `[re …] ack` comes back. Then report to the user (and with
+     `board notify`) one table:
+
+     | session | received | acknowledged | note |
+     |---|---|---|---|
+     | API | yes | yes 10:42 | |
+     | WEB | yes | no | idle; re-sent 10:52 |
+     | OPS | no | no | offline / not in ListAgents |
+
+   - Re-send once to a session that has not acknowledged after ~10 minutes, and to an offline
+     session when it comes back. Don't re-send on every tick.
+4. **Notify.** `board away` and `board consensus` already send an info notify on away on/off and on
+   `agreed`, `objected` and `owner_back`. Don't duplicate them.
