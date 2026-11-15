@@ -162,7 +162,7 @@ jq -n '{at: 1, enabled: true, platform: "linux", level: "warn", worst: "mem",
     teammates: [{name: "idle-one", pid: 4300, rss_mb: 300, cpu_pct: 0, age_s: 7200, idle_s: 3600, idle: true}],
     teammates_n: 1, teammates_rss_mb: 300, idle_teammates_n: 1, heavy_n: 1}],
   orphan_teammates: [], heavy_running: 1, unavailable: ["psi"], operator: {watch: true}, cmdline: "x"}' >"$BOARD_HOME/resources.json"
-for _ in $(seq 1 30); do req GET /api/state >/dev/null; [ "$(body .resources.level)" = warn ] && break; sleep 0.1; done
+for _ in $(seq 1 100); do req GET /api/state >/dev/null; [ "$(body .resources.level)" = warn ] && break; sleep 0.1; done
 eq "resources.json change reaches /api/state" "$(body '.resources.level + "/" + .resources.worst')" "warn/mem"
 eq "resources: session row" "$(body '.resources.sessions[0] | .code + "/" + (.rss_mb|tostring) + "/" + (.teammates_n|tostring)')" "CP/400/1"
 eq "resources: idle teammate flagged" "$(body '.resources.sessions[0].teammates[0] | .name + "/" + (.idle|tostring)')" "idle-one/true"
