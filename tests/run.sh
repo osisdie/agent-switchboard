@@ -1736,19 +1736,19 @@ eq "pr merged keeps head, sets merged_at" "$(jq -r '[.pr.state, .pr.head_sha, .p
 "$B" task pause "$t2" >/dev/null; eq "pause" "$(jq -r .status "$tf2")" "paused"
 "$B" task resume "$t2" >/dev/null; eq "resume" "$(jq -r .status "$tf2")" "active"
 "$B" task progress "$t2" >/dev/null; eq "progress stamps progress_at" "$(jq -r '.progress_at == .updated_at' "$tf2")" "true"
-"$B" task done "$t2" extra >/dev/null 2>&1; eq "status verb takes only the id" "$?" "2"
+"$B" task "done" "$t2" extra >/dev/null 2>&1; eq "status verb takes only the id" "$?" "2"
 "$B" task ls | grep -q "$t2 .*active" && ok "task ls shows status" || bad "task ls shows status" "$("$B" task ls)"
 eq "task events logged" "$(jq -rs --arg id "$t2" '[.[] | select(.type=="task" and .id==$id) | .action] | join(",")' "$BOARD_HOME/events.jsonl")" "new,set,dep,pause,resume,progress"
 jq '.schema_version = 99' "$tf2" > "$tf2.x" && mv "$tf2.x" "$tf2"
 "$B" task set "$t2" --size S >/dev/null 2>&1; eq "newer schema_version is never modified" "$?" "1"
-"$B" task done "$t2" >/dev/null 2>&1; jq '.schema_version = 1' "$tf2" > "$tf2.x" && mv "$tf2.x" "$tf2"
-"$B" task done "$t2" >/dev/null; eq "done" "$(jq -r '.status + "," + ((.done_at > 0) | tostring)' "$tf2")" "done,true"
+"$B" task "done" "$t2" >/dev/null 2>&1; jq '.schema_version = 1' "$tf2" > "$tf2.x" && mv "$tf2.x" "$tf2"
+"$B" task "done" "$t2" >/dev/null; eq "done" "$(jq -r '.status + "," + ((.done_at > 0) | tostring)' "$tf2")" "done,true"
 "$B" task resume "$t2" >/dev/null; eq "resume clears done_at" "$(jq -r '.status + "," + (.done_at | tostring)' "$tf2")" "active,null"
-"$B" task done "$t2" >/dev/null
+"$B" task "done" "$t2" >/dev/null
 "$B" task dep "$t2" --remove 'a b' >/dev/null 2>&1; eq "dep --remove checks the id" "$?" "1"
 printf '{"id":"t-other","owner":"CP","title":"x","stage":"plan"}\n' > "$BOARD_HOME/tasks/t-9-mismatch.json"
 "$B" task set t-9-mismatch --size S >/dev/null 2>&1; eq "file holding another id refused" "$?" "1"
-eq "no file written for the other id" "$(ls "$BOARD_HOME/tasks" | grep -c '^t-other')" "0"
+others=("$BOARD_HOME"/tasks/t-other*); eq "no file written for the other id" "$([ -e "${others[0]}" ] && echo yes || echo no)" "no"
 rm -f "$BOARD_HOME/tasks/t-9-mismatch.json"*
 (flock "$tf.lock" sleep 1) & lockpid=$!; sleep 0.2
 "$B" task progress "$tid" >/dev/null; r1=$?

@@ -526,8 +526,9 @@ cmd_ask() {
          { task_id: ($task | nz), stage: ($stage | nz), gate: ($gate | nz), artifact_ref: ($art | nz) }
        else {} end)' | { python3 "$GUARD" scrub-json || [ $? = 3 ]; })"
   # A failed guard or jq would leave nothing to store: never write an empty or broken decision.
-  [ -n "$dec_json" ] && jq -e 'type == "object" and .id != null' >/dev/null 2>&1 <<<"$dec_json" \
-    || die "ask: could not build the decision; nothing was created"
+  if [ -z "$dec_json" ] || ! jq -e 'type == "object" and .id != null' >/dev/null 2>&1 <<<"$dec_json"; then
+    die "ask: could not build the decision; nothing was created"
+  fi
   # Lock first: while ask waits for the task, no decision exists that the collector could pick up
   # and alert on, and a timeout leaves nothing behind (exit 8: run the same ask again).
   if [ -n "$tf" ]; then
