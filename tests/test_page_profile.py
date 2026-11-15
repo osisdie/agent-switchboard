@@ -339,7 +339,7 @@ def main():
             port = free_port()
             with open(os.path.join(cfg, "fleet.yaml"), "w", encoding="utf-8") as fh:
                 fh.write("approvers: [local]\nrelease_managers: [rm@example.com]\nserve:\n  enabled: true\n  port: %d\n" % port)
-            env = dict(os.environ, BOARD_HOME=home, BOARD_CONFIG_DIR=cfg, CLAUDE_SESSIONS_DIR=sess)
+            env = dict(os.environ, BOARD_HOME=home, BOARD_CONFIG_DIR=cfg, CLAUDE_SESSIONS_DIR=sess, CLAUDE_JSON=os.path.join(home, "no-claude.json"))
             env.pop("BOARD_PUBLIC_URL", None)
             env.pop("TMUX", None)
             subprocess.run([os.path.join(REPO, "bin", "board-collect"), "--once", "--no-notify"],

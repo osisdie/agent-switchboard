@@ -107,7 +107,7 @@ Waiting costs no tokens. When it fires:
      `status: "pending"`. For a pane question (`source: "pane"`) copy `source`, `questions`,
      `pressable` and `tool_use_id` too, so the page can draw its option buttons.
    - `meta/operator.heartbeat_at`.
-   - `meta/operator.usage`: exactly
+   - `meta/operator.usage`: exactly (never the account email: it stays on the self-hosted board)
      `{five_hour: {pct, resets_at}, seven_day: {pct, resets_at}, updated_at}`. `pct` is a number
      from **0 to 100** (a percentage, not a 0–1 fraction). Take the values from
      `$BOARD_HOME/usage.json`, and drop any other fields, such as `session_id`. Write it only when a

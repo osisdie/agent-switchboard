@@ -538,7 +538,7 @@ class Collector(Base):
         super().setUp()
         self.sleeper = subprocess.Popen(["sleep", "600"])
         self.pid = self.sleeper.pid
-        self.env = dict(os.environ, BOARD_HOME=self.home, CLAUDE_SESSIONS_DIR=os.path.join(self.dir, "sessions"),
+        self.env = dict(os.environ, BOARD_HOME=self.home, CLAUDE_JSON=os.path.join(self.dir, "no-claude.json"), CLAUDE_SESSIONS_DIR=os.path.join(self.dir, "sessions"),
                         BOARD_CONFIG_DIR=os.path.join(self.dir, "config"))
         os.makedirs(self.env["CLAUDE_SESSIONS_DIR"])
         os.makedirs(self.env["BOARD_CONFIG_DIR"])

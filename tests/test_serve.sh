@@ -19,6 +19,7 @@ cleanup() {
 trap cleanup EXIT
 
 export BOARD_HOME="$T/home"
+export CLAUDE_JSON="$T/claude.json"  # the account fixture, never ~/.claude.json
 export BOARD_CONFIG_DIR="$T/config"
 export CLAUDE_SESSIONS_DIR="$T/sessions"
 export CLAUDE_SETTINGS="$T/settings.json"
@@ -131,7 +132,14 @@ start
 # ---------------------------------------------------------------- state
 echo "state:"
 eq "GET /api/state 200" "$(req GET /api/state)" "200"
-eq "state keys" "$(body 'keys | join(",")')" "approvals,can_message,consensus,decisions,generated_at,ledger,me,messages,mode,notify,operator,owner_away,replies,resources,sessions,tasks,writable"
+eq "state keys" "$(body 'keys | join(",")')" "account,approvals,can_message,consensus,decisions,generated_at,ledger,me,messages,mode,notify,operator,owner_away,replies,resources,sessions,tasks,writable"
+eq "account: null when not known" "$(body '.account')" "null"
+echo '{"oauthAccount":{"emailAddress":"owner@example.com","organizationName":"Example Org"}}' > "$CLAUDE_JSON"
+"$REPO/bin/board-collect" --once --no-notify >/dev/null 2>&1
+eq "account: the local approver sees the email" "$(req GET /api/state >/dev/null; body '.account.email + "|" + .account.org')" "owner@example.com|Example Org"
+printf 'usage:\n  show_account: false\n' >> "$BOARD_CONFIG_DIR/fleet.yaml"
+eq "account: usage.show_account: false hides a stale account.json" "$([ -e "$BOARD_HOME/account.json" ] && echo file-there)/$(req GET /api/state >/dev/null; body '.account')" "file-there/null"
+write_cfg ""
 eq "me is local on loopback" "$(body .me)" "local"
 eq "mode local" "$(body .mode)" "local"
 eq "session CP needs-you" "$(body '.sessions[] | select(.code=="CP") | .state')" "needs-you"
@@ -236,7 +244,7 @@ eq "icon with a foreign Host refused" "$(req GET /icon.svg -H 'Host: evil.exampl
 eq "icon through a proxy refused (no auth bypass)" "$(req GET /favicon.png -H 'X-Forwarded-For: 203.0.113.9')" "403"
 eq "manifest with a foreign Host refused" "$(req GET /manifest.webmanifest -H "Host: evil.example:$PORT")" "421"
 req GET /manifest.webmanifest >/dev/null
-eq "manifest: standalone at /" "$(body '.name + "|" + .short_name + "|" + .display + "|" + .start_url + "|" + .scope')" "Switchboard|Switchboard|standalone|/|/"
+eq "manifest: standalone at /" "$(body '.name + "|" + .short_name + "|" + .display + "|" + .start_url + "|" + .scope')" "Agent Switchboard|Switchboard|standalone|/|/"
 eq "manifest: colors from the board palette" "$(body '.background_color + "|" + .theme_color')" "#edf0f4|#edf0f4"
 eq "manifest: maskable 192 and 512" "$(body '[.icons[] | select(.purpose == "maskable") | .sizes] | join(",")')" "192x192,512x512"
 eq "manifest: every icon is served with its type" "$(body -r '.icons[] | .src + " " + .type' | while read -r src type; do
@@ -255,7 +263,7 @@ req GET / -D "$T/hdr" >/dev/null
 for tag in '<link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">' '<link rel="apple-touch-icon" href="/apple-touch-icon.png">' \
            '<link rel="icon" href="/favicon.png" sizes="32x32" type="image/png">' '<meta name="apple-mobile-web-app-capable" content="yes">' \
            '<meta name="mobile-web-app-capable" content="yes">' '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">' \
-           '<meta name="apple-mobile-web-app-title" content="Switchboard">' \
+           '<meta name="apple-mobile-web-app-title" content="Agent Switchboard">' \
            '<meta name="theme-color" content="#edf0f4" media="(prefers-color-scheme: light)">' \
            '<meta name="theme-color" content="#0f141a" media="(prefers-color-scheme: dark)">'; do
   grep -qF "$tag" "$T/body" && ok "page head: $tag" || bad "page head: $tag"
@@ -706,6 +714,9 @@ EOF
   eq "tunnel me: expired JWT refused" "$(treq GET /api/me "${TUNNEL_HDRS[@]}" -H "$(jwt expired)")" "401"
   eq "tunnel me: foreign Host refused" "$(treq GET /api/me -H 'Host: evil.example' -H "$(jwt good)")" "421"
   eq "tunnel me: an email outside the list refused" "$(treq GET /api/me "${TUNNEL_HDRS[@]}" -H "$(jwt nobody)")" "403"
+  eq "tunnel: an approver sees the account email" "$(treq GET /api/state "${TUNNEL_HDRS[@]}" -H "$(jwt good)" >/dev/null; body '.account.email')" "owner@example.com"
+  eq "tunnel: a release manager who is not an approver does not" "$(treq GET /api/state "${TUNNEL_HDRS[@]}" -H "$(jwt rm)" >/dev/null; body '.account | tojson')" '{"hidden":true}'
+  grep -q 'owner@example.com' "$T/body" && bad "  the email appears nowhere in that state" || ok "  the email appears nowhere in that state"
   eq "the email header cannot override the token" "$(treq GET /api/state "${TUNNEL_HDRS[@]}" -H "$(jwt good)" -H 'Cf-Access-Authenticated-User-Email: rm@example.com' >/dev/null; body .me)" "boss@example.com"
   eq "tunnel: loopback Host refused" "$(treq GET /api/state -H "Host: 127.0.0.1:$TPORT" -H "$(jwt good)")" "421"
   eq "tunnel: foreign Host refused" "$(treq GET /api/state -H 'Host: evil.example' -H "$(jwt good)")" "421"
@@ -753,6 +764,8 @@ EOF
   start
   eq "allowed_emails: a listed viewer reads the state" "$(treq GET /api/state "${TUNNEL_HDRS[@]}" -H "$(jwt nobody)")" "200"
   eq "  can_message false" "$(body .can_message)" "false"
+  eq "  a viewer sees account: hidden" "$(body '.account | tojson')" '{"hidden":true}'
+  grep -q 'owner@example.com' "$T/body" && bad "  no email for the viewer" || ok "  no email for the viewer"
   eq "tunnel me: a listed viewer (not an approver)" "$(treq GET /api/me "${TUNNEL_HDRS[@]}" -H "$(jwt nobody)")" "200"
   eq "  viewer role only" "$(body '.identity + "/" + .via + "/" + (.roles | join(",")) + "/" + (.is_approver | tostring) + "/" + (.is_release_manager | tostring)')" "intruder@example.com/access/viewer/false/false"
   dec d-1-q8 question

@@ -1,4 +1,4 @@
-<title>Switchboard</title>
+<title>Agent Switchboard</title>
 <script>
 /* Theme before first paint. An explicit choice (light / dark) sets data-theme on the root; "system"
    sets none, so prefers-color-scheme decides. A data-theme the host already stamped (the claude.ai
@@ -10,7 +10,10 @@
     try { own = localStorage.getItem('switchboard.theme'); } catch (e) { /* storage blocked */ }
     if (own === 'light' || own === 'dark') root.setAttribute('data-theme', own); else own = null;
   }
-  window.switchboardTheme = { host: host || null, own };
+  let lang = 'en';
+  try { lang = localStorage.getItem('switchboard.lang') === 'zh-TW' ? 'zh-TW' : 'en'; } catch (e) { /* storage blocked */ }
+  root.setAttribute('lang', lang);
+  window.switchboardTheme = { host: host || null, own, lang };
   // iOS home-screen app (older iOS has no display-mode media query): see body::before.
   if (navigator.standalone === true) root.classList.add('standalone');
 })();
@@ -112,7 +115,6 @@ h1, h2, h3 { font-family: var(--f-display); text-wrap: balance; margin: 0; }
 a { color: var(--cord); }
 :focus-visible { outline: 2px solid var(--cord); outline-offset: 2px; border-radius: 3px; }
 .mono { font-family: var(--f-mono); }
-.zh { font-family: var(--f-body); font-weight: 500; color: var(--muted); font-size: 12px; letter-spacing: .04em; }
 .muted { color: var(--muted); }
 .eyebrow { font-family: var(--f-mono); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
 time { font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -489,13 +491,25 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 /* ---------- usage meters + escalation ---------- */
 .usage { display: grid; gap: 8px; align-content: center; padding: 10px 14px; border: 1px solid var(--rule); border-radius: var(--r); background: var(--panel); min-width: 230px; }
 .usage .u-title { font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; gap: 8px; }
-.u-row { display: grid; grid-template-columns: 26px minmax(60px, 1fr) 42px; align-items: center; gap: 2px 8px; --u: var(--off); }
+.u-row { display: grid; grid-template-columns: minmax(26px, max-content) minmax(60px, 1fr) 42px; align-items: center; gap: 2px 8px; --u: var(--off); }
 .u-k { font-family: var(--f-mono); font-size: 12px; font-weight: 600; color: var(--muted); }
 .u-bar { height: 8px; border-radius: 4px; background: var(--off-soft); overflow: hidden; }
 .u-bar > span { display: block; height: 100%; border-radius: 4px; background: var(--u); }
 .u-p { font-family: var(--f-mono); font-size: 13px; font-weight: 600; text-align: right; font-variant-numeric: tabular-nums; color: var(--ink); }
 .u-r { grid-column: 2 / -1; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .u-row.lvl-ok { --u: var(--cord); }
+/* usage popover: hover or focus the meter; on touch, tap to open and tap outside to close */
+.usage { position: relative; cursor: default; }
+.usage:focus-visible { outline: 2px solid var(--cord); outline-offset: 2px; }
+.u-pop { position: absolute; z-index: 9; top: calc(100% + 8px); left: 0; width: min(340px, calc(100vw - 32px)); display: grid; gap: 6px; padding: 12px 14px; border-radius: 8px; border: 1px solid var(--rule); background: var(--panel); color: var(--ink); box-shadow: 0 10px 30px rgb(0 0 0 / .18); font-size: 13px; line-height: 1.45; }
+.u-pop[hidden] { display: none; }
+.u-pop p { margin: 0; }
+.u-pop .k { color: var(--muted); }
+.u-pop .u-acct { overflow-wrap: anywhere; }
+.u-pop .lvls { display: flex; flex-wrap: wrap; gap: 4px; }
+.u-pop .lvls .esc { opacity: .45; }
+.u-pop .lvls .esc.on { opacity: 1; box-shadow: 0 0 0 1.5px currentColor; }
+@media (max-width: 480px) { .u-pop { left: auto; right: 0; } }
 .u-row.lvl-amber { --u: var(--lamp-glow); }
 .u-row.lvl-amber .u-p { color: var(--lamp); }
 .u-row.lvl-orange { --u: var(--heat); }
@@ -541,6 +555,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 .seg { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; }
 .seg label { position: relative; display: flex; align-items: center; justify-content: center; min-height: 36px; font-size: 13px; font-weight: 500; color: var(--muted); cursor: pointer; }
 .seg label + label { border-left: 1px solid var(--rule); }
+.seg.seg2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .seg input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: inherit; }
 .seg label:has(input:checked) { background: var(--cord-soft); color: var(--cord); }
 .seg label:has(input:focus-visible) { outline: 2px solid var(--cord); outline-offset: -2px; }
@@ -580,7 +595,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 .sys { display: grid; gap: 6px; align-content: center; padding: 10px 14px; border: 1px solid var(--rule); border-radius: var(--r); background: var(--panel); min-width: 230px; color: var(--ink); text-decoration: none; }
 .sys:hover { border-color: var(--cord); }
 .sys .u-title { font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; align-items: center; gap: 8px; }
-.sys .u-row { grid-template-columns: 34px minmax(60px, 1fr) 42px; }
+.sys .u-row { grid-template-columns: minmax(34px, max-content) minmax(60px, 1fr) 42px; }
 .sys .s-line { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; display: flex; flex-wrap: wrap; gap: 2px 10px; }
 .sys .s-line b { font-weight: 600; color: var(--ink); }
 .lvl { font-family: var(--f-mono); font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; padding: 1px 7px; border-radius: 9px; background: var(--off-soft); color: var(--muted); white-space: nowrap; }
@@ -606,82 +621,90 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 <div class="wrap">
   <header class="mast" id="top">
     <div class="acct" id="acct">
-      <button class="acct-btn" id="acct-btn" type="button" aria-expanded="false" aria-controls="acct-panel" aria-label="Account, theme and API keys">
+      <button class="acct-btn" id="acct-btn" type="button" aria-expanded="false" aria-controls="acct-panel" aria-label="Account, theme, language and API keys" data-i18n-attr="aria-label">
         <span class="avatar" id="acct-avatar" aria-hidden="true">?</span>
       </button>
       <div class="acct-panel" id="acct-panel" role="region" aria-labelledby="acct-name" tabindex="-1" hidden>
         <div class="acct-who">
           <span class="avatar lg" id="acct-avatar-lg" aria-hidden="true">?</span>
           <div>
-            <p class="acct-name" id="acct-name">Checking who you are…</p>
+            <p class="acct-name" id="acct-name" data-i18n>Checking who you are…</p>
             <p class="acct-via" id="acct-via"></p>
           </div>
         </div>
-        <ul class="acct-roles" id="acct-roles" aria-label="Your roles on this board"></ul>
+        <ul class="acct-roles" id="acct-roles" aria-label="Your roles on this board" data-i18n-attr="aria-label"></ul>
         <fieldset class="acct-sec" id="acct-theme">
-          <legend>Theme</legend>
+          <legend data-i18n>Theme</legend>
           <div class="seg">
-            <label><input type="radio" name="sb-theme" value="light">Light</label>
-            <label><input type="radio" name="sb-theme" value="dark">Dark</label>
-            <label><input type="radio" name="sb-theme" value="system">System</label>
+            <label><input type="radio" name="sb-theme" value="light"><span data-i18n>Light</span></label>
+            <label><input type="radio" name="sb-theme" value="dark"><span data-i18n>Dark</span></label>
+            <label><input type="radio" name="sb-theme" value="system"><span data-i18n>System</span></label>
           </div>
-          <p class="acct-note" id="acct-theme-note" hidden>Following the theme set in the claude.ai viewer. Change it there.</p>
+          <p class="acct-note" id="acct-theme-note" hidden data-i18n>Following the theme set in the claude.ai viewer. Change it there.</p>
+        </fieldset>
+        <fieldset class="acct-sec" id="acct-lang">
+          <legend data-i18n>Language</legend>
+          <div class="seg seg2">
+            <label><input type="radio" name="sb-lang" value="en"><span lang="en">English</span></label>
+            <label><input type="radio" name="sb-lang" value="zh-TW"><span lang="zh-TW">繁體中文</span></label>
+          </div>
         </fieldset>
         <section class="acct-sec" aria-labelledby="acct-keys-h">
-          <h3 id="acct-keys-h">My API keys</h3>
-          <p class="acct-note" id="acct-keys-off">API keys are not enabled on this board.</p>
+          <h3 id="acct-keys-h" data-i18n>My API keys</h3>
+          <p class="acct-note" id="acct-keys-off" data-i18n>API keys are not enabled on this board.</p>
           <ul class="keys" id="acct-keys" hidden></ul>
         </section>
-        <a class="acct-out" id="acct-out" href="/cdn-cgi/access/logout" hidden>Sign out of Cloudflare Access</a>
+        <a class="acct-out" id="acct-out" href="/cdn-cgi/access/logout" hidden data-i18n>Sign out of Cloudflare Access</a>
       </div>
     </div>
     <div class="brand">
       <div class="brand-row">
-        <h1>Switchboard</h1>
-        <span class="demo-tag" id="demo-tag" hidden>DEMO DATA</span>
+        <h1>Agent Switchboard</h1>
+        <span class="demo-tag" id="demo-tag" hidden data-i18n>DEMO DATA</span>
         <span class="pill unknown" id="op-pill"><span class="lamp"></span><span id="op-text">Connecting…</span></span>
       </div>
-      <p>Every Claude Code session on one panel. Answer what is waiting, see who is working, and send a note to any session.</p>
+      <p data-i18n>Every Claude Code session on one panel. Answer what is waiting, see who is working, and send a note to any session.</p>
     </div>
     <div class="meters">
       <a class="needs-tile zero" id="needs-tile" href="#decisions">
         <span class="big" id="needs-n">0</span>
-        <span class="t">Needs you <span class="zh">待你處理</span></span>
-        <span class="s" id="needs-sub">Nothing waiting</span>
+        <span class="t" data-i18n>Needs you</span>
+        <span class="s" id="needs-sub" data-i18n>Nothing waiting</span>
       </a>
-      <div class="meter-group" aria-label="Sessions by state">
-        <div class="meter"><span class="n"><span class="lamp working"></span><span id="m-working">0</span></span><span class="l">Working 執行中</span></div>
-        <div class="meter"><span class="n"><span class="lamp done"></span><span id="m-done">0</span></span><span class="l">Done / idle 閒置</span></div>
-        <div class="meter"><span class="n"><span class="lamp offline"></span><span id="m-offline">0</span></span><span class="l">Offline 離線</span></div>
+      <div class="meter-group" aria-label="Sessions by state" data-i18n-attr="aria-label">
+        <div class="meter"><span class="n"><span class="lamp working"></span><span id="m-working">0</span></span><span class="l" data-i18n>Working</span></div>
+        <div class="meter"><span class="n"><span class="lamp done"></span><span id="m-done">0</span></span><span class="l" data-i18n>Done / idle</span></div>
+        <div class="meter"><span class="n"><span class="lamp offline"></span><span id="m-offline">0</span></span><span class="l" data-i18n>Offline</span></div>
       </div>
-      <div class="usage" id="usage" aria-label="Claude usage against limits">
-        <div class="u-title"><span>Claude usage 用量</span><span id="u-upd"></span></div>
-        <div class="u-row none" id="u-5h"><span class="u-k">5h</span><span class="u-bar" role="meter" aria-label="5-hour usage" aria-valuemin="0" aria-valuemax="100"><span style="width:0%"></span></span><span class="u-p">—</span><span class="u-r">not reported</span></div>
-        <div class="u-row none" id="u-7d"><span class="u-k">7d</span><span class="u-bar" role="meter" aria-label="Weekly usage" aria-valuemin="0" aria-valuemax="100"><span style="width:0%"></span></span><span class="u-p">—</span><span class="u-r">not reported</span></div>
+      <div class="usage" id="usage" tabindex="0" aria-label="Claude usage against limits" aria-describedby="usage-pop" data-i18n-attr="aria-label">
+        <div class="u-title"><span data-i18n>Claude usage</span><span id="u-upd"></span></div>
+        <div class="u-row none" id="u-5h"><span class="u-k">5h</span><span class="u-bar" role="meter" aria-label="5-hour usage" data-i18n-attr="aria-label" aria-valuemin="0" aria-valuemax="100"><span style="width:0%"></span></span><span class="u-p">—</span><span class="u-r">not reported</span></div>
+        <div class="u-pop" id="usage-pop" role="tooltip" hidden></div>
+        <div class="u-row none" id="u-7d"><span class="u-k">7d</span><span class="u-bar" role="meter" aria-label="Weekly usage" data-i18n-attr="aria-label" aria-valuemin="0" aria-valuemax="100"><span style="width:0%"></span></span><span class="u-p">—</span><span class="u-r">not reported</span></div>
       </div>
-      <a class="sys" id="sys" href="#resources" aria-label="System resources" hidden>
-        <span class="u-title"><span>System 系統</span><span><span class="lvl" id="sys-lvl">—</span> <span class="oom" id="sys-oom" title="OOM kills since boot">OOM 0</span></span></span>
-        <span class="u-row none" id="sys-mem"><span class="u-k">Mem</span><span class="u-bar" role="meter" aria-label="Memory used" aria-valuemin="0" aria-valuemax="100"><span style="width:0%"></span></span><span class="u-p">—</span><span class="u-r"></span></span>
-        <span class="u-row none" id="sys-swap"><span class="u-k">Swap</span><span class="u-bar" role="meter" aria-label="Swap used" aria-valuemin="0" aria-valuemax="100"><span style="width:0%"></span></span><span class="u-p">—</span></span>
+      <a class="sys" id="sys" href="#resources" aria-label="System resources" data-i18n-attr="aria-label" hidden>
+        <span class="u-title"><span data-i18n>System</span><span><span class="lvl" id="sys-lvl">—</span> <span class="oom" id="sys-oom" title="OOM kills since boot" data-i18n-attr="title">OOM 0</span></span></span>
+        <span class="u-row none" id="sys-mem"><span class="u-k" data-i18n>Mem</span><span class="u-bar" role="meter" aria-label="Memory used" data-i18n-attr="aria-label" aria-valuemin="0" aria-valuemax="100"><span style="width:0%"></span></span><span class="u-p">—</span><span class="u-r"></span></span>
+        <span class="u-row none" id="sys-swap"><span class="u-k" data-i18n>Swap</span><span class="u-bar" role="meter" aria-label="Swap used" data-i18n-attr="aria-label" aria-valuemin="0" aria-valuemax="100"><span style="width:0%"></span></span><span class="u-p">—</span></span>
         <span class="s-line" id="sys-line"></span>
       </a>
     </div>
   </header>
 
-  <nav class="secnav" id="secnav" aria-label="Sections">
+  <nav class="secnav" id="secnav" aria-label="Sections" data-i18n-attr="aria-label">
     <div class="secnav-in">
-      <button class="icon-btn nav-toggle" id="nav-toggle" type="button" aria-expanded="false" aria-controls="nav-list">Sections ▾</button>
+      <button class="icon-btn nav-toggle" id="nav-toggle" type="button" aria-expanded="false" aria-controls="nav-list"><span data-i18n>Sections</span> ▾</button>
       <ul id="nav-list">
-        <li><a href="#decisions" data-spy="decisions">Decisions <span class="zh">決策</span> <span class="badge" id="nav-dec">0</span></a></li>
-        <li><a href="#consensus" data-spy="consensus">Consensus <span class="zh">共識</span> <span class="badge" id="nav-cons">0</span></a></li>
-        <li><a href="#lifecycle" data-spy="lifecycle">Lifecycle <span class="zh">流程</span> <span class="badge" id="nav-life">0</span></a></li>
-        <li><a href="#board" data-spy="board">Board <span class="zh">看板</span> <span class="badge" id="nav-board">0</span></a></li>
-        <li><a href="#resources" data-spy="resources">Resources <span class="zh">資源</span> <span class="badge" id="nav-res" title="idle teammates">0</span></a></li>
-        <li><a href="#messages" data-spy="messages">Messages <span class="zh">訊息</span> <span class="badge" id="nav-msg">0</span></a></li>
-        <li><a href="#approvals" data-spy="approvals">Approvals <span class="zh">核准紀錄</span> <span class="badge" id="nav-appr">0</span></a></li>
+        <li><a href="#decisions" data-spy="decisions"><span data-i18n>Decisions</span> <span class="badge" id="nav-dec">0</span></a></li>
+        <li><a href="#consensus" data-spy="consensus"><span data-i18n>Consensus</span> <span class="badge" id="nav-cons">0</span></a></li>
+        <li><a href="#lifecycle" data-spy="lifecycle"><span data-i18n>Lifecycle</span> <span class="badge" id="nav-life">0</span></a></li>
+        <li><a href="#board" data-spy="board"><span data-i18n>Board</span> <span class="badge" id="nav-board">0</span></a></li>
+        <li><a href="#resources" data-spy="resources"><span data-i18n>Resources</span> <span class="badge" id="nav-res" title="idle teammates" data-i18n-attr="title">0</span></a></li>
+        <li><a href="#messages" data-spy="messages"><span data-i18n>Messages</span> <span class="badge" id="nav-msg">0</span></a></li>
+        <li><a href="#approvals" data-spy="approvals"><span data-i18n>Approvals</span> <span class="badge" id="nav-appr">0</span></a></li>
       </ul>
-      <button class="icon-btn" id="notif-btn" type="button" aria-haspopup="dialog" title="Push notifications: mute, triage and presence"><span class="nlamp unknown" id="notif-lamp" aria-hidden="true"></span><span id="notif-label">Notifications</span></button>
-      <button class="icon-btn" id="info-btn" type="button" aria-haspopup="dialog" title="Versions, cost and how this works">ⓘ Info</button>
+      <button class="icon-btn" id="notif-btn" type="button" aria-haspopup="dialog" title="Push notifications: mute, triage and presence" data-i18n-attr="title"><span class="nlamp unknown" id="notif-lamp" aria-hidden="true"></span><span id="notif-label" data-i18n>Notifications</span></button>
+      <button class="icon-btn" id="info-btn" type="button" aria-haspopup="dialog" title="Versions, cost and how this works" data-i18n-attr="title">ⓘ <span data-i18n>Info</span></button>
     </div>
   </nav>
 
@@ -689,66 +712,66 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 
   <section class="sec" id="decisions" aria-labelledby="h-decisions">
     <div class="sec-head">
-      <h2 id="h-decisions">Decisions</h2>
-      <span class="hint">Questions and permission prompts that sessions are waiting on. Your answer is relayed to the session.</span>
+      <h2 id="h-decisions" data-i18n>Decisions</h2>
+      <span class="hint" data-i18n>Questions and permission prompts that sessions are waiting on. Your answer is relayed to the session.</span>
     </div>
-    <div class="empty" id="dec-empty"><strong>Nothing needs you.</strong>When a session asks a question or hits a permission prompt, it appears here with buttons to answer.</div>
+    <div class="empty" id="dec-empty"><strong data-i18n>Nothing needs you.</strong><span data-i18n>When a session asks a question, hits a permission prompt or reaches a gate, it appears here with buttons to answer.</span></div>
     <div class="dgrid" id="dec-list"></div>
     <details class="history" id="dec-history" hidden>
-      <summary id="dec-history-sum">Recent decisions</summary>
+      <summary id="dec-history-sum" data-i18n>Recent decisions</summary>
       <ul id="dec-history-list"></ul>
     </details>
   </section>
 
   <section class="sec" id="consensus" aria-labelledby="h-consensus">
     <div class="sec-head">
-      <h2 id="h-consensus">Consensus</h2>
-      <span class="hint">While the owner is away, sessions settle cross-session questions only when every participant agrees explicitly. Silence is not agreement; one objection parks it for the owner. Red lines and board asks always wait for the owner. 主人不在時的跨 session 共識（唯讀）。</span>
+      <h2 id="h-consensus" data-i18n>Consensus</h2>
+      <span class="hint" data-i18n>While the owner is away, sessions settle cross-session questions only when every participant agrees explicitly. Silence is not agreement; one objection parks it for the owner. Red lines and board asks always wait for the owner.</span>
     </div>
     <form class="away-form" id="away-form" hidden>
-      <label for="away-said">Going offline?</label>
-      <input id="away-said" maxlength="500" autocomplete="off" placeholder="Your words for the sessions, e.g. back Monday; agree among yourselves">
-      <button class="btn" type="submit" id="away-on">I'm away</button>
+      <label for="away-said" data-i18n>Going offline?</label>
+      <input id="away-said" maxlength="500" autocomplete="off" placeholder="Your words for the sessions, e.g. back Monday; agree among yourselves" data-i18n-attr="placeholder">
+      <button class="btn" type="submit" id="away-on" data-i18n>I'm away</button>
     </form>
-    <div class="empty" id="cons-empty"><strong>No consensus items.</strong>While the owner is away, a session proposes with <span class="mono">board consensus propose</span> and every participant votes.</div>
+    <div class="empty" id="cons-empty"><strong data-i18n>No consensus items.</strong><span data-i18n>A session proposes with board consensus propose; every participant must vote agree.</span></div>
     <div class="clist" id="cons-list"></div>
   </section>
 
   <section class="sec" id="lifecycle" aria-labelledby="h-lifecycle">
     <div class="sec-head">
-      <h2 id="h-lifecycle">Lifecycle</h2>
-      <span class="hint">Each task moves Plan → Design → Build → Test → Deploy. Every stage commits an artifact and waits at a human gate. Agents stop at the production gate.</span>
+      <h2 id="h-lifecycle" data-i18n>Lifecycle</h2>
+      <span class="hint" data-i18n>Each task moves Plan → Design → Build → Test → Deploy. Every stage commits an artifact and waits at a human gate. Agents stop at the production gate.</span>
     </div>
-    <div class="empty" id="task-empty"><strong>No tasks yet.</strong>A task appears here when a session starts one with <span class="mono">board task new</span>.</div>
+    <div class="empty" id="task-empty"><strong data-i18n>No tasks yet.</strong><span data-i18n>A task appears here when a session starts one with </span><span class="mono">board task new</span>.</div>
     <div class="tasks" id="tasks"></div>
   </section>
 
   <section class="sec" id="board" aria-labelledby="h-board">
     <div class="sec-head">
-      <h2 id="h-board">Board</h2>
-      <span class="hint">One card per session, filed by what it is doing now.</span>
+      <h2 id="h-board" data-i18n>Board</h2>
+      <span class="hint" data-i18n>One card per session, filed by what it is doing now.</span>
     </div>
-    <div class="empty" id="board-empty" hidden><strong>No sessions yet.</strong>The operator adds a card for each running session the next time it syncs.</div>
+    <div class="empty" id="board-empty" hidden><strong data-i18n>No sessions yet.</strong><span data-i18n>The operator adds a card for each running session the next time it syncs.</span></div>
     <div class="board" id="board-cols"></div>
   </section>
 
   <section class="sec" id="resources" aria-labelledby="h-resources">
     <div class="sec-head">
-      <h2 id="h-resources">Resources</h2>
-      <span class="hint">Memory, disks and what each session runs, teammates included. The board never stops a process. 系統資源與各 session 的程序。</span>
+      <h2 id="h-resources" data-i18n>Resources</h2>
+      <span class="hint" data-i18n>Memory, disks and what each session runs, teammates included. The board never stops a process.</span>
     </div>
-    <div class="empty" id="res-empty"><strong>No resource data yet.</strong>The collector samples memory, disks and processes every few seconds.</div>
+    <div class="empty" id="res-empty"><strong data-i18n>No resource data yet.</strong><span data-i18n>The collector samples memory, disks and processes every few seconds.</span></div>
     <div class="res-meta" id="res-meta" hidden></div>
     <p class="res-note" id="res-unavail" hidden></p>
     <div class="tbl-wrap" id="res-wrap" hidden>
       <table class="log res-tbl">
-        <thead><tr><th>Session</th><th>Claude</th><th>Processes</th><th>Teammates</th></tr></thead>
+        <thead><tr><th data-i18n>Session</th><th>Claude</th><th data-i18n>Processes</th><th data-i18n>Teammates</th></tr></thead>
         <tbody id="res-body"></tbody>
       </table>
     </div>
     <div class="tbl-wrap" id="disk-wrap" hidden>
       <table class="log res-tbl">
-        <thead><tr><th>Disk</th><th>Free</th><th>Size</th><th>Used by</th><th>Level</th></tr></thead>
+        <thead><tr><th data-i18n>Disk</th><th data-i18n>Free</th><th data-i18n>Size</th><th data-i18n>Used by</th><th data-i18n>Level</th></tr></thead>
         <tbody id="disk-body"></tbody>
       </table>
     </div>
@@ -757,25 +780,25 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 
   <section class="sec" id="messages" aria-labelledby="h-messages">
     <div class="sec-head">
-      <h2 id="h-messages">Messages</h2>
-      <span class="hint">Mention a session to send it a note. Replies come back into the thread.</span>
+      <h2 id="h-messages" data-i18n>Messages</h2>
+      <span class="hint" data-i18n>Mention a session to send it a note. Replies come back into the thread.</span>
     </div>
     <div class="msg-layout">
       <div>
         <form class="composer" id="composer" autocomplete="off">
-          <label for="msg-input">New message <span class="zh">新訊息</span></label>
-          <textarea id="msg-input" placeholder="@API please rebase on main and rerun the tests" aria-autocomplete="list" aria-controls="mention-list" aria-expanded="false"></textarea>
-          <ul class="mention-list" id="mention-list" role="listbox" aria-label="Sessions" hidden></ul>
+          <label for="msg-input" data-i18n>New message</label>
+          <textarea id="msg-input" placeholder="@API please rebase on main and rerun the tests" data-i18n-attr="placeholder" aria-autocomplete="list" aria-controls="mention-list" aria-expanded="false"></textarea>
+          <ul class="mention-list" id="mention-list" role="listbox" aria-label="Sessions" data-i18n-attr="aria-label" hidden></ul>
           <p class="err" id="msg-err" role="alert"></p>
           <div class="row">
-            <span class="help">Type <span class="mono">@</span> to pick a session, or <span class="mono">@all</span>. Ctrl+Enter sends.</span>
-            <button class="btn primary" id="msg-send" type="submit">Send</button>
+            <span class="help"><span data-i18n>Type</span> <span class="mono">@</span> <span data-i18n>to pick a session, or</span> <span class="mono">@all</span>. <span data-i18n>Ctrl+Enter sends.</span></span>
+            <button class="btn primary" id="msg-send" type="submit" data-i18n>Send</button>
           </div>
         </form>
-        <p class="readonly-note" id="msg-readonly" hidden>You can read the threads. Only editors of this board can send messages.</p>
+        <p class="readonly-note" id="msg-readonly" hidden data-i18n>You can read the threads. Only editors of this board can send messages.</p>
       </div>
       <div>
-        <div class="empty" id="msg-empty"><strong>No messages yet.</strong>Type @ and a session code on the left to send the first one.</div>
+        <div class="empty" id="msg-empty"><strong data-i18n>No messages yet.</strong><span data-i18n>Type @ and a session code to send the first one.</span></div>
         <ol class="threads" id="threads"></ol>
       </div>
     </div>
@@ -783,13 +806,13 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 
   <section class="sec" id="approvals" aria-labelledby="h-approvals">
     <div class="sec-head">
-      <h2 id="h-approvals">Approvals</h2>
-      <span class="hint">Every human approval is recorded, newest first. 每一筆人工核准都有紀錄。</span>
+      <h2 id="h-approvals" data-i18n>Approvals</h2>
+      <span class="hint" data-i18n>Every human approval is recorded, newest first.</span>
     </div>
-    <div class="empty" id="appr-empty"><strong>No approvals recorded yet.</strong>Each gate decision an approver answers is logged here once the operator relays it.</div>
+    <div class="empty" id="appr-empty"><strong data-i18n>No approvals recorded yet.</strong><span data-i18n>Each gate decision an approver answers is logged here once the operator relays it.</span></div>
     <div class="tbl-wrap" id="appr-wrap" hidden>
       <table class="log">
-        <thead><tr><th>Answered</th><th>Task</th><th>Stage</th><th>Gate</th><th>Answer</th><th>By</th><th>Relayed</th></tr></thead>
+        <thead><tr><th data-i18n>Answered</th><th data-i18n>Task</th><th data-i18n>Stage</th><th data-i18n>Gate</th><th data-i18n>Answer</th><th data-i18n>By</th><th data-i18n>Relayed</th></tr></thead>
         <tbody id="appr-body"></tbody>
       </table>
     </div>
@@ -799,35 +822,35 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 <dialog class="info" id="info" aria-labelledby="info-title">
   <div class="info-in">
     <div class="info-head">
-      <h2 id="info-title">About this board</h2>
-      <button class="icon-btn" id="info-close" type="button">Close</button>
+      <h2 id="info-title" data-i18n>About this board</h2>
+      <button class="icon-btn" id="info-close" type="button" data-i18n>Close</button>
     </div>
     <p class="info-op" id="info-operator"></p>
     <section>
-      <h3>版本與花費 <span class="zh">Versions and cost</span></h3>
+      <h3 data-i18n>Versions and cost</h3>
       <div id="ledger"></div>
     </section>
     <section class="failover" id="failover">
-      <h3>Switching accounts <span class="zh">切換帳號</span></h3>
-      <p>The operator is a Claude session, so it stops when its account reaches the 5-hour or weekly limit. Alerts keep going out without it.</p>
+      <h3 data-i18n>Switching accounts</h3>
+      <p data-i18n>The operator is a Claude session, so it stops when its account reaches the 5-hour or weekly limit. Alerts keep going out without it.</p>
       <ol>
-        <li>At 90% in either window, finish or park long tasks and pick a backup account that can edit this board.</li>
-        <li>In a Claude Code session on that account, run the operator prompt (<span class="mono">prompts/board-operator.md</span>) with this board's link. It takes over the heartbeat.</li>
-        <li>When the original operator comes back and sees a fresher heartbeat from another session, it stays passive.</li>
-        <li>Answers given here while nobody operates the board are saved and relayed by the next operator, oldest first.</li>
+        <li data-i18n>At 90% in either window, finish or park long tasks and pick a backup account that can edit this board.</li>
+        <li><span data-i18n>In a session on that account, run the operator prompt</span> (<span class="mono">prompts/board-operator.md</span>) <span data-i18n>with this board's link. It takes over the heartbeat.</span></li>
+        <li data-i18n>When the original operator comes back and sees a fresher heartbeat from another session, it stays passive.</li>
+        <li data-i18n>Answers given here while nobody operates the board are saved and relayed by the next operator, oldest first.</li>
       </ol>
       <div class="thresholds">
-        <span class="esc warn">80% · heads-up</span><span class="esc high">90% · prepare to switch</span><span class="esc urgent">95% or limit hit · switch now</span>
+        <span class="esc warn" data-i18n>80% · heads-up</span><span class="esc high" data-i18n>90% · prepare to switch</span><span class="esc urgent" data-i18n>95% or limit hit · switch now</span>
       </div>
     </section>
     <section>
-      <h3>How this works <span class="zh">運作方式</span></h3>
+      <h3 data-i18n>How this works</h3>
       <ol class="flow">
-        <li><b>Hooks</b><span>Each session's hook writes a small state file on every event: working, needs you, done or offline.</span></li>
-        <li><b>Collector</b><span>Merges the state files with the live session list and tmux into one snapshot.</span></li>
-        <li><b>Operator</b><span>A dedicated session syncs that snapshot to this board and keeps a heartbeat.</span></li>
-        <li><b>Board</b><span>You answer decisions and write messages here. Answers are saved to the board's data.</span></li>
-        <li><b>Relay</b><span>The operator picks up answers and messages, presses the prompt or messages the session, and posts replies back.</span></li>
+        <li><b data-i18n>Hooks</b><span data-i18n>Each session's hook writes a small state file on every event: working, needs you, done or offline.</span></li>
+        <li><b data-i18n>Collector</b><span data-i18n>Merges the state files with the live session list and tmux into one snapshot.</span></li>
+        <li><b data-i18n>Operator</b><span data-i18n>A dedicated session syncs that snapshot to this board and keeps a heartbeat.</span></li>
+        <li><b data-i18n>Board</b><span data-i18n>You answer decisions and write messages here. Answers are saved to the board's data.</span></li>
+        <li><b data-i18n>Relay</b><span data-i18n>The operator picks up answers and messages, presses the prompt or messages the session, and posts replies back.</span></li>
       </ol>
     </section>
     <p class="info-meta" id="info-meta"></p>
@@ -837,8 +860,8 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 <dialog class="info notif" id="notif" aria-labelledby="notif-title">
   <div class="info-in">
     <div class="info-head">
-      <h2 id="notif-title">Notifications <span class="zh">推播通知</span></h2>
-      <button class="icon-btn" id="notif-close" type="button">Close</button>
+      <h2 id="notif-title" data-i18n>Notifications</h2>
+      <button class="icon-btn" id="notif-close" type="button" data-i18n>Close</button>
     </div>
     <div class="nf" id="notif-body"></div>
   </div>
@@ -898,6 +921,44 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     return el;
   }
   const str = (v) => (typeof v === 'string' ? v : v == null ? '' : String(v));
+
+  /* ----------------------------------------------------------------- i18n */
+  // One language at a time: English (default) or Traditional Chinese. The English UI string is the
+  // key ({name} marks a value filled in); I18N['zh-TW'] maps it, I18N.en is the identity. Data
+  // (titles, questions, names, answers) is never translated. tr(), not t(): many functions here
+  // already use a local `t` for a time.
+  const I18N = { en: {}, 'zh-TW': ZH_TW() };
+  for (const k of Object.keys(I18N['zh-TW'])) I18N.en[k] = k;
+  const LANG_KEY = 'switchboard.lang';
+  let LANG = (window.switchboardTheme && window.switchboardTheme.lang) === 'zh-TW' ? 'zh-TW' : 'en';
+  function tr(key, vars) {
+    let out = str(key);
+    const dict = I18N[LANG];
+    if (dict && Object.prototype.hasOwnProperty.call(dict, out)) out = dict[out];
+    return vars ? out.replace(/\{(\w+)\}/g, (m, k) => (vars[k] == null ? '' : String(vars[k]))) : out;
+  }
+  const locale = () => (LANG === 'zh-TW' ? 'zh-TW' : 'en-US');
+  // Data values (a status, a level, a channel) go through the dictionary only when they are one of
+  // the values the page knows; anything else is shown as it is, never "translated" by accident.
+  function trMap(map, v) { v = str(v); return Object.prototype.hasOwnProperty.call(map, v) ? tr(map[v]) : v; }
+  function trKnown(v, known) { v = str(v); return known.includes(v) ? tr(v) : v; }
+  const LEVELS = ['info', 'warn', 'high', 'urgent'];
+  const RES_LEVELS = ['ok', 'warn', 'high', 'critical'];
+  // Static markup: [data-i18n] holds its English text, [data-i18n-attr] names attributes; the
+  // English is recorded on first use, so switching back and forth always starts from the key.
+  function applyStatic() {
+    for (const el of document.querySelectorAll('[data-i18n]')) {
+      if (!el.dataset.i18n) el.dataset.i18n = el.textContent.trim();
+      el.textContent = tr(el.dataset.i18n);
+    }
+    for (const el of document.querySelectorAll('[data-i18n-attr]')) {
+      for (const a of el.dataset.i18nAttr.split(/\s+/).filter(Boolean)) {
+        const keyAttr = 'data-i18n-' + a + '-key';
+        if (!el.hasAttribute(keyAttr)) el.setAttribute(keyAttr, el.getAttribute(a) || '');
+        el.setAttribute(a, tr(el.getAttribute(keyAttr)));
+      }
+    }
+  }
   function ts(v) {
     if (typeof v === 'number' && isFinite(v)) return v < 1e12 ? v * 1000 : v;
     if (typeof v === 'string' && v) { const n = Number(v); if (isFinite(n)) return ts(n); const p = Date.parse(v); return isNaN(p) ? 0 : p; }
@@ -906,14 +967,14 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   function rel(t) {
     if (!t) return '—';
     const s = Math.round((Date.now() - t) / 1000);
-    if (s < 45) return 'just now';
-    const m = Math.round(s / 60); if (m < 60) return m + 'm ago';
-    const hr = Math.round(m / 60); if (hr < 36) return hr + 'h ago';
-    return Math.round(hr / 24) + 'd ago';
+    if (s < 45) return tr('just now');
+    const m = Math.round(s / 60); if (m < 60) return tr('{n}m ago', { n: m });
+    const hr = Math.round(m / 60); if (hr < 36) return tr('{n}h ago', { n: hr });
+    return tr('{n}d ago', { n: Math.round(hr / 24) });
   }
   function timeEl(v) {
     const t = ts(v);
-    return h('time', { dataset: { ts: String(t) }, datetime: t ? new Date(t).toISOString() : null, title: t ? new Date(t).toLocaleString() : null, text: rel(t) });
+    return h('time', { dataset: { ts: String(t) }, datetime: t ? new Date(t).toISOString() : null, title: t ? new Date(t).toLocaleString(locale()) : null, text: rel(t) });
   }
   function safeUrl(u) {
     if (typeof u !== 'string') return null;
@@ -933,14 +994,14 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   function canMessage() { return canAnswer() && (S.demo || (isLocal() ? S.canMessageLocal : S.canEditBoard !== false)); }
   function hhmm(t) {
     const d = new Date(t), now = new Date();
-    const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
-    return d.toDateString() === now.toDateString() ? time : d.toLocaleDateString([], { weekday: 'short' }) + ' ' + time;
+    const time = d.toLocaleTimeString(locale(), { hour: '2-digit', minute: '2-digit', hour12: false });
+    return d.toDateString() === now.toDateString() ? time : d.toLocaleDateString(locale(), { weekday: 'short' }) + ' ' + time;
   }
   function dur(ms) {
-    if (ms <= 0) return 'now';
-    const m = Math.round(ms / 60000); if (m < 60) return m + 'm';
-    const hh = Math.floor(m / 60); if (hh < 48) return hh + 'h ' + (m % 60) + 'm';
-    return Math.floor(hh / 24) + 'd ' + (hh % 24) + 'h';
+    if (ms <= 0) return tr('now');
+    const m = Math.round(ms / 60000); if (m < 60) return tr('{m}m', { m });
+    const hh = Math.floor(m / 60); if (hh < 48) return tr('{h}h {m}m', { h: hh, m: m % 60 });
+    return tr('{d}d {h}h', { d: Math.floor(hh / 24), h: hh % 24 });
   }
   // The page never assumes the operator is alive: everything below is derived from db snapshots.
   function operatorOffline() {
@@ -964,11 +1025,11 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   function limitText() {
     const L = S.operator && S.operator.limit;
     if (!L || typeof L !== 'object') return null;
-    const kind = { '5h': '5-hour', weekly: 'weekly' }[str(L.kind)] || 'unknown';
+    const kind = tr({ '5h': '5-hour', weekly: 'weekly' }[str(L.kind)] || 'unknown');
     const r = ts(L.resets_at);
-    let when = 'reset time unknown';
-    if (r) when = r > Date.now() ? 'resets ~' + hhmm(r) + ' (in ' + dur(r - Date.now()) + ')' : 'should have reset at ' + hhmm(r);
-    return { text: 'Usage limit (' + kind + ') · ' + when + (L.note ? ' · ' + str(L.note) : ''), future: r ? r > Date.now() : Date.now() - ts(L.hit_at) < 5 * 3600 * 1000 };
+    let when = tr('reset time unknown');
+    if (r) when = r > Date.now() ? tr('resets ~{at} (in {in})', { at: hhmm(r), in: dur(r - Date.now()) }) : tr('should have reset at {at}', { at: hhmm(r) });
+    return { text: tr('Usage limit ({kind}) · {when}', { kind, when }) + (L.note ? ' · ' + str(L.note) : ''), future: r ? r > Date.now() : Date.now() - ts(L.hit_at) < 5 * 3600 * 1000 };
   }
   const WINDOWS = [{ key: 'five_hour', short: '5h', name: '5h', el: '#u-5h' }, { key: 'seven_day', short: '7d', name: 'weekly', el: '#u-7d' }];
   function usageOf(key) {
@@ -987,28 +1048,77 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       const bar = row.querySelector('.u-bar'), fill = bar.firstElementChild;
       if (!u) {
         row.className = 'u-row none'; fill.style.width = '0%'; bar.removeAttribute('aria-valuenow');
-        row.querySelector('.u-p').textContent = '—'; row.querySelector('.u-r').textContent = 'not reported';
+        row.querySelector('.u-p').textContent = '—'; row.querySelector('.u-r').textContent = tr('not reported');
         continue;
       }
       row.className = 'u-row lvl-' + usageLevel(u.pct);
       fill.style.width = u.pct + '%';
       bar.setAttribute('aria-valuenow', String(u.pct));
       row.querySelector('.u-p').textContent = u.pct + '%';
-      row.querySelector('.u-r').textContent = u.resets ? (u.resets > Date.now() ? 'resets in ' + dur(u.resets - Date.now()) + ' · ~' + hhmm(u.resets) : 'reset due ' + hhmm(u.resets)) : 'reset time unknown';
+      row.querySelector('.u-r').textContent = u.resets ? (u.resets > Date.now() ? tr('resets in {in} · ~{at}', { in: dur(u.resets - Date.now()), at: hhmm(u.resets) }) : tr('reset due {at}', { at: hhmm(u.resets) })) : tr('reset time unknown');
     }
     const upd = ts(S.operator && S.operator.usage && S.operator.usage.updated_at);
     $('#u-upd').textContent = upd ? rel(upd) : '';
+    renderUsagePop();
   }
   // Worst usage window for the switch-account banners: { level: 'prep'|'switch', text } or null.
+  // The usage popover: both windows, when they reset, when reported, the threshold reached and the
+  // account the sessions run on (the email only for approvers; board-serve decides, the Artifact
+  // mirror never carries it).
+  const THRESHOLDS = [{ at: 80, cls: 'warn', key: 'heads-up' }, { at: 90, cls: 'high', key: 'prepare to switch' }, { at: 95, cls: 'urgent', key: 'switch now' }];
+  function renderUsagePop() {
+    const pop = $('#usage-pop');
+    if (!pop || pop.hidden) return;
+    pop.textContent = '';
+    const live = S.mode === 'live' || S.mode === 'demo';
+    let worst = -1;
+    for (const w of WINDOWS) {
+      const u = live ? usageOf(w.key) : null;
+      if (u) worst = Math.max(worst, u.pct);
+      const when = u && u.resets ? (u.resets > Date.now() ? tr('resets ~{at} (in {in})', { at: hhmm(u.resets), in: dur(u.resets - Date.now()) }) : tr('reset due {at}', { at: hhmm(u.resets) })) : tr('reset time unknown');
+      pop.append(h('p', null, h('span', { class: 'k', text: tr(w.key === 'five_hour' ? '5-hour window: ' : 'Weekly: ') }),
+        u ? tr('{pct}% used · {when}', { pct: u.pct, when }) : tr('not reported')));
+    }
+    const upd = ts(S.operator && S.operator.usage && S.operator.usage.updated_at);
+    pop.append(h('p', null, h('span', { class: 'k', text: tr('Updated: ') }), upd ? rel(upd) + ' (' + hhmm(upd) + ')' : tr('not reported yet')));
+    const hit = THRESHOLDS.filter((x) => worst >= x.at).pop();
+    pop.append(h('p', null, h('span', { class: 'k', text: tr('Threshold: ') }), worst < 0 ? tr('unknown') : hit ? hit.at + '% · ' + tr(hit.key) : tr('below 80% · fine')));
+    pop.append(h('div', { class: 'lvls', 'aria-hidden': 'true' }, THRESHOLDS.map((x) => h('span', { class: 'esc ' + x.cls + (hit === x ? ' on' : ''), text: x.at + '% · ' + tr(x.key) }))));
+    const a = S.account;
+    const acct = a && a.email ? str(a.email) + (a.org ? ' · ' + str(a.org) : '') : tr(a && a.hidden ? 'hidden' : isLocal() || S.demo ? 'not reported' : 'hidden');
+    pop.append(h('p', { class: 'u-acct' }, h('span', { class: 'k', text: tr('Account: ') }), acct));
+  }
+  (() => {
+    const box = $('#usage'), pop = $('#usage-pop');
+    let touch = false;
+    const show = () => { if (pop.hidden) { pop.hidden = false; renderUsagePop(); } };
+    const hide = () => { pop.hidden = true; };
+    box.addEventListener('pointerenter', (e) => { if (e.pointerType === 'mouse') show(); });
+    box.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse' && document.activeElement !== box) hide(); });
+    box.addEventListener('focus', () => { if (!touch) show(); });
+    box.addEventListener('blur', () => { if (!touch) hide(); });
+    box.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !pop.hidden) { e.preventDefault(); hide(); } });
+    // Touch: a tap toggles it, a tap anywhere else closes it.
+    box.addEventListener('pointerdown', (e) => {
+      if (e.pointerType === 'mouse') return;
+      touch = true;
+      if (pop.hidden) show(); else hide();
+      setTimeout(() => { touch = false; }, 400);
+    });
+    document.addEventListener('pointerdown', (e) => { if (!pop.hidden && !(e.target instanceof Element && e.target.closest('#usage'))) hide(); });
+    // Escape closes it wherever the focus is (it may have opened on hover).
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !pop.hidden) hide(); });
+  })();
+
   function switchAdvice() {
     if (!(S.mode === 'live' || S.mode === 'demo')) return null;
     let worst = null;
     for (const w of WINDOWS) { const u = usageOf(w.key); if (u && (!worst || u.pct > worst.u.pct)) worst = { w, u }; }
-    const describe = (x) => x.w.name + ' usage ' + x.u.pct + '%' + (x.u.resets ? ', resets ~' + hhmm(x.u.resets) : '');
+    const describe = (x) => tr('{win} usage {pct}%', { win: tr(x.w.name), pct: x.u.pct }) + (x.u.resets ? tr(', resets ~{at}', { at: hhmm(x.u.resets) }) : '');
     const L = S.operator && S.operator.limit;
-    if (L && typeof L === 'object') return { level: 'switch', text: 'Switch account now — usage limit hit (' + ({ '5h': '5h', weekly: 'weekly' }[str(L.kind)] || 'unknown window') + ')' + (ts(L.resets_at) ? ', resets ~' + hhmm(ts(L.resets_at)) : '') };
-    if (worst && worst.u.pct >= 95) return { level: 'switch', text: 'Switch account now — ' + describe(worst) };
-    if (worst && worst.u.pct >= 90) return { level: 'prep', text: 'Prepare to switch account — ' + describe(worst) };
+    if (L && typeof L === 'object') return { level: 'switch', text: tr('Switch account now — usage limit hit ({win})', { win: tr({ '5h': '5h', weekly: 'weekly' }[str(L.kind)] || 'unknown window') }) + (ts(L.resets_at) ? tr(', resets ~{at}', { at: hhmm(ts(L.resets_at)) }) : '') };
+    if (worst && worst.u.pct >= 95) return { level: 'switch', text: tr('Switch account now — {what}', { what: describe(worst) }) };
+    if (worst && worst.u.pct >= 90) return { level: 'prep', text: tr('Prepare to switch account — {what}', { what: describe(worst) }) };
     return null;
   }
   function openInfo(sectionId) {
@@ -1042,10 +1152,10 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     if (v === 'production-gate' || v === 'gate' || v === 'prod' || v === 'release') v = 'production';
     return STAGES.findIndex((s) => s.key === v);
   }
-  const stageName = (k) => { const i = stageIndex(k); return i >= 0 ? STAGES[i].name : str(k) || '—'; };
+  const stageName = (k) => { const i = stageIndex(k); return i >= 0 ? tr(STAGES[i].name) : str(k) || '—'; };
   function artChip(file, ref) {
     ref = typeof ref === 'string' ? ref.trim() : '';
-    if (!ref) return h('span', { class: 'chip missing', title: 'Not committed yet', text: file });
+    if (!ref) return h('span', { class: 'chip missing', title: tr('Not committed yet'), text: file });
     const u = safeUrl(ref);
     const sha = /^[0-9a-f]{7,40}$/i.test(ref) ? ref.slice(0, 7) : null;
     const kids = [h('span', { text: file })];
@@ -1056,10 +1166,10 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   const GATE_LABEL = { pending: 'awaiting', approved: 'approved', rejected: 'changes requested', skipped: 'skipped', none: 'not reached', norecord: 'no record' };
   function gatePill(stage, g, state) {
     const st = g ? (str(g.status) || 'pending') : state === 'skipped' ? 'skipped' : state === 'done' ? 'norecord' : 'none';
-    const pill = h('span', { class: 'gate ' + st, title: (g && g.gate ? 'Gate "' + str(g.gate) + '" · ' : '') + stage.role },
-      icon('lock', 11), h('span', { text: stage.role }), h('b', { text: '· ' + (GATE_LABEL[st] || st) }));
+    const pill = h('span', { class: 'gate ' + st, title: (g && g.gate ? tr('Gate "{g}"', { g: str(g.gate) }) + ' · ' : '') + tr(stage.role) },
+      icon('lock', 11), h('span', { text: tr(stage.role) }), h('b', { text: '· ' + trMap(GATE_LABEL, st) }));
     if (g && st === 'pending' && g.decision_id && S.decisions.some((d) => d.id === g.decision_id && (d.status === 'pending' || d.status === 'unauthorized'))) {
-      pill.append(' ', h('a', { href: '#dec-' + g.decision_id, text: 'answer ↑' }));
+      pill.append(' ', h('a', { href: '#dec-' + g.decision_id, text: tr('answer ↑') }));
     }
     return pill;
   }
@@ -1086,7 +1196,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     const keep = new Set();
     let prev = null;
     for (const it of items) {
-      const k = keyFn(it), sig = sigFn(it);
+      const k = keyFn(it), sig = sigFn(it) + '|' + LANG;
       let el = old.get(k);
       if (!el || el.dataset.sig !== sig) {
         const focusKey = el && el.contains(document.activeElement) ? document.activeElement.dataset.focus : null;
@@ -1111,10 +1221,10 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 
   /* ------------------------------------------------------------- derived */
   const COLS = [
-    { key: 'needs', title: 'Needs you', zh: '待你處理', lamp: 'needs', states: ['needs-you'], none: 'No session is blocked.' },
-    { key: 'working', title: 'Working', zh: '執行中', lamp: 'working', states: ['working'], none: 'No session is working right now.' },
-    { key: 'done', title: 'Done / idle', zh: '完成・閒置', lamp: 'done', states: ['done', 'rest'], none: 'No idle sessions.' },
-    { key: 'offline', title: 'Offline', zh: '離線', lamp: 'offline', states: ['offline'], none: 'Every known session is running.' },
+    { key: 'needs', title: 'Needs you', lamp: 'needs', states: ['needs-you'], none: 'No session is blocked.' },
+    { key: 'working', title: 'Working', lamp: 'working', states: ['working'], none: 'No session is working right now.' },
+    { key: 'done', title: 'Done / idle', lamp: 'done', states: ['done', 'rest'], none: 'No idle sessions.' },
+    { key: 'offline', title: 'Offline', lamp: 'offline', states: ['offline'], none: 'Every known session is running.' },
   ];
   function colOf(s) { const st = str(s.state); for (const c of COLS) if (c.states.includes(st)) return c.key; return 'done'; }
   const isOpen = (d) => d.status === 'pending' || d.status === 'unauthorized';
@@ -1131,14 +1241,14 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     $('#demo-tag').hidden = !S.demo;
     const pill = $('#op-pill'), txt = $('#op-text');
     let cls = 'unknown', label;
-    if (S.mode === 'connecting') label = 'Connecting…';
-    else if (S.mode === 'offline') label = 'Board data unavailable';
+    if (S.mode === 'connecting') label = tr('Connecting…');
+    else if (S.mode === 'offline') label = tr('Board data unavailable');
     else {
       const hb = ts(S.operator && S.operator.heartbeat_at);
-      if (!S.got.operator && S.mode === 'live') { label = 'checking operator…'; }
-      else if (!hb) { cls = 'stale'; label = 'operator not seen yet'; }
-      else if (Date.now() - hb > STALE_MS) { cls = 'stale'; label = 'operator offline since ' + hhmm(hb); }
-      else { cls = 'live'; label = 'operator live · ' + rel(hb); }
+      if (!S.got.operator && S.mode === 'live') { label = tr('checking operator…'); }
+      else if (!hb) { cls = 'stale'; label = tr('operator not seen yet'); }
+      else if (Date.now() - hb > STALE_MS) { cls = 'stale'; label = tr('operator offline since {at}', { at: hhmm(hb) }); }
+      else { cls = 'live'; label = tr('operator live · {ago}', { ago: rel(hb) }); }
     }
     pill.className = 'pill ' + cls; txt.textContent = label;
     renderUsage();
@@ -1153,15 +1263,15 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     $('#needs-n').textContent = a.total;
     $('#needs-tile').classList.toggle('zero', a.total === 0);
     const parts = [];
-    if (a.decisions) parts.push(a.decisions + (a.decisions === 1 ? ' decision' : ' decisions'));
-    if (a.sessions) parts.push(a.sessions + (a.sessions === 1 ? ' blocked session' : ' blocked sessions'));
-    $('#needs-sub').textContent = parts.length ? parts.join(' · ') : 'Nothing waiting';
+    if (a.decisions) parts.push(tr(a.decisions === 1 ? '{n} decision' : '{n} decisions', { n: a.decisions }));
+    if (a.sessions) parts.push(tr(a.sessions === 1 ? '{n} blocked session' : '{n} blocked sessions', { n: a.sessions }));
+    $('#needs-sub').textContent = parts.length ? parts.join(' · ') : tr('Nothing waiting');
     const nd = $('#nav-dec'); nd.textContent = a.decisions; nd.classList.toggle('hot', a.decisions > 0);
     $('#nav-board').textContent = S.sessions.length;
     $('#nav-msg').textContent = S.messages.length;
     $('#nav-life').textContent = S.tasks.length;
     $('#nav-appr').textContent = S.approvals.length;
-    document.title = a.total ? '(' + a.total + ') Switchboard' : 'Switchboard';
+    document.title = a.total ? '(' + a.total + ') Agent Switchboard' : 'Agent Switchboard';
   }
 
   function renderBanners() {
@@ -1170,25 +1280,25 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     if (S.away) {
       const a = S.away, since = ts(a.since);
       box.append(h('div', { class: 'banner away', role: 'status' }, h('span', { class: 'lamp working', 'aria-hidden': 'true' }),
-        h('strong', { text: 'Owner away' + (since ? ' since ' + hhmm(since) : '') + (a.by ? ' (by ' + str(a.by) + ')' : '') }),
-        h('p', { text: 'Sessions decide by explicit consensus; red lines and board asks wait for the owner.' }),
-        awayEditor() ? h('button', { class: 'btn primary', type: 'button', disabled: S.busy.has('away'), onclick: () => setAway('off'), text: 'I\'m back' }) : null,
-        a.said ? h('span', { class: 'said', text: '“' + str(a.said) + '”' + (a.legacy ? ' (free-text record)' : '') }) : null));
+        h('strong', { text: (since ? tr('Owner away since {at}', { at: hhmm(since) }) : tr('Owner away')) + (a.by ? tr(' (by {who})', { who: str(a.by) }) : '') }),
+        h('p', { text: tr('Sessions decide by explicit consensus; red lines and board asks wait for the owner.') }),
+        awayEditor() ? h('button', { class: 'btn primary', type: 'button', disabled: S.busy.has('away'), onclick: () => setAway('off'), text: tr('I\'m back') }) : null,
+        a.said ? h('span', { class: 'said', text: '“' + str(a.said) + '”' + (a.legacy ? tr(' (free-text record)') : '') }) : null));
     }
     const muted = activeMutes();
     if (muted.length) {
       const urgentToo = muted.some((m) => m.include_urgent);
       box.append(h('div', { class: 'banner mute', role: 'status' }, h('span', { class: 'nlamp muted', 'aria-hidden': 'true' }),
-        h('strong', { id: 'mute-banner', text: muted.map((m) => chanName(m.target) + ' muted ' + untilText(m.until)).join(' · ') }),
-        h('p', { text: urgentToo ? 'Urgent alerts are muted too. The board still shows everything.' : 'Urgent alerts still break through. The board still shows everything.' }),
-        notifEditor() ? h('button', { class: 'btn', type: 'button', disabled: S.busy.has('notify'), onclick: () => setNotify({ op: 'unmute', channel: 'all' }), text: 'Unmute all' }) : null,
-        h('button', { class: 'golink', type: 'button', onclick: openNotif, text: 'Notification settings →' })));
+        h('strong', { id: 'mute-banner', text: muted.map((m) => tr('{ch} muted {until}', { ch: chanName(m.target), until: untilText(m.until) })).join(' · ') }),
+        h('p', { text: tr(urgentToo ? 'Urgent alerts are muted too. The board still shows everything.' : 'Urgent alerts still break through. The board still shows everything.') }),
+        notifEditor() ? h('button', { class: 'btn', type: 'button', disabled: S.busy.has('notify'), onclick: () => setNotify({ op: 'unmute', channel: 'all' }), text: tr('Unmute all') }) : null,
+        h('button', { class: 'golink', type: 'button', onclick: openNotif, text: tr('Notification settings →') })));
     }
     if (operatorOffline()) {
       const hb = ts(S.operator && S.operator.heartbeat_at);
       box.append(h('div', { class: 'banner down', role: 'alert' }, h('span', { class: 'lamp', 'aria-hidden': 'true' }),
-        h('strong', { text: hb ? 'Operator offline since ' + hhmm(hb) : 'Operator has not checked in' }),
-        h('p', { text: 'Board data may be stale; Slack keeps alerting, so check Slack or tmux. Answers you give here are saved and relayed when the operator returns.' }),
+        h('strong', { text: hb ? tr('Operator offline since {at}', { at: hhmm(hb) }) : tr('Operator has not checked in') }),
+        h('p', { text: tr('Board data may be stale; Slack keeps alerting, so check Slack or tmux. Answers you give here are saved and relayed when the operator returns.') }),
         lim ? h('span', { class: 'lim', text: lim.text }) : null));
     }
     const adv = switchAdvice();
@@ -1197,31 +1307,31 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       box.append(h('div', { class: 'banner ' + (sw ? 'down' : 'prep'), role: sw ? 'alert' : 'status' },
         h('span', { class: 'lamp' + (sw ? '' : ' needs'), 'aria-hidden': 'true' }),
         h('strong', { text: adv.text }),
-        h('p', { text: sw ? 'Start the operator on a backup account so the board keeps running. Alerts still go out meanwhile.' : 'Pick a backup account that can edit this board and wrap up long tasks before the limit hits.' }),
-        h('button', { class: 'golink', type: 'button', onclick: () => openInfo('failover'), text: 'How to switch accounts →' })));
+        h('p', { text: tr(sw ? 'Start the operator on a backup account so the board keeps running. Alerts still go out meanwhile.' : 'Pick a backup account that can edit this board and wrap up long tasks before the limit hits.') }),
+        h('button', { class: 'golink', type: 'button', onclick: () => openInfo('failover'), text: tr('How to switch accounts →') })));
     }
     resourceBanners(box);
     if (S.demo) {
-      box.append(h('div', { class: 'banner demo' }, h('strong', { text: 'DEMO DATA' }),
-        h('p', { text: 'Sample sessions, decisions and messages for preview. None of it is real, and nothing you do here is saved or sent.' })));
+      box.append(h('div', { class: 'banner demo' }, h('strong', { text: tr('DEMO DATA') }),
+        h('p', { text: tr('Sample sessions, decisions and messages for preview. None of it is real, and nothing you do here is saved or sent.') })));
     }
     if (S.mode === 'offline') {
-      box.append(h('div', { class: 'banner warn' }, h('strong', { text: 'Live board unavailable' }),
-        h('p', { text: isLocal() ? 'The board server did not answer' + (S.offlineDetail ? ': ' + S.offlineDetail : '') + '. Check that board-serve is running, then reload.'
-          : 'This page reads its data through the claude.ai viewer. Open it from its claude.ai link while signed in to see your sessions.' }),
-        h('button', { class: 'btn', type: 'button', onclick: enterDemo, text: 'Preview with demo data' })));
+      box.append(h('div', { class: 'banner warn' }, h('strong', { text: tr('Live board unavailable') }),
+        h('p', { text: isLocal() ? tr('The board server did not answer{detail}. Check that board-serve is running, then reload.', { detail: S.offlineDetail ? ': ' + S.offlineDetail : '' })
+          : tr('This page reads its data through the claude.ai viewer. Open it from its claude.ai link while signed in to see your sessions.') }),
+        h('button', { class: 'btn', type: 'button', onclick: enterDemo, text: tr('Preview with demo data') })));
     }
     if (S.mode === 'live' && S.slow) {
-      box.append(h('div', { class: 'banner warn' }, h('strong', { text: 'Waiting for board data' }),
-        h('p', { text: 'The board data has not answered yet. Keep this page open; it fills in when the connection comes back.' })));
+      box.append(h('div', { class: 'banner warn' }, h('strong', { text: tr('Waiting for board data') }),
+        h('p', { text: tr('The board data has not answered yet. Keep this page open; it fills in when the connection comes back.') })));
     }
     if (S.feedError) {
-      box.append(h('div', { class: 'banner warn' }, h('strong', { text: 'Live updates stopped' }),
+      box.append(h('div', { class: 'banner warn' }, h('strong', { text: tr('Live updates stopped') }),
         h('p', { text: S.feedError })));
     }
     if (S.mode === 'live' && S.userReady && S.writable === false) {
-      box.append(h('div', { class: 'banner' }, h('strong', { text: 'Read-only' }),
-        h('p', { text: 'You can see everything on this board. Only its editors can answer decisions or send messages.' })));
+      box.append(h('div', { class: 'banner' }, h('strong', { text: tr('Read-only') }),
+        h('p', { text: tr('You can see everything on this board. Only its editors can answer decisions or send messages.') })));
     }
   }
 
@@ -1248,25 +1358,25 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     const qs = (Array.isArray(d.questions) ? d.questions : []).filter((q) => q && typeof q === 'object');
     const pressable = d.pressable === true && qs.length === 1 && !qs[0].multiSelect;
     const busy = S.busy.has(d.id), offline = operatorOffline(), appr = approverState();
-    const who = str(d.from) || 'A session';
-    const card = h('article', { id: 'dec-' + d.id, class: 'dcard question panecard' + (offline ? ' queued' : ''), 'aria-label': 'Question from ' + who });
+    const who = str(d.from) || tr('A session');
+    const card = h('article', { id: 'dec-' + d.id, class: 'dcard question panecard' + (offline ? ' queued' : ''), 'aria-label': tr('Question from {who}', { who }) });
     card.append(h('div', { class: 'dmeta' },
       h('span', { class: 'lamp needs', 'aria-hidden': 'true' }),
-      h('span', { class: 'kind', text: 'Question' }),
+      h('span', { class: 'kind', text: tr('Question') }),
       h('span', { class: 'code-chip', text: str(d.from) || '?' }),
-      d.status === 'unauthorized' ? h('span', { class: 'status unauthorized', text: 'unauthorized' }) : null,
+      d.status === 'unauthorized' ? h('span', { class: 'status unauthorized', text: tr('unauthorized') }) : null,
       escChip(d),
       timeEl(d.created_at)));
     const live = pressable && !busy && canAnswer();
-    const list = qs.length ? qs : [{ question: str(d.question) || 'Question', options: [] }];
-    card.append(h('h3', null, h('span', { class: 'pq-asks', text: who + ' asks:' }), list.length === 1 ? str(list[0].question) : list.length + ' questions'));
+    const list = qs.length ? qs : [{ question: str(d.question) || tr('Question'), options: [] }];
+    card.append(h('h3', null, h('span', { class: 'pq-asks', text: tr('{who} asks:', { who }) }), list.length === 1 ? str(list[0].question) : tr('{n} questions', { n: list.length })));
     list.forEach((q, qi) => {
       const opts = (Array.isArray(q.options) ? q.options : []).map((o) => (o && typeof o === 'object' ? o : { label: str(o) }));
-      const box = h('section', { class: 'pq-q', 'aria-label': 'Question ' + (qi + 1) });
-      if (q.header) box.append(h('div', { class: 'pq-head', text: str(q.header) + (q.multiSelect ? ' · choose any' : '') }));
+      const box = h('section', { class: 'pq-q', 'aria-label': tr('Question {n}', { n: qi + 1 }) });
+      if (q.header) box.append(h('div', { class: 'pq-head', text: str(q.header) + (q.multiSelect ? ' · ' + tr('choose any') : '') }));
       if (list.length > 1) box.append(h('p', { class: 'ctx', text: str(q.question) }));
       if (live) {
-        box.append(h('div', { class: 'pq-opts', role: 'group', 'aria-label': 'Options' },
+        box.append(h('div', { class: 'pq-opts', role: 'group', 'aria-label': tr('Options') },
           opts.map((o, i) => h('button', { class: 'btn option pq-opt', type: 'button', dataset: { option: String(i + 1) },
             onclick: () => answerDecision(d, str(o.label), i + 1) },
             h('span', { text: (i + 1) + '. ' + str(o.label) }), o.description ? h('small', { text: str(o.description) }) : null))));
@@ -1277,28 +1387,28 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       card.append(box);
     });
     if (d.status === 'unauthorized') {
-      card.append(h('p', { class: 'note unauth', text: 'Answered by someone who is not an approver, so it was not sent. An approver can still answer.' }));
+      card.append(h('p', { class: 'note unauth', text: tr('Answered by someone who is not an approver, so it was not sent. An approver can still answer.') }));
     }
     if (!pressable) {
-      const why = qs.length > 1 ? 'multi-question form' : qs.some((q) => q.multiSelect) ? 'multi-select' : 'shown only in part here';
-      card.append(h('p', { class: 'note queue', text: 'Answer in the session (' + why + ').' }));
+      const why = tr(qs.length > 1 ? 'multi-question form' : qs.some((q) => q.multiSelect) ? 'multi-select' : 'shown only in part here');
+      card.append(h('p', { class: 'note queue', text: tr('Answer in the session ({why}).', { why }) }));
     } else if (busy) {
-      card.append(h('p', { class: 'saving', text: 'Sending your answer…' }));
+      card.append(h('p', { class: 'saving', text: tr('Sending your answer…') }));
     } else if (live) {
-      if (appr === false) card.append(h('p', { class: 'note noappr', text: 'You are not an approver — your answer won\'t be sent.' }));
-      if (offline && !isLocal()) card.append(h('p', { class: 'note queue', text: 'Operator offline — answers are saved and queued until the operator returns.' }));
-      const input = h('input', { id: 'ans-' + d.id, type: 'text', maxlength: '200', placeholder: 'Type something', 'aria-label': 'Type something for ' + who, dataset: { focus: 'answer' } });
+      if (appr === false) card.append(h('p', { class: 'note noappr', text: tr('You are not an approver — your answer won\'t be sent.') }));
+      if (offline && !isLocal()) card.append(h('p', { class: 'note queue', text: tr('Operator offline — answers are saved and queued until the operator returns.') }));
+      const input = h('input', { id: 'ans-' + d.id, type: 'text', maxlength: '200', placeholder: tr('Type something'), 'aria-label': tr('Type something for {who}', { who }), dataset: { focus: 'answer' } });
       input.value = S.drafts[d.id] || '';
       input.addEventListener('input', () => { S.drafts[d.id] = input.value; });
       const submit = () => { const v = input.value.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim(); if (!v) { input.focus(); return; } answerDecision(d, v); };
       input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } });
-      card.append(h('div', { class: 'free' }, input, h('button', { class: 'btn primary', type: 'button', onclick: submit, text: 'Send' })));
+      card.append(h('div', { class: 'free' }, input, h('button', { class: 'btn primary', type: 'button', onclick: submit, text: tr('Send') })));
     }
     const sess = findSession(d.from);
-    const link = sessionLink(d.from, pressable ? 'Open session' : 'Answer in session');
+    const link = sessionLink(d.from, tr(pressable ? 'Open session' : 'Answer in session'));
     const tmux = !link && sess && sess.tmux ? h('span', { class: 'mono', text: 'tmux ' + str(sess.tmux) }) : null;
     card.append(h('div', { class: 'dfoot' },
-      h('span', { text: pressable ? (isLocal() ? 'Your choice is picked in ' + who + '\'s question right away.' : 'Your choice is picked in ' + who + '\'s question by the operator.') : 'This question waits in ' + who + '\'s session.' }),
+      h('span', { text: tr(pressable ? (isLocal() ? 'Your choice is picked in {who}\'s question right away.' : 'Your choice is picked in {who}\'s question by the operator.') : 'This question waits in {who}\'s session.', { who }) }),
       link || tmux));
     return card;
   }
@@ -1311,78 +1421,78 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     const conf = S.confirm && S.confirm.id === d.id ? S.confirm.choice : null;
     const offline = operatorOffline();
     const appr = approverState();
-    const kindLabel = isGate ? (isProdGate(d) ? 'Production gate' : 'Gate') : isPerm ? 'Permission' : 'Question';
-    const card = h('article', { id: 'dec-' + d.id, class: 'dcard ' + (isGate ? 'gatecard' : isPerm ? 'permission' : 'question') + (offline ? ' queued' : ''), 'aria-label': kindLabel + ' from ' + str(d.from) });
+    const kindLabel = tr(isGate ? (isProdGate(d) ? 'Production gate' : 'Gate') : isPerm ? 'Permission' : 'Question');
+    const card = h('article', { id: 'dec-' + d.id, class: 'dcard ' + (isGate ? 'gatecard' : isPerm ? 'permission' : 'question') + (offline ? ' queued' : ''), 'aria-label': tr('{kind} from {who}', { kind: kindLabel, who: str(d.from) }) });
     card.append(h('div', { class: 'dmeta' },
       h('span', { class: 'lamp needs', 'aria-hidden': 'true' }),
       h('span', { class: 'kind', text: kindLabel }),
       h('span', { class: 'code-chip', text: str(d.from) || '?' }),
-      d.status === 'unauthorized' ? h('span', { class: 'status unauthorized', text: 'unauthorized' }) : null,
+      d.status === 'unauthorized' ? h('span', { class: 'status unauthorized', text: tr('unauthorized') }) : null,
       escChip(d),
       timeEl(d.created_at)));
     if (isGate) {
       const task = S.tasks.find((t) => t.id === d.task_id);
       card.append(h('div', { class: 'gatestrip' }, icon('lock', 13),
-        h('span', null, 'Stage ', h('b', { text: stageName(d.stage || d.gate) })),
-        d.gate ? h('span', null, 'gate ', h('b', { text: str(d.gate) })) : null,
+        h('span', null, tr('Stage') + ' ', h('b', { text: stageName(d.stage || d.gate) })),
+        d.gate ? h('span', null, tr('gate') + ' ', h('b', { text: str(d.gate) })) : null,
         task ? h('span', { text: str(task.title) }) : d.task_id ? h('span', { class: 'mono', text: str(d.task_id) }) : null,
         d.artifact_ref ? artChip(str(d.artifact_ref).split(/[\/#?]/).filter(Boolean).pop() || 'artifact', str(d.artifact_ref)) : null));
     }
-    const title = str(d.question) || (isPerm ? (str(d.tool_name) || 'A tool') + ' wants to run' : isGate ? 'Approve ' + stageName(d.stage || d.gate) + '?' : 'Question');
+    const title = str(d.question) || (isPerm ? tr('{tool} wants to run', { tool: str(d.tool_name) || tr('A tool') }) : isGate ? tr('Approve {stage}?', { stage: stageName(d.stage || d.gate) }) : tr('Question'));
     card.append(h('h3', { text: title }));
     if (d.context) card.append(h('p', { class: 'ctx', text: str(d.context) }));
     if (isPerm) {
       card.append(h('pre', { class: 'cmd' }, h('b', { text: str(d.tool_name) || 'tool' }), d.summary ? '\n' + str(d.summary) : ''));
     }
     if (d.status === 'unauthorized') {
-      card.append(h('p', { class: 'note unauth', text: 'Answered by someone who is not an approver, so the operator did not relay it. An approver can still answer.' }));
+      card.append(h('p', { class: 'note unauth', text: tr('Answered by someone who is not an approver, so the operator did not relay it. An approver can still answer.') }));
     }
     const mine = S.myAnswers.get(d.id);
     if (mine && !isLocal() && !S.demo) {
-      card.append(h('p', { class: 'note queue', text: 'Your answer "' + str(mine.answer) + '" is saved and waits for the operator. Answer again to change it.' }));
+      card.append(h('p', { class: 'note queue', text: tr('Your answer "{answer}" is saved and waits for the operator. Answer again to change it.', { answer: str(mine.answer) }) }));
     }
     // A permission whose input was cut short is never allowed from here: the human must see it all.
     const truncated = isPerm && !!d.summary_truncated;
     if (truncated) {
-      card.append(h('p', { class: 'note unauth', text: 'The request is longer than what is shown here, so it can only be allowed in the session. Open the session to review it.' }));
+      card.append(h('p', { class: 'note unauth', text: tr('The request is longer than what is shown here, so it can only be allowed in the session. Open the session to review it.') }));
     }
 
     let tip = null;
     if (busy) {
-      card.append(h('p', { class: 'saving', text: 'Saving your answer…' }));
+      card.append(h('p', { class: 'saving', text: tr('Saving your answer…') }));
     } else if (canAnswer()) {
-      if (appr === false) { tip = 'You are not an approver — your answer won\'t be relayed'; card.append(h('p', { class: 'note noappr', text: 'You are not an approver — your answer won\'t be relayed.' })); }
-      if (offline) { tip = tip || 'Answers will queue until the operator returns'; card.append(h('p', { class: 'note queue', text: 'Operator offline — answers are saved and queued until the operator returns.' })); }
+      if (appr === false) { tip = tr('You are not an approver — your answer won\'t be relayed'); card.append(h('p', { class: 'note noappr', text: tr('You are not an approver — your answer won\'t be relayed.') })); }
+      if (offline) { tip = tip || tr('Answers will queue until the operator returns'); card.append(h('p', { class: 'note queue', text: tr('Operator offline — answers are saved and queued until the operator returns.') })); }
       const opts = isPerm ? (truncated ? ['deny'] : ['allow', 'deny']) : Array.isArray(d.options) && d.options.length ? d.options.map(str).filter(Boolean) : isGate ? ['approve', 'request changes'] : [];
       const needsConfirm = isPerm || isProdGate(d);
       if (conf) {
         const cls = optionClass(conf);
-        const q = isPerm ? (conf === 'allow' ? 'Allow ' + (str(d.tool_name) || 'this') + ' to run?' : 'Deny this request?')
-          : 'Answer "' + conf + '" at the production gate?';
+        const q = isPerm ? (conf === 'allow' ? tr('Allow {tool} to run?', { tool: str(d.tool_name) || tr('this') }) : tr('Deny this request?'))
+          : tr('Answer "{answer}" at the production gate?', { answer: conf });
         card.append(h('div', { class: 'confirm-row' },
           h('span', { class: 'q', text: q }),
           h('button', { class: 'btn solid ' + (cls === 'option' ? 'allow' : cls), type: 'button', dataset: { focus: 'confirm' },
-            onclick: () => answerDecision(d, conf), text: 'Yes, ' + conf }),
-          h('button', { class: 'btn', type: 'button', onclick: () => { S.confirm = null; renderDecisions(); }, text: 'Cancel' })));
+            onclick: () => answerDecision(d, conf), text: tr('Yes, {answer}', { answer: isPerm ? tr(conf === 'allow' ? 'allow' : 'deny') : conf }) }),
+          h('button', { class: 'btn', type: 'button', onclick: () => { S.confirm = null; renderDecisions(); }, text: tr('Cancel') })));
       } else if (opts.length) {
-        card.append(h('div', { class: 'opts', role: 'group', 'aria-label': 'Options' },
+        card.append(h('div', { class: 'opts', role: 'group', 'aria-label': tr('Options') },
           opts.map((o) => h('button', { class: 'btn ' + optionClass(o), type: 'button',
             onclick: () => (needsConfirm ? askConfirm(d.id, o) : answerDecision(d, o)),
-            text: isPerm ? (o === 'allow' ? 'Allow' : 'Deny') : o }))));
+            text: isPerm ? tr(o === 'allow' ? 'Allow' : 'Deny') : o }))));
       }
       if (!isPerm && !conf) {
-        const input = h('input', { id: 'ans-' + d.id, type: 'text', placeholder: opts.length ? (isGate ? 'Or write what to change' : 'Or type a different answer') : 'Type your answer', 'aria-label': 'Answer for ' + str(d.from), dataset: { focus: 'answer' } });
+        const input = h('input', { id: 'ans-' + d.id, type: 'text', placeholder: tr(opts.length ? (isGate ? 'Or write what to change' : 'Or type a different answer') : 'Type your answer'), 'aria-label': tr('Answer for {who}', { who: str(d.from) }), dataset: { focus: 'answer' } });
         input.value = S.drafts[d.id] || '';
         input.addEventListener('input', () => { S.drafts[d.id] = input.value; });
         const submit = () => { const v = input.value.trim(); if (!v) { input.focus(); return; } answerDecision(d, v); };
         input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } });
-        card.append(h('div', { class: 'free' }, input, h('button', { class: 'btn primary', type: 'button', onclick: submit, text: 'Send answer' })));
+        card.append(h('div', { class: 'free' }, input, h('button', { class: 'btn primary', type: 'button', onclick: submit, text: tr('Send answer') })));
       }
       if (tip) for (const b of card.querySelectorAll('.opts .btn, .free .btn, .confirm-row .btn')) b.title = tip;
     }
-    const link = sessionLink(d.from, truncated ? 'Open in session' : 'Answer in session');
+    const link = sessionLink(d.from, tr(truncated ? 'Open in session' : 'Answer in session'));
     card.append(h('div', { class: 'dfoot' },
-      h('span', { text: isPerm ? (isLocal() ? 'Allow or Deny is pressed in the session right away.' : 'Allow or Deny is pressed in the session by the operator.') : isGate ? 'Approvals are logged in Approvals below.' : 'Your answer is relayed to ' + (str(d.from) || 'the session') + '.' }),
+      h('span', { text: isPerm ? tr(isLocal() ? 'Allow or Deny is pressed in the session right away.' : 'Allow or Deny is pressed in the session by the operator.') : isGate ? tr('Approvals are logged in Approvals below.') : tr('Your answer is relayed to {who}.', { who: str(d.from) || tr('the session') }) }),
       link));
     return card;
   }
@@ -1391,9 +1501,9 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   function escChip(d) {
     const lvl = lc(d.escalation_level);
     if (!['warn', 'high', 'urgent'].includes(lvl)) return null;
-    const via = (Array.isArray(d.notified_via) ? d.notified_via : []).map((c) => CHANNEL[lc(c)] || str(c)).filter(Boolean);
-    return h('span', { class: 'esc ' + lvl, title: 'Escalation level: ' + lvl + (via.length ? ' · notified via ' + via.join(', ') : '') },
-      lvl, h('span', { class: 'via', text: via.length ? ' · escalated → ' + via.join(', ') : ' · escalated' }));
+    const via = (Array.isArray(d.notified_via) ? d.notified_via : []).map((c) => (CHANNEL[lc(c)] ? tr(CHANNEL[lc(c)]) : str(c))).filter(Boolean);
+    return h('span', { class: 'esc ' + lvl, title: tr('Escalation level: {lvl}', { lvl: trKnown(lvl, LEVELS) }) + (via.length ? tr(' · notified via {via}', { via: via.join(', ') }) : '') },
+      trKnown(lvl, LEVELS), h('span', { class: 'via', text: via.length ? tr(' · escalated → {via}', { via: via.join(', ') }) : tr(' · escalated') }));
   }
   function askConfirm(id, choice) {
     S.confirm = { id, choice, at: Date.now() };
@@ -1408,9 +1518,9 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     if (!pend.length) {
       const e = $('#dec-empty');
       e.textContent = '';
-      if (S.mode === 'connecting' || (S.mode === 'live' && !S.got.decisions)) e.append(h('strong', { text: 'Loading decisions…' }), 'Checking what the sessions are waiting on.');
-      else if (S.mode === 'offline') e.append(h('strong', { text: 'No board data.' }), 'Decisions appear here once the page can reach the board.');
-      else e.append(h('strong', { text: 'Nothing needs you.' }), 'When a session asks a question, hits a permission prompt or reaches a gate, it appears here with buttons to answer.');
+      if (S.mode === 'connecting' || (S.mode === 'live' && !S.got.decisions)) e.append(h('strong', { text: tr('Loading decisions…') }), tr('Checking what the sessions are waiting on.'));
+      else if (S.mode === 'offline') e.append(h('strong', { text: tr('No board data.') }), tr('Decisions appear here once the page can reach the board.'));
+      else e.append(h('strong', { text: tr('Nothing needs you.') }), tr('When a session asks a question, hits a permission prompt or reaches a gate, it appears here with buttons to answer.'));
     }
     const ctx = [canAnswer() ? 'w' : 'r', operatorOffline() ? 'off' : 'on', String(approverState())].join('|');
     reconcile($('#dec-list'), pend, (d) => d.id,
@@ -1421,12 +1531,12 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       .sort((a, b) => (ts(b.answered_at) || ts(b.created_at)) - (ts(a.answered_at) || ts(a.created_at))).slice(0, 12);
     const hist = $('#dec-history');
     hist.hidden = past.length === 0;
-    $('#dec-history-sum').textContent = 'Recent decisions (' + past.length + ') · answered, relayed or expired';
+    $('#dec-history-sum').textContent = tr('Recent decisions ({n}) · answered, relayed or expired', { n: past.length });
     reconcile($('#dec-history-list'), past, (d) => d.id, (d) => JSON.stringify(d), (d) => h('li', null,
       h('span', { class: 'status ' + str(d.status), text: str(d.status) || 'unknown' }),
       h('span', { class: 'what' },
         h('span', { class: 'code-chip', text: str(d.from) || '?' }), ' ',
-        str(d.question) || (d.kind === 'permission' ? (str(d.tool_name) || 'tool') + ' permission' : isGateDecision(d) ? stageName(d.stage || d.gate) + ' gate' : 'Question'),
+        str(d.question) || (d.kind === 'permission' ? tr('{tool} permission', { tool: str(d.tool_name) || 'tool' }) : isGateDecision(d) ? tr('{stage} gate', { stage: stageName(d.stage || d.gate) }) : tr('Question')),
         d.answer != null && d.answer !== '' ? h('span', null, ' → ', h('span', { class: 'ans', text: str(d.answer) })) : null),
       timeEl(d.answered_at || d.relayed_at || d.created_at)));
   }
@@ -1447,29 +1557,29 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     function stageBlock(i, tag, extra) {
       const st = STAGES[i], state = stateOf(i), g = gateFor(i);
       const node = h('span', { class: 'node', 'aria-hidden': 'true' }, state === 'done' ? icon('check', 12) : null);
-      return h(tag, { class: 'stage ' + state + (extra ? ' ' + extra : ''), 'aria-label': st.name + ': ' + state },
-        h('div', { class: 'stage-head' }, node, h('span', { class: 'stage-name', text: st.name })),
-        state === 'skipped' && i === 1 ? h('span', { class: 'skipnote', text: 'simple fix skips design' }) : null,
+      return h(tag, { class: 'stage ' + state + (extra ? ' ' + extra : ''), 'aria-label': tr(st.name) + ': ' + tr(state) },
+        h('div', { class: 'stage-head' }, node, h('span', { class: 'stage-name', text: tr(st.name) })),
+        state === 'skipped' && i === 1 ? h('span', { class: 'skipnote', text: tr('simple fix skips design') }) : null,
         st.file ? artChip(st.file, arts[st.art]) : null,
         gatePill(st, g, state));
     }
-    const curName = cur >= 0 ? STAGES[cur].name : (str(t.stage) || 'unknown stage');
+    const curName = cur >= 0 ? tr(STAGES[cur].name) : (str(t.stage) || tr('unknown stage'));
     const pg = gateFor(5), pgState = stateOf(5);
     const pgStatus = pg ? (str(pg.status) || 'pending') : 'none';
-    return h('article', { class: 'tcard', 'aria-label': 'Task ' + str(t.title) },
+    return h('article', { class: 'tcard', 'aria-label': tr('Task {title}', { title: str(t.title) }) },
       h('div', { class: 'task-top' },
-        h('h3', { text: str(t.title) || 'Untitled task' }),
+        h('h3', { text: str(t.title) || tr('Untitled task') }),
         h('span', { class: 'tid', text: str(t.id) }),
-        t.owner ? h('span', { class: 'code-chip', title: 'Owner session', text: str(t.owner) }) : null,
-        h('span', { class: 'now', text: 'now: ' + curName }),
+        t.owner ? h('span', { class: 'code-chip', title: tr('Owner session'), text: str(t.owner) }) : null,
+        h('span', { class: 'now', text: tr('now: {stage}', { stage: curName }) }),
         timeEl(t.updated_at)),
-      h('ol', { class: 'rail', 'aria-label': 'Stages before production' }, [0, 1, 2, 3, 4].map((i) => stageBlock(i, 'li'))),
-      h('div', { class: 'prodgate ' + pgState, role: 'group', 'aria-label': 'Production gate' },
+      h('ol', { class: 'rail', 'aria-label': tr('Stages before production') }, [0, 1, 2, 3, 4].map((i) => stageBlock(i, 'li'))),
+      h('div', { class: 'prodgate ' + pgState, role: 'group', 'aria-label': tr('Production gate') },
         icon('lock', 18),
-        h('strong', { text: 'Production gate — agent stops here' }),
-        h('span', { class: 'who', text: 'release manager authorizes' }),
-        h('span', { class: 'gate ' + pgStatus }, h('b', { text: pgState === 'done' && pgStatus === 'none' ? 'passed' : GATE_LABEL[pgStatus] || pgStatus }),
-          pg && pgStatus === 'pending' && pg.decision_id && S.decisions.some((d) => d.id === pg.decision_id && isOpen(d)) ? h('a', { href: '#dec-' + pg.decision_id, text: ' answer ↑' }) : null)),
+        h('strong', { text: tr('Production gate — agent stops here') }),
+        h('span', { class: 'who', text: tr('release manager authorizes') }),
+        h('span', { class: 'gate ' + pgStatus }, h('b', { text: pgState === 'done' && pgStatus === 'none' ? tr('passed') : trMap(GATE_LABEL, pgStatus) }),
+          pg && pgStatus === 'pending' && pg.decision_id && S.decisions.some((d) => d.id === pg.decision_id && isOpen(d)) ? h('a', { href: '#dec-' + pg.decision_id, text: tr(' answer ↑') }) : null)),
       stageBlock(6, 'div', 'wide'));
   }
   function renderTasks() {
@@ -1478,9 +1588,9 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     e.hidden = list.length > 0;
     if (!list.length) {
       e.textContent = '';
-      if (S.mode === 'connecting' || (S.mode === 'live' && !S.got.tasks)) e.append(h('strong', { text: 'Loading tasks…' }));
-      else if (S.mode === 'offline') e.append(h('strong', { text: 'No board data.' }), 'Tasks appear here once the page can reach the board.');
-      else e.append(h('strong', { text: 'No tasks yet.' }), 'A task appears here when a session starts one with ', h('span', { class: 'mono', text: 'board task new' }), '.');
+      if (S.mode === 'connecting' || (S.mode === 'live' && !S.got.tasks)) e.append(h('strong', { text: tr('Loading tasks…') }));
+      else if (S.mode === 'offline') e.append(h('strong', { text: tr('No board data.') }), tr('Tasks appear here once the page can reach the board.'));
+      else e.append(h('strong', { text: tr('No tasks yet.') }), tr('A task appears here when a session starts one with '), h('span', { class: 'mono', text: 'board task new' }), '.');
     }
     const ctx = S.decisions.filter(isOpen).map((d) => d.id).join(',');
     reconcile($('#tasks'), list, (t) => t.id, (t) => JSON.stringify(t) + '|' + ctx, buildTask);
@@ -1494,12 +1604,12 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     $('#appr-wrap').hidden = rows.length === 0;
     if (!rows.length) {
       e.textContent = '';
-      if (S.mode === 'connecting' || (S.mode === 'live' && !S.got.approvals)) e.append(h('strong', { text: 'Loading approvals…' }));
-      else if (S.mode === 'offline') e.append(h('strong', { text: 'No board data.' }), 'The approvals log appears here once the page can reach the board.');
-      else e.append(h('strong', { text: 'No approvals recorded yet.' }), 'Each gate decision an approver answers is logged here once the operator relays it.');
+      if (S.mode === 'connecting' || (S.mode === 'live' && !S.got.approvals)) e.append(h('strong', { text: tr('Loading approvals…') }));
+      else if (S.mode === 'offline') e.append(h('strong', { text: tr('No board data.') }), tr('The approvals log appears here once the page can reach the board.'));
+      else e.append(h('strong', { text: tr('No approvals recorded yet.') }), tr('Each gate decision an approver answers is logged here once the operator relays it.'));
     }
     const appr = S.operator && Array.isArray(S.operator.approver_ids) ? S.operator.approver_ids : null;
-    const by = (id) => !id ? '—' : (S.me && id === S.me ? 'you' : appr ? (appr.includes(id) ? 'an approver' : 'not an approver') : 'an editor');
+    const by = (id) => !id ? '—' : tr(S.me && id === S.me ? 'you' : appr ? (appr.includes(id) ? 'an approver' : 'not an approver') : 'an editor');
     reconcile($('#appr-body'), rows, (r) => r.id, (r) => JSON.stringify(r) + '|' + (S.me || '') + '|' + str(appr) + '|' + str((S.tasks.find((t) => t.id === r.task_id) || {}).title), (r) => {
       const task = S.tasks.find((t) => t.id === r.task_id);
       const ans = str(r.answer);
@@ -1529,21 +1639,21 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     const col = colOf(s), p = s.pending && typeof s.pending === 'object' ? s.pending : null;
     const recent = Array.isArray(s.recent) ? objs(s.recent) : [];
     const last = recent[recent.length - 1];
-    if (col === 'offline') return { text: ts(s.updated_at) ? 'Offline, last seen ' + rel(ts(s.updated_at)) : 'Offline' };
+    if (col === 'offline') return { text: ts(s.updated_at) ? tr('Offline, last seen {ago}', { ago: rel(ts(s.updated_at)) }) : tr('Offline') };
     if (col === 'needs') {
-      if (p) return { waiting: true, text: 'Waiting: permission for ' + (str(p.tool_name) || 'a tool') + (p.summary ? ' · ' + clip(p.summary, 120) : '') };
+      if (p) return { waiting: true, text: tr('Waiting: permission for {tool}', { tool: str(p.tool_name) || tr('a tool') }) + (p.summary ? ' · ' + clip(p.summary, 120) : '') };
       const q = sessionDecisions(s).find((d) => d.kind !== 'permission');
-      return { waiting: true, text: q ? 'Waiting: ' + clip(q.question, 120) : 'Waiting for you in the session' };
+      return { waiting: true, text: q ? tr('Waiting: {what}', { what: clip(q.question, 120) }) : tr('Waiting for you in the session') };
     }
     if (col === 'working') {
-      if (last) return { text: 'Running ' + str(last.tool) + (last.summary ? ': ' + clip(last.summary, 120) : '') };
+      if (last) return { text: tr('Running {tool}', { tool: str(last.tool) }) + (last.summary ? ': ' + clip(last.summary, 120) : '') };
       const ev = str(s.last_event);
-      if (ev === 'PreToolUse') return { text: 'Running a tool' };
-      if (ev === 'UserPromptSubmit') return { text: 'Working on a new prompt' };
-      return { text: 'Working' };
+      if (ev === 'PreToolUse') return { text: tr('Running a tool') };
+      if (ev === 'UserPromptSubmit') return { text: tr('Working on a new prompt') };
+      return { text: tr('Working') };
     }
     const t = ts(s.updated_at);
-    return { text: t ? 'Idle since ' + hhmm(t) + ' (' + rel(t) + ')' : 'Idle' };
+    return { text: t ? tr('Idle since {at} ({ago})', { at: hhmm(t), ago: rel(t) }) : tr('Idle') };
   }
   // A DOM id per code: readable part + a short hash, so A.B / A_B or CODE/x / CODE_x never collide.
   function panelId(code) {
@@ -1565,15 +1675,15 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     const chev = document.createElementNS(SVGNS, 'svg');
     chev.setAttribute('viewBox', '0 0 10 10'); chev.setAttribute('class', 'chev'); chev.setAttribute('aria-hidden', 'true');
     chev.innerHTML = '<path d="M3 1.5 7 5 3 8.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>';
-    const card = h('article', { class: 'scard exp', 'aria-label': 'Session ' + s.code });
+    const card = h('article', { class: 'scard exp', 'aria-label': tr('Session {code}', { code: s.code }) });
     const btn = h('button', { class: 'scard-toggle', type: 'button', 'aria-expanded': open ? 'true' : 'false', 'aria-controls': pid, dataset: { focus: 'toggle' },
       onclick: () => { if (openCards.has(s.code)) openCards.delete(s.code); else openCards.add(s.code); renderBoard(); } },
       h('span', { class: 'scard-top' }, chev,
         h('span', { class: 'lamp ' + lampCls, 'aria-hidden': 'true' }),
         h('span', { class: 'code', text: s.code }),
-        h('span', { class: 'schip ' + col, text: STATE_LABEL[col] }),
+        h('span', { class: 'schip ' + col, text: tr(STATE_LABEL[col]) }),
         timeEl(s.updated_at)),
-      h('span', { class: 'stitle' + (title || task ? '' : ' none'), text: title || task || 'No title yet' }),
+      h('span', { class: 'stitle' + (title || task ? '' : ' none'), text: title || task || tr('No title yet') }),
       where ? h('span', { class: 'swhere', text: where }) : null,
       h('span', { class: 'snow' + (now.waiting ? ' waiting' : ''), text: now.text }));
     card.append(btn);
@@ -1585,32 +1695,32 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       ic.setAttribute('viewBox', '0 0 16 16'); ic.setAttribute('width', '14'); ic.setAttribute('height', '14'); ic.setAttribute('aria-hidden', 'true');
       ic.innerHTML = '<path d="M6 3H3.5A1.5 1.5 0 0 0 2 4.5v8A1.5 1.5 0 0 0 3.5 14h8a1.5 1.5 0 0 0 1.5-1.5V10M9 2h5v5M14 2 7 9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>';
       card.append(h('a', { class: 'rc-link', href: rc, target: rc.startsWith('#') ? null : '_blank', rel: 'noopener noreferrer',
-        'aria-label': 'Open ' + s.code + ' in Remote Control', title: 'Open in Remote Control' }, ic));
+        'aria-label': tr('Open {code} in Remote Control', { code: s.code }), title: tr('Open in Remote Control') }, ic));
     }
     const panel = h('div', { class: 'sdetail', id: pid, hidden: !open });
     if (open) {
       if (title) panel.append(h('p', { class: 'sd-title', text: title }));
       const rows = [];
-      const row = (label, ...val) => rows.push(h('dt', { text: label }), h('dd', null, ...val));
+      const row = (label, ...val) => rows.push(h('dt', { text: tr(label) }), h('dd', null, ...val));
       if (task && task !== title) row('Task', task);
       row('Now', now.text);
       const decs = sessionDecisions(s);
       const p = s.pending && typeof s.pending === 'object' ? s.pending : null;
       if (p && p.decision_id && !decs.some((d) => d.id === p.decision_id)) decs.push({ id: str(p.decision_id), kind: 'permission', tool_name: p.tool_name });
       if (decs.length) {
-        row('Pending', h('ul', null, decs.map((d) => h('li', null, h('a', { href: '#dec-' + str(d.id), text: d.kind === 'permission' ? 'Permission: ' + (str(d.tool_name) || 'a tool') : clip(d.question, 100) || 'A question' })))));
+        row('Pending', h('ul', null, decs.map((d) => h('li', null, h('a', { href: '#dec-' + str(d.id), text: d.kind === 'permission' ? tr('Permission: {tool}', { tool: str(d.tool_name) || tr('a tool') }) : clip(d.question, 100) || tr('A question') })))));
       }
-      if (!Array.isArray(s.recent)) row('Tools', h('span', { class: 'note', text: 'Shown on the self-hosted board only.' }));
-      else if (!s.recent.length) row('Tools', h('span', { class: 'note', text: 'Nothing running.' }));
+      if (!Array.isArray(s.recent)) row('Tools', h('span', { class: 'note', text: tr('Shown on the self-hosted board only.') }));
+      else if (!s.recent.length) row('Tools', h('span', { class: 'note', text: tr('Nothing running.') }));
       else row('Running', h('ul', null, objs(s.recent).map((r) => h('li', null, h('span', { class: 'tool', text: str(r.tool) }), r.summary ? ' ' : null, r.summary ? h('code', { text: str(r.summary) }) : null))));
       if (where) row('Repo', where);
       if (s.tmux) row('tmux', h('code', { text: str(s.tmux) }));
-      const link = sessionLink(s.code, 'Remote Control');
+      const link = sessionLink(s.code, tr('Remote Control'));
       if (link) row('Session', link);
       const aliases = (Array.isArray(s.aliases) ? s.aliases : []).map(str).filter((a) => a && lc(a) !== lc(s.code));
       if (aliases.length) row('Also', aliases.join(', '));
       const t = ts(s.updated_at);
-      if (t) row('Updated', new Date(t).toLocaleString() + ' (' + rel(t) + ')');
+      if (t) row('Updated', new Date(t).toLocaleString(locale()) + ' (' + rel(t) + ')');
       panel.append(h('dl', null, rows));
     }
     card.append(panel);
@@ -1623,16 +1733,16 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     const empty = $('#board-empty');
     empty.hidden = known && S.sessions.length > 0;
     empty.textContent = '';
-    if (S.mode === 'connecting' || (S.mode === 'live' && !S.got.sessions)) empty.append(h('strong', { text: 'Loading sessions…' }), 'Cards appear as soon as the board data answers.');
-    else if (S.mode === 'offline') empty.append(h('strong', { text: 'No board data.' }), 'Session cards appear here once the page can reach the board.');
-    else empty.append(h('strong', { text: 'No sessions yet.' }), 'The operator adds a card for each running session the next time it syncs.');
+    if (S.mode === 'connecting' || (S.mode === 'live' && !S.got.sessions)) empty.append(h('strong', { text: tr('Loading sessions…') }), tr('Cards appear as soon as the board data answers.'));
+    else if (S.mode === 'offline') empty.append(h('strong', { text: tr('No board data.') }), tr('Session cards appear here once the page can reach the board.'));
+    else empty.append(h('strong', { text: tr('No sessions yet.') }), tr('The operator adds a card for each running session the next time it syncs.'));
     host.hidden = !(known && S.sessions.length > 0);
     if (host.hidden) return;
     if (!host.children.length) {
       for (const c of COLS) {
         host.append(h('div', { class: 'col ' + c.key, dataset: { col: c.key } },
-          h('div', { class: 'col-head' }, h('span', { class: 'lamp ' + c.lamp, 'aria-hidden': 'true' }), h('h3', null, c.title, ' ', h('span', { class: 'zh', text: c.zh })), h('span', { class: 'count', text: '0' })),
-          h('div', { class: 'cards' }), h('p', { class: 'none', text: c.none })));
+          h('div', { class: 'col-head' }, h('span', { class: 'lamp ' + c.lamp, 'aria-hidden': 'true' }), h('h3', { text: tr(c.title) }), h('span', { class: 'count', text: '0' })),
+          h('div', { class: 'cards' }), h('p', { class: 'none', text: tr(c.none) })));
       }
     }
     for (const c of COLS) {
@@ -1658,10 +1768,10 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   const METRIC_NAMES = { mem: 'memory', swap: 'swap', load: 'load', oom: 'OOM kill' };
   function metricName(m, r) {
     const k = str(m);
-    if (!k.startsWith('disk:')) return METRIC_NAMES[k] || k || 'resources';
+    if (!k.startsWith('disk:')) return k ? trMap(METRIC_NAMES, k) : tr('resources');
     const d = r && objs(r.disks).find((x) => str(x.id) === k.slice(5));
     const used = d && Array.isArray(d.labels) ? d.labels.map(str).filter(Boolean).join(', ') : '';
-    return 'disk ' + k.slice(5) + (used ? ' (' + used + ')' : '');
+    return tr('disk {id}', { id: k.slice(5) }) + (used ? ' (' + used + ')' : '');
   }
   function resView() {
     const r = S.resources;
@@ -1678,7 +1788,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     const bar = row.querySelector('.u-bar'), fill = bar.firstElementChild;
     if (pct == null || !isFinite(Number(pct))) {
       row.className = 'u-row none'; fill.style.width = '0%'; bar.removeAttribute('aria-valuenow');
-      row.querySelector('.u-p').textContent = '—'; if (row.querySelector('.u-r')) row.querySelector('.u-r').textContent = sub || 'not available';
+      row.querySelector('.u-p').textContent = '—'; if (row.querySelector('.u-r')) row.querySelector('.u-r').textContent = sub || tr('not available');
       return;
     }
     const p = Math.max(0, Math.min(100, Math.round(Number(pct))));
@@ -1693,23 +1803,23 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     if (!r) return;
     const levels = r.levels && typeof r.levels === 'object' ? r.levels : {};
     const lvl = resLvl(r.level) || 'ok';
-    const chip = $('#sys-lvl'); chip.className = 'lvl ' + lvl; chip.textContent = lvl;
-    chip.title = r.worst ? 'worst: ' + metricName(r.worst, r) : 'all within limits';
+    const chip = $('#sys-lvl'); chip.className = 'lvl ' + lvl; chip.textContent = trKnown(lvl, RES_LEVELS);
+    chip.title = r.worst ? tr('worst: {what}', { what: metricName(r.worst, r) }) : tr('all within limits');
     const oom = $('#sys-oom');
     oom.hidden = r.oom_kills == null;
     oom.textContent = 'OOM ' + (r.oom_kills == null ? '?' : r.oom_kills);
     oom.classList.toggle('hot', !!r.oom_recent);
     const m = r.mem || {}, sw = r.swap || {};
     setBar($('#sys-mem'), m.available_pct == null ? null : 100 - Number(m.available_pct), resLvl(levels.mem),
-      null, m.available_mb == null ? 'not available here' : fmtMb(m.available_mb) + ' free of ' + fmtMb(m.total_mb) + (m.psi_some_avg60 ? ' · psi ' + Number(m.psi_some_avg60).toFixed(1) : ''));
+      null, m.available_mb == null ? tr('not available here') : tr('{free} free of {total}', { free: fmtMb(m.available_mb), total: fmtMb(m.total_mb) }) + (m.psi_some_avg60 ? ' · psi ' + Number(m.psi_some_avg60).toFixed(1) : ''));
     setBar($('#sys-swap'), sw.used_pct, resLvl(levels.swap));
     const line = $('#sys-line'); line.textContent = '';
     const c = r.cpu || {};
-    if (Array.isArray(c.load)) line.append(h('span', null, 'Load ', h('b', { text: Number(c.load[0]).toFixed(2) }), c.ncpu ? ' / ' + c.ncpu + ' cpu' : ''));
+    if (Array.isArray(c.load)) line.append(h('span', null, tr('Load') + ' ', h('b', { text: Number(c.load[0]).toFixed(2) }), c.ncpu ? ' / ' + tr('{n} cpu', { n: c.ncpu }) : ''));
     if (c.pct != null) line.append(h('span', null, 'CPU ', h('b', { text: c.pct + '%' })));
     const disks = objs(r.disks).filter((d) => d.free_pct != null).sort((a, b) => Number(a.free_pct) - Number(b.free_pct));
-    if (disks.length) line.append(h('span', { title: (disks[0].labels || []).map(str).join(', ') }, 'Disk ', h('b', { text: disks[0].free_pct + '% free' })));
-    if (r.heavy_running) line.append(h('span', null, h('b', { text: String(r.heavy_running) }), ' heavy'));
+    if (disks.length) line.append(h('span', { title: (disks[0].labels || []).map(str).join(', ') }, tr('Disk') + ' ', h('b', { text: tr('{pct}% free', { pct: disks[0].free_pct }) })));
+    if (r.heavy_running) line.append(h('span', null, h('b', { text: String(r.heavy_running) }), ' ' + tr('heavy')));
   }
   function renderResources() {
     const r = resView();
@@ -1724,23 +1834,23 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     if (!r) {
       empty.textContent = '';
       $('#res-unavail').hidden = true; $('#res-idle-note').hidden = true;
-      if (S.resources && S.resources.enabled === false) empty.append(h('strong', { text: 'Resource sampling is off.' }), 'fleet.yaml resources.enabled: false. The operator watch is still checked.');
-      else if (S.mode === 'live' && isLocal()) empty.append(h('strong', { text: 'No resource data yet.' }), 'The collector samples memory, disks and processes every few seconds.');
-      else if (S.mode === 'live') empty.append(h('strong', { text: 'No resource data yet.' }), 'The operator mirrors a summary here when the resource level changes.');
-      else empty.append(h('strong', { text: 'No board data.' }), 'Resources appear here once the page can reach the board.');
+      if (S.resources && S.resources.enabled === false) empty.append(h('strong', { text: tr('Resource sampling is off.') }), tr('fleet.yaml resources.enabled: false. The operator watch is still checked.'));
+      else if (S.mode === 'live' && isLocal()) empty.append(h('strong', { text: tr('No resource data yet.') }), tr('The collector samples memory, disks and processes every few seconds.'));
+      else if (S.mode === 'live') empty.append(h('strong', { text: tr('No resource data yet.') }), tr('The operator mirrors a summary here when the resource level changes.'));
+      else empty.append(h('strong', { text: tr('No board data.') }), tr('Resources appear here once the page can reach the board.'));
       return;
     }
     const meta = $('#res-meta'); meta.textContent = '';
     const lvl = resLvl(r.level) || 'ok';
-    meta.append(h('span', null, h('span', { class: 'lvl ' + lvl, text: lvl }), r.worst ? ' worst: ' + metricName(r.worst, r) : ''));
-    if (ts(r.at)) meta.append(h('span', null, 'sampled ', timeEl(r.at)));
-    if (r.platform) meta.append(h('span', null, 'on ', h('b', { text: str(r.platform) })));
-    meta.append(h('span', null, h('b', { text: String(r.heavy_running || 0) }), ' heavy job(s) running'));
+    meta.append(h('span', null, h('span', { class: 'lvl ' + lvl, text: trKnown(lvl, RES_LEVELS) }), r.worst ? ' ' + tr('worst: {what}', { what: metricName(r.worst, r) }) : ''));
+    if (ts(r.at)) meta.append(h('span', null, tr('sampled') + ' ', timeEl(r.at)));
+    if (r.platform) meta.append(h('span', null, tr('on') + ' ', h('b', { text: str(r.platform) })));
+    meta.append(h('span', null, h('b', { text: String(r.heavy_running || 0) }), ' ' + tr('heavy job(s) running')));
     const w = r.operator && r.operator.watch;
-    if (w === true || w === false) meta.append(h('span', null, 'operator watch ', h('b', { text: w ? 'running' : 'not running' })));
+    if (w === true || w === false) meta.append(h('span', null, tr('operator watch') + ' ', h('b', { text: tr(w ? 'running' : 'not running') })));
     const un = Array.isArray(r.unavailable) ? r.unavailable.map(str).filter(Boolean) : [];
     $('#res-unavail').hidden = !un.length;
-    $('#res-unavail').textContent = un.length ? 'Unavailable on this platform: ' + un.join(', ') + '.' : '';
+    $('#res-unavail').textContent = un.length ? tr('Unavailable on this platform: {what}.', { what: un.join(', ') }) : '';
 
     const body = $('#res-body'); body.textContent = '';
     const tmCell = (tms) => {
@@ -1748,7 +1858,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       const total = tms.reduce((n, t) => n + (Number(t.rss_mb) || 0), 0);
       return h('td', null, h('div', { class: 'tms' }, h('span', null, h('b', { text: String(tms.length) }), ' · ' + fmtMb(total)),
         ...tms.map((t) => h('span', null, h('span', { class: 'mono', text: str(t.name) || '?' }), ' ' + fmtMb(t.rss_mb),
-          t.idle ? h('span', { class: 'idle', text: 'idle ' + fmtAge(t.idle_s) }) : t.idle_s != null && t.idle_s >= 60 ? h('span', { class: 'muted', text: ' · quiet ' + fmtAge(t.idle_s) }) : null))));
+          t.idle ? h('span', { class: 'idle', text: tr('idle {age}', { age: fmtAge(t.idle_s) }) }) : t.idle_s != null && t.idle_s >= 60 ? h('span', { class: 'muted', text: ' · ' + tr('quiet {age}', { age: fmtAge(t.idle_s) }) }) : null))));
     };
     for (const s of objs(r.sessions)) {
       const cls = s.classes && typeof s.classes === 'object' ? s.classes : {};
@@ -1766,7 +1876,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
         tmCell(objs(s.teammates))));
     }
     const orphans = objs(r.orphan_teammates);
-    if (orphans.length) body.append(h('tr', { class: 'orphan' }, h('td', { text: 'no live session' }), h('td', { class: 'muted', text: '—' }), h('td', { class: 'muted', text: 'parent session gone' }), tmCell(orphans)));
+    if (orphans.length) body.append(h('tr', { class: 'orphan' }, h('td', { text: tr('no live session') }), h('td', { class: 'muted', text: '—' }), h('td', { class: 'muted', text: tr('parent session gone') }), tmCell(orphans)));
     $('#res-wrap').hidden = !body.children.length;
 
     const dbody = $('#disk-body'); dbody.textContent = '';
@@ -1774,29 +1884,29 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       const dl = resLvl(d.level) || 'ok';
       const stuck = d.unresponsive === true;
       dbody.append(h('tr', null, h('td', { class: 'mono', text: str(d.id) || '?' }),
-        h('td', { text: stuck ? 'not responding' : (d.free_pct != null ? d.free_pct + '% · ' : '') + fmtMb(d.free_mb) }), h('td', { text: stuck ? '—' : fmtMb(d.total_mb) }),
-        h('td', { text: (Array.isArray(d.labels) ? d.labels.map(str).join(', ') : '') || '—' }), h('td', null, stuck ? h('span', { class: 'lvl', text: 'skipped' }) : h('span', { class: 'lvl ' + dl, text: dl }))));
+        h('td', { text: stuck ? tr('not responding') : (d.free_pct != null ? d.free_pct + '% · ' : '') + fmtMb(d.free_mb) }), h('td', { text: stuck ? '—' : fmtMb(d.total_mb) }),
+        h('td', { text: (Array.isArray(d.labels) ? d.labels.map(str).join(', ') : '') || '—' }), h('td', null, stuck ? h('span', { class: 'lvl', text: tr('skipped') }) : h('span', { class: 'lvl ' + dl, text: trKnown(dl, RES_LEVELS) }))));
     }
     $('#disk-wrap').hidden = !dbody.children.length;
     const note = $('#res-idle-note');
     note.hidden = !groups.length;
-    note.textContent = groups.length ? 'Idle over ' + (Number(r.teammate_idle_minutes) || 30) + ' min: ' + groups.map((g) => (g.code || 'orphaned') + ' ' + g.idle.map((t) => str(t.name)).join(', ')).join('; ') +
-      '. The board never stops a process: ask the session to stop teammates it no longer needs.' : '';
+    note.textContent = groups.length ? tr('Idle over {min} min: {list}. The board never stops a process: ask the session to stop teammates it no longer needs.', {
+      min: Number(r.teammate_idle_minutes) || 30, list: groups.map((g) => (g.code || tr('orphaned')) + ' ' + g.idle.map((t) => str(t.name)).join(', ')).join('; ') }) : '';
   }
   function resourceBanners(box) {
     const r = resView();
     if (r && resLvl(r.level) === 'critical') {
       const groups = idleGroups(r);
       box.append(h('div', { class: 'banner down', role: 'alert' }, h('span', { class: 'lamp', 'aria-hidden': 'true' }),
-        h('strong', { text: 'System resources critical — ' + metricName(r.worst, r) }),
-        h('p', { text: (groups.length ? 'Reclaim idle teammates first (' + groups.map((g) => (g.code || 'orphaned') + ' ' + g.idle.length).join(', ') + '). ' : '') +
-          'Hold new test runs and browsers until it recovers; sessions stop only processes they started.' }),
-        h('a', { class: 'golink', href: '#resources', text: 'See resources →' })));
+        h('strong', { text: tr('System resources critical — {what}', { what: metricName(r.worst, r) }) }),
+        h('p', { text: (groups.length ? tr('Reclaim idle teammates first ({list}).', { list: groups.map((g) => (g.code || tr('orphaned')) + ' ' + g.idle.length).join(', ') }) + ' ' : '') +
+          tr('Hold new test runs and browsers until it recovers; sessions stop only processes they started.') }),
+        h('a', { class: 'golink', href: '#resources', text: tr('See resources →') })));
     }
     if (isLocal() && S.mode === 'live' && S.resources && S.resources.operator && S.resources.operator.watch === false) {
       box.append(h('div', { class: 'banner down', role: 'alert' }, h('span', { class: 'lamp', 'aria-hidden': 'true' }),
-        h('strong', { text: 'Operator watch is not running' }),
-        h('p', { text: 'No board-serve --watch process: answers and messages are saved but not relayed. Restart the operator session.' })));
+        h('strong', { text: tr('Operator watch is not running') }),
+        h('p', { text: tr('No board-serve --watch process: answers and messages are saved but not relayed. Restart the operator session.') })));
     }
   }
 
@@ -1804,7 +1914,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   function whoLabel(by) {
     if (!by) return 'someone';
     if (S.me && by === S.me) return 'you';
-    return 'an editor';
+    return tr('an editor');
   }
   function buildThread(m) {
     const replies = S.replies.get(m.id) || [];
@@ -1813,11 +1923,11 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       h('div', { class: 'thread-top' },
         h('span', { class: 'to', text: '→ @' + (str(m.to) || '?') }),
         h('span', { class: 'status ' + str(m.status), text: str(m.status) || 'new' }),
-        h('span', { text: 'from ' + whoLabel(m.by) }),
+        h('span', { text: tr('from {who}', { who: whoLabel(m.by) }) }),
         timeEl(m.created_at)),
       h('p', { class: 'body', text: str(m.body) }),
-      relayedTo.length || m.relayed_at ? h('span', { class: 'relay' }, 'Relayed' + (relayedTo.length ? ' to ' + relayedTo.join(', ') : ''), m.relayed_at ? ' · ' : '', m.relayed_at ? timeEl(m.relayed_at) : null) : null,
-      replies.length ? h('ol', { class: 'replies', 'aria-label': 'Replies' }, replies.map((r) => h('li', null,
+      relayedTo.length || m.relayed_at ? h('span', { class: 'relay' }, relayedTo.length ? tr('Relayed to {who}', { who: relayedTo.join(', ') }) : tr('Relayed'), m.relayed_at ? ' · ' : '', m.relayed_at ? timeEl(m.relayed_at) : null) : null,
+      replies.length ? h('ol', { class: 'replies', 'aria-label': tr('Replies') }, replies.map((r) => h('li', null,
         h('span', { class: 'from' }, h('span', { text: str(r.from) || '?' }), timeEl(r.created_at)),
         h('p', { text: str(r.body) })))) : null);
   }
@@ -1826,15 +1936,15 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     const e = $('#msg-empty');
     e.hidden = list.length > 0;
     e.textContent = '';
-    if (S.mode === 'connecting' || (S.mode === 'live' && !S.got.messages)) e.append(h('strong', { text: 'Loading messages…' }));
-    else if (S.mode === 'offline') e.append(h('strong', { text: 'No board data.' }), 'Threads appear here once the page can reach the board.');
-    else e.append(h('strong', { text: 'No messages yet.' }), canMessage() ? 'Type @ and a session code to send the first one.' : 'Messages that editors send to sessions appear here.');
+    if (S.mode === 'connecting' || (S.mode === 'live' && !S.got.messages)) e.append(h('strong', { text: tr('Loading messages…') }));
+    else if (S.mode === 'offline') e.append(h('strong', { text: tr('No board data.') }), tr('Threads appear here once the page can reach the board.'));
+    else e.append(h('strong', { text: tr('No messages yet.') }), tr(canMessage() ? 'Type @ and a session code to send the first one.' : 'Messages that editors send to sessions appear here.'));
     reconcile($('#threads'), list, (m) => m.id, (m) => JSON.stringify(m) + JSON.stringify(S.replies.get(m.id) || []) + (S.me || ''), buildThread);
     const ok = canMessage();
     $('#composer').hidden = !ok;
     $('#msg-readonly').hidden = ok || !(S.mode === 'live' && S.userReady);
-    $('#msg-readonly').textContent = isLocal() ? 'You can read the threads. Only approvers and release managers can send messages.'
-      : 'You can read the threads. Only editors of this board can send messages.';
+    $('#msg-readonly').textContent = tr(isLocal() ? 'You can read the threads. Only approvers and release managers can send messages.'
+      : 'You can read the threads. Only editors of this board can send messages.');
   }
 
   /* ----------------------------------------------------------- consensus */
@@ -1845,23 +1955,23 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     const parts = Array.isArray(c.participants) ? c.participants.map(str) : [];
     const agreed = parts.filter((p) => last.has(p) && str(last.get(p).vote) === 'agree').length;
     const st = str(c.status), ref = str(c.ref), refUrl = safeUrl(ref);
-    return h('article', { id: 'cons-' + str(c.id), class: 'ccard', 'aria-label': 'Consensus ' + str(c.id) + ', ' + (CONS_LABEL[st] || st) },
+    return h('article', { id: 'cons-' + str(c.id), class: 'ccard', 'aria-label': tr('Consensus {id}', { id: str(c.id) }) + ', ' + trMap(CONS_LABEL, st) },
       h('div', { class: 'top' },
-        h('span', { class: 'cst ' + st.replace(/[^a-z_]/g, ''), text: CONS_LABEL[st] || st || 'unknown' }),
-        h('span', { class: 'muted' }, 'from ', h('span', { class: 'code-chip', text: str(c.from) || '?' })),
-        h('span', { class: 'muted', text: agreed + '/' + parts.length + ' agreed' }),
+        h('span', { class: 'cst ' + st.replace(/[^a-z_]/g, ''), text: st ? trMap(CONS_LABEL, st) : tr('unknown') }),
+        h('span', { class: 'muted' }, tr('from') + ' ', h('span', { class: 'code-chip', text: str(c.from) || '?' })),
+        h('span', { class: 'muted', text: tr('{n}/{of} agreed', { n: agreed, of: parts.length }) }),
         timeEl(c.decided_at || c.created_at),
         h('span', { class: 'mono muted', text: str(c.id) })),
       h('p', { class: 'prop', text: str(c.proposal) }),
       ref ? (refUrl ? h('a', { class: 'chip', href: refUrl, target: '_blank', rel: 'noopener noreferrer', text: ref }) : h('span', { class: 'chip', text: ref })) : null,
-      h('ul', { class: 'votes', 'aria-label': 'Latest vote of each participant' }, parts.map((p) => {
+      h('ul', { class: 'votes', 'aria-label': tr('Latest vote of each participant') }, parts.map((p) => {
         const v = last.get(p), vote = v ? str(v.vote) : '';
         return h('li', { class: vote === 'agree' || vote === 'object' ? vote : 'silent' },
           h('span', { class: 'code-chip', text: p }),
-          h('span', { text: vote === 'agree' ? '✓ agree' : vote === 'object' ? '✗ object' : '… no vote yet' }),
+          h('span', { text: tr(vote === 'agree' ? '✓ agree' : vote === 'object' ? '✗ object' : '… no vote yet') }),
           v && v.at ? timeEl(v.at) : null);
       })),
-      votes.length ? h('details', null, h('summary', { text: 'Vote record (' + votes.length + ')' }),
+      votes.length ? h('details', null, h('summary', { text: tr('Vote record ({n})', { n: votes.length }) }),
         h('ol', null, votes.map((v) => h('li', null, h('span', { class: 'mono', text: str(v.by) }), ' ', str(v.vote), ' · ', timeEl(v.at),
           v.note ? ' · ' + str(v.note) : '')))) : null);
   }
@@ -1873,11 +1983,11 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     e.hidden = items.length > 0;
     if (!items.length) {
       e.textContent = '';
-      if (S.mode === 'connecting') e.append(h('strong', { text: 'Loading…' }));
-      else if (S.mode === 'offline') e.append(h('strong', { text: 'No board data.' }), 'Consensus items appear here once the page can reach the board.');
-      else e.append(h('strong', { text: 'No consensus items.' }), S.away
+      if (S.mode === 'connecting') e.append(h('strong', { text: tr('Loading…') }));
+      else if (S.mode === 'offline') e.append(h('strong', { text: tr('No board data.') }), tr('Consensus items appear here once the page can reach the board.'));
+      else e.append(h('strong', { text: tr('No consensus items.') }), tr(S.away
         ? 'A session proposes with board consensus propose; every participant must vote agree.'
-        : 'The owner is here, so sessions ask the owner. Consensus only applies while the owner is away.');
+        : 'The owner is here, so sessions ask the owner. Consensus only applies while the owner is away.'));
     }
     const form = $('#away-form');
     form.hidden = !!S.away || !awayEditor();
@@ -1892,15 +2002,15 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
         S.away = null;
         S.consensus = S.consensus.map((c) => (c.status === 'pending' ? Object.assign({}, c, { status: 'owner_back', decided_at: now }) : c));
       }
-      renderAll(); toast('Demo: shown on this page only. Nothing was saved or sent.');
+      renderAll(); toast(tr('Demo: shown on this page only. Nothing was saved or sent.'));
       return;
     }
     if (!isLocal() || !adapter.setAway || S.busy.has('away')) return;
     S.busy.add('away'); renderBanners(); renderConsensus();
     adapter.setAway(state, said || '').then((r) => {
       const same = r && r.status === 'unchanged';
-      if (state === 'off') toast(same ? 'The owner was not marked away.' : 'Welcome back: away mode is off, and pending consensus items are back with you.');
-      else { toast(same ? 'Already marked away; the earlier record is kept.' : 'Marked away: sessions may decide by explicit consensus. Red lines and board asks wait for you.'); $('#away-said').value = ''; }
+      if (state === 'off') toast(tr(same ? 'The owner was not marked away.' : 'Welcome back: away mode is off, and pending consensus items are back with you.'));
+      else { toast(tr(same ? 'Already marked away; the earlier record is kept.' : 'Marked away: sessions may decide by explicit consensus. Red lines and board asks wait for you.')); $('#away-said').value = ''; }
     }).catch((e) => handleWriteError(e)).finally(() => { S.busy.delete('away'); renderAll(); });
   }
   $('#away-form').addEventListener('submit', (ev) => { ev.preventDefault(); setAway('on', $('#away-said').value.trim()); });
@@ -1912,8 +2022,8 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   // read-only from meta/notify in the Artifact.
   const NCHANNELS = [['slack', 'Slack'], ['desktop', 'Desktop'], ['email', 'Email'], ['line', 'LINE'], ['sns', 'SNS'], ['webhook', 'Webhook']];
   const NLEVELS = ['info', 'warn', 'high', 'urgent'];
-  const chanName = (t) => (t === 'all' ? 'All push' : (NCHANNELS.find((c) => c[0] === t) || [t, str(t)])[1]);
-  function untilText(u) { const t = ts(u); return t ? 'until ' + hhmm(t) : 'until you unmute'; }
+  const chanName = (t) => tr(t === 'all' ? 'All push' : (NCHANNELS.find((c) => c[0] === t) || [t, str(t)])[1]);
+  function untilText(u) { const t = ts(u); return t ? tr('until {at}', { at: hhmm(t) }) : tr('until you unmute'); }
   function activeMutes() {
     const m = S.notify && S.notify.mutes;
     if (!m || typeof m !== 'object') return [];
@@ -1935,7 +2045,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   function renderNotifButton() {
     const lamp = $('#notif-lamp'), label = $('#notif-label'), muted = activeMutes();
     lamp.className = 'nlamp' + (!S.notify ? ' unknown' : muted.length ? ' muted' : '');
-    label.textContent = muted.length ? (muted.some((m) => m.target === 'all') ? 'All muted' : muted.length + ' muted') : 'Notifications';
+    label.textContent = muted.length ? (muted.some((m) => m.target === 'all') ? tr('All muted') : tr('{n} muted', { n: muted.length })) : tr('Notifications');
   }
   function levelSelect(id, value, opts, onchange, disabled, label) {
     const sel = h('select', { id, 'aria-label': label, disabled: disabled || null, onchange: (e) => onchange(e.target.value) },
@@ -1951,13 +2061,13 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     const dis = !ed || busy;
     box.textContent = '';
     if (!N || typeof N !== 'object') {
-      box.append(h('p', { class: 'note', text: isLocal() ? 'The board server did not report notification settings.' : 'The operator has not mirrored the notification settings to this board yet (meta/notify). Use board mute status in a terminal.' }));
+      box.append(h('p', { class: 'note', text: tr(isLocal() ? 'The board server did not report notification settings.' : 'The operator has not mirrored the notification settings to this board yet (meta/notify). Use board mute status in a terminal.') }));
       return;
     }
-    if (!ed) box.append(h('p', { class: 'note', id: 'notif-readonly', text: isLocal() ? 'Read-only: only approvers change notification settings.' : 'Read-only here. Change them on the self-hosted board or with board mute / board notify-level.' }));
+    if (!ed) box.append(h('p', { class: 'note', id: 'notif-readonly', text: tr(isLocal() ? 'Read-only: only approvers change notification settings.' : 'Read-only here. Change them on the self-hosted board or with board mute / board notify-level.') }));
     const mutes = activeMutes(), byT = new Map(mutes.map((m) => [m.target, m]));
-    const durSel = h('select', { id: 'notif-dur', 'aria-label': 'Mute for', disabled: dis || null },
-      [['1h', 'for 1 hour'], ['4h', 'for 4 hours'], ['morning', 'until 08:00'], ['', 'until I unmute']].map(([v, t]) => h('option', { value: v, text: t })));
+    const durSel = h('select', { id: 'notif-dur', 'aria-label': tr('Mute for'), disabled: dis || null },
+      [['1h', 'for 1 hour'], ['4h', 'for 4 hours'], ['morning', 'until 08:00'], ['', 'until I unmute']].map(([v, t]) => h('option', { value: v, text: tr(t) })));
     durSel.value = S.drafts.notifDur != null ? S.drafts.notifDur : '1h';
     durSel.addEventListener('change', () => { S.drafts.notifDur = durSel.value; });
     const urg = h('input', { type: 'checkbox', id: 'notif-urgent', disabled: dis || null });
@@ -1966,18 +2076,18 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     const muteBody = (target) => Object.assign({ op: 'mute', channel: target, include_urgent: urg.checked }, notifDuration(durSel.value));
     const all = byT.get('all');
     box.append(h('section', { 'aria-labelledby': 'nf-h-pause' },
-      h('h3', { id: 'nf-h-pause', text: 'Pause push' }),
+      h('h3', { id: 'nf-h-pause', text: tr('Pause push') }),
       h('div', { class: 'nf-line' },
-        h('span', { class: 'grow', id: 'notif-all-state', text: all ? 'All push muted ' + untilText(all.until) + (all.include_urgent ? ', urgent too.' : '; urgent still breaks through.') : 'Push is on.' }),
-        all ? h('button', { class: 'btn primary', type: 'button', id: 'notif-unmute-all', disabled: dis || null, onclick: () => setNotify({ op: 'unmute', channel: 'all' }), text: 'Unmute all' })
-          : h('button', { class: 'btn primary', type: 'button', id: 'notif-mute-all', disabled: dis || null, onclick: () => setNotify(muteBody('all')), text: 'Mute all' })),
-      h('div', { class: 'nf-line' }, h('label', { for: 'notif-dur', text: 'Mute' }), durSel,
-        h('label', { class: 'chk' }, urg, 'include urgent (no breakthrough)'))));
+        h('span', { class: 'grow', id: 'notif-all-state', text: all ? tr(all.include_urgent ? 'All push muted {until}, urgent too.' : 'All push muted {until}; urgent still breaks through.', { until: untilText(all.until) }) : tr('Push is on.') }),
+        all ? h('button', { class: 'btn primary', type: 'button', id: 'notif-unmute-all', disabled: dis || null, onclick: () => setNotify({ op: 'unmute', channel: 'all' }), text: tr('Unmute all') })
+          : h('button', { class: 'btn primary', type: 'button', id: 'notif-mute-all', disabled: dis || null, onclick: () => setNotify(muteBody('all')), text: tr('Mute all') })),
+      h('div', { class: 'nf-line' }, h('label', { for: 'notif-dur', text: tr('Mute') }), durSel,
+        h('label', { class: 'chk' }, urg, tr('include urgent (no breakthrough)')))));
     const eff = N.effective_min_level || {}, floors = N.min_level || {}, chans = N.channels || {};
     const floorOpts = (t) => {
       const f = floors[t] || {};
-      const def = f.source === 'config' ? 'default (' + str(f.level) + ', fleet.yaml)' : 'default (' + (f.source === 'prefs' ? 'remove' : 'info') + ')';
-      return [['default', def]].concat(NLEVELS.map((l) => [l, l + (l === 'urgent' ? ' only' : ' and up')]));
+      const def = f.source === 'config' ? tr('default ({level}, fleet.yaml)', { level: trKnown(f.level, LEVELS) }) : tr('default ({level})', { level: tr(f.source === 'prefs' ? 'remove' : 'info') });
+      return [['default', def]].concat(NLEVELS.map((l) => [l, tr(l === 'urgent' ? '{level} only' : '{level} and up', { level: tr(l) })]));
     };
     const floorVal = (t) => ((floors[t] || {}).source === 'prefs' ? str(floors[t].level) : 'default');
     const rows = h('ul', { class: 'nf-rows' });
@@ -1985,35 +2095,35 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       const m = byT.get(c), off = chans[c] === false;
       // Urgent is stopped when either mute in force (the channel's or "all") includes it.
       const urgentToo = !!((m && m.include_urgent) || (all && all.include_urgent));
-      const state = off ? 'not configured' : all && !m ? 'muted by "all"' + (urgentToo ? ', urgent too' : ' · urgent gets through')
-        : m ? 'muted ' + untilText(m.until) + (urgentToo ? ', urgent too' : ' · urgent gets through')
-        : 'on · ' + (eff[c] || 'info') + (eff[c] === 'urgent' ? ' only' : ' and up');
+      const state = off ? tr('not configured') : all && !m ? tr('muted by "all"') + tr(urgentToo ? ', urgent too' : ' · urgent gets through')
+        : m ? tr('muted {until}', { until: untilText(m.until) }) + tr(urgentToo ? ', urgent too' : ' · urgent gets through')
+        : tr('on · {floor}', { floor: tr((eff[c] || 'info') === 'urgent' ? '{level} only' : '{level} and up', { level: trKnown(eff[c] || 'info', LEVELS) }) });
       rows.append(h('li', { class: 'nf-row', id: 'nf-' + c },
-        h('span', { class: 'nf-name', text: name }),
+        h('span', { class: 'nf-name', text: tr(name) }),
         h('span', { class: 'nf-state' + (off ? ' off' : m || all ? ' muted' : ''), text: state }),
         h('span', { class: 'nf-ctl' },
-          m ? h('button', { class: 'btn', type: 'button', disabled: dis || null, onclick: () => setNotify({ op: 'unmute', channel: c }), text: 'Unmute' })
-            : h('button', { class: 'btn', type: 'button', disabled: dis || null, onclick: () => setNotify(muteBody(c)), text: 'Mute' }),
-          levelSelect('nf-level-' + c, floorVal(c), floorOpts(c), (v) => setNotify({ op: 'level', channel: c, level: v }), dis, name + ': minimum level'))));
+          m ? h('button', { class: 'btn', type: 'button', disabled: dis || null, onclick: () => setNotify({ op: 'unmute', channel: c }), text: tr('Unmute') })
+            : h('button', { class: 'btn', type: 'button', disabled: dis || null, onclick: () => setNotify(muteBody(c)), text: tr('Mute') }),
+          levelSelect('nf-level-' + c, floorVal(c), floorOpts(c), (v) => setNotify({ op: 'level', channel: c, level: v }), dis, tr('{ch}: minimum level', { ch: tr(name) })))));
     }
     box.append(h('section', { 'aria-labelledby': 'nf-h-chan' },
-      h('h3', { id: 'nf-h-chan', text: 'Channels and triage' }),
-      h('div', { class: 'nf-line' }, h('label', { class: 'grow', for: 'nf-level-all', text: 'Everything: deliver' }),
-        levelSelect('nf-level-all', floorVal('all'), floorOpts('all'), (v) => setNotify({ op: 'level', channel: 'all', level: v }), dis, 'All channels: minimum level')),
+      h('h3', { id: 'nf-h-chan', text: tr('Channels and triage') }),
+      h('div', { class: 'nf-line' }, h('label', { class: 'grow', for: 'nf-level-all', text: tr('Everything: deliver') }),
+        levelSelect('nf-level-all', floorVal('all'), floorOpts('all'), (v) => setNotify({ op: 'level', channel: 'all', level: v }), dis, tr('All channels: minimum level'))),
       rows,
-      h('p', { class: 'note', text: 'A channel gets the stricter of its own level and the level for everything.' })));
+      h('p', { class: 'note', text: tr('A channel gets the stricter of its own level and the level for everything.') })));
     const P = N.presence || {};
     const red = h('input', { type: 'checkbox', id: 'notif-presence', disabled: dis || null, onchange: (e) => setNotify({ op: 'presence', reduce: e.target.checked }) });
     red.checked = P.reduce !== false;
     const watching = isLocal() && document.visibilityState === 'visible' && P.reduce !== false && ed;
     box.append(h('section', { 'aria-labelledby': 'nf-h-pres' },
-      h('h3', { id: 'nf-h-pres', text: 'While I\'m watching' }),
-      h('div', { class: 'nf-line' }, h('label', { class: 'chk grow' }, red, 'Reduce push while I\'m watching the board'),
-        levelSelect('nf-pres-level', str(P.min_level) || 'high', [['warn', 'push warn and up'], ['high', 'push high and up'], ['urgent', 'push urgent only']],
-          (v) => setNotify({ op: 'presence', reduce: true, level: v }), dis || P.reduce === false, 'While watching: push from')),
-      h('p', { class: 'note', id: 'notif-watching', text: watching ? 'You are watching now: push below ' + str(P.min_level || 'high') + ' is held while this page stays open, visible and in use (' + Math.round((P.idle_seconds || 900) / 60) + ' min idle ends it). Escalation timers keep running.'
-        : 'Counts only while a board page is open, visible and in use. Escalation timers keep running, so anything still open escalates normally once you stop watching.' })));
-    box.append(h('p', { class: 'bt', text: 'Urgent alerts (a production gate, a usage limit hit, anything left unanswered long enough to escalate to urgent) break through mutes and presence unless a mute includes urgent. The board itself always shows everything. Held pushes are logged; nothing is replayed when a mute ends, and an alert still open goes out at its next escalation step.' }));
+      h('h3', { id: 'nf-h-pres', text: tr('While I\'m watching') }),
+      h('div', { class: 'nf-line' }, h('label', { class: 'chk grow' }, red, tr('Reduce push while I\'m watching the board')),
+        levelSelect('nf-pres-level', str(P.min_level) || 'high', [['warn', tr('push warn and up')], ['high', tr('push high and up')], ['urgent', tr('push urgent only')]],
+          (v) => setNotify({ op: 'presence', reduce: true, level: v }), dis || P.reduce === false, tr('While watching: push from'))),
+      h('p', { class: 'note', id: 'notif-watching', text: watching ? tr('You are watching now: push below {level} is held while this page stays open, visible and in use ({min} min idle ends it). Escalation timers keep running.', { level: trKnown(P.min_level || 'high', LEVELS), min: Math.round((P.idle_seconds || 900) / 60) })
+        : tr('Counts only while a board page is open, visible and in use. Escalation timers keep running, so anything still open escalates normally once you stop watching.') })));
+    box.append(h('p', { class: 'bt', text: tr('Urgent alerts (a production gate, a usage limit hit, anything left unanswered long enough to escalate to urgent) break through mutes and presence unless a mute includes urgent. The board itself always shows everything. Held pushes are logged; nothing is replayed when a mute ends, and an alert still open goes out at its next escalation step.') }));
   }
   function openNotif() {
     const d = $('#notif');
@@ -2035,14 +2145,14 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     for (const [c] of NCHANNELS) N.effective_min_level[c] = NLEVELS[Math.max(NLEVELS.indexOf(lv('all')), NLEVELS.indexOf(lv(c)))];
   }
   function setNotify(body) {
-    if (S.demo) { demoNotify(body); renderAll(); toast('Demo: shown on this page only. Nothing was saved or sent.'); return; }
+    if (S.demo) { demoNotify(body); renderAll(); toast(tr('Demo: shown on this page only. Nothing was saved or sent.')); return; }
     if (!isLocal() || !adapter.setNotify || S.busy.has('notify')) return;
     S.busy.add('notify'); renderNotif(); renderBanners();
     adapter.setNotify(body).then((r) => {
       if (r && r.notify && typeof r.notify === 'object') S.notify = r.notify;
-      toast(body.op === 'mute' ? chanName(body.channel) + ' muted.' : body.op === 'unmute' ? (body.channel === 'all' ? 'All push unmuted.' : chanName(body.channel) + ' unmuted.')
-        : body.op === 'level' ? 'Saved: ' + chanName(body.channel) + ' delivers ' + (body.level === 'default' ? 'its default levels.' : body.level + (body.level === 'urgent' ? ' only.' : ' and up.'))
-        : body.reduce ? 'Push is reduced while you watch the board.' : 'Push is no longer reduced while you watch.');
+      toast(body.op === 'mute' ? tr('{ch} muted.', { ch: chanName(body.channel) }) : body.op === 'unmute' ? (body.channel === 'all' ? tr('All push unmuted.') : tr('{ch} unmuted.', { ch: chanName(body.channel) }))
+        : body.op === 'level' ? tr('Saved: {ch} delivers {what}', { ch: chanName(body.channel), what: body.level === 'default' ? tr('its default levels.') : tr(body.level === 'urgent' ? '{level} only.' : '{level} and up.', { level: trKnown(body.level, LEVELS) }) })
+        : tr(body.reduce ? 'Push is reduced while you watch the board.' : 'Push is no longer reduced while you watch.'));
     }).catch((e) => handleWriteError(e)).finally(() => { S.busy.delete('notify'); renderAll(); });
   }
   // Presence heartbeat (self-hosted board, approvers): visible or not, and when this viewer last
@@ -2112,7 +2222,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     } catch (e) { /* a sandboxed frame may refuse: the link just stays in the address bar */ }
     afterFragmentScroll(() => {
       const card = document.getElementById(k.el + id);
-      if (!card) { toast(k.gone); return; }
+      if (!card) { toast(tr(k.gone)); return; }
       card.classList.add('linked');
       setTimeout(() => card.classList.remove('linked'), 2600);
       // The viewer is already busy (clicked, tapped, typed, or focus sits elsewhere): highlight only.
@@ -2131,47 +2241,47 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     if (!room) return null;
     if (S.canSend !== 'available' && S.canSend !== 'available_if_summoned') return null;
     try {
-      return room.sendToClaudeSession(Object.assign({ label: 'Switchboard', kind, id }, extra || {}), { deliver: 'send' });
+      return room.sendToClaudeSession(Object.assign({ label: 'Agent Switchboard', kind, id }, extra || {}), { deliver: 'send' });
     } catch (e) { return Promise.reject(e); }
   }
   async function settle(writeP, sendP, okText) {
     try { await writeP; } catch (e) { handleWriteError(e); return false; }
     let sent = false;
     if (sendP) { try { await sendP; sent = true; } catch (e) { sent = false; } }
-    toast(okText + (operatorOffline() ? ' · queued until the operator returns.' : sent ? ' · Sent to operator.' : ' · ' + queuedText()));
+    toast(okText + ' · ' + (operatorOffline() ? tr('queued until the operator returns.') : sent ? tr('Sent to operator.') : queuedText()));
     return true;
   }
   function handleWriteError(e, gone) {
     const code = e && e.code;
     // Local adapter (board-serve) answers; never produced by the claude.ai db.
-    if (code === 'not_approver') { toast('Not recorded: you are not an approver for this.', true); return; }
-    if (code === 'review_in_session') { toast('Only part of this request is shown here, so it can only be allowed in the session.', true); return; }
-    if (code === 'no_approvers') { toast('Nobody is listed as an approver on this board, so no answer is accepted.', true); return; }
-    if (code === 'away_failed') { toast('The board server could not change owner-away mode.', true); return; }
-    if (code === 'prefs_failed') { toast('The board server could not change the notification settings.', true); return; }
-    if (code === 'bad_duration' || code === 'bad_level' || code === 'bad_channel' || code === 'bad_op') { toast('Not saved: ' + (e.message || 'the board server refused that setting.'), true); return; }
-    if (code === 'stale') { toast('That prompt is no longer showing, so nothing was pressed. Handle it in the session.', true); return; }
-    if (code === 'partial') { toast('Your text was typed into the question but Enter was not pressed. Finish it in the session.', true); return; }
-    if (code === 'answer_in_session') { toast('This question can only be answered in the session.', true); return; }
-    if (code === 'bad_option') { toast('Not sent: that option no longer matches the question. Reload and try again.', true); return; }
+    if (code === 'not_approver') { toast(tr('Not recorded: you are not an approver for this.'), true); return; }
+    if (code === 'review_in_session') { toast(tr('Only part of this request is shown here, so it can only be allowed in the session.'), true); return; }
+    if (code === 'no_approvers') { toast(tr('Nobody is listed as an approver on this board, so no answer is accepted.'), true); return; }
+    if (code === 'away_failed') { toast(tr('The board server could not change owner-away mode.'), true); return; }
+    if (code === 'prefs_failed') { toast(tr('The board server could not change the notification settings.'), true); return; }
+    if (code === 'bad_duration' || code === 'bad_level' || code === 'bad_channel' || code === 'bad_op') { toast(tr('Not saved: {why}', { why: e.message || tr('the board server refused that setting.') }), true); return; }
+    if (code === 'stale') { toast(tr('That prompt is no longer showing, so nothing was pressed. Handle it in the session.'), true); return; }
+    if (code === 'partial') { toast(tr('Your text was typed into the question but Enter was not pressed. Finish it in the session.'), true); return; }
+    if (code === 'answer_in_session') { toast(tr('This question can only be answered in the session.'), true); return; }
+    if (code === 'bad_option') { toast(tr('Not sent: that option no longer matches the question. Reload and try again.'), true); return; }
     if (code === 'remote_refused' || code === 'unauthenticated' || code === 'csrf' || code === 'bad_host' || code === 'not_allowed' || code === 'press_refused') {
-      toast('The board server refused this request' + (e.message ? ': ' + e.message : '.'), true); return;
+      toast(e.message ? tr('The board server refused this request: {why}', { why: e.message }) : tr('The board server refused this request.'), true); return;
     }
-    if (gone) { toast('That decision was already handled or removed.', true); return; }
+    if (gone) { toast(tr('That decision was already handled or removed.'), true); return; }
     if (code === 'invalid_argument' || code === 'not_granted') {
       S.writable = false; renderAll();
-      toast('This board is read-only for you. Only its editors can answer or send messages.', true);
-    } else if (code === 'quota_exceeded') toast('The board\'s storage is full. Ask the owner to clear old messages.', true);
-    else if (code === 'revoked') toast('Your access to this board changed. Reload to see the current view.', true);
-    else toast('Couldn\'t save. Check your connection and try again.', true);
+      toast(tr('This board is read-only for you. Only its editors can answer or send messages.'), true);
+    } else if (code === 'quota_exceeded') toast(tr('The board\'s storage is full. Ask the owner to clear old messages.'), true);
+    else if (code === 'revoked') toast(tr('Your access to this board changed. Reload to see the current view.'), true);
+    else toast(tr('Couldn\'t save. Check your connection and try again.'), true);
   }
   function relayNote(demo) {
     const appr = approverState();
-    if (appr === false) return 'Not relayed: you are not an approver.';
-    if (operatorOffline()) return 'Queued until the operator returns.';
-    return demo ? 'Nothing was saved or sent.' : '';
+    if (appr === false) return tr('Not relayed: you are not an approver.');
+    if (operatorOffline()) return tr('Queued until the operator returns.');
+    return demo ? tr('Nothing was saved or sent.') : '';
   }
-  function queuedText() { return isLocal() ? 'Queued for the operator.' : 'Queued — operator checks every few minutes.'; }
+  function queuedText() { return tr(isLocal() ? 'Queued for the operator.' : 'Queued — operator checks every few minutes.'); }
   async function myId() { return S.me || (userNs ? await userNs.id() : null); }
 
   // Called synchronously from a click / key press. Nothing is awaited before
@@ -2182,7 +2292,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       const i = S.decisions.findIndex((x) => x.id === d.id);
       if (i >= 0) S.decisions[i] = Object.assign({}, d, { status: 'answered', answer, answered_by: S.me, answered_at: Date.now() });
       S.confirm = null; delete S.drafts[d.id];
-      renderAll(); toast('Demo: answer shown on this page only. ' + relayNote(true));
+      renderAll(); toast(tr('Demo: answer shown on this page only.') + ' ' + relayNote(true));
       return;
     }
     const offline = operatorOffline(), appr = approverState();
@@ -2202,8 +2312,8 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
         let sent = false;
         if (sendP) { try { await sendP; sent = true; } catch (e) { sent = false; } }
         // board-serve presses permission prompts itself: report what happened.
-        if (isLocal() && res && res.status === 'relayed') toast('Pressed ' + answer + ' in ' + (str(d.from) || 'the session') + '.');
-        else toast('Answer saved · ' + (appr === false ? 'not relayed: you are not an approver.' : offline ? 'queued until the operator returns.' : sent ? 'Sent to operator.' : queuedText()));
+        if (isLocal() && res && res.status === 'relayed') toast(tr('Pressed {key} in {who}.', { key: trKnown(answer, ['allow', 'deny']), who: str(d.from) || tr('the session') }));
+        else toast(tr('Answer saved') + ' · ' + (appr === false ? tr('not relayed: you are not an approver.') : offline ? tr('queued until the operator returns.') : sent ? tr('Sent to operator.') : queuedText()));
       }
       renderDecisions();
     })();
@@ -2215,15 +2325,15 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 
   function parseMentions(raw) {
     const m = raw.match(/^\s*((?:@[A-Za-z0-9_.\-]+[\s,]*)+)/);
-    if (!m) return { error: 'Start with @ and a session code, or @all.' };
+    if (!m) return { error: tr('Start with @ and a session code, or @all.') };
     const names = [...m[1].matchAll(/@([A-Za-z0-9_.\-]+)/g)].map((x) => x[1]);
     const body = raw.slice(m[0].length).trim();
-    if (!body) return { error: 'Add your message after the mention.' };
+    if (!body) return { error: tr('Add your message after the mention.') };
     const targets = [];
     for (const n of names) {
       if (lc(n) === 'all') { targets.push('all'); continue; }
       const s = findSession(n);
-      if (!s) return { error: 'No session called @' + n + '. Pick one from the list that opens when you type @.' };
+      if (!s) return { error: tr('No session called @{name}. Pick one from the list that opens when you type @.', { name: n }) };
       if (!targets.includes(s.code)) targets.push(s.code);
     }
     return { targets: targets.includes('all') ? ['all'] : targets, body };
@@ -2240,7 +2350,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     const ctx = mentionContext();
     if (!ctx) return closeMentions();
     const q = lc(ctx.q);
-    const all = [{ code: 'all', desc: 'every session' }].concat(S.sessions.map((s) => ({
+    const all = [{ code: 'all', desc: tr('every session') }].concat(S.sessions.map((s) => ({
       code: s.code,
       desc: [(Array.isArray(s.aliases) ? s.aliases.filter((a) => lc(a) !== lc(s.code)).join(', ') : ''), str(s.state)].filter(Boolean).join(' · '),
       keys: [s.code].concat(Array.isArray(s.aliases) ? s.aliases : []),
@@ -2298,28 +2408,28 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     if (S.demo) {
       p.targets.forEach((to, i) => S.messages.unshift({ id: ids[i], to, body: p.body, by: S.me, created_at: now, status: 'new' }));
       ta.value = ''; closeMentions(); renderAll();
-      toast('Demo: message shown on this page only. Nothing was saved or sent.');
+      toast(tr('Demo: message shown on this page only. Nothing was saved or sent.'));
       return;
     }
     let writeP;
     try { writeP = adapter.sendMessage(ids, p.targets, p.body, now); } catch (e) { writeP = Promise.reject(e); }
     const sendP = operatorOffline() ? null : adapter.fastPath('message', ids[0], ids.length > 1 ? { also: ids.slice(1) } : null);
     ta.value = ''; closeMentions();
-    const btn = $('#msg-send'); btn.disabled = true; btn.textContent = 'Sending…';
-    settle(writeP, sendP, ids.length > 1 ? ids.length + ' messages saved' : 'Message saved').then((ok) => {
-      btn.disabled = false; btn.textContent = 'Send';
+    const btn = $('#msg-send'); btn.disabled = true; btn.textContent = tr('Sending…');
+    settle(writeP, sendP, ids.length > 1 ? tr('{n} messages saved', { n: ids.length }) : tr('Message saved')).then((ok) => {
+      btn.disabled = false; btn.textContent = tr('Send');
       if (!ok && !ta.value) ta.value = raw;
     });
   }
 
   /* ---------------------------------------------------------- info dialog */
-  const fmt = (v) => (typeof v === 'number' && isFinite(v) ? v.toLocaleString('en-US') : v == null || v === '' ? '—' : str(v));
+  const fmt = (v) => (typeof v === 'number' && isFinite(v) ? v.toLocaleString(locale()) : v == null || v === '' ? '—' : str(v));
   function renderLedger() {
     const box = $('#ledger'); box.textContent = '';
     const L = S.ledger || {};
     const rows = Array.isArray(L.rows) ? L.rows : [];
     if (!rows.length) {
-      box.append(h('p', { class: 'muted', text: S.mode === 'offline' ? '尚無紀錄 · board data unavailable' : '尚無紀錄' }));
+      box.append(h('p', { class: 'muted', text: S.mode === 'offline' ? tr('No records yet · board data unavailable') : tr('No records yet') }));
     } else {
       const leadKeys = ['input', 'cache_read', 'cache_write', 'output', 'total'];
       const sums = { input: 0, cache_read: 0, cache_write: 0, output: 0, total: 0 };
@@ -2339,22 +2449,22 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       const tMate = T && T.teammate != null ? T.teammate : (mateAllNum ? mateSum : '—');
       const table = h('table', { class: 'ledger' },
         h('thead', null,
-          h('tr', null, h('th', { rowspan: '2', text: '版本' }), h('th', { rowspan: '2', text: '日期' }), h('th', { rowspan: '2', text: '做了什麼' }), h('th', { rowspan: '2', text: 'review' }),
-            h('th', { colspan: '5', class: 'num', style: 'text-align:center', text: 'lead tokens' }), h('th', { rowspan: '2', text: 'teammate' }), h('th', { rowspan: '2', text: '備註' })),
-          h('tr', null, ['input', 'cache read', 'cache write', 'output', '小計'].map((t) => h('th', { class: 'num', text: t })))),
+          h('tr', null, h('th', { rowspan: '2', text: tr('Version') }), h('th', { rowspan: '2', text: tr('Date') }), h('th', { rowspan: '2', text: tr('What changed') }), h('th', { rowspan: '2', text: tr('Review') }),
+            h('th', { colspan: '5', class: 'num', style: 'text-align:center', text: tr('lead tokens') }), h('th', { rowspan: '2', text: tr('Teammates') }), h('th', { rowspan: '2', text: tr('Note') })),
+          h('tr', null, ['input', 'cache read', 'cache write', 'output', 'Subtotal'].map((k) => h('th', { class: 'num', text: tr(k) })))),
         h('tbody', null, body),
-        h('tfoot', null, h('tr', null, h('td', { colspan: '4', text: '累計' }), leadKeys.map((k) => h('td', { class: 'num', text: fmt(tLead[k]) })), h('td', { class: 'num', text: fmt(tMate) }), h('td'))));
+        h('tfoot', null, h('tr', null, h('td', { colspan: '4', text: tr('Total') }), leadKeys.map((k) => h('td', { class: 'num', text: fmt(tLead[k]) })), h('td', { class: 'num', text: fmt(tMate) }), h('td'))));
       box.append(h('div', { class: 'tbl-wrap' }, table));
     }
     const op = S.operator || {};
     const ioe = $('#info-operator'); ioe.textContent = '';
     if (op.operator_session || op.account_hint) {
-      ioe.append('Operated by ', h('b', { text: str(op.operator_session) || 'an unnamed session' }), op.account_hint ? ' · ' + str(op.account_hint) : '', '.');
-    } else ioe.append('The operator has not identified itself yet.');
+      ioe.append(tr('Operated by') + ' ', h('b', { text: str(op.operator_session) || tr('an unnamed session') }), op.account_hint ? ' · ' + str(op.account_hint) : '', '.');
+    } else ioe.append(tr('The operator has not identified itself yet.'));
     const appr = approverState();
-    if (Array.isArray(op.approver_ids)) ioe.append(' ' + op.approver_ids.length + (op.approver_ids.length === 1 ? ' approver' : ' approvers') + '; ' + (appr ? 'you are one of them.' : 'you are not an approver, so your decision answers are not relayed.'));
-    $('#info-meta').textContent = S.demo ? 'Showing demo data.' :
-      (op.version ? 'Operator version ' + str(op.version) + '. ' : '') + (ts(op.heartbeat_at) ? 'Last heartbeat ' + rel(ts(op.heartbeat_at)) + '.' : 'No operator heartbeat yet.');
+    if (Array.isArray(op.approver_ids)) ioe.append(' ' + tr(op.approver_ids.length === 1 ? '{n} approver' : '{n} approvers', { n: op.approver_ids.length }) + '; ' + tr(appr ? 'you are one of them.' : 'you are not an approver, so your decision answers are not relayed.'));
+    $('#info-meta').textContent = S.demo ? tr('Showing demo data.') :
+      (op.version ? tr('Operator version {v}.', { v: str(op.version) }) + ' ' : '') + (ts(op.heartbeat_at) ? tr('Last heartbeat {ago}.', { ago: rel(ts(op.heartbeat_at)) }) : tr('No operator heartbeat yet.'));
   }
   $('#info-btn').addEventListener('click', () => openInfo());
   $('#info-close').addEventListener('click', () => { const d = $('#info'); if (typeof d.close === 'function') d.close(); else d.removeAttribute('open'); });
@@ -2385,8 +2495,8 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   function feedFailed(what) {
     return (e) => {
       clearTimeout(loadTimer); S.slow = false;
-      if (e && e.code === 'revoked') S.feedError = 'This view no longer has access to the board data.';
-      else S.feedError = 'Updates for ' + what + ' stopped. Reload the page to reconnect.';
+      if (e && e.code === 'revoked') S.feedError = tr('This view no longer has access to the board data.');
+      else S.feedError = tr('Updates for {what} stopped. Reload the page to reconnect.', { what: tr(what) });
       renderAll();
     };
   }
@@ -2516,6 +2626,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
       S.replies = new Map(Object.entries(st.replies && typeof st.replies === 'object' ? st.replies : {}).map(([k, v]) => [k, arr(v)]));
       S.me = str(st.me) || null; S.writable = st.writable !== false; S.userReady = true;
       S.canMessageLocal = st.can_message === true;
+      S.account = st.account && typeof st.account === 'object' ? st.account : null;
       for (const k of Object.keys(S.got)) S.got[k] = true;
       clearTimeout(loadTimer);
       S.mode = 'live'; S.slow = false; S.feedError = null; S.offlineDetail = null;
@@ -2524,7 +2635,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     }
     function failed(detail) {
       clearTimeout(loadTimer); S.slow = false;
-      if (S.mode === 'live') S.feedError = 'Lost the connection to the board server. Reload the page to reconnect.';
+      if (S.mode === 'live') S.feedError = tr('Lost the connection to the board server. Reload the page to reconnect.');
       else { S.mode = 'offline'; S.offlineDetail = detail || null; }
       renderAll();
     }
@@ -2549,7 +2660,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
         // EventSource reconnects by itself; the next state frame clears the banner.
         es.onerror = () => {
           if (es.readyState === EventSource.CLOSED) failed('the update stream closed');
-          else if (S.mode === 'live' && !S.feedError) { S.feedError = 'Reconnecting to the board server…'; renderBanners(); }
+          else if (S.mode === 'live' && !S.feedError) { S.feedError = tr('Reconnecting to the board server…'); renderBanners(); }
         };
       },
       answer(d, answer, option) { return post('/api/decisions/' + encodeURIComponent(d.id) + '/answer', option ? { answer, option } : { answer }); },
@@ -2656,29 +2767,29 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     ];
   }
   function profileInfo() {
-    if (S.demo) return { name: 'Demo viewer', via: 'Demo data: a sample identity, nothing is real', roles: rolesFor(S.me), keys: demoKeys(), access: false };
+    if (S.demo) return { name: tr('Demo viewer'), via: tr('Demo data: a sample identity, nothing is real'), roles: rolesFor(S.me), keys: demoKeys(), access: false };
     if (isLocal()) {
       const m = P.me;
       if (m) {
         const access = m.via === 'access';
-        return { name: str(m.identity), via: access ? 'Verified by Cloudflare Access' : 'Local listener: a request from this machine',
+        return { name: str(m.identity), via: tr(access ? 'Verified by Cloudflare Access' : 'Local listener: a request from this machine'),
           roles: Array.isArray(m.roles) && m.roles.length ? m.roles.map(str) : rolesFor(m.identity),
           keys: Array.isArray(m.api_keys) ? objs(m.api_keys) : null, access };
       }
       // An older board-serve without /api/me: the identity from the state ("local" or an Access email).
       if (S.me) {
         const access = S.me.includes('@');
-        return { name: S.me, via: access ? 'Verified by Cloudflare Access' : 'Local listener: a request from this machine', roles: rolesFor(S.me), keys: null, access };
+        return { name: S.me, via: tr(access ? 'Verified by Cloudflare Access' : 'Local listener: a request from this machine'), roles: rolesFor(S.me), keys: null, access };
       }
-      return { name: S.mode === 'offline' ? 'Not connected' : 'Checking who you are…', via: '', roles: null, keys: null, access: false };
+      return { name: tr(S.mode === 'offline' ? 'Not connected' : 'Checking who you are…'), via: '', roles: null, keys: null, access: false };
     }
     if (userNs) {
       const v = P.claude, can = v ? !!v.canEdit : S.canEditBoard;
       const via = ['Signed in to claude.ai', v && v.isOwner ? 'owner' : null,
-        can === true ? 'can edit this board' : can === false ? 'cannot edit this board' : null].filter(Boolean).join(' · ');
-      return { name: (v && str(v.name)) || 'You', via, roles: rolesFor(S.me), keys: null, access: false };
+        can === true ? 'can edit this board' : can === false ? 'cannot edit this board' : null].filter(Boolean).map((x) => tr(x)).join(' · ');
+      return { name: (v && str(v.name)) || tr('You'), via, roles: rolesFor(S.me), keys: null, access: false };
     }
-    return { name: 'Not signed in', via: S.mode === 'offline' ? 'No board data source on this page' : 'Checking…', roles: null, keys: null, access: false };
+    return { name: tr('Not signed in'), via: tr(S.mode === 'offline' ? 'No board data source on this page' : 'Checking…'), roles: null, keys: null, access: false };
   }
   function initials(name) {
     const parts = str(name).split('@')[0].replace(/[^\p{L}\p{N}]+/gu, ' ').trim().split(/\s+/).filter(Boolean);
@@ -2692,34 +2803,35 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     list.hidden = !keys;
     list.textContent = '';
     if (!keys) return;
-    if (!keys.length) { list.append(h('li', { class: 'none', text: 'No keys yet.' })); return; }
-    const day = (v) => { const t = ts(v); return t ? new Date(t).toLocaleDateString() : null; };
+    if (!keys.length) { list.append(h('li', { class: 'none', text: tr('No keys yet.') })); return; }
+    const day = (v) => { const t = ts(v); return t ? new Date(t).toLocaleDateString(locale()) : null; };
     for (const k of keys) {
       const st = KEY_STATUS.includes(lc(k.status)) ? lc(k.status) : 'unknown';
       const used = ts(k.last_used_at);
       const scopes = Array.isArray(k.scopes) ? k.scopes.map(str).filter(Boolean) : [];
       list.append(h('li', { class: st },
-        h('div', { class: 'k-top' }, h('span', { class: 'k-name', text: str(k.name) || 'Unnamed key' }), h('span', { class: 'status ' + st, text: st })),
+        h('div', { class: 'k-top' }, h('span', { class: 'k-name', text: str(k.name) || tr('Unnamed key') }), h('span', { class: 'status ' + st, text: tr(st) })),
         h('span', { class: 'k-id', text: str(k.id) }),
-        scopes.length ? h('div', { class: 'k-scopes', 'aria-label': 'Scopes' }, scopes.map((x) => h('span', { class: 'chip', text: x }))) : null,
-        h('span', { class: 'k-meta', text: ['created ' + (day(k.created_at) || '—'), k.expires_at ? 'expires ' + (day(k.expires_at) || '—') : 'no expiry',
-          'last used ' + (used ? rel(used) : 'never')].join(' · ') })));
+        scopes.length ? h('div', { class: 'k-scopes', 'aria-label': tr('Scopes') }, scopes.map((x) => h('span', { class: 'chip', text: x }))) : null,
+        h('span', { class: 'k-meta', text: [tr('created {day}', { day: day(k.created_at) || '—' }), k.expires_at ? tr('expires {day}', { day: day(k.expires_at) || '—' }) : tr('no expiry'),
+          tr('last used {ago}', { ago: used ? rel(used) : tr('never') })].join(' · ') })));
     }
   }
   function renderProfile() {
     if (isLocal()) { if (!P.tried) loadMe(); } else if (!S.demo) loadClaudeMe();
     const info = profileInfo(), ini = initials(info.name);
     $('#acct-avatar').textContent = ini; $('#acct-avatar-lg').textContent = ini;
-    $('#acct-btn').setAttribute('aria-label', 'Account: ' + info.name + '. Roles, theme and API keys');
+    $('#acct-btn').setAttribute('aria-label', tr('Account: {name}. Roles, theme, language and API keys', { name: info.name }));
     $('#acct-name').textContent = info.name;
     $('#acct-via').textContent = info.via;
     const roles = $('#acct-roles');
     roles.textContent = '';
-    for (const r of info.roles || []) roles.append(h('li', { class: r, text: ROLE_LABEL[r] || r }));
-    if (!info.roles) roles.append(h('li', { text: 'Roles not known yet' }));
+    for (const r of info.roles || []) roles.append(h('li', { class: r, text: trMap(ROLE_LABEL, r) }));
+    if (!info.roles) roles.append(h('li', { text: tr('Roles not known yet') }));
     renderKeys(info.keys);
     $('#acct-out').hidden = !info.access;
     renderTheme();
+    renderLang();
   }
 
   const acctBtn = $('#acct-btn'), acctPanel = $('#acct-panel');
@@ -2746,12 +2858,30 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   document.addEventListener('pointerdown', (e) => {
     if (acctOpen() && !(e.target instanceof Element && e.target.closest('#acct'))) closeAcct(false);
   });
-  acctPanel.addEventListener('change', (e) => { if (e.target.name === 'sb-theme') setTheme(e.target.value); });
+  acctPanel.addEventListener('change', (e) => {
+    if (e.target.name === 'sb-theme') setTheme(e.target.value);
+    else if (e.target.name === 'sb-lang') setLang(e.target.value);
+  });
+  function renderLang() {
+    for (const inp of document.querySelectorAll('input[name="sb-lang"]')) inp.checked = inp.value === LANG;
+  }
+  function setLang(lang) {
+    LANG = lang === 'zh-TW' ? 'zh-TW' : 'en';
+    try { localStorage.setItem(LANG_KEY, LANG); } catch (e) { /* storage blocked: this page view only */ }
+    document.documentElement.setAttribute('lang', LANG);
+    applyStatic();
+    $('#board-cols').textContent = '';  // the columns are built once: build them again
+    renderAll(); renderProfile(); renderLang();
+    if ($('#notif').open) renderNotif();
+    if ($('#info').open) renderLedger();
+  }
+  window.addEventListener('storage', (e) => { if (e.key === LANG_KEY && e.newValue && e.newValue !== LANG) setLang(e.newValue); });
 
   /* ---------------------------------------------------------------- demo */
   function enterDemo() {
     const now = Date.now(), min = 60000;
     S.demo = true; S.mode = 'demo'; S.me = 'u_demo_you'; S.userReady = true; S.writable = true; S.feedError = null; S.slow = false;
+    S.account = { email: 'you@example.com', org: 'Example Org' };
     const frozen = params.get('offline') === '1';
     S.operator = { heartbeat_at: now - (frozen ? 47 : 2) * min, version: 'demo', owner_id: 'u_demo_you', approver_ids: ['u_demo_you', 'u_demo_lead'],
       operator_session: 'BOARD', account_hint: 'primary team account',
@@ -2851,6 +2981,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
   document.addEventListener('visibilitychange', () => { if (!document.hidden && room) refreshCanSend(); });
 
   async function boot() {
+    applyStatic();
     renderAll(); spy();
     if (params.get('demo') === '1') { enterDemo(); return; }
     // board-serve injects a board-mode meta tag with content "local"; a published Artifact has none.
@@ -2884,5 +3015,595 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
     adapter.watchMine();
   }
   boot();
+
+  // zh-TW strings, keyed by the English UI string. Keep the {placeholders} as they are.
+  function ZH_TW() {
+    return {
+      "just now": "剛剛",
+      "{n}m ago": "{n} 分鐘前",
+      "{n}h ago": "{n} 小時前",
+      "{n}d ago": "{n} 天前",
+      "now": "現在",
+      "{m}m": "{m} 分",
+      "{h}h {m}m": "{h} 小時 {m} 分",
+      "{d}d {h}h": "{d} 天 {h} 小時",
+      "reset time unknown": "重設時間不明",
+      "resets ~{at} (in {in})": "約 {at} 重設（{in}後）",
+      "should have reset at {at}": "應已於 {at} 重設",
+      "Usage limit ({kind}) · {when}": "用量上限（{kind}）· {when}",
+      "not reported": "未回報",
+      "resets in {in} · ~{at}": "{in}後重設 · 約 {at}",
+      "reset due {at}": "應於 {at} 重設",
+      "{pct}% used · {when}": "已用 {pct}% · {when}",
+      "Updated: ": "更新：",
+      "not reported yet": "尚未回報",
+      "Threshold: ": "門檻：",
+      "unknown": "不明",
+      "below 80% · fine": "低於 80% · 正常",
+      "Account: ": "帳號：",
+      "hidden": "已隱藏",
+      "5-hour window: ": "5 小時區間：",
+      "Weekly: ": "每週：",
+      "{win} usage {pct}%": "{win}用量 {pct}%",
+      ", resets ~{at}": "，約 {at} 重設",
+      "Switch account now — usage limit hit ({win})": "立即切換帳號 — 已達用量上限（{win}）",
+      "Switch account now — {what}": "立即切換帳號 — {what}",
+      "Prepare to switch account — {what}": "準備切換帳號 — {what}",
+      "5h": "5 小時",
+      "weekly": "每週",
+      "5-hour": "5 小時",
+      "unknown window": "不明區間",
+      "heads-up": "提醒",
+      "prepare to switch": "準備切換",
+      "switch now": "立即切換",
+      "Claude usage": "Claude 用量",
+      "Claude usage against limits": "Claude 用量與上限",
+      "5-hour usage": "5 小時用量",
+      "Weekly usage": "每週用量",
+      "Not committed yet": "尚未 commit",
+      "Gate \"{g}\"": "關卡「{g}」",
+      "answer ↑": "回答 ↑",
+      " answer ↑": " 回答 ↑",
+      "Plan": "規劃",
+      "Design": "設計",
+      "Build": "建置",
+      "Test": "測試",
+      "Deploy": "部署",
+      "Production gate": "Production 關卡",
+      "Maintain": "維護",
+      "owner approves the plan": "owner 核准計畫",
+      "owner signs off": "owner 簽核",
+      "engineer / tech lead": "工程師 / tech lead",
+      "code owner reviews results": "code owner 審查結果",
+      "code owner": "code owner",
+      "release manager authorizes": "release manager 授權",
+      "service owner triages": "service owner 分流",
+      "awaiting": "等待中",
+      "approved": "已核准",
+      "changes requested": "要求修改",
+      "skipped": "已略過",
+      "not reached": "尚未到達",
+      "no record": "無紀錄",
+      "passed": "已通過",
+      "done": "完成",
+      "current": "進行中",
+      "upcoming": "未開始",
+      "simple fix skips design": "簡單修正略過設計",
+      "unknown stage": "不明階段",
+      "Task {title}": "任務 {title}",
+      "Untitled task": "未命名任務",
+      "Owner session": "負責的 session",
+      "now: {stage}": "目前：{stage}",
+      "Stages before production": "Production 之前的階段",
+      "Production gate — agent stops here": "Production 關卡 — agent 在此停下",
+      "Loading tasks…": "正在載入任務…",
+      "Tasks appear here once the page can reach the board.": "頁面連上看板後，任務會出現在這裡。",
+      "No tasks yet.": "還沒有任務。",
+      "A task appears here when a session starts one with ": "session 用以下指令開始任務後，任務會出現在這裡：",
+      "A task appears here when a session starts one with": "session 用以下指令開始任務後，任務會出現在這裡：",
+      "Each task moves Plan → Design → Build → Test → Deploy. Every stage commits an artifact and waits at a human gate. Agents stop at the production gate.": "每個任務依序經過 規劃 → 設計 → 建置 → 測試 → 部署。每個階段都會 commit 產出物，並在人工關卡等待。Agent 會在 production 關卡停下。",
+      "Connecting…": "連線中…",
+      "Board data unavailable": "看板資料無法取得",
+      "checking operator…": "正在檢查 operator…",
+      "operator not seen yet": "還沒看到 operator",
+      "operator offline since {at}": "operator 自 {at} 起離線",
+      "operator live · {ago}": "operator 在線 · {ago}",
+      "Nothing waiting": "沒有待處理的事",
+      "{n} decision": "{n} 個決策",
+      "{n} decisions": "{n} 個決策",
+      "{n} blocked session": "{n} 個卡住的 session",
+      "{n} blocked sessions": "{n} 個卡住的 session",
+      "Every Claude Code session on one panel. Answer what is waiting, see who is working, and send a note to any session.": "所有 Claude Code session 集中在一個面板。回覆等待中的事、看誰在工作，也能傳訊息給任何 session。",
+      "Needs you": "待你處理",
+      "Working": "執行中",
+      "Done / idle": "完成 / 閒置",
+      "Offline": "離線",
+      "Sessions by state": "依狀態分類的 session",
+      "DEMO DATA": "示範資料",
+      "Owner away since {at}": "主人自 {at} 起不在",
+      "Owner away": "主人不在",
+      " (by {who})": "（{who} 設定）",
+      "Sessions decide by explicit consensus; red lines and board asks wait for the owner.": "session 以明確的共識做決定；紅線和看板提問會等主人回來。",
+      "I'm back": "我回來了",
+      " (free-text record)": "（自由文字紀錄）",
+      "{ch} muted {until}": "{ch} 已靜音，{until}",
+      "Urgent alerts are muted too. The board still shows everything.": "緊急告警也一起靜音。看板仍會顯示所有內容。",
+      "Urgent alerts still break through. The board still shows everything.": "緊急告警仍會突破靜音。看板仍會顯示所有內容。",
+      "Unmute all": "全部取消靜音",
+      "Notification settings →": "通知設定 →",
+      "Operator offline since {at}": "Operator 自 {at} 起離線",
+      "Operator has not checked in": "Operator 尚未報到",
+      "Board data may be stale; Slack keeps alerting, so check Slack or tmux. Answers you give here are saved and relayed when the operator returns.": "看板資料可能已過時；Slack 仍會持續告警，請查看 Slack 或 tmux。你在這裡的回答會先保存，等 operator 回來再轉達。",
+      "Start the operator on a backup account so the board keeps running. Alerts still go out meanwhile.": "請用備用帳號啟動 operator，讓看板繼續運作。這段期間告警仍會送出。",
+      "Pick a backup account that can edit this board and wrap up long tasks before the limit hits.": "請挑一個能編輯這個看板的備用帳號，並在達到上限前收尾長時間的任務。",
+      "How to switch accounts →": "如何切換帳號 →",
+      "Sample sessions, decisions and messages for preview. None of it is real, and nothing you do here is saved or sent.": "預覽用的範例 session、決策和訊息。全都不是真的，你在這裡做的事也不會保存或送出。",
+      "Live board unavailable": "無法使用即時看板",
+      "The board server did not answer{detail}. Check that board-serve is running, then reload.": "看板伺服器沒有回應{detail}。請確認 board-serve 正在執行，然後重新載入。",
+      "This page reads its data through the claude.ai viewer. Open it from its claude.ai link while signed in to see your sessions.": "這個頁面透過 claude.ai 檢視器讀取資料。請在登入狀態下從 claude.ai 連結開啟，才能看到你的 session。",
+      "Preview with demo data": "用示範資料預覽",
+      "Waiting for board data": "等待看板資料",
+      "The board data has not answered yet. Keep this page open; it fills in when the connection comes back.": "看板資料還沒有回應。請保持此頁開啟；連線恢復後就會顯示。",
+      "Live updates stopped": "即時更新已停止",
+      "Read-only": "唯讀",
+      "You can see everything on this board. Only its editors can answer decisions or send messages.": "你可以看到這個看板上的所有內容。只有編輯者能回答決策或傳送訊息。",
+      "{kind} from {who}": "來自 {who} 的{kind}",
+      "Stage": "階段",
+      "gate": "關卡",
+      "{tool} wants to run": "{tool} 要求執行",
+      "A tool": "某個工具",
+      "Approve {stage}?": "核准「{stage}」？",
+      "Question": "問題",
+      "Permission": "權限",
+      "Gate": "關卡",
+      "Answered by someone who is not an approver, so the operator did not relay it. An approver can still answer.": "回答者不是 approver，所以 operator 沒有轉達。approver 仍可以回答。",
+      "Your answer \"{answer}\" is saved and waits for the operator. Answer again to change it.": "你的回答「{answer}」已保存，正在等 operator。再回答一次即可修改。",
+      "The request is longer than what is shown here, so it can only be allowed in the session. Open the session to review it.": "這個請求比這裡顯示的內容更長，所以只能在 session 裡允許。請開啟 session 檢查。",
+      "Saving your answer…": "正在保存你的回答…",
+      "You are not an approver — your answer won't be relayed": "你不是 approver — 你的回答不會被轉達",
+      "You are not an approver — your answer won't be relayed.": "你不是 approver — 你的回答不會被轉達。",
+      "Answers will queue until the operator returns": "回答會排隊，直到 operator 回來",
+      "Operator offline — answers are saved and queued until the operator returns.": "Operator 離線 — 回答會先保存並排隊，直到 operator 回來。",
+      "Allow {tool} to run?": "允許 {tool} 執行？",
+      "this": "這個請求",
+      "Deny this request?": "拒絕這個請求？",
+      "Answer \"{answer}\" at the production gate?": "在 production 關卡回答「{answer}」？",
+      "Yes, {answer}": "是，{answer}",
+      "Cancel": "取消",
+      "Options": "選項",
+      "Allow": "允許",
+      "Deny": "拒絕",
+      "allow": "允許",
+      "deny": "拒絕",
+      "Or write what to change": "或寫下要修改的地方",
+      "Or type a different answer": "或輸入其他回答",
+      "Type your answer": "輸入你的回答",
+      "Answer for {who}": "回答 {who}",
+      "Send answer": "送出回答",
+      "Open in session": "在 session 中開啟",
+      "Answer in session": "在 session 中回答",
+      "Allow or Deny is pressed in the session right away.": "允許或拒絕會立刻在 session 中按下。",
+      "Allow or Deny is pressed in the session by the operator.": "允許或拒絕會由 operator 在 session 中按下。",
+      "Approvals are logged in Approvals below.": "核准會記錄在下方的核准紀錄。",
+      "Your answer is relayed to {who}.": "你的回答會轉達給 {who}。",
+      "the session": "該 session",
+      "Escalation level: {lvl}": "升級等級：{lvl}",
+      " · notified via {via}": " · 已透過 {via} 通知",
+      " · escalated → {via}": " · 已升級 → {via}",
+      " · escalated": " · 已升級",
+      "info": "資訊",
+      "warn": "注意",
+      "high": "高",
+      "urgent": "緊急",
+      "remove": "移除",
+      "Loading decisions…": "正在載入決策…",
+      "Checking what the sessions are waiting on.": "正在檢查 session 在等什麼。",
+      "No board data.": "沒有看板資料。",
+      "Decisions appear here once the page can reach the board.": "頁面連上看板後，決策會出現在這裡。",
+      "Nothing needs you.": "沒有需要你處理的事。",
+      "When a session asks a question, hits a permission prompt or reaches a gate, it appears here with buttons to answer.": "當 session 提問、遇到權限提示或到達關卡時，會連同回答按鈕出現在這裡。",
+      "Recent decisions ({n}) · answered, relayed or expired": "最近的決策（{n}）· 已回答、已轉達或已過期",
+      "Recent decisions": "最近的決策",
+      "{tool} permission": "{tool} 權限",
+      "{stage} gate": "{stage}關卡",
+      "Questions and permission prompts that sessions are waiting on. Your answer is relayed to the session.": "session 正在等待的問題和權限提示。你的回答會轉達給 session。",
+      "Loading approvals…": "正在載入核准紀錄…",
+      "The approvals log appears here once the page can reach the board.": "頁面連上看板後，核准紀錄會出現在這裡。",
+      "No approvals recorded yet.": "還沒有核准紀錄。",
+      "Each gate decision an approver answers is logged here once the operator relays it.": "approver 回答的每個關卡決策，在 operator 轉達後都會記錄在這裡。",
+      "you": "你",
+      "an approver": "approver",
+      "not an approver": "非 approver",
+      "an editor": "編輯者",
+      "Every human approval is recorded, newest first.": "每一筆人工核准都有紀錄，最新的在最前面。",
+      "Answered": "回答時間",
+      "Task": "任務",
+      "Answer": "回答",
+      "By": "回答者",
+      "Relayed": "已轉達",
+      "Offline, last seen {ago}": "離線，最後出現於 {ago}",
+      "Waiting: permission for {tool}": "等待中：{tool} 的權限",
+      "a tool": "某個工具",
+      "Waiting: {what}": "等待中：{what}",
+      "Waiting for you in the session": "在 session 中等你",
+      "Running {tool}": "正在執行 {tool}",
+      "Running a tool": "正在執行工具",
+      "Working on a new prompt": "正在處理新的提示",
+      "Idle since {at} ({ago})": "自 {at} 起閒置（{ago}）",
+      "Idle": "閒置",
+      "Session {code}": "Session {code}",
+      "No title yet": "還沒有標題",
+      "Open {code} in Remote Control": "在 Remote Control 開啟 {code}",
+      "Open in Remote Control": "在 Remote Control 開啟",
+      "Permission: {tool}": "權限：{tool}",
+      "A question": "一個問題",
+      "Shown on the self-hosted board only.": "只在自架看板上顯示。",
+      "Nothing running.": "沒有執行中的工具。",
+      "Remote Control": "Remote Control",
+      "Loading sessions…": "正在載入 session…",
+      "Cards appear as soon as the board data answers.": "看板資料一回應，卡片就會出現。",
+      "Session cards appear here once the page can reach the board.": "頁面連上看板後，session 卡片會出現在這裡。",
+      "No sessions yet.": "還沒有 session。",
+      "The operator adds a card for each running session the next time it syncs.": "operator 下次同步時，會為每個執行中的 session 加上一張卡片。",
+      "needs you": "待你處理",
+      "working": "執行中",
+      "idle": "閒置",
+      "offline": "離線",
+      "No session is blocked.": "沒有卡住的 session。",
+      "No session is working right now.": "目前沒有執行中的 session。",
+      "No idle sessions.": "沒有閒置的 session。",
+      "Every known session is running.": "所有已知的 session 都在執行。",
+      "Now": "現在",
+      "Pending": "待處理",
+      "Tools": "工具",
+      "Running": "執行中",
+      "Repo": "Repo",
+      "Session": "Session",
+      "Also": "別名",
+      "Updated": "更新時間",
+      "One card per session, filed by what it is doing now.": "每個 session 一張卡片，依它現在在做什麼分類。",
+      "disk {id}": "磁碟 {id}",
+      "not available": "無法取得",
+      "worst: {what}": "最嚴重：{what}",
+      "all within limits": "全部在限制內",
+      "not available here": "此處無法取得",
+      "{free} free of {total}": "{total} 中可用 {free}",
+      "Load": "負載",
+      "{n} cpu": "{n} 顆 CPU",
+      "Disk": "磁碟",
+      "{pct}% free": "可用 {pct}%",
+      "heavy": "重度",
+      "Resource sampling is off.": "資源取樣已關閉。",
+      "fleet.yaml resources.enabled: false. The operator watch is still checked.": "fleet.yaml resources.enabled: false。operator watch 仍會檢查。",
+      "No resource data yet.": "還沒有資源資料。",
+      "The collector samples memory, disks and processes every few seconds.": "收集器每幾秒會取樣記憶體、磁碟和程序。",
+      "The operator mirrors a summary here when the resource level changes.": "資源等級變化時，operator 會在這裡同步一份摘要。",
+      "Resources appear here once the page can reach the board.": "頁面連上看板後，資源會出現在這裡。",
+      "sampled": "取樣於",
+      "on": "平台",
+      "heavy job(s) running": "個重度工作執行中",
+      "operator watch": "operator watch",
+      "running": "執行中",
+      "not running": "未執行",
+      "Unavailable on this platform: {what}.": "此平台無法取得：{what}。",
+      "idle {age}": "閒置 {age}",
+      "quiet {age}": "安靜 {age}",
+      "no live session": "沒有存活的 session",
+      "parent session gone": "上層 session 已結束",
+      "not responding": "沒有回應",
+      "Idle over {min} min: {list}. The board never stops a process: ask the session to stop teammates it no longer needs.": "閒置超過 {min} 分鐘：{list}。看板不會停止任何程序：請 session 自行停止不再需要的 teammate。",
+      "orphaned": "孤立",
+      "System resources critical — {what}": "系統資源危急 — {what}",
+      "Reclaim idle teammates first ({list}).": "先回收閒置的 teammate（{list}）。",
+      "Hold new test runs and browsers until it recovers; sessions stop only processes they started.": "恢復前先暫停新的測試和瀏覽器；session 只會停止自己啟動的程序。",
+      "See resources →": "查看資源 →",
+      "Operator watch is not running": "Operator watch 未執行",
+      "No board-serve --watch process: answers and messages are saved but not relayed. Restart the operator session.": "沒有 board-serve --watch 程序：回答和訊息會保存但不會轉達。請重新啟動 operator session。",
+      "memory": "記憶體",
+      "swap": "swap",
+      "load": "負載",
+      "OOM kill": "OOM kill",
+      "resources": "資源",
+      "ok": "正常",
+      "critical": "危急",
+      "Memory, disks and what each session runs, teammates included. The board never stops a process.": "記憶體、磁碟，以及每個 session（含 teammate）執行的程序。看板不會停止任何程序。",
+      "Processes": "程序",
+      "Teammates": "Teammate",
+      "Free": "可用",
+      "Size": "大小",
+      "Used by": "使用者",
+      "Level": "等級",
+      "System": "系統",
+      "System resources": "系統資源",
+      "OOM kills since boot": "開機以來的 OOM kill 次數",
+      "Mem": "記憶體",
+      "Swap": "Swap",
+      "Memory used": "已用記憶體",
+      "Swap used": "已用 swap",
+      "idle teammates": "閒置的 teammate",
+      "Relayed to {who}": "已轉達給 {who}",
+      "Replies": "回覆",
+      "Loading messages…": "正在載入訊息…",
+      "Threads appear here once the page can reach the board.": "頁面連上看板後，對話串會出現在這裡。",
+      "No messages yet.": "還沒有訊息。",
+      "Type @ and a session code to send the first one.": "輸入 @ 和 session 代號，送出第一則訊息。",
+      "Messages that editors send to sessions appear here.": "編輯者傳給 session 的訊息會出現在這裡。",
+      "You can read the threads. Only approvers and release managers can send messages.": "你可以閱讀對話串。只有 approver 和 release manager 能傳送訊息。",
+      "You can read the threads. Only editors of this board can send messages.": "你可以閱讀對話串。只有這個看板的編輯者能傳送訊息。",
+      "Mention a session to send it a note. Replies come back into the thread.": "提及一個 session 就能傳訊息給它。回覆會回到對話串裡。",
+      "New message": "新訊息",
+      "Type": "輸入",
+      "to pick a session, or": "選擇 session，或",
+      "Ctrl+Enter sends.": "Ctrl+Enter 送出。",
+      "Send": "送出",
+      "Sessions": "Session",
+      "@API please rebase on main and rerun the tests": "@API 請 rebase 到 main 並重跑測試",
+      "Start with @ and a session code, or @all.": "請以 @ 加上 session 代號開頭，或用 @all。",
+      "Add your message after the mention.": "請在提及之後加上訊息內容。",
+      "No session called @{name}. Pick one from the list that opens when you type @.": "沒有叫 @{name} 的 session。輸入 @ 時會出現清單，請從中挑選。",
+      "every session": "所有 session",
+      "Demo: message shown on this page only. Nothing was saved or sent.": "示範：訊息只顯示在這個頁面。沒有保存或送出任何東西。",
+      "Sending…": "傳送中…",
+      "{n} messages saved": "已保存 {n} 則訊息",
+      "Message saved": "訊息已保存",
+      "Consensus {id}": "共識 {id}",
+      "from": "提案者",
+      "{n}/{of} agreed": "{n}/{of} 同意",
+      "Latest vote of each participant": "每位參與者最新的投票",
+      "✓ agree": "✓ 同意",
+      "✗ object": "✗ 反對",
+      "… no vote yet": "… 尚未投票",
+      "Vote record ({n})": "投票紀錄（{n}）",
+      "Loading…": "載入中…",
+      "Consensus items appear here once the page can reach the board.": "頁面連上看板後，共識項目會出現在這裡。",
+      "No consensus items.": "沒有共識項目。",
+      "A session proposes with board consensus propose; every participant must vote agree.": "session 用 board consensus propose 提案；每位參與者都必須投下同意。",
+      "The owner is here, so sessions ask the owner. Consensus only applies while the owner is away.": "主人在，所以 session 會直接問主人。只有主人不在時才適用共識。",
+      "pending": "待決",
+      "agreed": "已同意",
+      "objected · parked for the owner": "有人反對 · 留給主人決定",
+      "back to the owner": "交還給主人",
+      "While the owner is away, sessions settle cross-session questions only when every participant agrees explicitly. Silence is not agreement; one objection parks it for the owner. Red lines and board asks always wait for the owner.": "主人不在時，跨 session 的問題只有在每位參與者都明確同意時才算定案。沉默不算同意；只要有一人反對就留給主人決定。紅線和看板提問一律等主人。",
+      "Going offline?": "要離開了嗎？",
+      "Your words for the sessions, e.g. back Monday; agree among yourselves": "給 session 的話，例如：週一回來；你們自己商量",
+      "I'm away": "我不在",
+      "Demo: shown on this page only. Nothing was saved or sent.": "示範：只顯示在這個頁面。沒有保存或送出任何東西。",
+      "The owner was not marked away.": "主人沒有被標記為不在。",
+      "Welcome back: away mode is off, and pending consensus items are back with you.": "歡迎回來：不在模式已關閉，待決的共識項目交還給你。",
+      "Already marked away; the earlier record is kept.": "已經標記為不在；保留先前的紀錄。",
+      "Marked away: sessions may decide by explicit consensus. Red lines and board asks wait for you.": "已標記為不在：session 可以用明確的共識做決定。紅線和看板提問會等你回來。",
+      "until {at}": "到 {at}",
+      "until you unmute": "直到你取消靜音",
+      "All muted": "全部靜音",
+      "{n} muted": "{n} 個已靜音",
+      "Notifications": "通知",
+      "Mute for": "靜音時間",
+      "for 1 hour": "1 小時",
+      "for 4 hours": "4 小時",
+      "until 08:00": "到 08:00",
+      "until I unmute": "直到我取消",
+      "Pause push": "暫停推播",
+      "Push is on.": "推播已開啟。",
+      "Mute all": "全部靜音",
+      "Mute": "靜音",
+      "Unmute": "取消靜音",
+      "All push muted {until}, urgent too.": "所有推播已靜音，{until}，緊急告警也一樣。",
+      "All push muted {until}; urgent still breaks through.": "所有推播已靜音，{until}；緊急告警仍會突破。",
+      "include urgent (no breakthrough)": "包含緊急（不突破）",
+      "default ({level}, fleet.yaml)": "預設（{level}，fleet.yaml）",
+      "default ({level})": "預設（{level}）",
+      "{level} only": "只有{level}",
+      "{level} and up": "{level}以上",
+      "{level} only.": "只有{level}。",
+      "{level} and up.": "{level}以上。",
+      "not configured": "未設定",
+      "muted by \"all\"": "被「全部」靜音",
+      ", urgent too": "，緊急也一樣",
+      " · urgent gets through": " · 緊急仍會送出",
+      "on · {floor}": "開啟 · {floor}",
+      "{ch}: minimum level": "{ch}：最低等級",
+      "Channels and triage": "管道與分級",
+      "Everything: deliver": "全部：送出",
+      "All channels: minimum level": "所有管道：最低等級",
+      "A channel gets the stricter of its own level and the level for everything.": "每個管道採用自身等級與「全部」等級中較嚴格的那個。",
+      "While I'm watching": "我在看的時候",
+      "Reduce push while I'm watching the board": "我在看看板時減少推播",
+      "push warn and up": "推播注意以上",
+      "push high and up": "推播高以上",
+      "push urgent only": "只推播緊急",
+      "While watching: push from": "觀看時：推播起點",
+      "You are watching now: push below {level} is held while this page stays open, visible and in use ({min} min idle ends it). Escalation timers keep running.": "你正在看：只要這個頁面保持開啟、可見且有在使用，低於{level}的推播都會暫緩（閒置 {min} 分鐘就結束）。升級計時器會繼續運作。",
+      "Counts only while a board page is open, visible and in use. Escalation timers keep running, so anything still open escalates normally once you stop watching.": "只在看板頁面開啟、可見且有在使用時才算。升級計時器會繼續運作，所以你一停止觀看，任何仍未處理的事都會照常升級。",
+      "Urgent alerts (a production gate, a usage limit hit, anything left unanswered long enough to escalate to urgent) break through mutes and presence unless a mute includes urgent. The board itself always shows everything. Held pushes are logged; nothing is replayed when a mute ends, and an alert still open goes out at its next escalation step.": "緊急告警（production 關卡、達到用量上限、未回應到升級為緊急的事項）會突破靜音和在線狀態，除非靜音包含緊急。看板本身一律顯示所有內容。被暫緩的推播會記錄下來；靜音結束時不會補送，仍未處理的告警會在下一個升級步驟送出。",
+      "{ch} muted.": "{ch} 已靜音。",
+      "All push unmuted.": "所有推播已取消靜音。",
+      "{ch} unmuted.": "{ch} 已取消靜音。",
+      "Saved: {ch} delivers {what}": "已保存：{ch} 送出{what}",
+      "its default levels.": "它的預設等級。",
+      "Push is reduced while you watch the board.": "你在看看板時會減少推播。",
+      "Push is no longer reduced while you watch.": "你在看看板時不再減少推播。",
+      "The board server did not report notification settings.": "看板伺服器沒有回報通知設定。",
+      "The operator has not mirrored the notification settings to this board yet (meta/notify). Use board mute status in a terminal.": "operator 還沒有把通知設定同步到這個看板（meta/notify）。請在終端機用 board mute status。",
+      "Read-only: only approvers change notification settings.": "唯讀：只有 approver 能修改通知設定。",
+      "Read-only here. Change them on the self-hosted board or with board mute / board notify-level.": "這裡是唯讀。請在自架看板或用 board mute / board notify-level 修改。",
+      "Slack": "Slack",
+      "Desktop": "桌面",
+      "Email": "電子郵件",
+      "LINE": "LINE",
+      "SNS": "SNS",
+      "Webhook": "Webhook",
+      "All push": "所有推播",
+      "Push notifications: mute, triage and presence": "推播通知：靜音、分級和在線狀態",
+      "queued until the operator returns.": "排隊等 operator 回來。",
+      "Sent to operator.": "已送給 operator。",
+      "Not recorded: you are not an approver for this.": "未記錄：你不是這件事的 approver。",
+      "Only part of this request is shown here, so it can only be allowed in the session.": "這裡只顯示了請求的一部分，所以只能在 session 裡允許。",
+      "Nobody is listed as an approver on this board, so no answer is accepted.": "這個看板沒有列出任何 approver，所以不接受任何回答。",
+      "The board server could not change owner-away mode.": "看板伺服器無法變更不在模式。",
+      "The board server could not change the notification settings.": "看板伺服器無法變更通知設定。",
+      "Not saved: {why}": "未保存：{why}",
+      "the board server refused that setting.": "看板伺服器拒絕了這個設定。",
+      "That prompt is no longer showing, so nothing was pressed. Handle it in the session.": "那個提示已經不在了，所以什麼都沒有按。請在 session 中處理。",
+      "The board server refused this request: {why}": "看板伺服器拒絕了這個請求：{why}",
+      "The board server refused this request.": "看板伺服器拒絕了這個請求。",
+      "That decision was already handled or removed.": "那個決策已經處理過或被移除。",
+      "This board is read-only for you. Only its editors can answer or send messages.": "這個看板對你是唯讀的。只有編輯者能回答或傳送訊息。",
+      "The board's storage is full. Ask the owner to clear old messages.": "看板的儲存空間已滿。請主人清除舊訊息。",
+      "Your access to this board changed. Reload to see the current view.": "你對這個看板的權限已變更。請重新載入以查看目前的畫面。",
+      "Couldn't save. Check your connection and try again.": "無法保存。請檢查連線後再試一次。",
+      "Not relayed: you are not an approver.": "未轉達：你不是 approver。",
+      "Queued until the operator returns.": "排隊等 operator 回來。",
+      "Nothing was saved or sent.": "沒有保存或送出任何東西。",
+      "Demo: answer shown on this page only.": "示範：回答只顯示在這個頁面。",
+      "Pressed {key} in {who}.": "已在 {who} 按下{key}。",
+      "Answer saved": "回答已保存",
+      "not relayed: you are not an approver.": "未轉達：你不是 approver。",
+      "Queued for the operator.": "已排給 operator。",
+      "Queued — operator checks every few minutes.": "已排隊 — operator 每幾分鐘檢查一次。",
+      "This decision was already answered or no longer exists.": "這個決策已經回答過，或已不存在。",
+      "This message is no longer on the board.": "這則訊息已不在看板上。",
+      "This consensus item was decided over a day ago or no longer exists.": "這個共識項目在一天多前就已定案，或已不存在。",
+      "No records yet · board data unavailable": "尚無紀錄 · 看板資料無法取得",
+      "No records yet": "尚無紀錄",
+      "Version": "版本",
+      "Date": "日期",
+      "What changed": "做了什麼",
+      "Review": "審查",
+      "lead tokens": "lead tokens",
+      "Note": "備註",
+      "Total": "累計",
+      "input": "input",
+      "cache read": "cache read",
+      "cache write": "cache write",
+      "output": "output",
+      "Subtotal": "小計",
+      "Operated by": "Operator：",
+      "an unnamed session": "未命名的 session",
+      "The operator has not identified itself yet.": "operator 還沒有表明身分。",
+      "{n} approver": "{n} 位 approver",
+      "{n} approvers": "{n} 位 approver",
+      "you are one of them.": "你是其中之一。",
+      "you are not an approver, so your decision answers are not relayed.": "你不是 approver，所以你對決策的回答不會被轉達。",
+      "Showing demo data.": "正在顯示示範資料。",
+      "Operator version {v}.": "Operator 版本 {v}。",
+      "Last heartbeat {ago}.": "最後心跳：{ago}。",
+      "No operator heartbeat yet.": "還沒有 operator 心跳。",
+      "About this board": "關於這個看板",
+      "Close": "關閉",
+      "Versions and cost": "版本與花費",
+      "Switching accounts": "切換帳號",
+      "The operator is a Claude session, so it stops when its account reaches the 5-hour or weekly limit. Alerts keep going out without it.": "operator 是一個 Claude session，所以帳號達到 5 小時或每週上限時就會停止。沒有它，告警仍會繼續送出。",
+      "At 90% in either window, finish or park long tasks and pick a backup account that can edit this board.": "任一區間達到 90% 時，請完成或暫停長時間的任務，並挑一個能編輯這個看板的備用帳號。",
+      "In a session on that account, run the operator prompt": "在那個帳號的 session 中執行 operator prompt",
+      "with this board's link. It takes over the heartbeat.": "並附上這個看板的連結。它會接手心跳。",
+      "When the original operator comes back and sees a fresher heartbeat from another session, it stays passive.": "原本的 operator 回來後，若看到其他 session 有更新的心跳，就會保持被動。",
+      "Answers given here while nobody operates the board are saved and relayed by the next operator, oldest first.": "沒有 operator 時在這裡給的回答會先保存，由下一個 operator 從最舊的開始轉達。",
+      "80% · heads-up": "80% · 提醒",
+      "90% · prepare to switch": "90% · 準備切換",
+      "95% or limit hit · switch now": "95% 或達到上限 · 立即切換",
+      "How this works": "運作方式",
+      "Hooks": "Hook",
+      "Each session's hook writes a small state file on every event: working, needs you, done or offline.": "每個 session 的 hook 在每個事件寫入一個小狀態檔：執行中、待你處理、完成或離線。",
+      "Collector": "收集器",
+      "Merges the state files with the live session list and tmux into one snapshot.": "把狀態檔與存活的 session 清單和 tmux 合併成一份 snapshot。",
+      "Operator": "Operator",
+      "A dedicated session syncs that snapshot to this board and keeps a heartbeat.": "一個專責的 session 把 snapshot 同步到這個看板，並維持心跳。",
+      "Board": "看板",
+      "You answer decisions and write messages here. Answers are saved to the board's data.": "你在這裡回答決策和寫訊息。回答會保存到看板的資料。",
+      "Relay": "轉達",
+      "The operator picks up answers and messages, presses the prompt or messages the session, and posts replies back.": "operator 取得回答和訊息，在 session 中按下提示或傳訊息，再把回覆貼回來。",
+      "Versions, cost and how this works": "版本、花費與運作方式",
+      "Info": "資訊",
+      "This view no longer has access to the board data.": "這個畫面已無法存取看板資料。",
+      "Updates for {what} stopped. Reload the page to reconnect.": "{what}的更新已停止。請重新載入頁面以重新連線。",
+      "Lost the connection to the board server. Reload the page to reconnect.": "與看板伺服器的連線中斷。請重新載入頁面以重新連線。",
+      "Reconnecting to the board server…": "正在重新連線到看板伺服器…",
+      "sessions": "session",
+      "decisions": "決策",
+      "messages": "訊息",
+      "tasks": "任務",
+      "approvals": "核准紀錄",
+      "operator status": "operator 狀態",
+      "the board": "看板",
+      "consensus": "共識",
+      "notification settings": "通知設定",
+      "owner-away state": "不在狀態",
+      "Demo viewer": "示範檢視者",
+      "Demo data: a sample identity, nothing is real": "示範資料：範例身分，都不是真的",
+      "You": "你",
+      "Not signed in": "未登入",
+      "No board data source on this page": "這個頁面沒有看板資料來源",
+      "Checking…": "檢查中…",
+      "Verified by Cloudflare Access": "由 Cloudflare Access 驗證",
+      "Local listener: a request from this machine": "本機 listener：來自這台機器的請求",
+      "Not connected": "未連線",
+      "Checking who you are…": "正在確認你的身分…",
+      "Signed in to claude.ai": "已登入 claude.ai",
+      "owner": "擁有者",
+      "can edit this board": "可以編輯這個看板",
+      "cannot edit this board": "不能編輯這個看板",
+      "No keys yet.": "還沒有金鑰。",
+      "Unnamed key": "未命名的金鑰",
+      "Scopes": "範圍",
+      "created {day}": "建立於 {day}",
+      "expires {day}": "{day} 到期",
+      "no expiry": "不會到期",
+      "last used {ago}": "最後使用：{ago}",
+      "never": "從未",
+      "active": "啟用中",
+      "revoked": "已撤銷",
+      "expired": "已過期",
+      "Account: {name}. Roles, theme, language and API keys": "帳號：{name}。角色、主題、語言和 API 金鑰",
+      "Roles not known yet": "角色尚不明",
+      "Approver": "Approver",
+      "Release manager": "Release manager",
+      "Viewer": "檢視者",
+      "Theme": "主題",
+      "Light": "淺色",
+      "Dark": "深色",
+      "Language": "語言",
+      "Following the theme set in the claude.ai viewer. Change it there.": "依照 claude.ai 檢視器設定的主題。請在那裡修改。",
+      "My API keys": "我的 API 金鑰",
+      "API keys are not enabled on this board.": "這個看板沒有啟用 API 金鑰。",
+      "Sign out of Cloudflare Access": "登出 Cloudflare Access",
+      "Account, theme, language and API keys": "帳號、主題、語言和 API 金鑰",
+      "Your roles on this board": "你在這個看板的角色",
+      "Sections": "區段",
+      "Decisions": "決策",
+      "Consensus": "共識",
+      "Lifecycle": "流程",
+      "Resources": "資源",
+      "Messages": "訊息",
+      "Approvals": "核准紀錄",
+      "A session": "某個 session",
+      "Answer in the session ({why}).": "請在 session 中回答（{why}）。",
+      "Answered by someone who is not an approver, so it was not sent. An approver can still answer.": "回答者不是 approver，所以沒有送出。approver 仍可以回答。",
+      "Not sent: that option no longer matches the question. Reload and try again.": "未送出：那個選項已經和問題對不上。請重新載入後再試一次。",
+      "Open session": "開啟 session",
+      "Question from {who}": "來自 {who} 的問題",
+      "Question {n}": "問題 {n}",
+      "Sending your answer…": "正在送出你的回答…",
+      "This question can only be answered in the session.": "這個問題只能在 session 中回答。",
+      "This question waits in {who}'s session.": "這個問題在 {who} 的 session 中等待。",
+      "Type something": "輸入內容",
+      "Type something for {who}": "輸入要給 {who} 的內容",
+      "You are not an approver — your answer won't be sent.": "你不是 approver — 你的回答不會送出。",
+      "Your choice is picked in {who}'s question by the operator.": "你的選擇會由 operator 在 {who} 的問題中選取。",
+      "Your choice is picked in {who}'s question right away.": "你的選擇會立刻在 {who} 的問題中選取。",
+      "Your text was typed into the question but Enter was not pressed. Finish it in the session.": "你的文字已輸入問題中，但沒有按下 Enter。請在 session 中完成。",
+      "choose any": "可複選",
+      "from {who}": "來自 {who}",
+      "multi-question form": "多題表單",
+      "multi-select": "複選",
+      "muted {until}": "已靜音，{until}",
+      "shown only in part here": "這裡只顯示了一部分",
+      "unauthorized": "未授權",
+      "{n} questions": "{n} 個問題",
+      "{who} asks:": "{who} 問：",
+      "desktop": "桌面",
+      "email": "電子郵件",
+      "webhook": "Webhook",
+    };
+  }
 })();
 </script>

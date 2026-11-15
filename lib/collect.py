@@ -18,6 +18,10 @@ Usage: collect.py [--no-notify] [--baseline] [--verbose]
 - Samples system resources every resources.interval seconds into resources.json (lib/resources.py)
   and adds only their digest (`resources`: null or {level, worst}) to the snapshot, so raw numbers
   never change snapshot.json.
+- The Claude account the sessions run on: only oauthAccount.emailAddress / organizationName from
+  ~/.claude.json (re-read when its mtime changes; never any token) into $BOARD_HOME/account.json
+  (0600). Off with BOARD_SHOW_ACCOUNT=0 or fleet.yaml usage.show_account: false (the file is then
+  removed). board-serve shows the email to approvers only; the operator never mirrors it.
 - Card details per session: `title` (the pane title Claude Code sets, from one batched
   `tmux list-panes -a`), `repo` / `branch` (basename of the git toplevel of cwd and the current
   branch, cached 30 s in $BOARD_HOME/gitinfo.json), `last_event`, `notification_type` and `recent`
@@ -155,16 +159,19 @@ def local_user():
         return ""
 
 
-def clean_title(raw, hosts, user=None):
+def clean_title(raw, hosts, user=None, names=()):
     """A pane title as the session sets it ("✳ Fix the login form"): the leading status glyph
     (spinner, ✳, ...) dropped. Never published: tmux's default (the host name), a shell's own
-    title (user@host: ~/dir), or any title naming this host or the local user as a word."""
+    title (user@host: ~/dir), any title naming this host or the local user as a word, or a title
+    that is just the session's own code or alias (a /renamed session: the card shows the task)."""
     if not isinstance(raw, str):
         return ""
     t = raw.strip()
     while t and unicodedata.category(t[0])[0] not in "LN":
         t = t[1:]
     if not t or t.lower() == "claude code" or SHELL_TITLE_RE.search(t):
+        return ""
+    if t.strip().lower() in {str(n).strip().lower() for n in names if n}:
         return ""
     words = set(re.findall(r"[\w.-]+", t.lower()))
     words |= {w.strip(".-") for w in words}
@@ -252,10 +259,53 @@ def card_details(rows, home, now, titles=None, hosts=None):
     hosts = hostnames() if hosts is None else hosts
     info = git_info(home, [r.get("cwd") for r in rows if r.get("pid")], now)
     for r in rows:
-        r["title"] = clean_title(titles.get(r.get("tmux_pane") or ""), hosts) or None if r.get("pid") else None
+        names = [r.get("code"), r.get("name")] + list(r.get("aliases") or [])
+        r["title"] = clean_title(titles.get(r.get("tmux_pane") or ""), hosts, names=names) or None if r.get("pid") else None
         g = info.get(r.get("cwd")) if r.get("pid") else None
         r["repo"] = (g or {}).get("repo")
         r["branch"] = (g or {}).get("branch")
+
+
+def claude_json_path():
+    return os.environ.get("CLAUDE_JSON") or os.path.join(os.path.expanduser("~"), ".claude.json")
+
+
+def account_info(cfg, home):
+    """Write $BOARD_HOME/account.json {email, org, source_mtime, updated_at} (0600) from
+    ~/.claude.json oauthAccount.emailAddress / organizationName, nothing else. Re-read only when the
+    source changed. Disabled: the file is removed. Returns the record or None."""
+    path = os.path.join(home, "account.json")
+    if not fleet.account_enabled(cfg):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        return None
+    src = claude_json_path()
+    try:
+        mtime = os.stat(src).st_mtime_ns
+    except OSError:
+        mtime = None
+    cur = read_json(path)
+    if isinstance(cur, dict) and cur.get("source_mtime") == mtime:
+        return cur
+    email = org = None
+    if mtime is not None:
+        data = read_json(src)
+        oa = data.get("oauthAccount") if isinstance(data, dict) else None
+        if isinstance(oa, dict):
+            email = clean_text(oa.get("emailAddress"), 200) or None
+            org = clean_text(oa.get("organizationName"), 200) or None
+        del data, oa  # nothing else from the file is kept
+    rec = {"email": email, "org": org, "source_mtime": mtime, "updated_at": now_ms()}
+    tmp = "%s.tmp.%d" % (path, os.getpid())
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(rec, fh)
+        fh.write("\n")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+    return rec
 
 
 def live_registry():
@@ -483,6 +533,11 @@ def main(argv):
     now = now_ms()
     sessions = build_sessions(cfg, home, str(cfg.get("remote_url_prefix") or ""))
     card_details(sessions, home, now)
+    try:
+        account_info(cfg, home)
+    except (OSError, ValueError) as exc:  # never breaks the collector
+        if verbose:
+            print("account: %s" % exc)
     decisions = process_decisions(cfg, home, sessions, now)
     tasks = load_tasks(home)
     attach_tasks(sessions, tasks)

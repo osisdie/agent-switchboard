@@ -232,7 +232,7 @@ def main():
                                "options": ["yes", "no"], "status": st, "created_at": now, "updated_at": now}, fh)
             proc = os.path.join(tmp, "proc")  # a calm fixture /proc: never the live machine's numbers
             subprocess.run([sys.executable, os.path.join(REPO, "tests", "fake_proc.py"), proc], check=True)
-            env = dict(os.environ, BOARD_HOME=home, BOARD_CONFIG_DIR=cfg, CLAUDE_SESSIONS_DIR=sess, BOARD_PROC_ROOT=proc)
+            env = dict(os.environ, BOARD_HOME=home, BOARD_CONFIG_DIR=cfg, CLAUDE_SESSIONS_DIR=sess, CLAUDE_JSON=os.path.join(home, "no-claude.json"), BOARD_PROC_ROOT=proc)
             env.pop("BOARD_PUBLIC_URL", None)
             subprocess.run([os.path.join(REPO, "bin", "board-collect"), "--once", "--no-notify"],
                            env=env, check=True, stdout=subprocess.DEVNULL)

@@ -97,7 +97,7 @@ def serve(tmp, approvers):
     port = free_port()
     with open(os.path.join(cfg, "fleet.yaml"), "w", encoding="utf-8") as fh:
         fh.write("approvers: %s\nserve:\n  enabled: true\n  port: %d\n" % (json.dumps(approvers), port))
-    env = dict(os.environ, BOARD_HOME=home, BOARD_CONFIG_DIR=cfg, CLAUDE_SESSIONS_DIR=sess)
+    env = dict(os.environ, BOARD_HOME=home, BOARD_CONFIG_DIR=cfg, CLAUDE_SESSIONS_DIR=sess, CLAUDE_JSON=os.path.join(home, "no-claude.json"))
     for k in list(env):
         if k.startswith(("SLACK_", "SMTP_", "ALERT_", "LINE_", "AWS_", "BOARD_PUBLIC_URL", "BOARD_NOW_MS")):
             env.pop(k)

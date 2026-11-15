@@ -12,6 +12,7 @@ T="$(mktemp -d "${TMPDIR:-/tmp}/switchboard-test.XXXXXX")"
 trap 'rm -rf "$T"' EXIT
 
 export BOARD_HOME="$T/home"
+export CLAUDE_JSON="$T/claude.json"  # the account fixture, never ~/.claude.json
 export BOARD_CONFIG_DIR="$T/config"
 export CLAUDE_SESSIONS_DIR="$T/sessions"
 export CLAUDE_SETTINGS="$T/settings.json"
@@ -196,7 +197,7 @@ eq "  a repo with no commits yet: one git call still names it" \
 echo "collector: untrusted text"
 while IFS=$'\t' read -r verdict name detail; do
   if [ "$verdict" = ok ]; then ok "$name"; else bad "$name" "$detail"; fi
-done < <(python3 - "$REPO/lib" <<'PY'
+done < <(python3 - "$REPO/lib" "$T" <<'PY'
 import sys
 sys.path.insert(0, sys.argv[1])
 import collect as c
@@ -225,6 +226,13 @@ cases = [
     ("title: a word containing the user name kept", c.clean_title("Fix bobcat parser", H, user="bob"), "Fix bobcat parser"),
     ("title: tokens and paths redacted too", c.clean_title("⠂ Rotate ghp_" + "b" * 24 + " in /etc/app/key.pem", H, user="bob"),
      "Rotate [REDACTED] in …/key.pem"),
+    ("title: the session's own code dropped (a /renamed session)", c.clean_title("✳ AI", H, user="bob", names=["AI", "ai-old"]), ""),
+    ("title: an alias dropped, any case", c.clean_title("⠂ Ai-Old", H, user="bob", names=["AI", "ai-old"]), ""),
+    ("title: a title that only mentions the code kept", c.clean_title("Fix the AI build", H, user="bob", names=["AI"]), "Fix the AI build"),
+    ("card_details passes the code, name and aliases",
+     (lambda rows: (c.card_details(rows, sys.argv[2], 0, titles={"%1": "✳ CP", "%2": "✳ Fix it"}, hosts=set()), [r["title"] for r in rows])[1])(
+         [{"code": "CP", "name": "CP", "aliases": ["CP", "cp-old"], "pid": 1, "tmux_pane": "%1", "cwd": None},
+          {"code": "QA", "name": "QA", "aliases": ["QA"], "pid": 2, "tmux_pane": "%2", "cwd": None}]), [None, "Fix it"]),
     ("host names include <short>.local", sorted(n for n in c.hostnames() if n.endswith(".local"))[:1] != [], True),
 ]
 for name, got, want in cases:
@@ -253,6 +261,27 @@ kill "$dup_pid" "$dup_pid2" 2>/dev/null
 rm -f "${CLAUDE_SESSIONS_DIR:?}/${dup_pid:?}.json" "${CLAUDE_SESSIONS_DIR:?}/${dup_pid2:?}.json" "${BOARD_HOME:?}/state/s-qa.json"
 cp "$T/cp-reg.json" "$CLAUDE_SESSIONS_DIR/$live_pid.json"
 "$REPO/bin/board-collect" --once --no-notify
+
+echo "collector: account"
+fake_key="fixture""-key-""not-real"  # built from pieces: no secret-looking literal in the repo
+printf '%s\n' '{"oauthAccount": {"emailAddress": "owner@example.com", "organizationName": "Example Org", "accountUuid": "acc-1"},' \
+  " \"primaryApiKey\": \"$fake_key\", \"userID\": \"u-1\", \"projects\": {\"/w\": {\"history\": [\"x\"]}}}" > "$CLAUDE_JSON"
+"$REPO/bin/board-collect" --once --no-notify
+acct="$BOARD_HOME/account.json"
+eq "account: email and org only" "$(jq -r '[.email, .org] | join("|")' "$acct")/$(jq -r 'keys | join(",")' "$acct")" "owner@example.com|Example Org/email,org,source_mtime,updated_at"
+eq "  0600" "$(stat -c %a "$acct")" "600"
+grep -q 'fixture-key\|acc-1\|u-1\|history' "$acct" && bad "  nothing else from the file" || ok "  nothing else from the file"
+BOARD_SHOW_ACCOUNT=0 "$REPO/bin/board-collect" --once --no-notify
+eq "  BOARD_SHOW_ACCOUNT=0 removes it" "$([ -e "$acct" ] && echo kept || echo removed)" "removed"
+"$REPO/bin/board-collect" --once --no-notify
+cp "$BOARD_CONFIG_DIR/fleet.yaml" "$T/fleet.yaml.acct"
+printf 'usage:\n  show_account: false\n' >> "$BOARD_CONFIG_DIR/fleet.yaml"
+"$REPO/bin/board-collect" --once --no-notify
+eq "  usage.show_account: false removes it" "$([ -e "$acct" ] && echo kept || echo removed)" "removed"
+cp "$T/fleet.yaml.acct" "$BOARD_CONFIG_DIR/fleet.yaml"
+rm -f "${CLAUDE_JSON:?}"
+"$REPO/bin/board-collect" --once --no-notify
+eq "  no ~/.claude.json: no email" "$(jq -r '.email' "$acct")" "null"
 
 echo "collector: a session alone in another session's tmux"
 cp "$BOARD_CONFIG_DIR/fleet.yaml" "$T/fleet.yaml.bak"

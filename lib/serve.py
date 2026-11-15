@@ -344,7 +344,7 @@ class StateBuilder:
 
     def signature(self):
         h = hashlib.sha1()
-        paths = [self.p(n) for n in ("snapshot.json", "usage.json", "limit.json", "operator.json",
+        paths = [self.p(n) for n in ("snapshot.json", "usage.json", "account.json", "limit.json", "operator.json",
                                     "ledger.json", "events.jsonl", "owner-away", prefs.PREFS_FILE)]
         paths.append(self.p("resources.json"))  # rewritten on a bucketed change, else every 60 s
         for sub in ("decisions", "tasks", "consensus"):
@@ -559,7 +559,7 @@ def render_page(nonce):
             '<meta name="mobile-web-app-capable" content="yes">'
             '<meta name="apple-mobile-web-app-capable" content="yes">'
             '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">'
-            '<meta name="apple-mobile-web-app-title" content="Switchboard">'
+            '<meta name="apple-mobile-web-app-title" content="Agent Switchboard">'
             '<style nonce="%s">%s</style>\n' % (nonce, RESET_CSS))
     return (head + body + "\n</html>\n").encode("utf-8")
 
@@ -722,9 +722,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def state_for(self, ident):
         with self.server.hub.cond:
             state = dict(self.server.hub.state)
+        cfg = fleet.load_fleet()
         state.update({"mode": "local", "me": ident, "writable": True,
-                      "can_message": match_id(ident, sorted(deciders(fleet.load_fleet()))) is not None})
+                      "can_message": match_id(ident, sorted(deciders(cfg))) is not None,
+                      "account": self.account_for(ident, cfg)})
         return state
+
+    def account_for(self, ident, cfg):
+        """The Claude account the sessions run on: {email, org} for approvers, {hidden: true} for
+        everyone else, None when it is not known or switched off (collector, account.json)."""
+        if not fleet.account_enabled(cfg):  # also when a stale account.json is still there
+            return None
+        rec = read_json(os.path.join(self.server.home, "account.json"))
+        if not isinstance(rec, dict) or not rec.get("email"):
+            return None
+        if match_id(ident, fleet.id_list(cfg, "approvers")) is None:
+            return {"hidden": True}
+        return {"email": str(rec["email"]), "org": str(rec["org"]) if rec.get("org") else None}
 
     def me_for(self, ident, via):
         """GET /api/me: built only from the verified identity and fleet.yaml, never from request
