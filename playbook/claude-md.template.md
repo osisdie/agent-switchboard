@@ -71,8 +71,8 @@ gets integrated on a base nobody tested.
   3. **Before review, push and merge**: the branch must contain the latest `origin/<target>`. If
      behind, catch up and rerun the tests first. If a reviewer already saw the branch, ask them to
      review only what the catch-up brought in.
-- How to catch up: rebase unpushed local commits. For an already pushed branch, rebase plus
-  `--force-with-lease` on **your own** feature branch, or `git merge origin/<target>` where the team
+- How to catch up: rebase unpushed local commits. For an already pushed branch, rebase, then
+  `git push --force-with-lease`, on **your own** feature branch only, or `git merge origin/<target>` where the team
   forbids force-pushes. Never force-push shared branches or `main`.
 - A branch stacked on another one: after the lower branch is squash-merged, move it with
   `git rebase --onto origin/<target> <old tip of the lower branch> <branch>`.
