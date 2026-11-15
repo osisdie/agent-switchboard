@@ -27,6 +27,9 @@ $BOARD_HOME/
   statusline/<session_id>.json  # the statusline tap's session meter {ctx_pct, cost_usd, model, at}
   cards.json                # card extras for board-serve, written by the collector (see "Card extras")
   cards-state.json          # their cache: transcript tails by mtime, git info, when each state began
+  rc-prefs.json             # the owner's Remote Control choices (see "Remote Control"); rc-prefs.lock
+  rc-apply.json             # the last Remote Control attempt per session; rc-apply.lock
+  rc-run.lock               # flock held while `board rc` types into a pane (one applier at a time)
 ```
 
 ### state/<session_id>.json
@@ -71,7 +74,9 @@ Map hook events to states like this:
                   "updated_at": 0,
                   "title": "Fix the login form"|null, "repo": "web-app"|null, "branch": "main"|null,
                   "last_event": "PreToolUse"|null, "notification_type": "permission_prompt"|null,
-                  "recent": [ {"tool": "Bash", "summary": "npm test -- …/login.spec.ts"} ] } ],
+                  "recent": [ {"tool": "Bash", "summary": "npm test -- …/login.spec.ts"} ],
+                  "rc": { "on": true|false|null, "want": "on|off", "source": "session|all|fleet|default",
+                          "pending": false, "last": {"want","result","reason","at"}|null } } ],
   "decisions": [ { ...decision file... } ],
   "tasks": [ ... ], "limit": {...}|null,
   "owner_away": { "since": 0, "by": "CP", "said": "..." } | null,
@@ -106,6 +111,11 @@ Map hook events to states like this:
   - `last_event`, `notification_type`: from the hook state file.
   - `recent`: the last 3 tool calls in flight (the hook's `recent_pre`): tool name and the hook's
     redacted summary, at most 160 chars. Self-hosted board only: the operator never mirrors it.
+- **`rc`** (Remote Control, see "Remote Control"): `on` is whether the running process has a
+  `bridgeSessionId` (`null` when offline); `want` / `source` come from `rc-prefs.json`, then
+  `fleet.yaml`, then the default (on); `pending` is true when an explicit board choice (`source`
+  `session` or `all`) differs from `on` on a running session; `last` is the last attempt for this
+  session process.
 - **`owner_away`** is `null` when `$BOARD_HOME/owner-away` does not exist, else its record. A file
   that is not a JSON object (free text, empty) still means away: `{since: <mtime ms>, by: null,
   said: <first 300 chars>, legacy: true}`.
@@ -374,6 +384,7 @@ $BOARD_HOME/
 | `POST /api/notify-prefs` `{op, ...}` | Notification controls. `op` is `mute` `{channel, for?\|until?, include_urgent?}`, `unmute` `{channel}`, `level` `{channel, level}` or `presence` `{reduce, level?}`. `channel` is `slack`, `desktop`, `email`, `line`, `sns`, `webhook` or `all`; `for` matches `^[1-9][0-9]{0,4}[mhd]$` (at most 30 days); `until` is `HH:MM` or an ISO time in the next 30 days (a string of at most 64 characters); `include_urgent` and `reduce` are booleans; `level` is `info\|warn\|high\|urgent\|default` (`presence`: `warn\|high\|urgent`). Anything else → 400 `bad_op` / `bad_channel` / `bad_duration` / `bad_level` / `bad_body`, nothing run. Empty `approvers` → 403 `no_approvers`; identity not in `approvers` → 403 `not_approver`, audited. Otherwise `board mute\|unmute\|notify-level\|notify-presence … --by board:<identity>` (argv, no shell) → 200 `{status: "ok", notify}` (the new `notify` state). Failure → 500 `prefs_failed`. |
 | `POST /api/presence` `{visible, idle_ms?}` | The page's presence heartbeat. `visible` boolean; `idle_ms` integer ms since the viewer last clicked, tapped, scrolled or typed, at most 86400000 (a day), or null (else 400 `bad_body`). The server records `interaction_at = <server now> − max(0, idle_ms)`, so a page clock that runs fast changes nothing. Any time the page sends (`interaction_at` in the body) is ignored: without `idle_ms` the last interaction is unknown, so the viewer does not count as watching. Same approver rule as `/api/notify-prefs`. Recorded in `presence.json` under the listener's verified identity, never one from the body → 200 `{status: "ok", visible}`. Audited only when the identity's `visible` changes. |
 | `POST /api/alerts/ack` `{scope: "all"}` | The Deck panel's "acknowledge all". `scope` other than `"all"` → 400 `bad_scope`. Same approver rule as `/api/notify-prefs` (empty `approvers` → 403 `no_approvers`; not an approver → 403 `not_approver`, audited, nothing acked). Otherwise `board ack --by board:<identity> '*'` (argv, no shell): every unacked key in `alerts.json` gets `acked_at` and `acked_by: board:<identity>`, the same as `board ack '*'` in a terminal → 200 `{status: "ok", acked: <n>}` (`0` when nothing was open). Escalation stops; nothing leaves the board, and a condition that opens again alerts again. Failure → 500 `ack_failed`. |
+| `POST /api/rc` `{code, state}` | Remote Control. `state` other than `on`/`off` → 400 `bad_state`; `code` not `"all"` and not `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`, or not a session in the snapshot or `fleet.yaml` → 400 `bad_code`; nothing run. Empty `approvers` → 403 `no_approvers`; identity not in `approvers` → 403 `not_approver`, audited, nothing written. Otherwise `board rc on\|off <code> --by board:<identity> --no-apply` (argv, no shell) → 200 `{status: "ok", rc}` (the new `rc` state), then `board rc apply <code>` (`--pending` for `all`) starts in the background: the page follows the result through the snapshot. Failure → 500 `rc_failed`. |
 | `POST /api/away` `{state: "on"\|"off", said?}` | `state` other than `on`/`off` → 400 `bad_state`; `said` not a string or over 500 chars → 400 `bad_said`. Empty `approvers` → 403 `no_approvers`; identity not in `approvers` → 403 `not_approver`, audited, nothing written. Otherwise `board away on\|off --by board:<identity> [--said <said>]` (argv, no shell; `on` without `said` records "away (set on the board)") → 200 `{away: true\|false, status: "on"\|"off"\|"unchanged"}`. `on` while already away keeps the existing record (`unchanged`). Failure → 500 `away_failed`. |
 
 Every request: `Host` from the listener's allowlist, else 421. Per listener, at most 64
@@ -385,7 +396,7 @@ from the listener's allowlist (`http://127.0.0.1:<port>`, `http://localhost:<por
 `https://<hostname>`; missing or `null` → 403 `csrf`), `Content-Type: application/json` (else
 415), at most 16 KiB (else 413). `OPTIONS` and every other method → 405, and no
 `Access-Control-*` header is ever sent. Every write appends `{type: "serve", action:
-"answer"|"press"|"message"|"message-release"|"away"|"notify-prefs"|"presence"|"alerts-ack", by, via: "loopback"|"cf-jwt", id, result}` to
+"answer"|"press"|"message"|"message-release"|"away"|"notify-prefs"|"presence"|"alerts-ack"|"rc", by, via: "loopback"|"cf-jwt", id, result}` to
 `events.jsonl` (`presence` only when visibility changes).
 
 State (`/api/state` and every SSE frame):
@@ -393,7 +404,7 @@ State (`/api/state` and every SSE frame):
 ```json
 { "mode": "local", "me": "local|<email>", "writable": true, "can_message": true|false, "generated_at": 0,
   "account": {"email": "...", "org": "..."|null} | {"hidden": true} | null,
-  "sessions":  [ {code, aliases, state, status, task, tmux, remote_url, pending, updated_at} ],
+  "sessions":  [ {code, aliases, state, status, task, tmux, remote_url, pending, updated_at, rc} ],
   "decisions": [ decision files, newest 200, without session_id/tmux_pane ],
   "tasks":     [ task files, newest 50 ],
   "approvals": [ events.jsonl type:"approval" rows (+ relayed_at from the decision), newest 100 ],
@@ -406,7 +417,8 @@ State (`/api/state` and every SSE frame):
   "consensus": [ snapshot.consensus items, newest 50 ],
   "notify":    { mutes, min_level, effective_min_level, presence: {reduce, min_level, window_seconds,
                  idle_seconds}, breakthrough, updated_at, updated_by, channels: {slack: bool, ...} } | null,
-  "resources": { see "Resources": resources.json without pids, paths or unknown fields }|null }
+  "resources": { see "Resources": resources.json without pids, paths or unknown fields }|null,
+  "rc":        { "all": "on"|"off"|null, "sessions": {"<code>": "on"|"off"}, "updated_at" } | null }
 ```
 
 `account` is the Claude account the sessions run on, from `$BOARD_HOME/account.json` (the collector
@@ -1130,3 +1142,84 @@ prompt, and the operator never relays it as `[BOARD decision …]`. The page sho
 Artifact mode the operator mirrors `owner_away` to `meta/away` and each item to `consensus/{id}`;
 when the away state changes it broadcasts it to every live session and reports, per session, who
 received and who acknowledged it (`prompts/board-operator.md` section 10).
+
+## Remote Control
+
+Remote Control (RC) connects a session to claude.ai/code and the Claude app. The owner turns it
+on or off per session, or for all sessions, from the board or with `board rc`.
+
+**What a session wants**, first match wins:
+1. its own choice (`board rc on|off CODE`),
+2. the choice for all sessions (`board rc on|off all`, which also drops every per-session choice),
+3. `fleet.yaml`: the session's `remote_control: true|false`, then a top-level `remote_control`,
+4. on.
+
+`$BOARD_HOME/rc-prefs.json` (0600, written atomically under `rc-prefs.lock`):
+`{version: 1, all: {state, by, at}|null, sessions: {CODE: {state, by, at}}, updated_at,
+updated_by}`. `board rc clear CODE|all` forgets a choice. Every change and every attempt appends
+`{type: "rc", action: "set"|"clear"|"apply", code, want, by, result?, reason?, auto?, pane?}` to
+`events.jsonl`.
+
+**At start.** `fleet-up` asks `lib/rc.py want CODE` and leaves `--remote-control CODE` out when
+the answer is `off`.
+
+**On a running session.** Claude Code (2.1.x) has no flag or API for a running session. The
+`/remote-control` slash command (alias `/rc`) toggles it in the interactive session:
+- **Off → on:** `/remote-control` + Enter. The first time on a machine, Claude shows a one-time
+  consent dialog ("Enable Remote Control" / "Never mind"); after that there is no dialog. The pane
+  then shows `/remote-control is active · Continue here, on your phone, or at
+  https://claude.ai/code/session_…` and the registry gets `bridgeSessionId` within about a second.
+- **On → off:** `/remote-control` + Enter opens a "Remote Control" dialog with the rows "Disconnect
+  this session", "Show QR code", "Continue" (focused) and the footer "Enter to select · Esc to
+  continue". Up twice, then Enter on "Disconnect this session", prints `⎿ Remote Control
+  disconnected.` and `bridgeSessionId` goes back to `null`. Escape is "Continue": nothing changes.
+- **Not available:** with `DO_NOT_TRACK` set, not signed in to claude.ai, or turned off by policy,
+  Claude ignores `--remote-control` and answers `Unknown command: /remote-control`.
+
+`board rc on|off CODE|all` (and `board rc apply`, and the collector) applies a choice only with
+these checks, in the style of `board press`. A check that fails before the first key sends nothing:
+1. The session must be idle: registry status `idle`, and the hook state, corrected as in the
+   snapshot, `done` or `rest`. A `working` or `needs-you` session → `deferred` ("will apply when
+   idle"), nothing sent.
+2. The pane must belong to the session's tmux session (`display-message`). The last
+   `rc.lines` (30) lines of `capture-pane` must show Claude's input box: the last line that starts
+   with `❯` has a rule (`rc.rule_regex`) right above and right below it, and holds nothing else
+   (`rc.prompt_regex`). There must be no `esc to interrupt` anywhere and no dialog footer
+   (`rc.dialog_regex`) below the box. Anything else → `refused`, nothing sent.
+3. The registry and hook state are read again. Then `send-keys -l -- /remote-control`.
+4. The box must now hold exactly `/remote-control`, and the session must still be idle. Else
+   `partial` (exit 5): the text is typed, Enter is not pressed, and the owner clears it.
+5. Enter. On: wait up to `rc.confirm_seconds` for `bridgeSessionId` → `confirmed`. If the screen
+   shows the consent dialog, Escape dismisses it → `consent`. `Unknown command` → `unavailable`.
+   Otherwise → `unconfirmed`. Off: wait for the dialog (footer and "Disconnect this session"),
+   then press Up one row at a time, checking the focused row (`❯ …`) on screen after each key,
+   until "Disconnect this session" is focused (at most 4 moves). Then Enter, and wait for
+   `bridgeSessionId` to disappear. An unexpected dialog gets Escape (Remote Control stays on) →
+   `refused`.
+
+Results: `confirmed`, `already`, `deferred`, `offline`, `refused` (exit 3), `partial` (5),
+`unconfirmed` / `unavailable` / `consent` (6), `failed` (1). The last attempt per session is kept
+in `rc-apply.json`: `{CODE: {sid, want, result, reason, at, tries}}`.
+
+**Pending choices.** The looping collector (`board-collect`, not `--once`) passes `--apply-rc`.
+When a running session does not follow an explicit board choice (`pending`) and is idle with a
+pane, it starts `rc.py apply --pending --auto` in the background. Only one applier runs at a time
+(`rc-run.lock`; `--auto` skips when it is held). For the same session process and wanted state,
+`--auto` never retries `unavailable`, `consent` or `partial`. It retries `refused`, `unconfirmed`
+and `failed` after `rc.retry_minutes` (10), at most `rc.max_tries` (3) times. A new process or a
+new choice starts over. `fleet.yaml` alone never makes the collector type into a pane. Turn it off
+with `BOARD_RC_AUTO=0` or `rc.auto_apply: false`.
+
+**Trade-offs.** Typing into a live session is the same risk as `board press`, and is bounded the
+same way: only when idle, only into an empty box, and Enter only after a second look. A session
+that the owner turns on by hand while the board choice is off is turned off again when it is next
+idle; the board choice is the source of truth. To keep a session's own setting, `board rc clear
+CODE` (with no `all` choice, `fleet.yaml` alone never changes a running session). A session that
+cannot get Remote Control at runtime (`unavailable`) gets it at its next start through fleet-up.
+`DO_NOT_TRACK` in the environment that starts the sessions disables Remote Control in all of them;
+`board doctor` and `fleet-up` warn about it.
+
+**The page.** Each running session card shows an RC chip: `RC on`, `RC off`, or a dashed
+`RC → on|off` when a choice waits for the session to be idle. In the card's details approvers get
+Turn on / Turn off (`POST /api/rc`). The Notifications dialog has "RC: all on / all off" with a
+confirm step. Read-only for everyone else and in the Artifact (the chip only).

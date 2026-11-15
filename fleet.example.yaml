@@ -6,6 +6,13 @@ collector: true
 poll_interval: 3              # seconds between snapshot rebuilds
 decision_timeout_hours: 24    # pending decisions older than this become "timeout"
 resume_fallback_seconds: 15   # fleet-up: start fresh only if `claude -r NAME` exits this fast
+# Remote Control (claude.ai/code, the Claude app): fleet-up starts sessions with
+# `--remote-control CODE` unless they don't want it. The owner's `board rc on|off CODE|all`
+# (or the board's RC toggle) wins over this; a session's own `remote_control:` over this default.
+# remote_control: true
+# rc:
+#   auto_apply: true            # the collector applies a pending board choice when a session is idle
+#   confirm_seconds: 10         # how long to wait for bridgeSessionId to appear / disappear
 
 # Who may decide: board user ids (the artifact page's user.id()), or with the self-hosted board
 # emails and "local".
@@ -103,6 +110,7 @@ sessions:
   - code: WEB
     cwd: ~/work/web
     autostart: false
+    remote_control: false     # fleet-up starts it without --remote-control
 
 # Aliases can also be given here: CODE -> [alias, ...]
 # aliases:

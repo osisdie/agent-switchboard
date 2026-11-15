@@ -438,6 +438,34 @@ Workers reply with `[re <msgId>] …`, and replies thread under the message. **M
 information, never approvals.** A message that asks a session for a secret value is held, not
 relayed (see [Secret guardrails](#secret-guardrails)).
 
+### Remote Control on or off
+
+Remote Control lets you open a session from claude.ai/code or the Claude app. Turn it on or off
+per session, or for all of them:
+
+```bash
+board rc off API                 # this session: off now if it is idle, else when it is
+board rc on all                  # every session (drops the per-session choices)
+board rc status                  # wanted / actual / pending per session
+board rc clear API               # forget the choice: fleet.yaml decides again (default on)
+```
+
+On the board, every running session card shows an RC chip: **RC on**, **RC off**, or a dashed
+**RC → on** while the change waits for the session to be idle. Approvers get Turn on / Turn off in
+the card's details, and "RC: all on / all off" (with a confirm step) in the Notifications dialog.
+
+How it reaches a running session: Claude Code has no switch for a running session, so the board
+types `/remote-control` into its pane, the way it presses a permission prompt. It does that only
+when the session is idle, its prompt box is empty and nothing else is on screen. It presses Enter
+only after a second look, and it confirms the result in the session registry. A working or
+needs-you session is left alone, and the collector applies the change when it goes idle. Turning
+it off walks Claude's "Disconnect this session" dialog, and anything unexpected there gets Escape.
+`fleet-up` starts sessions with or without `--remote-control` to match the choice, and
+`remote_control: true|false` in `fleet.yaml` sets a session's default.
+
+**Note.** With `DO_NOT_TRACK` set in the environment that starts the sessions, Claude Code ignores
+`--remote-control` and has no `/remote-control`. `board doctor` warns about it.
+
 ### Profile menu, theme and language
 
 The avatar at the top right of the board opens a small menu:
@@ -1106,10 +1134,11 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 |---|---|
 | `docs/contract.md` | Binding data contract: local files, db collections, lifecycle stages & gates, relay formats, degraded mode |
 | `hooks/board-hook.sh` | Lifecycle hook: writes `state/<session_id>.json`, appends `events.jsonl`, always exits 0 |
-| `bin/board` | CLI: `ls`, `snapshot`, `ask`, `task new/stage/ls/show`, `decisions`, `answer`, `mark`, `limit`, `resources`, `press`, `notify`, `mute`, `unmute`, `notify-level`, `notify-presence`, `away`, `consensus`, `message`, `guard`, `doctor`. Exit codes: 2 = usage (also `answer --option` mismatch), 3 = press refused, 4 = answer / vote refused, 5 = press partial (keys sent, Enter not pressed) |
+| `bin/board` | CLI: `ls`, `snapshot`, `ask`, `task new/stage/ls/show`, `decisions`, `answer`, `mark`, `limit`, `resources`, `press`, `notify`, `mute`, `unmute`, `notify-level`, `notify-presence`, `rc`, `away`, `consensus`, `message`, `guard`, `doctor`. Exit codes: 2 = usage (also `answer --option` mismatch), 3 = press refused, 4 = answer / vote refused, 5 = press partial (keys sent, Enter not pressed) |
 | `bin/board-collect` | Zero-token collector: snapshot, diff, runs `board-notify` each loop; `--baseline` on first install |
 | `bin/board-notify`, `lib/notify.py` | Alerting: `send`, `ack`, `tick`, `test`, `status`, `gate`. Adapters (slack, desktop, email, line, sns, webhook), levels, escalation, ack, quiet hours, dedupe |
 | `lib/prefs.py` | Notification controls: mutes, min levels, presence (`board mute`, `notify-level`, `notify-presence`) and the delivery rule `lib/notify.py` applies |
+| `lib/rc.py` | Remote Control on/off: the owner's choice per session or for all (`board rc`), what fleet-up passes at start, and applying it to idle running sessions (typed `/remote-control`, checked on screen) |
 | `hooks/board-statusline-tap.sh` | Statusline wrapper that records 5h/weekly usage to `usage.json` without changing your statusline |
 | `bin/fleet-up` | Idempotent fleet launcher from `fleet.yaml` (also starts `board-serve` with `serve.enabled`) |
 | `bin/board-serve`, `lib/serve.py` | Self-hosted board: the page in local mode + JSON/SSE API over `$BOARD_HOME`, 127.0.0.1 only; `--watch` feeds the local-mode operator |
@@ -1131,7 +1160,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `lib/cards.py` | Card extras for board-serve (`cards.json`): teammates and their tasks, the session meter, recent tool calls, the last message and prompt (approvers only), ahead/behind, time in state |
 | `lib/resources.py` | Resources sampler (memory, disks, OOM, per-session processes and teammates) for `resources.json`, the snapshot digest and `board resources` |
 | `docs/design/` | Design notes, e.g. `resources-and-scheduling.md` (resources, scheduler, lessons) |
-| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), the resources sampler (`test_resources.py`, fixture `/proc`), the secret guardrails (`test_guard.py`), the card extras (`test_cards.py`), and the optional headless checks of the page's alert links, notifications control, profile menu and theme, home-screen app, session cards, usage popover, language toggle and Deck panel (`test_page_links.py`, `test_page_notify.py`, `test_page_profile.py`, `test_page_pwa.py`, `test_page_cards.py`, `test_page_guard.py` (held-message cards), `test_page_usage.py`, `test_page_i18n.py`, `test_page_deck.py`, plus `test_site.py` for the screenshots and the Pages site: need python playwright, skip without it; not run in CI) |
+| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), the resources sampler (`test_resources.py`, fixture `/proc`), the secret guardrails (`test_guard.py`), the card extras (`test_cards.py`), Remote Control (`test_rc.py`, scripted tmux in `fake_tmux.py`), and the optional headless checks of the page's alert links, notifications control, profile menu and theme, home-screen app, session cards, usage popover, language toggle and Deck panel (`test_page_links.py`, `test_page_notify.py`, `test_page_profile.py`, `test_page_pwa.py`, `test_page_cards.py`, `test_page_guard.py` (held-message cards), `test_page_usage.py`, `test_page_i18n.py`, `test_page_deck.py`, `test_page_rc.py` (Remote Control chip and switches), plus `test_site.py` for the screenshots and the Pages site: need python playwright, skip without it; not run in CI) |
 | `CONTRIBUTING.md` | Dev setup, tests, and the rule for keeping `README.zh-TW.md` in sync |
 | `fleet.example.yaml`, `.env.example` | Example config |
 
