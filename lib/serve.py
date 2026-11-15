@@ -33,6 +33,9 @@ listeners (docs/contract.md, "Local adapter API"):
                                        the board page's heartbeat, recorded in presence.json)
   POST /api/alerts/ack                 {"scope": "all"}  (approvers only; the Deck panel's
                                        "acknowledge all", via `board ack --by board:<identity> '*'`)
+  POST /api/rc                         {"code": "CODE"|"all", "state": "on"|"off"}  (approvers
+                                       only; via `board rc on|off CODE|all --by board:<identity>
+                                       --no-apply`, then `board rc apply` in the background)
 
 --check prints the resolved settings and exits. --watch serves nothing: it prints one line per
 item the local-mode operator must relay (see prompts/board-operator.md, "Local mode").
@@ -62,6 +65,7 @@ import limit  # noqa: E402
 import messages  # noqa: E402
 import notify  # noqa: E402
 import prefs  # noqa: E402
+import rc  # noqa: E402
 import resources  # noqa: E402
 
 REPO = fleet.REPO
@@ -101,7 +105,7 @@ FORWARD_HEADERS = ("Cf-Connecting-Ip", "Cf-Ray", "X-Forwarded-For", "Forwarded",
                    "X-Forwarded-Proto", "X-Real-Ip", "Cf-Visitor", "Cdn-Loop",
                    "Cf-Access-Authenticated-User-Email", "Cf-Access-Jwt-Assertion")
 SESSION_KEYS = ("code", "aliases", "state", "status", "tmux", "remote_url", "pending", "updated_at",
-                "title", "repo", "branch", "last_event", "notification_type", "recent")
+                "title", "repo", "branch", "last_event", "notification_type", "recent", "rc")
 # Card extras from cards.json (lib/cards.py). CARD_PRIVATE ones reach approvers only (state_for).
 CARD_KEYS = ("teammates", "meter", "done", "doing", "prompt", "branch", "state_since")
 CARD_PRIVATE = ("doing", "prompt")
@@ -379,7 +383,8 @@ class StateBuilder:
         h = hashlib.sha1()
         paths = [self.p(n) for n in ("snapshot.json", "usage.json", "usage-samples.json", "account.json",
                                     "limit.json", "operator.json",
-                                    "ledger.json", "events.jsonl", "owner-away", prefs.PREFS_FILE)]
+                                    "ledger.json", "events.jsonl", "owner-away", prefs.PREFS_FILE,
+                                    rc.PREFS_FILE, rc.APPLY_FILE)]
         paths.append(self.p("resources.json"))  # rewritten on a bucketed change, else every 60 s
         paths.append(self.p("cards.json"))      # card extras (lib/cards.py), rewritten when changed
         for sub in ("decisions", "tasks", "consensus"):
@@ -517,6 +522,7 @@ class StateBuilder:
                 "owner_away": away.away_record(self.home),
                 "consensus": away.consensus_items(self.home, now_ms())[-50:],
                 "notify": notify_state(self.home),
+                "rc": rc_state(self.home),
                 "resources": resources.board_view(read_json(self.p("resources.json"))),
                 "generated_at": snap.get("generated_at")})
 
@@ -548,6 +554,15 @@ def notify_state(home):
         return out
     except Exception as exc:  # noqa: BLE001 - the board keeps working without this panel
         log("notify state: %r" % exc)
+        return None
+
+
+def rc_state(home):
+    """The owner's Remote Control choices for the page (rc-prefs.json): {all, sessions}."""
+    try:
+        return rc.page_state(home)
+    except Exception as exc:  # noqa: BLE001 - the board keeps working without it
+        log("rc state: %r" % exc)
         return None
 
 
@@ -927,6 +942,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if path == "/api/alerts/ack":
                 body = self.read_body()
                 return self.ack_alerts(body, ident, via)
+            if path == "/api/rc":
+                body = self.read_body()
+                return self.set_rc(body, ident, via)
             raise Refused(404, "not_found")
         except Refused as exc:
             return self.refuse(exc)
@@ -1299,6 +1317,44 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.audit(ident, via, "alerts-ack", scope="all", result="ok", acked=n)
         self.hub_kick()
         return self.send_json(200, {"status": "ok", "acked": n})
+
+    def set_rc(self, body, ident, via):
+        """Remote Control on/off from the board: approvers only, through the board CLI (argv).
+        The choice is stored at once; applying it to the running sessions (typing into their
+        panes, seconds each) runs in the background (`board rc apply`), and the page follows it
+        through the snapshot."""
+        code, state = body.get("code"), body.get("state")
+        if state not in ("on", "off"):
+            raise Refused(400, "bad_state", "state must be \"on\" or \"off\"")
+        if not isinstance(code, str) or (code != "all" and not CODE_RE.fullmatch(code)):
+            raise Refused(400, "bad_code", "code must be a session code or \"all\"")
+        if code != "all":
+            snap = read_json(os.path.join(self.server.home, "snapshot.json")) or {}
+            known = {str(s.get("code")) for s in snap.get("sessions") or [] if isinstance(s, dict)}
+            known |= {s["code"] for s in fleet.load_fleet()["sessions"]}
+            if code not in known:
+                raise Refused(400, "bad_code", "no such session on this board")
+        by = self.approver(ident, via, "rc", what="change Remote Control", code=code, state=state)
+        with self.server.write_lock:
+            rcode, out, err = self.board("rc", state, code, "--by", "board:%s" % by, "--no-apply")
+            if rcode != 0:
+                log("board rc %s %s failed (rc %d): %s %s" % (state, code, rcode, err, out))
+                self.audit(ident, via, "rc", code=code, state=state, result="error", rc=rcode)
+                raise Refused(500, "rc_failed", "the Remote Control choice could not be saved")
+            self.audit(ident, via, "rc", code=code, state=state, result="ok")
+        self.apply_rc(code, by)
+        self.hub_kick()
+        return self.send_json(200, {"status": "ok", "rc": rc_state(self.server.home)})
+
+    def apply_rc(self, code, by):
+        """`board rc apply CODE|--pending` in the background: never blocks the request."""
+        argv = [BOARD, "rc", "apply", "--by", "board:%s" % by] + (["--pending"] if code == "all" else [code])
+        try:
+            subprocess.Popen(argv, env=dict(os.environ, BOARD_HOME=self.server.home),  # noqa: S603
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+        except OSError as exc:
+            log("board rc apply could not start: %r" % exc)
 
 
 class Server(http.server.ThreadingHTTPServer):

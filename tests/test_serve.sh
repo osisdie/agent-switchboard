@@ -132,7 +132,7 @@ start
 # ---------------------------------------------------------------- state
 echo "state:"
 eq "GET /api/state 200" "$(req GET /api/state)" "200"
-eq "state keys" "$(body 'keys | join(",")')" "account,approvals,can_message,consensus,decisions,generated_at,ledger,me,messages,mode,notify,operator,owner_away,page_version,replies,resources,sessions,tasks,writable"
+eq "state keys" "$(body 'keys | join(",")')" "account,approvals,can_message,consensus,decisions,generated_at,ledger,me,messages,mode,notify,operator,owner_away,page_version,rc,replies,resources,sessions,tasks,writable"
 eq "page_version is the hash of artifact/board.html" "$(body .page_version)" "$(sha256sum "$REPO/artifact/board.html" | cut -c1-12)"
 pv="$(body .page_version)"
 req GET / >/dev/null
