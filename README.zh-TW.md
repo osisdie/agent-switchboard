@@ -506,12 +506,14 @@ board rc clear API               # 忘掉設定：回到 fleet.yaml（預設開�
 - **看板上**：每張卡片有一個小番茄圓環，顯示 `12:34 / 25:00` 和 `今日 🍅×3`。按鍵面板的 **🍅 今日**
   顯示全體總數（`14 · 專注 5 小時 50 分`）和 7 天的小長條圖，按下會開啟面板，列出今天每個 session 的
   計數和最近 14 天。完成一個番茄鐘時會噴出一小串番茄（設定「減少動態效果」時不會）。
-- `board pomodoro [today|week] [--json]` 在終端機印出同樣的統計。
+- `board pomodoro [today|week] [--json|--mirror]` 在終端機印出同樣的統計（`--mirror`：給 Artifact 頁面的
+  `meta/pomodoro` 文件）。
 - 選用、預設關閉：`pomodoro.notify: true` 時，全體每天每完成第 10 個番茄鐘就送一則 info 通知
   （「AI fleet finished its 10th 🍅 today」）。
 
 ```yaml
 pomodoro:                 # fleet.yaml；全部選填
+  enabled: true
   focus_minutes: 25
   grace_minutes: 2
   timezone: ""            # IANA 名稱，例如 Asia/Taipei；空白 = 系統時區

@@ -553,12 +553,14 @@ pomodoro. Here each session presses its own while it works.
   Deck key **🍅 Today** shows the fleet total (`14 · 5h 50m focus`) with a 7-day sparkline, and
   opens a panel with each session's count today and the last 14 days. A finished pomodoro gets a
   short burst of tomatoes (none with *reduce motion*).
-- `board pomodoro [today|week] [--json]` prints the same tallies in a terminal.
+- `board pomodoro [today|week] [--json|--mirror]` prints the same tallies in a terminal (`--mirror`:
+  the `meta/pomodoro` document for the Artifact page).
 - Optional, off by default: `pomodoro.notify: true` sends one info notification at every 10th
   fleet pomodoro of the day ("AI fleet finished its 10th 🍅 today").
 
 ```yaml
 pomodoro:                 # fleet.yaml; all optional
+  enabled: true
   focus_minutes: 25
   grace_minutes: 2
   timezone: ""            # IANA name, e.g. Asia/Taipei; empty = the system's
