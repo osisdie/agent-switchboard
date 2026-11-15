@@ -538,8 +538,10 @@ board rc clear API               # 忘掉設定：回到 fleet.yaml（預設開�
   （`pomodoro.timezone`，預設是系統時區）。收集器重新啟動後統計會接著算。
 - **看板上**：每張卡片有一個小番茄圓環，顯示 `12:34 / 25:00` 和 `今日 🍅×3`；teammate 有專注時再加上
   `teammate +5 🍅 · 2 小時 20 分`。按鍵面板的 **🍅 今日** 顯示全體總數（含 teammate，`19 · 專注 9 小時 28 分`）
-  和 7 天的小長條圖，按下會開啟面板，列出 session／teammate 的分計、今天每個 session 的計數（teammate 列在它的
-  session 底下）和最近 14 天。完成一個番茄鐘時會噴出一小串番茄（設定「減少動態效果」時不會）。
+  和 7 天的小長條圖，按下會開啟面板，列出 session／teammate 的分計、今天的計時數和相當於幾個人時的專注、冠軍
+  （🍅 最多，同數比專注時間）和亞軍、今天每個 session 的計數（teammate 列在它的 session 底下；被截短的名稱在滑過、
+  聚焦或點一下時顯示全名）和最近 14 天。滑過或聚焦 🍅（按鍵、面板標題）會說明怎樣才算。完成一個番茄鐘時會噴出
+  一小串番茄（設定「減少動態效果」時不會）。
 - `board pomodoro [today|week] [--json|--mirror]` 在終端機印出同樣的統計（`--mirror`：給 Artifact 頁面的
   `meta/pomodoro` 文件）。
 - 選用、預設關閉：`pomodoro.notify: true` 時，全體每天每完成第 10 個番茄鐘就送一則 info 通知
