@@ -502,13 +502,17 @@ hasnt "unset again: repeats carry no board link" "$(cat "$T"/curl/*.cfg 2>/dev/n
 echo "board notify --link:"
 reset_calls
 BOARD_PUBLIC_URL="$BL" "$REPO/bin/board" notify --link c-1794650400-ef56 "Consensus parked"
-has "board notify --link appends the card link" "$(slack_text)" $'Consensus parked\n'"$BL/?c=c-1794650400-ef56"
+eq "board notify --link appends the labelled card link" "$(slack_text)" $'Consensus parked\nView on the board: <'"$BL/?c=c-1794650400-ef56>"
 reset_calls
 BOARD_PUBLIC_URL="$BL" "$REPO/bin/board" notify --link root "BOARD back online"
-eq "board notify --link root" "$(slack_text)" $'BOARD back online\n'"$BL/"
+eq "board notify --link root" "$(slack_text)" $'BOARD back online\nOpen the board: <'"$BL/>"
 reset_calls
 "$REPO/bin/board" notify --link c-1794650400-ef56 "no url set"
 eq "board notify --link without a board URL: text only" "$(slack_text)" "no url set"
+reset_calls
+BOARD_PUBLIC_URL="$BL" "$REPO/bin/board" notify --link d-1794650400-ab12 "gate <!channel> & <@U1>"
+eq "board notify: text escaped, link added after escaping" "$(slack_text)" \
+  $'gate &lt;!channel&gt; &amp; &lt;@U1&gt;\nDecide on the board: <'"$BL/?d=d-1794650400-ab12>"
 "$REPO/bin/board" notify --link >/dev/null 2>&1; rc=$?
 eq "board notify --link without an id -> usage (2)" "$rc" "2"
 rm -f "$BOARD_HOME/alerts.json" "$BOARD_HOME/snapshot.json"

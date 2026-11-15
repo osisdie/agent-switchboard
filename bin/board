@@ -711,10 +711,8 @@ cmd_notify() {
   fi
   local text="${1:-}"
   [ -n "$text" ] || { sub_usage notify >&2; exit 2; }
-  if [ "$want_link" = 1 ]; then
-    local link; link="$(board_link "$link_to")"
-    [ -n "$link" ] && text="$text"$'\n'"$link"
-  fi
+  local link=""
+  [ "$want_link" = 1 ] && link="$(board_link "$link_to")"
   local url="${SLACK_WEBHOOK_URL:-}"
   local envf; envf="$(config_dir)/.env"
   if [ -z "$url" ] && [ -f "$envf" ]; then
@@ -726,7 +724,15 @@ cmd_notify() {
   local payload
   # Slack control sequences (<!channel>, <url|label>, <@U...>) come from & < >: escape them, as
   # lib/notify.py slack_escape does, so text from sessions or the owner can't ping or link.
-  payload="$(jq -cn --arg t "$text" '{text: ($t | gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;"))}')"
+  # The board link is added after escaping, as a labelled Slack <link> (like lib/notify.py
+  # slack_link): only a plain http(s) URL, which a validated board link always is.
+  payload="$(jq -cn --arg t "$text" --arg l "$link" '
+    def esc: gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;");
+    def linklabel: if test("/[?]d=") then "Decide on the board" elif test("/[?][cm]=") then "View on the board"
+               else "Open the board" end;
+    {text: (($t | esc) + (if $l == "" then ""
+       elif ($l | test("^https?://[^\\s<>|&]+$")) then "\n" + ($l | linklabel) + ": <" + $l + ">"
+       else "\n" + ($l | esc) end))}')"
   # The webhook URL is a secret: give it to curl in a config on stdin, never on argv.
   cfgq() { local v="${1//\\/\\\\}"; printf '"%s"' "${v//\"/\\\"}"; }
   local code
@@ -1126,7 +1132,7 @@ cons_vote() {
     local returned
     returned="$(consensus_owner_back_one "$f" "$now" "owner-away record changed")"
     unlock_board
-    [ -n "$returned" ] && notify_quiet "[board] Consensus $id returned to the owner: it was proposed in an earlier away period"
+    [ -n "$returned" ] && notify_quiet "[board] Consensus $id returned to the owner: it was proposed in an earlier away period" "$id"
     die "consensus $id belongs to an earlier away period; it went back to the owner (ask the owner)"
   fi
   prev="$(jq -r --arg f "$from" '[.votes[] | select(.by == $f)] | last | .vote // empty' "$f")"
