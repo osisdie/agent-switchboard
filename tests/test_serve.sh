@@ -22,6 +22,8 @@ export BOARD_HOME="$T/home"
 export BOARD_CONFIG_DIR="$T/config"
 export CLAUDE_SESSIONS_DIR="$T/sessions"
 export CLAUDE_SETTINGS="$T/settings.json"
+# Resources: a calm fixture /proc (tests/fake_proc.py), so the live machine's numbers never alert.
+python3 "$REPO/tests/fake_proc.py" "$T/proc" && export BOARD_PROC_ROOT="$T/proc"
 unset TMUX_PANE TMUX BOARD_PUBLIC_URL
 while IFS= read -r v; do unset "$v"; done < <(compgen -e | grep -E '^(SLACK_|SMTP_|ALERT_|LINE_|AWS_)')
 export ALERT_DESKTOP=0
@@ -128,7 +130,7 @@ start
 # ---------------------------------------------------------------- state
 echo "state:"
 eq "GET /api/state 200" "$(req GET /api/state)" "200"
-eq "state keys" "$(body 'keys | join(",")')" "approvals,can_message,consensus,decisions,generated_at,ledger,me,messages,mode,notify,operator,owner_away,replies,sessions,tasks,writable"
+eq "state keys" "$(body 'keys | join(",")')" "approvals,can_message,consensus,decisions,generated_at,ledger,me,messages,mode,notify,operator,owner_away,replies,resources,sessions,tasks,writable"
 eq "me is local on loopback" "$(body .me)" "local"
 eq "mode local" "$(body .mode)" "local"
 eq "session CP needs-you" "$(body '.sessions[] | select(.code=="CP") | .state')" "needs-you"
@@ -146,6 +148,27 @@ eq "usage pct" "$(body '.operator.usage.five_hour.pct')" "42"
 eq "usage drops session_id" "$(body '.operator.usage | has("session_id")')" "false"
 eq "approver_ids from fleet.yaml" "$(body '.operator.approver_ids | join(",")')" "local,boss@example.com"
 eq "limit null when none" "$(body '.operator.limit')" "null"
+
+echo "resources:"
+eq "resources from the collector's sample" "$(body '.resources.level + "/" + (.resources.mem.total_mb | tostring)')" "ok/16384"
+eq "resources: the operator watch is reported" "$(body '.resources.operator.watch')" "false"
+# A richer sample: board_view() drops pids and paths; serve picks up the rewrite (signature).
+jq -n '{at: 1, enabled: true, platform: "linux", level: "warn", worst: "mem", levels: {mem: "warn"},
+  mem: {total_mb: 16384, available_mb: 1900, available_pct: 12, psi_some_avg60: 2.5},
+  disks: [{mount: "/", total_mb: 1000, free_mb: 500, free_pct: 50, level: "ok", labels: ["$BOARD_HOME", "CP"], paths: ["/secret/path"]}],
+  sessions: [{code: "CP", pid: 4242, rss_mb: 400, cpu_pct: 3, classes: {test: {n: 1, rss_mb: 900, cpu_pct: 90}},
+    children: [{class: "test", comm: "python3", pid: 4243, rss_mb: 900, cpu_pct: 90, age_s: 60, heavy: true, via: null}],
+    teammates: [{name: "idle-one", pid: 4300, rss_mb: 300, cpu_pct: 0, age_s: 7200, idle_s: 3600, idle: true}],
+    teammates_n: 1, teammates_rss_mb: 300, idle_teammates_n: 1, heavy_n: 1}],
+  orphan_teammates: [], heavy_running: 1, unavailable: ["psi"], operator: {watch: true}, cmdline: "x"}' >"$BOARD_HOME/resources.json"
+for _ in $(seq 1 30); do req GET /api/state >/dev/null; [ "$(body .resources.level)" = warn ] && break; sleep 0.1; done
+eq "resources.json change reaches /api/state" "$(body '.resources.level + "/" + .resources.worst')" "warn/mem"
+eq "resources: session row" "$(body '.resources.sessions[0] | .code + "/" + (.rss_mb|tostring) + "/" + (.teammates_n|tostring)')" "CP/400/1"
+eq "resources: idle teammate flagged" "$(body '.resources.sessions[0].teammates[0] | .name + "/" + (.idle|tostring)')" "idle-one/true"
+eq "resources: child class" "$(body '.resources.sessions[0].children[0].class')" "test"
+eq "resources: no pids" "$(body '[.resources | .. | objects | has("pid")] | any')" "false"
+eq "resources: disks carry labels, not paths" "$(body '.resources.disks[0] | (.labels | join(",")) + "/" + (has("paths") | tostring)')" "\$BOARD_HOME,CP/false"
+eq "resources: unknown fields dropped" "$(body '.resources | has("cmdline")')" "false"
 
 eq "GET / 200" "$(req GET / -D "$T/hdr")" "200"
 grep -q '<meta name="board-mode" content="local">' "$T/body" && ok "page has the local-mode meta" || bad "page has the local-mode meta"
