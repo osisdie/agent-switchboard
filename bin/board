@@ -445,7 +445,7 @@ task_write() {
   shift
   command -v flock >/dev/null 2>&1 || die "flock is required (util-linux)"
   exec 7>>"$tf.lock" || die "cannot open $tf.lock"
-  if flock -w 10 7; then
+  if flock -w "${BOARD_TASK_LOCK_WAIT:-10}" 7; then   # the wait is shortened by tests only
     out="$(jq "$@" "$tf")" && write_atomic "$tf" "$out" && rc=0
   else
     echo "board: task $(basename "$tf" .json) is locked; try again" >&2
@@ -516,7 +516,10 @@ cmd_ask() {
     task_write "$tf" --arg id "$id" --arg stage "$stage" --arg gate "$gate" --argjson now "$now" '
       .gates = ((.gates // []) + [{ stage: $stage, gate: $gate, status: "pending", decision_id: $id,
                                     approved_by: null, approved_at: null }])
-      | .updated_at = $now' || echo "board: ask: could not record the gate on task $task" >&2
+      | .updated_at = $now' || {
+      rm -f "$(dec_path "$id")"   # fail closed: no decision without its gate on the task
+      die "ask: could not record the gate on task $task; nothing was created"
+    } >&2
   fi
   log_event "$(jq -cn --arg id "$id" --arg from "$from" --arg task "$task" --arg gate "$gate" --argjson now "$now" \
     '{ts: $now, type: "ask", id: $id, from: $from} + (if $task == "" then {} else {task_id: $task} end)
@@ -781,7 +784,7 @@ cmd_answer() {
     return 0
   fi
 
-  local gate task_id
+  local gate task_id task_failed=0
   gate="$(jq -r '.gate // empty' "$f")"
   task_id="$(jq -r '.task_id // empty' "$f")"
   if [ -n "$gate" ]; then
@@ -803,10 +806,14 @@ cmd_answer() {
                        | .approved_at = (if $result == "approved" then $now else null end)
                        | .answered_by = $by
                      else . end ]
-          | .updated_at = $now' || echo "board: answer: could not update task $task_id" >&2
+          | .updated_at = $now' || {
+          echo "board: answer: $id is answered, but task $task_id was not updated; run the same answer again" >&2
+          task_failed=1
+        }
       fi
     fi
     echo "$id answered ($gate gate $result)"
+    [ "$task_failed" = 0 ] || exit 1
   else
     echo "$id answered"
   fi
