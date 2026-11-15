@@ -412,7 +412,7 @@ flowchart LR
 
 看板只有在你去看的時候才有用。告警則在你沒在看的時候找上你，並以類似 PagerDuty 的方式一路升級，
 直到有人確認為止。告警由 `bin/board-notify`（引擎：`lib/notify.py`）送出，收集器每一輪都會呼叫它。
-告警**不耗 token**，所以 operator session 被限流時依然照常運作。
+告警**不耗 token**，所以 operator session 受到速率限制時依然照常運作。
 
 ### 等級
 
@@ -429,7 +429,7 @@ flowchart LR
 - **看板連結**：設定了 `board_url`（或 `BOARD_PUBLIC_URL`）時，每則告警都會連到看板上對應的項目
   （`<board_url>/?d=<decision id>`、`?c=`、`?m=`，或看板首頁）。請見「在手機上開啟看板」，以及契約文件的
   「Board links in alerts」。
-- **去重**：同一個 key 在同一個等級最多只送一次。仍未關閉的告警，要過了 `repeat_minutes`（預設 60）
+- **去除重複**：同一個 key 在同一個等級最多只送一次。仍未關閉的告警，要過了 `repeat_minutes`（預設 60）
   才會以相同等級重送。用量告警在每個重設週期裡，每個門檻只觸發一次。
 - **勿擾時段**（預設關閉）：設定 `quiet_hours: "23:00-08:00"`（當地時間）時，只會送出 `urgent`。
   其他告警都會先保留，等勿擾時段結束再送，除非期間已經被確認。
@@ -770,7 +770,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `hooks/board-hook.sh` | 生命週期 hook：寫入 `state/<session_id>.json`、附加到 `events.jsonl`，永遠以 exit 0 結束 |
 | `bin/board` | CLI：`ls`、`snapshot`、`ask`、`task new/stage/ls/show`、`decisions`、`answer`、`mark`、`limit`、`press`、`notify`、`away`、`consensus`、`doctor`。結束碼：3 = 拒絕按鍵，4 = 拒絕回答／投票 |
 | `bin/board-collect` | 不耗 token 的收集器：snapshot、diff，每一輪執行 `board-notify`；首次安裝時用 `--baseline` |
-| `bin/board-notify`、`lib/notify.py` | 告警：`send`、`ack`、`tick`、`test`、`status`。轉接器（slack、desktop、email、line、sns、webhook）、等級、升級、確認、勿擾時段、去重 |
+| `bin/board-notify`、`lib/notify.py` | 告警：`send`、`ack`、`tick`、`test`、`status`。轉接器（slack、desktop、email、line、sns、webhook）、等級、升級、確認、勿擾時段、去除重複 |
 | `hooks/board-statusline-tap.sh` | statusline 包裝器，把 5h／每週用量記錄到 `usage.json`，不改變你的 statusline |
 | `bin/fleet-up` | 依 `fleet.yaml` 啟動整組 session 的冪等啟動器（設定 `serve.enabled` 時也會啟動 `board-serve`） |
 | `bin/board-serve`、`lib/serve.py` | 自架看板：local 模式的頁面 + 建立在 `$BOARD_HOME` 上的 JSON／SSE API，只限 127.0.0.1；`--watch` 供 local 模式的 operator 使用 |
