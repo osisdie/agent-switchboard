@@ -18,6 +18,8 @@ listeners (docs/contract.md, "Local adapter API"):
   GET  /api/state                      the board state (sessions, decisions, tasks, ...)
   GET  /api/events                     Server-Sent Events: the full state on every change
   GET  /api/me                         who is asking: identity, how it was verified, roles
+  GET  /icon.svg, /favicon.png, /favicon.ico, /apple-touch-icon.png, /icons/icon-{192,512}.png,
+       /manifest.webmanifest           icons and the web app manifest (fixed list, same checks)
   POST /api/decisions/<id>/answer      {"answer": "..."}   (via `board answer` / `board press`)
   POST /api/messages                   {"to": "CODE"|"all", "body": "..."}
   POST /api/away                       {"state": "on"|"off", "said": "..."}   (approvers only;
@@ -55,6 +57,19 @@ import prefs  # noqa: E402
 REPO = fleet.REPO
 BOARD = os.path.join(REPO, "bin", "board")
 PAGE = os.path.join(REPO, "artifact", "board.html")
+# Static files: a fixed map from URL path to (file under artifact/, content type). Nothing else
+# under artifact/ is served, and a request path is never joined onto a directory.
+STATIC = {
+    "/icon.svg": ("icon.svg", "image/svg+xml"),
+    "/favicon.png": ("favicon.png", "image/png"),
+    "/favicon.ico": ("favicon.png", "image/png"),
+    "/apple-touch-icon.png": ("apple-touch-icon.png", "image/png"),
+    "/apple-touch-icon-precomposed.png": ("apple-touch-icon.png", "image/png"),
+    "/icons/icon-192.png": ("icons/icon-192.png", "image/png"),
+    "/icons/icon-512.png": ("icons/icon-512.png", "image/png"),
+    "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"),
+}
+STATIC_CACHE = "private, max-age=86400"  # private: behind Access, never cached by a shared proxy
 
 DEFAULT_PORT = 39410
 MAX_BODY = 16 * 1024
@@ -529,6 +544,16 @@ def render_page(nonce):
     head = ('<!doctype html>\n<html lang="en"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">'
             '<meta name="board-mode" content="local">'
+            # Home-screen app (local mode only: the Artifact page cannot serve these files).
+            '<link rel="icon" href="/favicon.png" sizes="32x32" type="image/png">'
+            '<link rel="apple-touch-icon" href="/apple-touch-icon.png">'
+            '<link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">'
+            '<meta name="theme-color" content="#edf0f4" media="(prefers-color-scheme: light)">'
+            '<meta name="theme-color" content="#0f141a" media="(prefers-color-scheme: dark)">'
+            '<meta name="mobile-web-app-capable" content="yes">'
+            '<meta name="apple-mobile-web-app-capable" content="yes">'
+            '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">'
+            '<meta name="apple-mobile-web-app-title" content="Switchboard">'
             '<style nonce="%s">%s</style>\n' % (nonce, RESET_CSS))
     return (head + body + "\n</html>\n").encode("utf-8")
 
@@ -536,7 +561,8 @@ def render_page(nonce):
 def csp(nonce):
     return ("default-src 'none'; script-src 'nonce-%s'; style-src 'self' 'unsafe-inline' "
             "https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self'; "
-            "img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" % nonce)
+            "img-src 'self' data:; manifest-src 'self'; base-uri 'none'; form-action 'none'; "
+            "frame-ancestors 'none'" % nonce)
 
 
 # ------------------------------------------------------------------------- HTTP
@@ -569,8 +595,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(data)
 
-    def common_headers(self):
-        self.send_header("Cache-Control", "no-store")
+    def common_headers(self, cache="no-store"):
+        self.send_header("Cache-Control", cache)
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("X-Frame-Options", "DENY")
@@ -683,12 +709,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.events(ident)
         if path == "/api/me":
             return self.send_json(200, self.me_for(ident, via))
-        if path == "/favicon.ico":
-            self.send_response(204)
-            self.send_header("Content-Length", "0")
-            self.common_headers()
-            self.end_headers()
-            return None
+        if path in STATIC:
+            return self.static(*STATIC[path])
         return self.send_json(404, {"error": "not_found"})
 
     def state_for(self, ident):
@@ -704,6 +726,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
         me = {"identity": ident, "via": "access" if via == "cf-jwt" else "local"}
         me.update(roles_of(fleet.load_fleet(), ident))
         return me
+
+    def static(self, name, ctype):
+        try:
+            with open(os.path.join(REPO, "artifact", name), "rb") as fh:
+                data = fh.read()
+        except OSError:
+            return self.send_json(404, {"error": "not_found"})
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Security-Policy", "default-src 'none'")
+        self.common_headers(cache=STATIC_CACHE)
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(data)
+        return None
 
     def page(self):
         nonce = secrets.token_urlsafe(16)

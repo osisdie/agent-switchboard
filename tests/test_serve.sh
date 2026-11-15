@@ -185,6 +185,63 @@ sed -i 's/^release_managers: .*/release_managers: []/' "$BOARD_CONFIG_DIR/fleet.
 eq "me: empty release_managers falls back to approvers" "$(req GET /api/me >/dev/null; body '(.roles | join(",")) + "/" + (.is_release_manager | tostring)')" "approver,release_manager/true"
 write_cfg ""
 
+# ---------------------------------------------------------------- icons + web app manifest
+echo "static:"
+hdr() { tr -d '\r' < "$T/hdr" | awk -v k="$(tr '[:upper:]' '[:lower:]' <<<"$1")" -F': ' 'tolower($1)==k {print $2}'; }
+for pair in /icon.svg:icon.svg:image/svg+xml /favicon.png:favicon.png:image/png /favicon.ico:favicon.png:image/png \
+            /apple-touch-icon.png:apple-touch-icon.png:image/png /apple-touch-icon-precomposed.png:apple-touch-icon.png:image/png \
+            /icons/icon-192.png:icons/icon-192.png:image/png /icons/icon-512.png:icons/icon-512.png:image/png \
+            /manifest.webmanifest:manifest.webmanifest:application/manifest+json; do
+  IFS=: read -r url file ctype <<<"$pair"
+  eq "GET $url 200" "$(req GET "$url" -D "$T/hdr")" "200"
+  eq "  content type" "$(hdr Content-Type)" "$ctype"
+  eq "  private cache, a day" "$(hdr Cache-Control)" "private, max-age=86400"
+  eq "  locked-down CSP and nosniff" "$(hdr Content-Security-Policy)/$(hdr X-Content-Type-Options)" "default-src 'none'/nosniff"
+  cmp -s "$T/body" "$REPO/artifact/$file" && ok "  the bytes of artifact/$file" || bad "  the bytes of artifact/$file"
+done
+eq "HEAD /apple-touch-icon.png: 200, headers only" "$(req HEAD /apple-touch-icon.png -I)/$(grep -c 'PNG' "$T/body")" "200/0"
+for p in /board.html /artifact/icon.svg /icons/../board.html /icons/icon-999.png /icons/ /manifest.json /lib/serve.py; do
+  eq "GET $p refused" "$(req GET "$p")" "404"
+done
+eq "icon with a foreign Host refused" "$(req GET /icon.svg -H 'Host: evil.example')" "421"
+eq "icon through a proxy refused (no auth bypass)" "$(req GET /favicon.png -H 'X-Forwarded-For: 203.0.113.9')" "403"
+eq "manifest with a foreign Host refused" "$(req GET /manifest.webmanifest -H "Host: evil.example:$PORT")" "421"
+req GET /manifest.webmanifest >/dev/null
+eq "manifest: standalone at /" "$(body '.name + "|" + .short_name + "|" + .display + "|" + .start_url + "|" + .scope')" "Switchboard|Switchboard|standalone|/|/"
+eq "manifest: colors from the board palette" "$(body '.background_color + "|" + .theme_color')" "#edf0f4|#edf0f4"
+eq "manifest: maskable 192 and 512" "$(body '[.icons[] | select(.purpose == "maskable") | .sizes] | join(",")')" "192x192,512x512"
+eq "manifest: every icon is served with its type" "$(body -r '.icons[] | .src + " " + .type' | while read -r src type; do
+  [ "$(req GET "$src" -D "$T/hdr")" = 200 ] && [ "$(hdr Content-Type)" = "$type" ] && echo ok || echo "bad $src"; done | sort -u)" "ok"
+eq "PNG sizes and alpha (iOS ignores transparency)" "$(python3 - "$REPO/artifact" <<'PY'
+import struct, sys
+out = []
+for f in ("favicon.png", "apple-touch-icon.png", "icons/icon-192.png", "icons/icon-512.png"):
+    d = open(sys.argv[1] + "/" + f, "rb").read()
+    w, h, _, ct = struct.unpack(">IIBB", d[16:26])
+    out.append("%s=%dx%d%s" % (f.split("/")[-1], w, h, "a" if ct in (4, 6) else ""))
+print(" ".join(out))
+PY
+)" "favicon.png=32x32a apple-touch-icon.png=180x180 icon-192.png=192x192 icon-512.png=512x512"
+req GET / -D "$T/hdr" >/dev/null
+for tag in '<link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">' '<link rel="apple-touch-icon" href="/apple-touch-icon.png">' \
+           '<link rel="icon" href="/favicon.png" sizes="32x32" type="image/png">' '<meta name="apple-mobile-web-app-capable" content="yes">' \
+           '<meta name="mobile-web-app-capable" content="yes">' '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">' \
+           '<meta name="apple-mobile-web-app-title" content="Switchboard">' \
+           '<meta name="theme-color" content="#edf0f4" media="(prefers-color-scheme: light)">' \
+           '<meta name="theme-color" content="#0f141a" media="(prefers-color-scheme: dark)">'; do
+  grep -qF "$tag" "$T/body" && ok "page head: $tag" || bad "page head: $tag"
+done
+hdr Content-Security-Policy | grep -q "manifest-src 'self'" && ok "page CSP allows the manifest" || bad "page CSP allows the manifest" "$(hdr Content-Security-Policy)"
+grep -q 'rel="manifest"' "$REPO/artifact/board.html" && bad "the Artifact page has no manifest link" || ok "the Artifact page has no manifest link"
+eq "board.html's data: favicon is artifact/icon.svg" "$(python3 - "$REPO/artifact" <<'PY'
+import re, sys, urllib.parse
+page = open(sys.argv[1] + "/board.html", encoding="utf-8").read()
+m = re.search(r'<link rel="icon" type="image/svg\+xml" href="data:image/svg\+xml,([^"]+)">', page)
+svg = open(sys.argv[1] + "/icon.svg", encoding="utf-8").read().strip()
+print("same" if m and urllib.parse.unquote(m.group(1)) == svg else "differs")
+PY
+)" "same"
+
 # ---------------------------------------------------------------- allowlist / traversal / host
 echo "allowlist:"
 for p in /../../etc/passwd /%2e%2e/%2e%2e/etc/passwd /artifact/board.html /lib/serve.py /events.jsonl /api/../snapshot.json /api/state/../../x; do
@@ -329,8 +386,12 @@ for at in "$(date +%s)000" "$(( $(date +%s) + 3600 ))000" "$(( $(date +%s) - 420
     "$(post /api/presence "{\"visible\":true,\"interaction_at\":$at}"; jq -r '.local.interaction_at' "$PRF"; watching)" "200null"
 done
 eq "  idle_ms 1 s: watching" "$(post /api/presence '{"visible":true,"idle_ms":1000}' >/dev/null; watching)" "local"
-t0="$(date +%s%3N)"; post /api/presence '{"visible":true,"idle_ms":60000}' >/dev/null
-eq "  idle_ms is applied to the server's clock" "$(jq -r --argjson t "$t0" '(.local.interaction_at - ($t - 60000)) | (. >= 0 and . < 5000)' "$PRF")" "true"
+# interaction_at must be the server's time of the request minus idle_ms. The request happens
+# between t0 and t1; 2 s either side absorbs runner jitter, far less than the 60 s being proven.
+t0="$(date +%s%3N)"; st="$(post /api/presence '{"visible":true,"idle_ms":60000}')"; t1="$(date +%s%3N)"
+eq "  idle_ms is applied to the server's clock" "$(jq -r --arg st "$st" --argjson t0 "$t0" --argjson t1 "$t1" \
+  '.local.interaction_at as $ia | if $st == "200" and ($ia | type) == "number" and $ia >= $t0 - 62000 and $ia <= $t1 - 58000
+   then "200 in window" else "status \($st), interaction_at \($ia), want \($t0 - 62000)..\($t1 - 58000)" end' "$PRF")" "200 in window"
 eq "  idle_ms 33 min: not watching (idle limit 15 min)" "$(post /api/presence '{"visible":true,"idle_ms":2000000}' >/dev/null; watching)" ""
 eq "  negative idle_ms counts as 0" "$(post /api/presence '{"visible":true,"idle_ms":-99999999}' >/dev/null; watching)" "local"
 eq "heartbeat: hidden" "$(post /api/presence '{"visible":false}')" "200"
@@ -551,6 +612,9 @@ EOF
   done
   eq "garbage JWT refused" "$(treq GET /api/state "${TUNNEL_HDRS[@]}" -H 'Cf-Access-Jwt-Assertion: a.b.c')" "401"
   eq "valid JWT: identity from the token" "$(treq GET /api/state "${TUNNEL_HDRS[@]}" -H "$(jwt good)" >/dev/null; body .me)" "boss@example.com"
+  eq "tunnel: manifest without a token refused" "$(treq GET /manifest.webmanifest "${TUNNEL_HDRS[@]}")" "401"
+  eq "tunnel: touch icon without a token refused" "$(treq GET /apple-touch-icon.png "${TUNNEL_HDRS[@]}")" "401"
+  eq "tunnel: manifest with a token" "$(treq GET /manifest.webmanifest "${TUNNEL_HDRS[@]}" -H "$(jwt good)")" "200"
   eq "tunnel me: approver JWT" "$(treq GET /api/me "${TUNNEL_HDRS[@]}" -H "$(jwt good)")" "200"
   eq "  identity and via from the token" "$(body '.identity + "/" + .via')" "boss@example.com/access"
   eq "  roles" "$(body '(.roles | join(",")) + "/" + (.is_approver | tostring) + "/" + (.is_release_manager | tostring)')" "approver/true/false"

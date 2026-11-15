@@ -11,9 +11,14 @@
     if (own === 'light' || own === 'dark') root.setAttribute('data-theme', own); else own = null;
   }
   window.switchboardTheme = { host: host || null, own };
+  // iOS home-screen app (older iOS has no display-mode media query): see body::before.
+  if (navigator.standalone === true) root.classList.add('standalone');
 })();
 </script>
 <meta name="claude:viewport-fit-sides" content="cover">
+<!-- The favicon inline (artifact/icon.svg, URL-encoded), so it also works on the Artifact page, which
+     cannot serve sibling files. board-serve adds the PNG icons and the web app manifest. -->
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2264%22 height=%2264%22 viewBox=%220 0 64 64%22%3E%3Crect width=%2264%22 height=%2264%22 rx=%2214%22 fill=%22%231d5bb8%22/%3E%3Cg fill=%22%23fbfcfd%22%3E%3Ccircle cx=%2220%22 cy=%2220%22 r=%227.5%22/%3E%3Ccircle cx=%2244%22 cy=%2220%22 r=%227.5%22/%3E%3Ccircle cx=%2220%22 cy=%2244%22 r=%227.5%22/%3E%3Ccircle cx=%2244%22 cy=%2244%22 r=%227.5%22/%3E%3C/g%3E%3Cg fill=%22%230d2a57%22%3E%3Ccircle cx=%2244%22 cy=%2220%22 r=%223%22/%3E%3Ccircle cx=%2220%22 cy=%2244%22 r=%223%22/%3E%3C/g%3E%3Cpath d=%22M20 20C9 50 37 57 44 44%22 fill=%22none%22 stroke=%22%23ffb020%22 stroke-width=%225%22 stroke-linecap=%22round%22/%3E%3Cg fill=%22%23ffb020%22%3E%3Ccircle cx=%2220%22 cy=%2220%22 r=%225.5%22/%3E%3Ccircle cx=%2244%22 cy=%2244%22 r=%225.5%22/%3E%3C/g%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..100,500..800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
@@ -98,6 +103,10 @@ body::before {
   content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px);
   z-index: 10; background: var(--paper);
 }
+/* Home-screen app on iOS: the status bar is black-translucent (white text over the page), so the
+   band under it is dark in both themes. */
+@media (display-mode: standalone) { body::before { background: var(--gate-bg); } }
+:root.standalone body::before { background: var(--gate-bg); }
 .wrap { max-width: 1360px; margin-inline: auto; display: grid; gap: 28px; }
 h1, h2, h3 { font-family: var(--f-display); text-wrap: balance; margin: 0; }
 a { color: var(--cord); }

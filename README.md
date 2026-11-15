@@ -840,6 +840,30 @@ approvers: [local, you@example.com, <your claude.ai user id>]
 release_managers: [you@example.com, <your claude.ai user id>]
 ```
 
+### Add to Home Screen (iPhone)
+
+The self-hosted board installs as a home-screen app. `board-serve` serves the icons
+(`artifact/icon.svg`, `favicon.png`, `apple-touch-icon.png`, `icons/icon-{192,512}.png`) and
+`manifest.webmanifest` (standalone, start URL `/`), and adds the matching head tags to the page.
+These files go through the same Host and identity checks as the page: through the tunnel they sit
+behind Cloudflare Access like everything else.
+
+1. Open the board's tunnel address in Safari and **log in to Cloudflare Access first**. Safari sends
+   the Access cookie with the icon fetches, and the manifest link carries
+   `crossorigin="use-credentials"` (manifests are fetched without cookies otherwise), so adding the
+   board before you log in saves the Access login page instead of the board.
+2. Share → **Add to Home Screen**. The app opens full screen. The status bar is
+   `black-translucent`, so the page puts a dark band under it, and the header and the bottom of the
+   page stay clear of the notch and the home indicator.
+3. When the Access session expires, the app shows the Access login again; log in there.
+
+The Artifact page can't serve sibling files, so it has only the favicon, inlined as a `data:` URI,
+and no manifest. `scripts/render-icons.py` renders the PNGs from the SVGs (headless Chromium).
+
+There is **no service worker**. The board is live data, so offline mode is useless, and a service
+worker behind Access adds ways to fail. Web push on iOS (16.4 and later) would need one, plus VAPID
+keys and the installed app. It is a possible future alert channel, not part of this release.
+
 ## Security model
 
 - **Never share the board org-editable, and never make an approver an Editor.** Editors (and the
@@ -925,16 +949,17 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `bin/board-serve`, `lib/serve.py` | Self-hosted board: the page in local mode + JSON/SSE API over `$BOARD_HOME`, 127.0.0.1 only; `--watch` feeds the local-mode operator |
 | `autostart/` | Windows logon task and systemd user unit |
 | `artifact/board.html` | The board page: claude adapter (Artifact db + user + room) or local adapter (`board-serve`) |
+| `artifact/icon.svg`, `artifact/icons/`, `*.png`, `manifest.webmanifest` | Icons and the web app manifest (home-screen app; served by `board-serve`) |
 | `prompts/board-operator.md` | Standing instructions for the `BOARD` operator session |
 | `snippets/worker-protocol.md` | Paste-in block for every worker session's `CLAUDE.md` |
 | `playbook/` | Lessons for running many Claude Code sessions: SDLC delivery harness, collaboration, publishing, repo hygiene, CLAUDE.md template |
-| `scripts/` | `install.sh`, `setup-dev.sh` (git hooks + gitleaks), `expose-cloudflare.sh` (tunnel + Access steps), `check-readme-sync.py` (README translation structure + bold check, run in CI) |
+| `scripts/` | `install.sh`, `setup-dev.sh` (git hooks + gitleaks), `expose-cloudflare.sh` (tunnel + Access steps), `check-readme-sync.py` (README translation structure + bold check, run in CI), `render-icons.py` (PNG icons from the SVGs) |
 | `.githooks/pre-commit` | refuses `tmp*/` paths; gitleaks on staged changes + banned-terms check |
 | `.githooks/commit-msg` | secret patterns + banned terms in the commit message |
 | `.github/workflows/ci.yml` | CI: gitleaks, shellcheck, tests, readme-sync |
 | `.gitleaks.toml` | gitleaks default rules plus a narrow allowlist for test fixtures |
 | `lib/away.py` | Reads owner-away mode and consensus items for the snapshot and `board-serve` |
-| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), and the optional headless checks of the page's alert links, notifications control, and profile menu and theme (`test_page_links.py`, `test_page_notify.py`, `test_page_profile.py`: need python playwright, skip without it; not run in CI) |
+| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), and the optional headless checks of the page's alert links, notifications control, profile menu and theme, and home-screen app (`test_page_links.py`, `test_page_notify.py`, `test_page_profile.py`, `test_page_pwa.py`: need python playwright, skip without it; not run in CI) |
 | `CONTRIBUTING.md` | Dev setup, tests, and the rule for keeping `README.zh-TW.md` in sync |
 | `fleet.example.yaml`, `.env.example` | Example config |
 
