@@ -687,7 +687,7 @@ class EndToEnd(unittest.TestCase):
         routes |= set(re.findall(r'fullmatch\(r"([^"]+)", path\)', post_src))
         self.assertEqual(routes, {
             "/", "/index.html", "/api/state", "/api/events", "/api/me",
-            "/api/messages", "/api/away", "/api/notify-prefs", "/api/presence",
+            "/api/messages", "/api/away", "/api/notify-prefs", "/api/presence", "/api/alerts/ack",
             "/api/decisions/([^/]+)/answer", "/api/messages/([^/]+)/release"})
         self.assertIn("if path in STATIC:", get_src)
         self.assertNotIn("os.environ", get_src + post_src)

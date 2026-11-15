@@ -181,6 +181,12 @@ jq -n --argjson now "$NOW" '{resets_at: ($now + 7200000), samples: [{t: $now, pc
   burn: {status: "danger", pct_per_hour: 30, hit_at: ($now + 4800000), n: 12, extra: "x"}, computed_at: $now}' > "$BOARD_HOME/usage-samples.json"
 sleep 1.3
 eq "  a new burn rate reaches the state (signature)" "$(req GET /api/state >/dev/null; body '.operator.usage.burn | "\(.status)/\(.pct_per_hour)/\(.n)/\(has("extra"))"')" "danger/30/12/false"
+jq -n '{samples: [], burn: {status: "<b>pwned</b>", pct_per_hour: "x", hit_at: 1, n: 1}}' > "$BOARD_HOME/usage-samples.json"
+sleep 1.3
+eq "  an unknown burn status is dropped" "$(req GET /api/state >/dev/null; body '.operator.usage | has("burn")')" "false"
+jq -n '{samples: [], burn: {status: "ok", pct_per_hour: "fast", hit_at: null, n: 4}}' > "$BOARD_HOME/usage-samples.json"
+sleep 1.3
+eq "  a non-number field becomes null" "$(req GET /api/state >/dev/null; body '.operator.usage.burn | "\(.status)/\(.pct_per_hour)/\(.n)"')" "ok/null/4"
 eq "approver_ids from fleet.yaml" "$(body '.operator.approver_ids | join(",")')" "local,boss@example.com"
 eq "limit null when none" "$(body '.operator.limit')" "null"
 

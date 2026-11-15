@@ -109,7 +109,17 @@ DECISION_KEYS = ("id", "kind", "from", "question", "options", "context", "tool_u
                  # pane questions (an AskUserQuestion picker): source "pane"
                  "source", "questions", "questions_clipped", "pressable", "answer_index", "relay")
 OPERATOR_KEYS = ("heartbeat_at", "version", "operator_session", "account_hint")
-BURN_KEYS = ("status", "pct_per_hour", "hit_at", "n")
+BURN_STATUS = ("danger", "ok", "unknown", "stale")
+
+
+def burn_view(samples_file):
+    """operator.usage.burn from usage-samples.json: a known status and numbers only, else None."""
+    b = samples_file.get("burn") if isinstance(samples_file, dict) else None
+    if not isinstance(b, dict) or b.get("status") not in BURN_STATUS:
+        return None
+    num = lambda v: v if isinstance(v, (int, float)) and not isinstance(v, bool) else None  # noqa: E731
+    return {"status": b["status"], "pct_per_hour": num(b.get("pct_per_hour")), "hit_at": num(b.get("hit_at")),
+            "n": num(b.get("n"))}
 
 
 def log(msg):
@@ -483,9 +493,9 @@ class StateBuilder:
         usage = read_json(self.p("usage.json"))
         if isinstance(usage, dict):
             operator["usage"] = {k: usage.get(k) for k in ("five_hour", "seven_day", "updated_at") if k in usage}
-            burn = (read_json(self.p("usage-samples.json")) or {}).get("burn")
-            if isinstance(burn, dict):
-                operator["usage"]["burn"] = {k: burn.get(k) for k in BURN_KEYS}
+            burn = burn_view(read_json(self.p("usage-samples.json")))
+            if burn:
+                operator["usage"]["burn"] = burn
         lim = limit.active()
         operator["limit"] = {k: lim.get(k) for k in ("hit_at", "kind", "resets_at", "note")} if lim else None
         ledger = read_json(self.p("ledger.json"))
@@ -1226,7 +1236,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         with self.server.write_lock:
             rc, out, err = self.board("ack", "--by", "board:%s" % by, "*")
             if rc != 0 and not (rc == 1 and not err):  # 1 and silent: nothing was open
-                log("board ack failed (rc %d): %s %s" % (rc, err, out))
+                log("board ack failed (rc %d): %s" % (rc, guard.scrub("%s %s" % (err, out))))
                 self.audit(ident, via, "alerts-ack", scope="all", result="error", rc=rc)
                 raise Refused(500, "ack_failed", "the alerts could not be acknowledged")
             n = sum(1 for line in out.splitlines() if line.startswith("acked "))
