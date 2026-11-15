@@ -890,6 +890,77 @@ seqpress tu_m8 "$(mq_q1 | sed 's/✔ Submit/  Done/')"
 eq "no tab bar -> exit 3, nothing sent" "$?/$(keys_sent)" "3/"
 qdone tu_m8
 
+# A slow redraw: question 2 shows only after a few captures -> waited for, then pressed.
+d="$(askq tu_m9 "$Q2F")"; "$B" answer "$d" --options 2,2 --by user-1 >/dev/null
+seqpress tu_m9 "$(mq_q1)" "$(mq_q1)" "$(mq_q1)" "$(mq_q1)" "$(mq_q2)" "$(mq_q2)" "$(mq_review Blue Large)"
+eq "slow redraw: each next screen is awaited -> ok, digits then Submit" "$?/$(keys_sent)" "0/send-keys -t %42 2|send-keys -t %42 2|send-keys -t %42 1|"
+qdone tu_m9
+
+# Stuck on question 1 whose option text quotes question 2 and its labels: question 2 must be the
+# first text after the tab bar, so its digit never goes into question 1.
+d="$(askq tu_ma "$Q2F")"; "$B" answer "$d" --options 2,2 --by user-1 >/dev/null
+Q1Q="$(mq_q1 | sed 's/     natural/     natural (Which size for the banner? Small or Large)/')"
+seqpress tu_ma "$Q1Q"
+eq "question 2 quoted under question 1 does not pass for question 2 -> exit 5, one key" "$?/$(keys_sent)" "5/send-keys -t %42 2|"
+qdone tu_ma
+
+# The form closed after question 1 (no picker footer under question 2) -> no second digit.
+d="$(askq tu_mb "$Q2F")"; "$B" answer "$d" --options 2,2 --by user-1 >/dev/null
+seqpress tu_mb "$(mq_q1)" "$(mq_q1)" "$(mq_q2 | grep -v 'Enter to select')"
+eq "no picker footer under question 2 -> exit 5, one key" "$?/$(keys_sent)" "5/send-keys -t %42 2|"
+qdone tu_mb
+
+# A question whose text has its own "2. Submit answers" line: the review shows two such rows; the
+# first one was once taken, which pressed Cancel and reported success. Now nothing is submitted.
+Q2S="$(jq -c '.[1].question = "Which size for the banner? Reply as\n  2. Submit answers (as drafted)"' <<<"$Q2F")"
+mq_q2s() { mq_head ☒ ☐; printf 'Which size for the banner? Reply as\n  2. Submit answers (as drafted)\n\n❯ 1. Small\n     compact\n  2. Large\n     wide\n  3. Type something.\n\nEnter to select · Tab/Arrow keys to navigate · Esc to cancel\n'; }
+mq_review_s() { mq_head ☒ ☒; printf 'Review your answers\n\n ● Which color for the banner?\n   → Blue\n ● Which size for the banner? Reply as\n  2. Submit answers (as drafted)\n   → Large\n\nReady to submit your answers?\n\n❯ 1. Submit answers\n  2. Cancel\n'; }
+d="$(askq tu_mc "$Q2S")"; "$B" answer "$d" --options 2,2 --by user-1 >/dev/null
+seqpress tu_mc "$(mq_q1)" "$(mq_q1)" "$(mq_q2s)" "$(mq_review_s)"
+eq "two 'N. Submit answers' rows on the review -> exit 5, nothing submitted" "$?/$(keys_sent)" "5/send-keys -t %42 2|send-keys -t %42 2|"
+eq "...stale, not relayed" "$(dj "$d" .status)" "stale"
+qdone tu_mc
+d="$(askq tu_md "$Q2F")"; "$B" answer "$d" --options 2,2 --by user-1 >/dev/null
+seqpress tu_md "$(mq_q1)" "$(mq_q1)" "$(mq_q2)" "$(mq_review Blue Large | sed 's/^❯ 1. Submit answers/  1. Submit answers/; s/^  2. Cancel/❯ 2. Cancel/')"
+eq "Submit row not focused (Cancel is) -> exit 5, nothing submitted" "$?/$(keys_sent)" "5/send-keys -t %42 2|send-keys -t %42 2|"
+qdone tu_md
+d="$(askq tu_me "$Q2F")"; "$B" answer "$d" --options 2,2 --by user-1 >/dev/null
+seqpress tu_me "$(mq_q1)" "$(mq_q1)" "$(mq_q2)" "$(mq_review Blue Large; printf '\nNotes:\n')"
+eq "Submit row not in the last numbered block -> exit 5, nothing submitted" "$?/$(keys_sent)" "5/send-keys -t %42 2|send-keys -t %42 2|"
+qdone tu_me
+
+# Questions that start alike (same first 40 characters, same labels) are not pressable: a screen
+# still on one could pass for the other. A decision forced pressable is still refused by press.
+QSAME="$(jq -cn '[range(2) as $i | {question: ("Which of these two settings should the release keep for item " + ($i + 1 | tostring) + "?"),
+  header: ("Item " + ($i + 1 | tostring)), multiSelect: false, options: [{label: "Keep", description: ""}, {label: "Drop", description: ""}]}]')"
+d="$(askq tu_mf "$QSAME")"
+eq "questions differing past 40 characters: pressable" "$(dj "$d" .pressable)" "true"
+qdone tu_mf
+QPRE="$(jq -c '.[1].question = .[0].question + " Explain."' <<<"$QSAME")"
+d="$(askq tu_mg "$QPRE")"
+eq "one question begins another -> not pressable" "$(dj "$d" .pressable)" "false"
+jq '.pressable = true' "$BOARD_HOME/decisions/$d.json" > "$T/d.x" && mv "$T/d.x" "$BOARD_HOME/decisions/$d.json"
+"$B" answer "$d" --options 1,1 --by user-1 >/dev/null
+: > "$FAKE_TMUX_LOG"
+FAKE_TMUX_SCREEN="$(mq_q1)" press CP answer --expect tu_mg
+eq "...forced pressable: press refuses (questions start alike) -> exit 4, nothing sent" "$?/$(sent_keys)" "4/0"
+qdone tu_mg
+
+# Configured patterns are checked before any key.
+cp "$BOARD_CONFIG_DIR/fleet.yaml" "$T/fleet.yaml.mq"
+d="$(askq tu_mh "$Q2F")"; "$B" answer "$d" --options 2,2 --by user-1 >/dev/null
+printf 'press:\n  review_regex: "(unclosed"\n' >> "$BOARD_CONFIG_DIR/fleet.yaml"
+seqpress tu_mh "$(mq_q1)" "$(mq_q1)" "$(mq_q2)" "$(mq_review Blue Large)"
+eq "an invalid press.review_regex -> exit 3 before any key" "$?/$(keys_sent)" "3/"
+qdone tu_mh
+cp "$T/fleet.yaml.mq" "$BOARD_CONFIG_DIR/fleet.yaml"
+d="$(askq tu_mi "$Q2F")"; "$B" answer "$d" --options 2,2 --by user-1 >/dev/null
+printf 'press:\n  submit_label: ".*"\n' >> "$BOARD_CONFIG_DIR/fleet.yaml"
+seqpress tu_mi "$(mq_q1)" "$(mq_q1)" "$(mq_q2)" "$(mq_review Blue Large)"
+eq "submit_label is literal text: '.*' matches no row -> exit 5, nothing submitted" "$?/$(keys_sent)" "5/send-keys -t %42 2|send-keys -t %42 2|"
+qdone tu_mi
+cp "$T/fleet.yaml.mq" "$BOARD_CONFIG_DIR/fleet.yaml"
+
 # One label cut short -> read-only, even with a short question.
 CLIPL="$(jq -cn --arg l "Option $(printf 'l%.0s' $(seq 1 100))" '[{question: "Which one?", header: "Pick", options: [{label: $l, description: ""}, {label: "No", description: ""}], multiSelect: false}]')"
 d="$(askq tu_q11 "$CLIPL")"

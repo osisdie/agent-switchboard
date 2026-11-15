@@ -159,6 +159,10 @@ JQ_PANE_ANSWER='
       elif any($qs[]; .multiSelect == true) then "multi-select"
       elif any($qs[]; ([ .options[].label | tostring | trim | ascii_downcase ] | unique | length) != (.options | length))
         then "repeated labels"
+      elif ([ $qs[] | .question // "" | tostring | split("…")[0] | split("[REDACTED")[0] | gsub("\\s"; "") ] as $k
+            | any(range(0; $k | length) as $a | range(0; $k | length) as $b | select($a != $b) | [$a, $b];
+                  . as $p | $k[$p[1]] | startswith($k[$p[0]])))
+        then "questions start alike"
       else "ok" end;
 '
 
@@ -1052,10 +1056,18 @@ press_free_text() {
 # Never Enter. A check that fails before the first key exits 3; after it, 5 (partial, stale).
 press_multi() {
   local pane="$1" sf="$2" df="$3" sha="$4" lines="$5"
-  local tabbar review submit n i key sent=0 raw flat rest q lab lbl seg digit
-  tabbar="$(cfg_get press.tabbar_regex)"; review="$(cfg_get press.review_regex)"; submit="$(cfg_get press.submit_label)"
-  [ -n "$tabbar" ] && [ -n "$review" ] && [ -n "$submit" ] \
-    || refuse "press.tabbar_regex, press.review_regex or press.submit_label is not configured" "$pane"
+  local tabbar review submit footer n i t tries key sent=0 raw="" prev="" why="" digit re
+  tabbar="$(cfg_get press.tabbar_regex)"; review="$(cfg_get press.review_regex)"
+  submit="$(cfg_get press.submit_label)"; footer="$(cfg_get press.question_regex)"
+  # Configured patterns are checked before any key: each must be a valid extended regex (grep -E
+  # exits 2 on a bad one), and the submit label is plain text, matched literally (never a pattern).
+  for re in "$tabbar" "$review" "$footer"; do
+    [ -n "$re" ] || refuse "press.tabbar_regex, press.review_regex or press.question_regex is not configured" "$pane"
+    grep -Eq -- "$re" <<<'' 2>/dev/null; [ $? -le 1 ] || refuse "a press.*_regex setting is not a valid pattern" "$pane"
+  done
+  if [ -z "$submit" ] || [ "${#submit}" -gt 80 ] || [[ $submit =~ [[:cntrl:]] ]]; then
+    refuse "press.submit_label must be plain text (1-80 characters)" "$pane"
+  fi
   n="$(jq -r '.questions | length' "$df")"
   fail() { if [ "$sent" = 0 ]; then refuse "$1" "$pane"; else partial "$1" "$pane"; fi; }
   same_prompt() {
@@ -1064,56 +1076,91 @@ press_multi() {
   }
   form_region() {  # the last LINES non-blank-trailing lines, after the last tab bar; fails without one
     tmux capture-pane -p -t "$pane" 2>/dev/null | sed -e :a -e '/^[[:space:]]*$/{$d;N;ba' -e '}' | tail -n "$lines" \
-      | awk -v re="$tabbar" '$0 ~ re { buf = ""; found = 1; next } found { buf = buf $0 "\n" }
-                             END { if (!found) exit 1; printf "%s", buf }'
+      | SB_TABBAR="$tabbar" awk '$0 ~ ENVIRON["SB_TABBAR"] { buf = ""; found = 1; next } found { buf = buf $0 "\n" }
+                                 END { if (!found) exit 1; printf "%s", buf }'
   }
-  qstart() {  # the start of question I as stored (before any clip "…" or [REDACTED]), no whitespace
-    local t
-    t="$(jq -r --argjson i "$1" '.questions[$i].question // "" | split("…")[0] | split("[REDACTED")[0]' "$df")"
-    t="$(tr -d '[:space:]' <<<"$t")"
-    printf '%s' "${t:0:40}"
+  qkey() {  # question I as stored, up to any clip "…" or [REDACTED], no whitespace (the hook's qkey)
+    jq -r --argjson i "$1" '.questions[$i].question // "" | split("…")[0] | split("[REDACTED")[0] | gsub("\\s"; "")' "$df"
   }
-  for ((i = 0; i < n; i++)); do
-    raw="$(form_region)" || fail "no question form visible for question $((i + 1))"
-    flat="$(tr -d '[:space:]' <<<"$raw")"
-    q="$(qstart "$i")"
-    [ -n "$q" ] || fail "question $((i + 1)) has no text to check on screen"
-    [[ $flat == *"$q"* ]] || fail "question $((i + 1)) ('$q') is not the one showing"
-    rest="${flat#*"$q"}"
+  # check_question I — RAW is a fresh capture showing question I: after the tab bar, its text comes
+  # first (all of it, or the stored start of a clipped one), then its labels in order, then the
+  # picker footer; and it is not the screen the previous digit was sent on. Sets WHY when not.
+  check_question() {
+    local q flat rest lab
+    raw="$(form_region)" || { why="no question form visible for question $(($1 + 1))"; return 1; }
+    [ "$1" -gt 0 ] && [ "$raw" = "$prev" ] && { why="question $(($1 + 1)) did not appear (the screen did not change)"; return 1; }
+    q="$(qkey "$1")"; flat="$(tr -d '[:space:]' <<<"$raw")"
+    [ "${#q}" -ge 8 ] || [ "$(jq -r --argjson i "$1" '.questions[$i].question // "" | gsub("\\s"; "")' "$df")" = "$q" ] \
+      || { why="too little of question $(($1 + 1)) to check on screen"; return 1; }
+    [ -n "$q" ] && [[ $flat == "$q"* ]] || { why="question $(($1 + 1)) is not the one showing"; return 1; }
+    rest="${flat#"$q"}"
     while IFS= read -r lab; do
       lab="$(tr -d '[:space:]' <<<"$lab")"
       [ -n "$lab" ] || continue
-      [[ $rest == *"$lab"* ]] || fail "the options of question $((i + 1)) are not showing"
+      [[ $rest == *"$lab"* ]] || { why="the options of question $(($1 + 1)) are not showing"; return 1; }
       rest="${rest#*"$lab"}"
-    done < <(jq -r --argjson i "$i" '.questions[$i].options[].label' "$df")
+    done < <(jq -r --argjson i "$1" '.questions[$i].options[].label' "$df")
+    grep -Eq -- "$footer" <<<"$raw" || { why="the picker of question $(($1 + 1)) is not open"; return 1; }
+  }
+  # check_review — RAW is a fresh capture of the review screen: every question in order, exactly
+  # one "→ label" line per question equal to the chosen label, and one Submit row: the focused row
+  # of the last numbered block (after the answers). Sets DIGIT, or WHY when not.
+  check_review() {
+    local q flat rest seg lbl
+    raw="$(form_region)" || { why="no review screen after the last question"; return 1; }
+    [ "$raw" != "$prev" ] || { why="the review screen did not appear (the screen did not change)"; return 1; }
+    grep -Eq -- "$review" <<<"$raw" || { why="the review screen did not appear"; return 1; }
+    flat="$(tr -d '[:space:]' <<<"$raw")"; rest="$flat"
+    for ((t = 0; t < n; t++)); do
+      q="$(qkey "$t")"
+      [[ $rest == *"$q"* ]] || { why="the review screen does not show question $((t + 1))"; return 1; }
+      rest="${rest#*"$q"}"
+    done
+    # "→ Redwood" never passes for "Red", and a label the screen wrapped fails safe.
+    local -a shown=()
+    while IFS= read -r seg; do shown+=("$(tr -d '[:space:]' <<<"${seg#*→}")"); done < <(grep -E '^[[:space:]]*→' <<<"$raw")
+    [ "${#shown[@]}" = "$n" ] || { why="the review screen shows ${#shown[@]} answers for $n questions"; return 1; }
+    for ((t = 0; t < n; t++)); do
+      lbl="$(jq -r --argjson i "$t" '.questions[$i].options[.answer_options[$i] - 1].label' "$df")"
+      [ "${shown[$t]}" = "$(tr -d '[:space:]' <<<"$lbl")" ] \
+        || { why="the review screen shows another answer for question $((t + 1))"; return 1; }
+    done
+    digit="$(SB_SUBMIT="$submit" awk '
+      BEGIN { lab = ENVIRON["SB_SUBMIT"] }
+      { l[NR] = $0; if ($0 ~ /^[[:space:]]*→/) last = NR; if (index($0, lab)) { cnt++; row = NR } }
+      END {
+        if (cnt != 1 || row <= last) exit 1
+        s = l[row]
+        if (!match(s, /^[[:space:]]*❯[[:space:]]*[1-9]\.[[:space:]]*/)) exit 1
+        rest = substr(s, RLENGTH + 1); sub(/[[:space:]]+$/, "", rest)
+        if (rest != lab) exit 1
+        for (i = row + 1; i <= NR; i++)
+          if (l[i] !~ /^[[:space:]]*$/ && l[i] !~ /^[[:space:]]*[1-9]\.[[:space:]]/) exit 1
+        d = s; sub(/^[[:space:]]*❯[[:space:]]*/, "", d); print substr(d, 1, 1)
+      }' <<<"$raw")" \
+      && [ -n "$digit" ] || { why="no single focused \"$submit\" row at the end of the review screen"; return 1; }
+  }
+  # await CHECK [ARG] — run CHECK on fresh captures until it passes: the first question once (no
+  # key sent yet), every later screen up to BOARD_PRESS_TRIES times (a slow redraw), never past a
+  # prompt change.
+  await() {
+    tries=1; [ "$sent" = 1 ] && tries="${BOARD_PRESS_TRIES:-20}"
+    for ((i2 = 0; i2 < tries; i2++)); do
+      [ "$i2" -gt 0 ] && sleep "${BOARD_PRESS_SETTLE:-0.15}"
+      same_prompt || fail "pending prompt changed"
+      "$@" && return 0
+    done
+    return 1
+  }
+  local i2
+  for ((i = 0; i < n; i++)); do
+    await check_question "$i" || fail "$why"
     same_prompt || fail "pending prompt changed (question $((i + 1)))"
     key="$(jq -r --argjson i "$i" '.answer_options[$i]' "$df")"
     tmux send-keys -t "$pane" "$key" || fail "send-keys failed (question $((i + 1)))"
-    sent=1
-    sleep "${BOARD_PRESS_SETTLE:-0.3}"
+    sent=1; prev="$raw"
   done
-  # The review screen: every question with the chosen label, in order, then the submit row.
-  raw="$(form_region)" || partial "no review screen after the last question; nothing submitted" "$pane"
-  grep -Eq -- "$review" <<<"$raw" || partial "the review screen did not appear; nothing submitted" "$pane"
-  flat="$(tr -d '[:space:]' <<<"$raw")"
-  rest="$flat"
-  for ((i = 0; i < n; i++)); do
-    q="$(qstart "$i")"
-    [[ $rest == *"$q"* ]] || partial "the review screen does not show question $((i + 1)); nothing submitted" "$pane"
-    rest="${rest#*"$q"}"
-  done
-  # One "→ label" line per question, in order, each exactly the chosen label (whitespace aside):
-  # "→ Redwood" never passes for "Red", and a label the screen wrapped fails safe.
-  local -a shown=()
-  while IFS= read -r seg; do shown+=("$(tr -d '[:space:]' <<<"${seg#*→}")"); done < <(grep -E '^[[:space:]]*→' <<<"$raw")
-  [ "${#shown[@]}" = "$n" ] || partial "the review screen shows ${#shown[@]} answers for $n questions; nothing submitted" "$pane"
-  for ((i = 0; i < n; i++)); do
-    lbl="$(jq -r --argjson i "$i" '.questions[$i].options[.answer_options[$i] - 1].label' "$df")"
-    lbl="$(tr -d '[:space:]' <<<"$lbl")"
-    [ "${shown[$i]}" = "$lbl" ] || partial "the review screen shows another answer for question $((i + 1)); nothing submitted" "$pane"
-  done
-  digit="$(sed -nE "s/^[[:space:]]*(❯|>|›)?[[:space:]]*([0-9])\.[[:space:]]*(${submit}).*/\2/p" <<<"$raw" | head -n 1)"
-  [ -n "$digit" ] || partial "no \"Submit answers\" row on the review screen; nothing submitted" "$pane"
+  await check_review || partial "$why; nothing submitted" "$pane"
   same_prompt || partial "pending prompt changed before submitting" "$pane"
   tmux send-keys -t "$pane" "$digit" || partial "send-keys failed (submit)" "$pane"
 }

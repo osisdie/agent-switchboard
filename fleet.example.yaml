@@ -72,12 +72,12 @@ serve:
 # match `prompt_regex` (permission prompts) or `question_regex` (an AskUserQuestion picker; its
 # option is chosen with its number key, free text through "Type something"). A form of several
 # questions: only lines after its tab bar (`tabbar_regex`) count; it ends on a review screen
-# (`review_regex`) whose `submit_label` row is picked by its number.
+# (`review_regex`) whose `submit_label` row (plain text, not a pattern) is picked by its number.
 press:
   prompt_regex: 'Do you want to (proceed|make this edit|create|overwrite|allow)'
   question_regex: 'Enter to select.*navigate'
   free_text_label: 'Type something'
-  tabbar_regex: '(☐|☒).*Submit'
+  tabbar_regex: '^[[:space:]]*←.*(☐|☒).*Submit.*→'
   review_regex: 'Review your answers'
   submit_label: 'Submit answers'
   lines: 30

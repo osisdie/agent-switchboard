@@ -40,7 +40,7 @@ DEFAULTS = {
         "free_text_label": r"Type something",
         # A form of several questions: the tab bar above it ("←  ☐ Color  ☐ Size  ✔ Submit  →"), the
         # review screen after the last question, and its submit row ("1. Submit answers").
-        "tabbar_regex": r"(☐|☒).*Submit",
+        "tabbar_regex": r"^[[:space:]]*←.*(☐|☒).*Submit.*→",
         "review_regex": r"Review your answers",
         "submit_label": r"Submit answers",
     },
