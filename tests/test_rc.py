@@ -796,8 +796,10 @@ class Round2Test(unittest.TestCase):
         self.assertEqual(sent(), [])
         self.assertFalse(actions.same_process({"procStart": "1"}, live.pid))
         self.assertTrue(actions.same_process({"procStart": proc_start(live.pid)}, live.pid))
-        self.assertTrue(actions.same_process({"startedAt": int(time.time() * 1000)}, live.pid))
-        self.assertFalse(actions.same_process({"startedAt": 1}, live.pid))
+        # Without procStart only the zombie check applies: a wall-clock startedAt is never compared
+        # (it drifts after the host sleeps).
+        self.assertTrue(actions.same_process({"startedAt": 1}, live.pid))
+        self.assertFalse(actions.same_process({"procStart": proc_start(live.pid)}, 999999999))
 
     def test_compact_unconfirmed_never_retried(self):
         Live()
@@ -815,6 +817,74 @@ class Round2Test(unittest.TestCase):
         snap = jload(os.path.join(HOME, "snapshot.json"))["sessions"]
         self.assertEqual(actions.auto_candidates(snap, rc.fleet.load_fleet(), HOME, rc.now_ms()), [])
         self.assertFalse(os.path.exists(actions.lock_path(HOME, "CP")))
+
+
+class Round3Test(unittest.TestCase):
+    """rc_dialog without an echo on screen, and what counts as freshly printed (review round 3)."""
+
+    def setUp(self):
+        reset_home()
+        write_fleet()
+
+    def tearDown(self):
+        close_lives()
+
+    c = {}
+    U = "● Unknown command: /remote-control"
+
+    def lines(self, s):
+        return s.split("\n")
+
+    def test_no_echo_scrollback_and_user_picker(self):
+        # The echo scrolled away: old consent words in the scrollback and a picker of the user's own.
+        noecho = "\n".join(HEAD + ["  To turn it on: Enable Remote Control, or pick Never mind", "   Select model",
+                                    "   ❯ 1. Default", "     2. Other", "   Enter to confirm · Esc to exit"])
+        self.assertIsNone(actions.rc_dialog(self.lines(noecho), self.c))
+        noecho2 = "\n".join(HEAD + ["  Disconnect this session", "  older", "   Pick one", "   ❯ Yes", "     No",
+                                     "   Enter to select · Esc"])
+        self.assertIsNone(actions.rc_dialog(self.lines(noecho2), self.c))
+        withecho = "\n".join(HEAD + ["  Disconnect this session", "❯ do it", "   Pick one", "   ❯ Yes",
+                                      "   Enter to select · Esc"])
+        self.assertIsNone(actions.rc_dialog(self.lines(withecho), self.c))
+        odd = dialog("Continue").replace("Enter to select · Esc to continue", "↑↓ to navigate · Esc to go back")
+        self.assertIsNone(actions.rc_dialog(self.lines(odd), self.c))
+        self.assertIsNone(actions.rc_dialog(self.lines(dialog("Continue") + "\n  esc to interrupt"), self.c))
+        self.assertEqual(actions.rc_dialog(self.lines(CONSENT), self.c), "consent")
+        self.assertEqual(actions.rc_dialog(self.lines(dialog("Continue")), self.c), "disconnect")
+        # The dialog itself, its echo gone and a blank line above its footer, is still recognized.
+        bare = "\n".join(["  older output", "", "   Remote Control", "   ❯ Disconnect this session",
+                           "     Show QR code   Scan with your phone", "     Continue", "", "   Enter to select · Esc to continue"])
+        self.assertEqual(actions.rc_dialog(self.lines(bare), self.c), "disconnect")
+        # ... and the flow sends no Escape into the user's picker.
+        Live()
+        script([IDLE, TYPED, noecho])
+        rc_, out, _ = board("rc", "on", "CP")
+        self.assertEqual((rc_, sent()), (6, ["-l|--|/remote-control", "Enter"]), out)
+        self.assertNotIn("consent", out)
+
+    def test_fresh_counts_not_positions(self):
+        L = self.lines
+        before = screen("❯ /remote-control", above=[self.U, "  s1", "  s2", "  s3", "  s4"])
+        after = screen(above=[self.U, "❯ /remote-control", "  ⎿  Remote Control connecting…"])
+        self.assertFalse(actions.fresh_above_box(L(after), L(before), self.c, "rc_unavailable_regex"))
+        before2 = screen("❯ /remote-control", above=[self.U])
+        after2 = screen(above=[self.U, "❯ /remote-control", self.U])
+        self.assertTrue(actions.fresh_above_box(L(after2), L(before2), self.c, "rc_unavailable_regex"))
+        before3 = screen("❯ /remote-control", above=[self.U, "a", "b", "c", "d"])
+        after3 = screen(above=[self.U, "a", "b", "c", "d", "❯ /remote-control"])
+        self.assertFalse(actions.fresh_above_box(L(after3), L(before3), self.c, "rc_unavailable_regex"))
+
+    def test_late_dialog_is_left_alone(self):
+        # A dialog that opens after rc_confirm_seconds: unconfirmed, nothing more sent; a second
+        # attempt finds no prompt box and sends nothing.
+        Live()
+        after = screen(above=["❯ /remote-control"])
+        script([IDLE, TYPED, CONSENT], seq={"2": [after] * 40 + [CONSENT]})
+        rc_, out, _ = board("rc", "on", "CP")
+        self.assertEqual((rc_, sent()), (6, ["-l|--|/remote-control", "Enter"]), out)
+        script([CONSENT])
+        rc_, out, _ = board("rc", "apply", "CP")
+        self.assertEqual((rc_, sent()), (3, []), out)
 
 
 class CompactTest(unittest.TestCase):

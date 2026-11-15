@@ -430,35 +430,22 @@ def _proc_stat(pid):
         return None
 
 
-def _boot_ms():
-    try:
-        with open("/proc/stat", encoding="utf-8") as fh:
-            for line in fh:
-                if line.startswith("btime "):
-                    return int(line.split()[1]) * 1000
-    except (OSError, ValueError):
-        pass
-    return None
-
-
 def same_process(reg, pid):
-    """Is PID still the process the registry entry describes? Not a zombie, and its start time
-    matches the registry's procStart (clock ticks, when given) or, else, startedAt (ms, within
-    5 minutes): a reused pid is another process."""
+    """Is PID still the process the registry entry describes? Not a zombie, and when the registry
+    has procStart (Claude Code 2.1.x writes it: clock ticks since boot), the start time in
+    /proc/<pid>/stat matches it: a reused pid is another process. Without procStart only the
+    zombie check applies (a wall-clock comparison with startedAt would drift after the host
+    sleeps and refuse every time)."""
     st = _proc_stat(pid)
     if st is None or st[0] in ("Z", "X"):
         return False
     proc_start = reg.get("procStart")
-    if proc_start not in (None, ""):
-        try:
-            return int(proc_start) == st[1]
-        except (TypeError, ValueError):
-            return False
-    started, boot = reg.get("startedAt"), _boot_ms()
-    if isinstance(started, int) and not isinstance(started, bool) and boot:
-        hz = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
-        return abs(boot + st[1] * 1000 // hz - started) <= 300000
-    return True
+    if proc_start in (None, ""):
+        return True
+    try:
+        return int(proc_start) == st[1]
+    except (TypeError, ValueError):
+        return False
 
 
 def session_now(row):
@@ -539,42 +526,56 @@ def box_visible(lines, c):
                for i in range(1, len(lines) - 1))
 
 
+def _row_rx(c, key):
+    """A dialog row pattern, matched against a line with the focus mark turned into a space."""
+    rx = _rx(c, key)
+    return lambda ln: bool(rx.search(ln.replace("\u276f", " ")))
+
+
 def rc_dialog(lines, c):
     """"disconnect" or "consent" when one of Claude's Remote Control dialogs is open, else None.
-    All of: no input box anywhere on screen, nothing running (busy_regex), and below the last
-    echoed command line a dialog footer (dialog_regex) with, above it, the dialog's own rows: the
-    disconnect label (rc_disconnect_label, a whole row) or the consent dialog (its title and
-    "Never mind"). Text in the scrollback never counts: only what is below the last echo."""
+    All of: no input box anywhere on screen, nothing running (busy_regex), a dialog footer
+    (dialog_regex) and, above it, the dialog's own rows, each a whole row of its own: "Disconnect
+    this session", "Show QR code" and "Continue", or "Enable Remote Control" and "Never mind".
+    Only the lines below the last echoed command count; with no echo on screen (it scrolled away),
+    only the block right above the footer (up to 8 lines, to the first blank line). Text in the
+    scrollback never counts."""
     if not lines or box_visible(lines, c) or _has(c, "busy_regex", lines):
         return None
-    start = 0
-    for k in range(len(lines) - 1, -1, -1):
-        if lines[k].startswith("\u276f"):
-            start = k + 1
-            break
-    region = lines[start:]
-    foot = [k for k, ln in enumerate(region) if _rx(c, "dialog_regex").search(ln)]
+    foot = [k for k, ln in enumerate(lines) if _rx(c, "dialog_regex").search(ln)]
     if not foot:
         return None
-    body = region[:foot[-1]]
-    label = _rx(c, "rc_disconnect_label")
-    if any(label.search(ln.replace("\u276f", " ")) for ln in body):
+    f = foot[-1]
+    echo = next((k for k in range(f - 1, -1, -1) if lines[k].startswith("\u276f")), None)
+    if echo is not None:
+        body = lines[echo + 1:f]
+    else:
+        k = f - 1
+        while k >= 0 and not lines[k].strip():
+            k -= 1
+        top = k
+        while top >= 0 and lines[top].strip() and k - top < 8:
+            top -= 1
+        body = lines[top + 1:k + 1]
+    has = lambda key: any(_row_rx(c, key)(ln) for ln in body)  # noqa: E731
+    if has("rc_disconnect_label") and has("rc_qr_regex") and has("rc_continue_regex"):
         return "disconnect"
-    if _has(c, "rc_consent_title_regex", body) and _has(c, "rc_consent_regex", body):
+    if has("rc_consent_title_regex") and has("rc_consent_regex"):
         return "consent"
     return None
 
 
 def fresh_above_box(lines, before, c, key, window=4):
-    """Does KEY match in the few lines right above the input box now, and not in the same place
-    on the screen captured before Enter? (What the command just printed; scrollback with the
-    same words does not count.)"""
-    def near(ls):
-        i, _ = prompt_box(ls or [], c)
-        if i is None:
-            return []
-        return ls[max(0, i - 1 - window):i - 1]
-    return _has(c, key, near(lines)) and not _has(c, key, near(before))
+    """Did the command just print KEY? Only when KEY shows on more lines of the screen than it
+    did right before Enter. A line already there (scrollback, even right above the box, or moved
+    up by the redraw) never counts; when an old one scrolls off as a new one appears, the counts
+    tie and the answer is no: the caller then reports unconfirmed, the safe side. (window: kept
+    for callers; unused.)"""
+    rx = _rx(c, key)
+
+    def count(ls):
+        return sum(1 for ln in ls or [] if rx.search(ln))
+    return count(lines) > count(before)
 
 
 def _confirm_rc_on(row, pane, c, nlines, before):

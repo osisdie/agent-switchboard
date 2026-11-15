@@ -65,8 +65,11 @@ DEFAULTS = {
         "rc_confirm_seconds": 10,
         # Matched against the focused row of the dialog only (the text after the focus mark).
         "rc_disconnect_label": r"^\s*\u276f?\s*Disconnect this session\s*$",
-        "rc_consent_regex": r"Never mind",
-        "rc_consent_title_regex": r"Enable Remote Control",
+        # Rows of the consent and Disconnect dialogs: each a whole row of its own.
+        "rc_consent_regex": r"^\s*Never mind\b",
+        "rc_consent_title_regex": r"^\s*Enable Remote Control\b",
+        "rc_qr_regex": r"^\s*Show QR code\b",
+        "rc_continue_regex": r"^\s*Continue\s*$",
         "rc_unavailable_regex": r"Unknown command: /remote-control",
         "compact_running_regex": r"Compacting conversation",
         "compact_done_regex": r"\u23bf\s+Compacted",
