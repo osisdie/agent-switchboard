@@ -576,8 +576,15 @@ def cmd_approve(home, argv):
     now = now_ms()
     ttl = request_ttl_ms()
     with locked(home):
+        # owners first, before the key is even looked up: a non-owner gets the same refusal for an
+        # unknown id as for a real one, so approve cannot be used to probe which ids exist
+        if "owner" not in roles(fleet.load_fleet(), by):
+            try:
+                who = load(home, kid).get("owner")
+            except Bad:
+                who = None
+            _deny(home, "approve", by, via, "--by %s is not an owner (fleet.yaml owners)" % by, str(kid)[:40], who)
         rec = load(home, kid)
-        _owner_only(home, "approve", by, via, rec)
         if lapsed(rec, now, ttl):
             audit(home, {"action": "approve", "by": by, "via": via, "key_id": kid, "owner": rec.get("owner"),
                          "result": "refused", "reason": "lapsed", "request_age_ms": now - (rec.get("created_at") or 0)})
@@ -798,7 +805,8 @@ def main(argv):
         sys.stderr.write("board apikey: unknown command %r (create request approve ls show revoke rotate expire "
                          "scopes)\n" % cmd[:40])
         return 2
-    if any(a in ("-h", "--help") for a in argv[2:]):
+    # help only as the first word after the command: a value such as --name --help is data, not a flag
+    if len(argv) > 2 and argv[2] in ("-h", "--help"):
         print(usage())
         return 0
     try:

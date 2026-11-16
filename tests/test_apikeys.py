@@ -361,6 +361,22 @@ class Authorization(Base):
                 self.assertEqual(record(kid), before)
         self.assertEqual(len(os.listdir(os.path.join(home(), "apikeys"))), 1)
 
+    def test_approve_does_not_reveal_which_ids_exist(self):
+        req = json.loads(board("request", "--name", "probe", "--by", RM, "--json", check=0).stdout)
+        for by in (APPROVER, VIEWER, "local"):
+            real = board("approve", req["id"], "--by", by)
+            unknown = board("approve", "zzzzzzzzzzzz", "--by", by)
+            self.assertEqual((real.returncode, real.stdout), (unknown.returncode, unknown.stdout), by)
+            self.assertEqual(real.returncode, 4, by)
+            self.assertEqual(real.stderr, unknown.stderr, by)
+        self.assertEqual(apikeys.status(record(req["id"]), NOW), "pending")
+
+    def test_help_only_as_the_first_word(self):
+        r = board("create", "--name", "--help", "--owner", VIEWER, "--by", OWNER, "--json")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout)["name"], "--help")
+        self.assertIn("Usage", board("create", "--help").stdout)
+
     def test_no_owners_fails_closed(self):
         with open(os.path.join(CFG, "fleet.yaml"), "w") as fh:
             fh.write("approvers: [%s]\n" % APPROVER)
