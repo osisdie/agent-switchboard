@@ -437,6 +437,18 @@ class SessionPathTests(Base):
         self.assertEqual(rc, 2)
 
 
+class PageSyncTests(unittest.TestCase):
+    def test_board_page_q4_text_is_the_relay_text(self):
+        """The board's take/release confirm shows the Q4 text (artifact/board.html TK_AUTH); it must
+        be exactly writes.AUTHORIZES, the words of the [BOARD ticket] relay. Browser-free (the page
+        tests that click through it need Chromium and are not in CI)."""
+        with open(os.path.join(REPO, "artifact", "board.html"), encoding="utf-8") as fh:
+            page = fh.read()
+        self.assertIn("  const TK_AUTH = '%s';\n" % writes.AUTHORIZES, page)
+        self.assertEqual(page.count("const TK_AUTH = "), 1)
+        self.assertNotIn("'", writes.AUTHORIZES, "a quote would end the JS string")
+
+
 class WriteTests(Base):
     def test_comment_transition_assign(self):
         cf = os.path.join(TMP, "note.txt")
@@ -546,6 +558,17 @@ class RouteTests(Base):
         self.assertEqual(st, 200, out)
         self.assertEqual(out["status"], "taken")
         self.assertEqual([w["op"] for w in self.tr.writes], ["comment", "assign"])
+        with urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:%d/api/tickets/WEB-1" % self.port,
+                                                           headers={"X-Board": "1"}), timeout=30) as r:
+            got = json.loads(r.read())
+        self.assertEqual({k: got["link"][k] for k in ("status", "session", "task_id", "taken_by")},
+                         {"status": "active", "session": "API", "task_id": out["task_id"], "taken_by": "local"})
+        self.assertEqual(got["tracker"], {"capabilities": ["read", "comment", "transition", "assign"],
+                                          "states": ["backlog", "todo", "in_progress", "done", "cancelled"],
+                                          "take": {"comment": True, "transition": "in_progress", "assign": "Board Bot"}})
+        with urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:%d/api/tickets/WEB-2" % self.port,
+                                                           headers={"X-Board": "1"}), timeout=30) as r:
+            self.assertIsNone(json.loads(r.read())["link"])
         st, again = self.post("/api/tickets/take", {"ref": "WEB-1", "session": "WEB"})
         self.assertEqual((st, again["error"], again["task_id"], again["session"]), (409, "already_taken", out["task_id"], "API"))
         st, r = self.post("/api/tickets/WEB-1/transition", {"to": "bogus"})

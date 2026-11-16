@@ -1327,7 +1327,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                              "result": "refused", "reason": "not an approver or release manager"})
             return self.send_json(403, {"error": "not_approver", "detail": "only approvers and release managers read tickets"})
         try:
-            t = tickets.get(ref, by=by, via=via, home=self.server.home)
+            reg = tickets.load(cfg)
+            t = tickets.get(ref, by=by, via=via, registry=reg, home=self.server.home)
+            t = dict(t, link=self.ticket_link(t), tracker=self.ticket_tracker(reg, t))
         except tickets.TicketError as exc:
             extra = {"Retry-After": str(int(exc.retry_after))} if exc.status == 429 and exc.retry_after else None
             return self.send_json(exc.status, exc.to_json(), extra)
@@ -1335,6 +1337,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
             log("tickets: unexpected %s" % type(exc).__name__)
             return self.send_json(502, {"error": "ticket_upstream", "detail": "unexpected error"})
         return self.send_json(200, self.viewer_mask(tickets.redact_tree(t), ident, via, cfg))
+
+    def ticket_link(self, t):
+        """The newest take of this ticket (tickets/links/), for the board's ticket panel: who has it."""
+        from tickets import writes  # noqa: WPS433
+        rows = writes.links(self.server.home, "%s:%s" % (t["provider"], t["key"]))
+        if not rows:
+            return None
+        return {k: rows[0].get(k) for k in ("status", "task_id", "session", "taken_by", "taken_at")}
+
+    @staticmethod
+    def ticket_tracker(reg, t):
+        """What the panel may offer: the tracker's writes, its states and what a take does upstream."""
+        prov = reg.by_name(t["provider"])
+        if prov is None:
+            return None
+        spec = prov.take_spec()
+        return {"capabilities": list(prov.capabilities), "states": prov.transitions(t["key"]),
+                "take": {"comment": bool(spec.get("comment")), "transition": spec.get("transition"),
+                         "assign": spec.get("assign")}}
 
     def ticket_reply(self, fn, ident=None, via=None):
         """Run a ticket write; TicketError -> its status and {error, detail, ...}."""

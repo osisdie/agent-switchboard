@@ -589,7 +589,7 @@ $BOARD_HOME/
 | `GET /api/me` | who is asking, from the verified identity and `fleet.yaml` only (never from request headers): see "Who am I" below. Same `Host` and identity checks as `/api/state` (no or bad JWT on the tunnel → 401, a forwarded request on the local listener → 403) |
 | `GET /icon.svg`, `/favicon.png`, `/favicon.ico` (the PNG), `/apple-touch-icon.png` (+ `-precomposed`), `/icons/icon-192.png`, `/icons/icon-512.png`, `/manifest.webmanifest` | a fixed map to files under `artifact/` (nothing else there is served; the request path is never joined onto a directory), with `image/svg+xml`, `image/png` or `application/manifest+json`, `Cache-Control: private, max-age=86400` and `Content-Security-Policy: default-src 'none'`. Same Host and identity checks as every route, so through the tunnel they need Access too. The page itself gets `manifest-src 'self'` in its CSP |
 | `GET /api/pomodoro/day?d=YYYY-MM-DD` | one kept day's per-stream pomodoro breakdown, read-only and on demand (the pushed `pomodoro` view has daily totals only, so SSE stays small): see "Pomodoro". Exactly one `d`, a real date, nothing else in the query (else 400 `bad_request`); a day outside the 14 kept, or no `pomodoro.json` → 404. Same `Host` and identity checks as `/api/state` (anyone who may view the board may read it) |
-| `GET /api/tickets/<ref>` | one tracker ticket, see "Tickets". Because it spends the tracker token's rate limit, it needs `X-Board: 1` (a custom header: a cross-site page can only send it after a CORS preflight, which is never granted) and a `Sec-Fetch-Site` that is absent, `same-origin` or `none`; else 403 `csrf` **before** the identity, the audit or any tracker call. Only `approvers` ∪ `release_managers` (both empty → 403 `no_approvers`; anyone else → 403 `not_approver`), checked **before** any tracker call; refusals are audited (`type: "ticket"`, `result: "refused"`). `<ref>` is percent-decoded once: `KEY` or `tracker:KEY`. → 200 the ticket, or the ticket errors below (`Retry-After` on 429). Same `Host` and identity checks as `/api/state` |
+| `GET /api/tickets/<ref>` | one tracker ticket, see "Tickets". Because it spends the tracker token's rate limit, it needs `X-Board: 1` (a custom header: a cross-site page can only send it after a CORS preflight, which is never granted) and a `Sec-Fetch-Site` that is absent, `same-origin` or `none`; else 403 `csrf` **before** the identity, the audit or any tracker call. Only `approvers` ∪ `release_managers` (both empty → 403 `no_approvers`; anyone else → 403 `not_approver`), checked **before** any tracker call; refusals are audited (`type: "ticket"`, `result: "refused"`). `<ref>` is percent-decoded once: `KEY` or `tracker:KEY`. → 200 the ticket plus `link: {status, task_id, session, taken_by, taken_at}\|null` (the newest take, from `tickets/links/`) and `tracker: {capabilities, states, take: {comment: bool, transition, assign}}` (what the board panel may offer), or the ticket errors below (`Retry-After` on 429). Same `Host` and identity checks as `/api/state` |
 | `POST /api/tickets/take` `{ref, session, comment?, transition?, assign?}` | take a ticket for a session, see "Tickets: take". Approvers only (empty → 403 `no_approvers`; else 403 `not_approver`), checked and a refusal audited **before** anything is fetched, sent or written. `session` must be a session in the snapshot or `fleet.yaml` (else 400 `unknown_session`); `comment` a string (scrubbed, footer added) or `false` (skip) or absent (the tracker's `take.comment`); `transition`, `assign` booleans (default true; else 400 `bad_body`). → 200 `{status: "taken"\|"partial", task_id, msg_id, failed, link, ticket}`; an active take → 409 `already_taken {task_id, session}`, nothing written |
 | `POST /api/tickets/<ref>/comment` `{text}`, `/transition` `{to}`, `/assign` `{who}`, `/release` `{}` | the tracker writes and the end of a take, see "Tickets: writes". Approvers only, checked first and refusals audited. → 200 `{status: "ok", ref, ticket}` (`release`: `{status: "released", msg_id, link}`); `to` not in the tracker's `states` → 400 `bad_transition`; no active take → 409 `not_taken`; a tracker without that write → 400 `ticket_unsupported` |
 | `GET /api/events` | `text/event-stream`: `event: state` with the full state at once and after every change (1 s mtime poll; only when the state differs), `: keepalive` every 25 s |
@@ -894,6 +894,23 @@ Exit codes: 0 ok (a `partial` take too, the failed writes on stderr), 1 error (u
 unconfigured, `already_taken`, `not_taken`; `show`: no active take), 2 usage, bad/unknown/ambiguous
 ref, bad value, `unknown_session`, `ticket_unsupported`, 3 not found, 4 not an approver
 (`not_approver`, `no_approvers`), 5 rate limited. Output goes through `guarded` as well.
+
+**Board panel** (`artifact/board.html`, section "Tickets"). Shown only to `approvers` ∪
+`release_managers` (roles from `/api/me`, else `operator.approver_ids` / `release_manager_ids`);
+everyone else has no panel, no nav entry and no ticket chip on session cards (owner decision Q3).
+Paste a ref and it calls `GET /api/tickets/<ref>` on demand: title, status (with its category),
+assignee, updated, an https link to the tracker, the excerpt (all as text), and who has the ticket.
+An ambiguous ref offers its candidates as buttons; every other error is a fixed sentence per error
+code. Approvers also get Take (pick a session, which tracker writes to run, then a confirm step
+that shows the Q4 text, the same words as the relay), Comment, Move (the tracker's `states`),
+Assign and Release (a confirm step with the Q4 text); they call the routes below with the page's
+CSRF `post()`, and a refusal is shown as it is. Release managers read only. Tasks with a
+`ticket` that are still going are listed under "Taken tickets" and put a `KEY taken` chip on their
+session's card. While the page is visible and a ticket is shown or taken, the panel refetches
+those tickets every 5 minutes (the server cache answers within 60 s); a taken ticket that is
+`done` on the tracker while its task is still going gets a drift badge (`KEY closed upstream`).
+Nothing else polls. Demo mode has sample tickets (`DEMO-1`…`DEMO-3`, one drifting); in Artifact
+mode approvers and release managers see a note that tickets live on the self-hosted board.
 
 ### Tickets: writes
 

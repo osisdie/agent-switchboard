@@ -739,6 +739,34 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 .lf-rule legend { font-size: 13px; color: var(--muted); padding: 0 4px; }
 .lc-list { display: grid; gap: 6px; }
 .lc-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-width: 0; }
+/* tickets: lookup, the ticket card, approvers' actions, linked takes */
+.tk-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+.tk-bar input { flex: 1 1 200px; font: inherit; font-size: 14px; min-height: 36px; min-width: 0; padding: 6px 10px; border: 1px solid var(--rule); border-radius: 5px; background: var(--paper); color: var(--ink); }
+.tkcard { display: grid; gap: 8px; padding: 12px 14px; border: 1px solid var(--rule); border-radius: var(--r); background: var(--panel); min-width: 0; margin-bottom: 12px; }
+.tktitle, .tkexcerpt, .tklink, .tkkey { overflow-wrap: anywhere; min-width: 0; }
+.tkexcerpt, .tklink { margin: 0; font-size: 14px; }
+.tklink { color: var(--muted); }
+.tkst { font-family: var(--f-mono); font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 9px; background: var(--off-soft); color: var(--muted); white-space: nowrap; }
+.tkst.todo { background: var(--lamp-soft); color: var(--lamp); }
+.tkst.doing { background: var(--work-soft); color: var(--work); }
+.tkst.done { background: var(--ok-soft); color: var(--ok); }
+.tkdrift { font-size: 12px; font-weight: 600; padding: 1px 7px; border-radius: 9px; background: var(--deny-soft); color: var(--deny); overflow-wrap: anywhere; }
+.tk-acts { display: grid; gap: 8px; }
+.tk-form { display: grid; gap: 8px; min-width: 0; }
+.tk-form select, .tk-form input[type="text"], .tk-form textarea { font: inherit; font-size: 14px; min-height: 36px; min-width: 0; max-width: 100%; padding: 6px 10px; border: 1px solid var(--rule); border-radius: 5px; background: var(--paper); color: var(--ink); }
+.tk-form textarea { resize: vertical; }
+.tk-form .lf-check { flex-wrap: wrap; }
+.tk-q4 { border-left: 3px solid var(--lamp); padding: 6px 10px; background: var(--lamp-soft); border-radius: 0 5px 5px 0; font-size: 14px; overflow-wrap: anywhere; }
+.tk-q4 p { margin: 0 0 4px; }
+.tk-q4 .help { margin: 0; color: var(--muted); font-size: 13px; }
+.tk-err { border: 1px solid var(--deny); background: var(--deny-soft); color: var(--ink); padding: 10px 12px; border-radius: var(--r); margin-bottom: 12px; }
+.tk-err p { margin: 0 0 6px; }
+.tk-loading { color: var(--muted); font-size: 14px; }
+.tk-linked { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.tk-lrow { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; font-size: 14px; min-width: 0; }
+#tk-linked-head { font-size: 15px; margin: 4px 0 8px; }
+.tkchip { justify-self: start; align-self: start; font-family: var(--f-mono); font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 9px; background: var(--work-soft); color: var(--work); white-space: nowrap; max-width: 100%; min-width: 0; box-sizing: border-box; overflow: hidden; text-overflow: ellipsis; }
+.tkchip.drift { background: var(--deny-soft); color: var(--deny); }
 .lc-row .lc-metric { flex: 1 1 160px; }
 .lc-row .lc-op { flex: 0 0 auto; }
 .lc-row .lc-num, .lc-row .lc-stage { flex: 1 1 90px; }
@@ -1073,6 +1101,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
         <li><a href="#resources" data-spy="resources"><span data-i18n>Resources</span> <span class="badge" id="nav-res" title="idle teammates" data-i18n-attr="title">0</span></a></li>
         <li><a href="#lessons" data-spy="lessons"><span data-i18n>Lessons</span> <span class="badge" id="nav-ls" title="active lessons" data-i18n-attr="title">0</span></a></li>
         <li id="nav-rm-li" hidden><a href="#reminders" data-spy="reminders"><span data-i18n>Reminders</span> <span class="badge" id="nav-rm">0</span></a></li>
+        <li id="nav-tk" hidden><a href="#tickets" data-spy="tickets"><span data-i18n>Tickets</span></a></li>
         <li><a href="#messages" data-spy="messages"><span data-i18n>Messages</span> <span class="badge" id="nav-msg">0</span></a></li>
         <li><a href="#approvals" data-spy="approvals"><span data-i18n>Approvals</span> <span class="badge" id="nav-appr">0</span></a></li>
       </ul>
@@ -1186,6 +1215,21 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     <p class="readonly-note" id="rm-note" hidden></p>
     <div class="empty" id="rm-empty"><strong data-i18n>No reminders.</strong><span data-i18n>Add one above, or run board remind add "Meeting" --at 15:00 in a terminal.</span></div>
     <ol class="rm-list" id="rm-list"></ol>
+  </section>
+
+  <section class="sec" id="tickets" aria-labelledby="h-tickets" hidden>
+    <div class="sec-head">
+      <h2 id="h-tickets" data-i18n>Tickets</h2>
+      <span class="hint" data-i18n>Paste a ticket number to look it up on your tracker. Approvers can give it to a session.</span>
+    </div>
+    <form class="tk-bar" id="tk-form" role="search">
+      <input type="search" id="tk-ref" maxlength="128" placeholder="Ticket, e.g. WEB-12 or tracker:WEB-12" aria-label="Ticket number" data-i18n-attr="placeholder aria-label">
+      <button class="btn" type="submit" data-i18n>Look up</button>
+    </form>
+    <p class="readonly-note" id="tk-note" hidden></p>
+    <div id="tk-out"></div>
+    <h3 id="tk-linked-head" hidden data-i18n>Taken tickets</h3>
+    <ul class="tk-linked" id="tk-linked"></ul>
   </section>
 
   <section class="sec" id="messages" aria-labelledby="h-messages">
@@ -2444,7 +2488,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     return 'sd-' + str(code).replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 40) + '-' + hsh.toString(36);
   }
   function cardSig(s) {
-    return JSON.stringify(s) + '|' + JSON.stringify(rcView(s)) + '|' + S.busy.has('rc:' + s.code) + S.busy.has('compact:' + s.code) + (S.drafts.compactAsk === s.code) + rcEditor() + '|' + openCards.has(s.code) + '|' + sessionDecisions(s).map((d) => d.id + (d.question || '')).join(',') + '|' + pomoSig(s.code);
+    return JSON.stringify(s) + '|' + JSON.stringify(rcView(s)) + '|' + S.busy.has('rc:' + s.code) + S.busy.has('compact:' + s.code) + (S.drafts.compactAsk === s.code) + rcEditor() + '|' + openCards.has(s.code) + '|' + sessionDecisions(s).map((d) => d.id + (d.question || '')).join(',') + '|' + pomoSig(s.code) + '|' + ticketSig(s.code);
   }
   // Card extras from board-serve (cards.json, lib/cards.py): teammates, meter, recent tool calls,
   // what it says (approvers only), branch, time in state. Absent in Artifact mode.
@@ -2507,6 +2551,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
         timeEl(s.updated_at)),
       h('span', { class: 'stitle' + (title || task || says ? '' : ' none'), text: title || task || says || tr('No title yet') }),
       where ? h('span', { class: 'swhere', text: where }) : null,
+      ticketChip(s),
       h('span', { class: 'snow' + (now.waiting ? ' waiting' : ''), text: now.text }),
       meta.length ? h('span', { class: 'smeta' }, meta.flatMap((m, i) => [i ? ' · ' : null, m])) : null,
       pomoRow(s));
@@ -3337,6 +3382,305 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     RM.list.push({ id: 'r-demo-n' + (++RM.demoSeq), title: f.title, at: f.at, lead_min: f.lead, level: f.level, repeat: f.repeat, breakthrough: true,
       state: 'active', next_at: d.getTime(), lead_at: d.getTime() - f.lead * 60000 });
     RM.list.sort((a, b) => (a.next_at || 0) - (b.next_at || 0));
+  }
+
+  /* ----------------------------------------------------------------- tickets */
+  // Tracker tickets (lib/tickets, GET/POST /api/tickets/...). Owner decision Q3: only approvers and
+  // release managers read tickets, so the panel (and the ticket chip on session cards) is absent
+  // for everyone else; release managers read; approvers also take, comment, move, assign and
+  // release. board-serve checks every call again. Fetched on demand (a lookup, a confirmed action)
+  // and refreshed every 5 minutes while the page is visible and a ticket is shown or linked; no
+  // heartbeat. Text only ever goes through textContent; links are https only (safeUrl).
+  // What a take authorizes (owner decision Q4): the same words as the [BOARD ticket] relay.
+  const TK_AUTH = 'the delivery harness for this ticket up to and including opening the PR/MR: plan, design, build, tests, local review, push, open the PR, and, as this session (board ticket comment|transition --session), progress comments and in-progress on this ticket. NOT merge, production deploy, closing or cancelling the ticket, other tickets or repos, or any red line';
+  const TK_REFRESH_MS = 5 * 60 * 1000;
+  const TK_MAX_LINKED = 10;
+  const TK_CATS = ['todo', 'doing', 'done', 'other'];
+  const TK_ERR = {
+    bad_ticket_ref: 'That is not a ticket number (KEY or tracker:KEY).',
+    unknown_ticket_ref: 'No tracker takes that ticket number.',
+    ticket_ambiguous: 'Several trackers take that number. Pick one:',
+    ticket_not_found: 'The tracker has no such ticket.',
+    ticket_rate_limited: 'The tracker asks the board to wait. Try again in {n} s.',
+    ticket_auth: 'The tracker refused the board\'s token.',
+    ticket_upstream: 'The tracker did not answer properly. Try again later.',
+    ticket_unconfigured: 'That tracker is not set up correctly (board ticket doctor).',
+    not_approver: 'Only approvers and release managers read tickets; only approvers change them.',
+    no_approvers: 'Nobody is listed as an approver, so the board refuses this.',
+    already_taken: 'Already taken for {session} (task {task}).',
+    not_taken: 'Nobody has this ticket now.',
+    unknown_session: 'There is no such session.',
+    bad_transition: 'The tracker does not have that state.',
+    bad_comment: 'The comment is empty or too long.',
+    ticket_unsupported: 'This tracker does not allow that from the board.',
+    network: 'The board server did not answer.',
+  };
+  const TK = { ref: '', ticket: null, err: null, loading: false, form: null, confirm: false, session: '', opts: { comment: true, transition: true, assign: true },
+    text: '', to: '', who: '', busy: false, seen: new Map(), timer: null, lastRefresh: 0 };
+  // 'approver' | 'reader' | null (no panel). Demo: the sample viewer is an approver.
+  function ticketRole() {
+    if (S.demo) return 'approver';
+    const r = isLocal() && P.me && Array.isArray(P.me.roles) && P.me.roles.length ? P.me.roles.map(str) : rolesFor(S.me);
+    if (!r) return null;
+    if (r.includes('approver')) return 'approver';
+    return r.includes('release_manager') ? 'reader' : null;
+  }
+  const tkUsable = () => S.demo || (isLocal() && !!adapter.ticket);
+  const tkRefOf = (tk) => (tk && tk.provider && tk.key ? str(tk.provider) + ':' + str(tk.key) : '');
+  // Tasks that hold a take (task.ticket from `board ticket take`) and are still going.
+  function linkedTasks() {
+    return objs(S.tasks).filter((t) => t.ticket && typeof t.ticket === 'object' && t.ticket.key
+      && t.stage !== 'maintain' && !['done', 'dropped'].includes(str(t.status))).slice(0, TK_MAX_LINKED);
+  }
+  const sessionTicket = (code) => linkedTasks().find((t) => str(t.owner) === code) || null;
+  // Closed on the tracker while the task is still active: the drift badge.
+  function tkDrift(ref) { const x = TK.seen.get(ref); return !!(x && x.status_category === 'done'); }
+  function ticketSig(code) {
+    if (!ticketRole()) return '';
+    const t = sessionTicket(code);
+    return t ? tkRefOf(t.ticket) + (tkDrift(tkRefOf(t.ticket)) ? '!' : '') : '';
+  }
+  function ticketChip(s) {
+    if (!ticketRole()) return null;
+    const t = sessionTicket(s.code);
+    if (!t) return null;
+    const ref = tkRefOf(t.ticket), drift = tkDrift(ref);
+    return h('span', { class: 'tkchip' + (drift ? ' drift' : ''), title: drift ? tr('Closed on the tracker; the task is still active') : tr('Taken ticket {key} (task {task})', { key: str(t.ticket.key), task: str(t.id) }),
+      text: drift ? tr('{key} closed upstream', { key: str(t.ticket.key) }) : tr('{key} taken', { key: str(t.ticket.key) }) });
+  }
+  function tkError(e) {
+    const b = (e && e.body && typeof e.body === 'object') ? e.body : {};
+    return { code: str(e && e.code) || 'network', detail: str(b.detail || (e && e.message)), candidates: Array.isArray(b.candidates) ? b.candidates.map(str) : [],
+      retry: Number(b.retry_after) || 0, session: str(b.session), task: str(b.task_id) };
+  }
+  function tkErrText(err) {
+    const k = TK_ERR[err.code];
+    return k ? tr(k, { n: err.retry || '?', session: err.session || '?', task: err.task || '?' }) : tr('The board server refused it: {why}', { why: err.detail || err.code });
+  }
+  async function ticketFetch(ref) {
+    if (S.demo) return demoTicket(ref);
+    return adapter.ticket(ref);
+  }
+  async function ticketLookup(ref, quiet) {
+    ref = str(ref).trim();
+    if (!ref || !tkUsable() || !ticketRole()) return;
+    if (!quiet) { TK.ref = ref; TK.loading = true; TK.err = null; TK.form = null; TK.confirm = false; renderTickets(); }
+    try {
+      const t = await ticketFetch(ref);
+      TK.ticket = t; TK.err = null;
+      TK.seen.set(tkRefOf(t), t);
+      if (!quiet) TK.ref = tkRefOf(t) || ref;
+    } catch (e) {
+      if (!quiet) { TK.ticket = null; TK.err = tkError(e); }
+    } finally { TK.loading = false; renderTickets(); renderBoard(); }
+  }
+  // Every 5 minutes, only while the page is visible: the shown ticket and the linked ones (drift).
+  async function ticketRefresh(force) {
+    if (!tkUsable() || !ticketRole()) return;
+    if (!force && (document.visibilityState !== 'visible' || Date.now() - TK.lastRefresh < TK_REFRESH_MS - 1000)) return;
+    TK.lastRefresh = Date.now();
+    const refs = new Set(linkedTasks().map((t) => tkRefOf(t.ticket)).filter(Boolean));
+    for (const ref of refs) {
+      try { TK.seen.set(ref, await ticketFetch(ref)); } catch (e) { /* kept as it was; the lookup shows errors */ }
+    }
+    if (TK.ticket && !TK.form) await ticketLookup(tkRefOf(TK.ticket), true);
+    renderTickets(); renderBoard();
+  }
+  function tkSchedule() {
+    const want = !!ticketRole() && tkUsable() && (!!TK.ticket || linkedTasks().length > 0);
+    if (want && !TK.timer) {
+      TK.timer = setInterval(() => ticketRefresh(false), TK_REFRESH_MS);
+      if (!TK.lastRefresh) setTimeout(() => ticketRefresh(true), 0);
+    } else if (!want && TK.timer) { clearInterval(TK.timer); TK.timer = null; }
+  }
+  function renderTickets() {
+    const role = ticketRole();
+    const sec = $('#tickets');
+    sec.hidden = !role; $('#nav-tk').hidden = !role;
+    tkSchedule();
+    if (!role) return;
+    const usable = tkUsable();
+    $('#tk-form').hidden = !usable;
+    const note = $('#tk-note');
+    note.textContent = S.demo ? tr('Sample tickets: try DEMO-1, DEMO-2 or DEMO-3. Nothing reaches a tracker.')
+      : !usable ? tr('Tickets live on the self-hosted board: this page cannot reach your tracker. Use board ticket get in a terminal, or open the board served by board-serve.')
+      : role === 'reader' ? tr('Read-only: release managers read tickets; only approvers take or change them.') : '';
+    note.hidden = !note.textContent;
+    const out = $('#tk-out');
+    out.textContent = '';
+    if (usable) {
+      if (TK.loading) out.append(h('p', { class: 'tk-loading', text: tr('Looking up {ref}…', { ref: TK.ref }) }));
+      else if (TK.err) out.append(ticketErrorBox(TK.err));
+      else if (TK.ticket) out.append(ticketCard(TK.ticket, role));
+    }
+    const list = $('#tk-linked'), rows = linkedTasks();
+    $('#tk-linked-head').hidden = !rows.length;
+    list.textContent = '';
+    for (const t of rows) {
+      const ref = tkRefOf(t.ticket), drift = tkDrift(ref);
+      list.append(h('li', { class: 'tk-lrow' + (drift ? ' drift' : '') },
+        usable ? h('button', { class: 'btn linkish mono', type: 'button', onclick: () => { $('#tk-ref').value = ref; ticketLookup(ref); }, text: str(t.ticket.key) })
+          : h('span', { class: 'mono', text: str(t.ticket.key) }),
+        h('span', { text: tr('{session} · task {task} · {stage}', { session: str(t.owner), task: str(t.id), stage: str(t.stage) }) }),
+        drift ? h('span', { class: 'tkdrift', text: tr('Closed on the tracker; the task is still active') }) : null));
+    }
+  }
+  function ticketErrorBox(err) {
+    const box = h('div', { class: 'tk-err', role: 'alert', dataset: { code: err.code } }, h('p', { text: tkErrText(err) }));
+    if (err.candidates.length) {
+      box.append(h('div', { class: 'lacts' }, err.candidates.map((c) => h('button', { class: 'btn', type: 'button',
+        onclick: () => { $('#tk-ref').value = c; ticketLookup(c); }, text: c }))));
+    }
+    return box;
+  }
+  function ticketCard(t, role) {
+    const cat = TK_CATS.includes(str(t.status_category)) ? str(t.status_category) : 'other';
+    const link = t.link && typeof t.link === 'object' ? t.link : null;
+    const active = !!(link && link.status === 'active');
+    const drift = active && cat === 'done';
+    const card = h('article', { class: 'tkcard', id: 'tk-card', 'aria-label': tr('Ticket {key}', { key: str(t.key) }) });
+    card.append(h('div', { class: 'lhead' },
+      h('span', { class: 'mono tkkey', text: tkRefOf(t) }),
+      h('span', { class: 'tkst ' + cat, text: str(t.status) || tr('unknown') }),
+      drift ? h('span', { class: 'tkdrift', text: tr('Closed on the tracker; the task is still active') }) : null));
+    card.append(h('strong', { class: 'tktitle', text: str(t.title) || tr('(untitled)') }));
+    const a = t.assignee && typeof t.assignee === 'object' ? str(t.assignee.name || t.assignee.id) : '';
+    const meta = h('div', { class: 'dmeta' }, h('span', { text: tr('Assignee: {who}', { who: a || tr('nobody') }) }));
+    if (t.updated_at) meta.append(h('span', { text: tr('Updated {at}', { at: str(t.updated_at) }) }));
+    const u = safeUrl(str(t.url));
+    if (u) meta.append(h('a', { href: u, target: u.startsWith('#') ? null : '_blank', rel: 'noopener noreferrer', text: tr('Open in the tracker') }));
+    card.append(meta);
+    if (t.excerpt) card.append(h('p', { class: 'tkexcerpt', text: str(t.excerpt) }));
+    card.append(h('p', { class: 'tklink', text: active
+      ? tr('Taken for {session} as task {task} by {who}.', { session: str(link.session), task: str(link.task_id), who: str(link.taken_by) })
+      : link ? tr('Was taken for {session} ({status}).', { session: str(link.session), status: tr(str(link.status)) }) : tr('Not taken.') }));
+    if (role === 'approver') card.append(ticketActions(t, active, link));
+    return card;
+  }
+  const tkCan = (t, op) => !!(t.tracker && Array.isArray(t.tracker.capabilities) && t.tracker.capabilities.includes(op));
+  function q4Box(code) {
+    return h('div', { class: 'tk-q4' },
+      h('p', null, h('b', { text: tr('Authorizes {session}:', { session: code }) + ' ' }), tr(TK_AUTH) + '.'),
+      h('p', { class: 'help', text: tr('Merge and production still need a board decision or the owner in the pane.') }));
+  }
+  function ticketActions(t, active, link) {
+    const box = h('div', { class: 'tk-acts' });
+    const busy = TK.busy;
+    const cancel = () => h('button', { class: 'btn', type: 'button', disabled: busy, onclick: () => { TK.form = null; TK.confirm = false; renderTickets(); }, text: tr('Cancel') });
+    if (!TK.form) {
+      const row = h('div', { class: 'lacts' });
+      if (!active) row.append(h('button', { class: 'btn allow', type: 'button', onclick: () => { TK.form = 'take'; TK.confirm = false; renderTickets(); }, text: tr('Take…') }));
+      if (tkCan(t, 'comment')) row.append(h('button', { class: 'btn', type: 'button', onclick: () => { TK.form = 'comment'; renderTickets(); }, text: tr('Comment…') }));
+      if (tkCan(t, 'transition')) row.append(h('button', { class: 'btn', type: 'button', onclick: () => { TK.form = 'transition'; renderTickets(); }, text: tr('Move…') }));
+      if (tkCan(t, 'assign')) row.append(h('button', { class: 'btn', type: 'button', onclick: () => { TK.form = 'assign'; renderTickets(); }, text: tr('Assign…') }));
+      if (active) row.append(h('button', { class: 'btn deny', type: 'button', onclick: () => { TK.form = 'release'; renderTickets(); }, text: tr('Release take…') }));
+      box.append(row);
+      return box;
+    }
+    const f = h('div', { class: 'tk-form ls-form', id: 'tk-' + TK.form + '-form' });
+    if (TK.form === 'take') {
+      const codes = S.sessions.map((s) => s.code);
+      if (!codes.includes(TK.session)) TK.session = codes[0] || '';
+      const take = (t.tracker && t.tracker.take) || {};
+      if (!TK.confirm) {
+        const sel = h('select', { id: 'tk-session', 'aria-label': tr('Session') }, codes.map((c) => h('option', { value: c, text: c })));
+        sel.value = TK.session;
+        sel.addEventListener('change', () => { TK.session = sel.value; });
+        f.append(h('label', { class: 'lf-check' }, tr('Take for session') + ' ', sel));
+        const opt = (k, label, on) => {
+          if (!on) return null;
+          const cb = h('input', { type: 'checkbox', checked: TK.opts[k] });
+          cb.addEventListener('change', () => { TK.opts[k] = cb.checked; });
+          return h('label', { class: 'lf-check' }, cb, label);
+        };
+        f.append(opt('comment', tr('Post the pickup comment'), take.comment && tkCan(t, 'comment')),
+          opt('transition', tr('Move it to {state}', { state: str(take.transition) }), take.transition && tkCan(t, 'transition')),
+          opt('assign', tr('Assign it to {who}', { who: str(take.assign) }), take.assign && tkCan(t, 'assign')));
+        f.append(h('div', { class: 'lacts' },
+          h('button', { class: 'btn allow', type: 'button', disabled: !TK.session, onclick: () => { TK.confirm = true; renderTickets(); }, text: tr('Next…') }), cancel()));
+      } else {
+        f.append(h('p', { class: 'lconfirm tk-confirm', text: tr('Take {key} for {session}? The board creates a task and the operator tells the session.', { key: str(t.key), session: TK.session }) }),
+          q4Box(TK.session),
+          h('div', { class: 'lacts' },
+            h('button', { class: 'btn allow solid', type: 'button', id: 'tk-take-go', disabled: busy, onclick: () => ticketDo('take', t), text: tr('Take for {session}', { session: TK.session }) }), cancel()));
+      }
+    } else if (TK.form === 'release') {
+      f.append(h('p', { class: 'lconfirm tk-confirm', text: tr('Release {key} from {session}? The session is told, and the take no longer authorizes it to:', { key: str(t.key), session: str(link && link.session) }) }),
+        q4Box(str(link && link.session)),
+        h('div', { class: 'lacts' },
+          h('button', { class: 'btn deny solid', type: 'button', id: 'tk-release-go', disabled: busy, onclick: () => ticketDo('release', t), text: tr('Release') }), cancel()));
+    } else if (TK.form === 'comment') {
+      const ta = h('textarea', { id: 'tk-text', rows: '4', maxlength: '4000', 'aria-label': tr('Comment') });
+      ta.value = TK.text;
+      ta.addEventListener('input', () => { TK.text = ta.value; });
+      f.append(ta, h('p', { class: 'help', text: tr('Posted with the tracker token, after the secret guard, ending with "(via agent-switchboard)".') }),
+        h('div', { class: 'lacts' }, h('button', { class: 'btn allow', type: 'button', disabled: busy, onclick: () => ticketDo('comment', t), text: tr('Post comment') }), cancel()));
+    } else if (TK.form === 'transition') {
+      const states = t.tracker && Array.isArray(t.tracker.states) ? t.tracker.states.map(str) : [];
+      if (!states.includes(TK.to)) TK.to = states[0] || '';
+      const sel = h('select', { id: 'tk-to', 'aria-label': tr('State') }, states.map((s) => h('option', { value: s, text: s })));
+      sel.value = TK.to;
+      sel.addEventListener('change', () => { TK.to = sel.value; });
+      f.append(h('label', { class: 'lf-check' }, tr('Move to') + ' ', sel),
+        h('div', { class: 'lacts' }, h('button', { class: 'btn allow', type: 'button', disabled: busy || !TK.to, onclick: () => ticketDo('transition', t), text: tr('Move') }), cancel()));
+    } else if (TK.form === 'assign') {
+      const inp = h('input', { id: 'tk-who', type: 'text', maxlength: '80', 'aria-label': tr('Assignee') });
+      inp.value = TK.who;
+      inp.addEventListener('input', () => { TK.who = inp.value; });
+      f.append(h('label', { class: 'lf-check' }, tr('Assign to') + ' ', inp),
+        h('div', { class: 'lacts' }, h('button', { class: 'btn allow', type: 'button', disabled: busy, onclick: () => ticketDo('assign', t), text: tr('Assign') }), cancel()));
+    }
+    box.append(f);
+    return box;
+  }
+  const TK_DONE = { take: 'Taken: the operator relays it to {session}.', release: 'Released: the operator tells the session.', comment: 'Comment posted.', transition: 'Ticket moved.', assign: 'Ticket assigned.' };
+  async function ticketDo(op, t) {
+    if (TK.busy || !tkUsable() || ticketRole() !== 'approver') return;
+    const ref = tkRefOf(t);
+    TK.busy = true; renderTickets();
+    try {
+      let r;
+      if (S.demo) r = demoTicketDo(op, t);
+      else if (op === 'take') r = await adapter.ticketTake({ ref, session: TK.session, comment: TK.opts.comment ? undefined : false, transition: TK.opts.transition, assign: TK.opts.assign });
+      else r = await adapter.ticketAct(ref, op, op === 'comment' ? { text: TK.text } : op === 'transition' ? { to: TK.to } : op === 'assign' ? { who: TK.who } : {});
+      if (r && r.status === 'partial') toast(tr('Taken, but the tracker refused: {ops}.', { ops: (r.failed || []).map(str).join(', ') }), true);
+      else toast(tr(TK_DONE[op], { session: TK.session }));
+      TK.form = null; TK.confirm = false;
+      if (op === 'comment') TK.text = '';
+      if (op === 'assign') TK.who = '';
+      TK.busy = false;
+      await ticketLookup(ref, true);
+    } catch (e) {
+      toast(tr('Not done: {why}', { why: tkErrText(tkError(e)) }), true);
+    } finally { TK.busy = false; renderTickets(); }
+  }
+  // Demo: sample tickets in the page; nothing leaves it.
+  const DEMO_TICKETS = {
+    'DEMO-1': { title: 'Add a health endpoint to the API', status: 'todo', status_category: 'todo', assignee: null, excerpt: 'The API needs /healthz for the load balancer.', updated_at: '2026-11-01T09:00:00Z' },
+    'DEMO-2': { title: 'Paginate the orders endpoint', status: 'in_progress', status_category: 'doing', assignee: { id: 'u-7', name: 'Alex Example' }, excerpt: 'Cursor pagination for GET /orders; the mobile app pages through results.', updated_at: '2026-11-15T15:30:00Z' },
+    'DEMO-3': { title: 'Split the deploy pipeline into stages', status: 'done', status_category: 'done', assignee: { id: null, name: 'Sam Example' }, excerpt: 'Closed on the tracker while the session still works on it: the drift badge shows that.', updated_at: '2026-11-15T08:00:00Z' },
+  };
+  const demoTk = { links: {} };
+  function demoTicket(ref) {
+    const key = str(ref).replace(/^demo:/, '');
+    const base = DEMO_TICKETS[key];
+    if (!base) throw Object.assign(new Error('not found'), { code: /^[A-Za-z0-9][A-Za-z0-9._#-]{0,99}$/.test(key) ? 'ticket_not_found' : 'bad_ticket_ref' });
+    const task = objs(S.tasks).find((t) => t.ticket && t.ticket.key === key);
+    const link = demoTk.links[key] || (task ? { status: 'active', task_id: task.id, session: task.owner, taken_by: 'you@example.com', taken_at: Date.now() - 3600000 } : null);
+    return Object.assign({ provider: 'demo', key, id: key, url: '#demo-ticket-' + key, fetched_at: Date.now(), link,
+      tracker: { capabilities: ['read', 'comment', 'transition', 'assign'], states: ['backlog', 'todo', 'in_progress', 'done', 'cancelled'],
+        take: { comment: true, transition: 'in_progress', assign: null } } }, base);
+  }
+  function demoTicketDo(op, t) {
+    const key = str(t.key);
+    if (op === 'take') demoTk.links[key] = { status: 'active', task_id: 't-demo-' + rand(), session: TK.session, taken_by: 'you@example.com', taken_at: Date.now() };
+    if (op === 'release') demoTk.links[key] = Object.assign({}, demoTk.links[key] || {}, { status: 'released' });
+    if (op === 'transition' && DEMO_TICKETS[key]) {
+      DEMO_TICKETS[key].status = TK.to;
+      DEMO_TICKETS[key].status_category = { backlog: 'todo', todo: 'todo', in_progress: 'doing', done: 'done', cancelled: 'done' }[TK.to] || 'other';
+    }
+    if (op === 'assign' && DEMO_TICKETS[key]) DEMO_TICKETS[key].assignee = { id: null, name: TK.who };
+    return { status: op === 'take' ? 'taken' : 'ok' };
   }
 
   /* ----------------------------------------------------------------- lessons */
@@ -4807,7 +5151,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
   }
 
   wirePops();
-  function renderAll() { renderHeader(); renderBanners(); renderNotif(); renderDecisions(); renderConsensus(); renderTasks(); renderBoard(); renderMessages(); renderApprovals(); renderResources(); renderLessons(); renderReminders(); if (!RM.tried && rmUsable() && !S.demo && S.mode === 'live' && P.me) { RM.tried = true; rmLoad(); } if ($('#info').open) renderLedger(); openLinked(); }
+  function renderAll() { renderHeader(); renderBanners(); renderNotif(); renderDecisions(); renderConsensus(); renderTasks(); renderBoard(); renderMessages(); renderApprovals(); renderResources(); renderLessons(); renderReminders(); renderTickets(); if (!RM.tried && rmUsable() && !S.demo && S.mode === 'live' && P.me) { RM.tried = true; rmLoad(); } if ($('#info').open) renderLedger(); openLinked(); }
 
   /* ----------------------------------------------------------- deep links */
   // Alerts link to <board>/?d=<decision id> (m= message, c= consensus); a #<id> or #dec-<id> hash
@@ -5054,6 +5398,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
   $('#composer').addEventListener('submit', (e) => { e.preventDefault(); sendMessage(); });
   $('#ls-q').addEventListener('input', (e) => { S.lsQ = e.target.value; renderLessons(); });
   $('#rm-form').addEventListener('submit', rmAdd);
+  $('#tk-form').addEventListener('submit', (e) => { e.preventDefault(); ticketLookup($('#tk-ref').value); });
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') ticketRefresh(false); });
   $('#ls-filter').addEventListener('change', (e) => { S.lsFilter = e.target.value; renderLessons(); });
   $('#ls-add').addEventListener('click', () => openLessonForm(null));
 
@@ -5142,7 +5488,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
   function spy() {
     const line = nav.getBoundingClientRect().bottom + 24;
     let current = 'decisions';
-    for (const id of ['decisions', 'consensus', 'lifecycle', 'board', 'resources', 'lessons', 'reminders', 'messages', 'approvals']) { const el = document.getElementById(id); if (el && el.getBoundingClientRect().top <= line) current = id; }
+    for (const id of ['decisions', 'consensus', 'lifecycle', 'board', 'resources', 'lessons', 'reminders', 'tickets', 'messages', 'approvals']) { const el = document.getElementById(id); if (el && el.getBoundingClientRect().top <= line) current = id; }
     if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4) current = 'approvals';
     for (const a of spyLinks) a.setAttribute('aria-current', a.dataset.spy === current ? 'true' : 'false');
   }
@@ -5321,7 +5667,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       try { r = await fetch(url, Object.assign({ credentials: 'same-origin', cache: 'no-store' }, init)); } catch (e) { throw Object.assign(new Error('network error'), { code: 'network' }); }
       let j = null;
       try { j = await r.json(); } catch (e) { j = null; }
-      if (!r.ok) throw Object.assign(new Error(str(j && j.detail) || r.statusText), { code: str(j && j.error) || 'http_' + r.status, status: r.status });
+      if (!r.ok) throw Object.assign(new Error(str(j && j.detail) || r.statusText), { code: str(j && j.error) || 'http_' + r.status, status: r.status, body: j });
       return j || {};
     }
     const post = (url, body) => call(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Board': '1' }, body: JSON.stringify(body) });
@@ -5368,6 +5714,12 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       reminders() { return call('/api/reminders', { headers: { 'X-Board': '1' } }); },
       addReminder(body) { return post('/api/reminders', body); },
       reminderAct(id, body) { return post('/api/reminders/' + encodeURIComponent(id), body); },
+      // Tickets (approvers ∪ release managers read; approvers write and take): fetched on demand.
+      // X-Board: 1 like a POST: the route spends the tracker's rate limit, so board-serve refuses a
+      // fetch without it (a cross-site page cannot send it without a CORS preflight).
+      ticket(ref) { return call('/api/tickets/' + encodeURIComponent(ref), { headers: { 'X-Board': '1' } }); },
+      ticketTake(body) { return post('/api/tickets/take', body); },
+      ticketAct(ref, op, body) { return post('/api/tickets/' + encodeURIComponent(ref) + '/' + op, body); },
       presence(visible, interactionAt, leaving) {
         return call('/api/presence', { method: 'POST', keepalive: !!leaving, headers: { 'Content-Type': 'application/json', 'X-Board': '1' },
           // A duration, not a time: board-serve applies it to its own clock.
@@ -5442,7 +5794,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     P.loading = true; P.tried = true;
     fetch('/api/me', { credentials: 'same-origin', cache: 'no-store' })
       .then((r) => (r.ok ? r.json() : null)).catch(() => null)
-      .then((j) => { P.loading = false; if (j && typeof j === 'object' && j.identity) P.me = j; renderProfile(); rmLoad(); });
+      .then((j) => { P.loading = false; if (j && typeof j === 'object' && j.identity) P.me = j; renderProfile(); rmLoad(); renderTickets(); renderBoard(); });
   }
   function loadClaudeMe() {
     if (P.claudeTried || !userNs || typeof userNs.me !== 'function') return;
@@ -5624,12 +5976,14 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     ];
     S.tasks = [
       { id: 't-101', title: 'Paginate the orders endpoint', owner: 'API', stage: 'test', updated_at: now - 6 * min,
+        ticket: { provider: 'demo', key: 'DEMO-2', url: '#demo-ticket-DEMO-2', title_at_take: 'Paginate the orders endpoint' },
         artifacts: { intent: '3f9c2a1', plan: 'e41b7d0', evals: '#demo-evals' },
         gates: [{ stage: 'plan', gate: 'plan', status: 'approved' }, { stage: 'design', gate: 'design', status: 'skipped' }, { stage: 'build', gate: 'build-review', status: 'approved' }, { stage: 'test', gate: 'test-review', status: 'pending', decision_id: 'd-5-demo' }] },
       { id: 't-102', title: 'Settings page redesign', owner: 'WEB', stage: 'design', updated_at: now - 18 * min,
         artifacts: { intent: '#demo-intent', spec: '#demo-spec' },
         gates: [{ stage: 'plan', gate: 'plan', status: 'approved' }, { stage: 'design', gate: 'design-signoff', status: 'pending', decision_id: 'd-7-demo' }] },
       { id: 't-103', title: 'Rotate staging and production certificates', owner: 'OPS', stage: 'production', updated_at: now - 15 * min,
+        ticket: { provider: 'demo', key: 'DEMO-3', url: '#demo-ticket-DEMO-3', title_at_take: 'Split the deploy pipeline into stages' },
         artifacts: { intent: '9a0c1f2', plan: '77d2e9b', evals: '#demo-evals-ops', review: '#demo-review-findings' },
         gates: [{ stage: 'plan', status: 'approved' }, { stage: 'design', status: 'skipped' }, { stage: 'build', status: 'approved' }, { stage: 'test', status: 'approved' }, { stage: 'deploy', status: 'approved' }, { stage: 'production', gate: 'production', status: 'pending', decision_id: 'd-6-demo' }] },
       { id: 't-099', title: 'Fix the flaky upload test', owner: 'QA', stage: 'maintain', updated_at: now - 26 * 60 * min,
@@ -6853,6 +7207,81 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "Add reminder": "新增提醒",
       "No reminders.": "沒有提醒。",
       "Add one above, or run board remind add \"Meeting\" --at 15:00 in a terminal.": "在上面新增，或在終端機執行 board remind add \"Meeting\" --at 15:00。",
+      "Tickets": "工單",
+      "Paste a ticket number to look it up on your tracker. Approvers can give it to a session.": "貼上工單編號，就能從追蹤系統查詢。核可者可以把它交給某個 session。",
+      "Ticket, e.g. WEB-12 or tracker:WEB-12": "工單，例如 WEB-12 或 tracker:WEB-12",
+      "Ticket number": "工單編號",
+      "Look up": "查詢",
+      "Taken tickets": "已接手的工單",
+      "Sample tickets: try DEMO-1, DEMO-2 or DEMO-3. Nothing reaches a tracker.": "示範工單：試試 DEMO-1、DEMO-2 或 DEMO-3。不會連到任何追蹤系統。",
+      "Tickets live on the self-hosted board: this page cannot reach your tracker. Use board ticket get in a terminal, or open the board served by board-serve.": "工單只在自架看板上：這個頁面連不到你的追蹤系統。請在終端機用 board ticket get，或開啟 board-serve 提供的看板。",
+      "Read-only: release managers read tickets; only approvers take or change them.": "唯讀：release manager 可以讀工單，只有核可者能接手或修改。",
+      "Looking up {ref}…": "正在查詢 {ref}…",
+      "That is not a ticket number (KEY or tracker:KEY).": "這不是工單編號（KEY 或 tracker:KEY）。",
+      "No tracker takes that ticket number.": "沒有追蹤系統接受這個工單編號。",
+      "Several trackers take that number. Pick one:": "有好幾個追蹤系統都接受這個編號，請選一個：",
+      "The tracker has no such ticket.": "追蹤系統裡沒有這張工單。",
+      "The tracker asks the board to wait. Try again in {n} s.": "追蹤系統要看板稍候，請 {n} 秒後再試。",
+      "The tracker refused the board's token.": "追蹤系統拒絕了看板的 token。",
+      "The tracker did not answer properly. Try again later.": "追蹤系統沒有正常回應，請稍後再試。",
+      "That tracker is not set up correctly (board ticket doctor).": "這個追蹤系統的設定有問題（board ticket doctor）。",
+      "Only approvers and release managers read tickets; only approvers change them.": "只有核可者與 release manager 能讀工單，只有核可者能修改。",
+      "Nobody is listed as an approver, so the board refuses this.": "沒有列出任何核可者，所以看板拒絕這個動作。",
+      "Already taken for {session} (task {task}).": "已經交給 {session}（任務 {task}）。",
+      "Nobody has this ticket now.": "目前沒有人接手這張工單。",
+      "There is no such session.": "沒有這個 session。",
+      "The tracker does not have that state.": "追蹤系統沒有這個狀態。",
+      "The comment is empty or too long.": "留言是空的或太長。",
+      "This tracker does not allow that from the board.": "這個追蹤系統不允許從看板做這件事。",
+      "The board server did not answer.": "看板伺服器沒有回應。",
+      "The board server refused it: {why}": "看板伺服器拒絕了：{why}",
+      "Closed on the tracker; the task is still active": "追蹤系統上已關閉，任務仍在進行",
+      "Taken ticket {key} (task {task})": "已接手的工單 {key}（任務 {task}）",
+      "{key} closed upstream": "{key} 已在上游關閉",
+      "{key} taken": "{key} 已接手",
+      "{session} · task {task} · {stage}": "{session} · 任務 {task} · {stage}",
+      "Ticket {key}": "工單 {key}",
+      "Assignee: {who}": "負責人：{who}",
+      "nobody": "無",
+      "Updated {at}": "更新於 {at}",
+      "Open in the tracker": "在追蹤系統開啟",
+      "Taken for {session} as task {task} by {who}.": "由 {who} 交給 {session}，任務 {task}。",
+      "Was taken for {session} ({status}).": "曾交給 {session}（{status}）。",
+      "Not taken.": "尚未接手。",
+      "released": "已釋出",
+      "Authorizes {session}:": "授權 {session}：",
+      "the delivery harness for this ticket up to and including opening the PR/MR: plan, design, build, tests, local review, push, open the PR, and, as this session (board ticket comment|transition --session), progress comments and in-progress on this ticket. NOT merge, production deploy, closing or cancelling the ticket, other tickets or repos, or any red line": "依 delivery harness 處理這張工單，一路做到開出 PR/MR（含）：規劃、設計、實作、測試、本機 review、push、開 PR，並以這個 session 自己的身分（board ticket comment|transition --session）在這張工單上留進度留言和移到 in-progress。不授權：合併、production 部署、關閉或取消工單、其他工單或 repo，以及任何紅線",
+      "Merge and production still need a board decision or the owner in the pane.": "合併與 production 仍需要看板決策，或擁有者在 pane 裡同意。",
+      "Take…": "接手…",
+      "Comment…": "留言…",
+      "Move…": "移動…",
+      "Assign…": "指派…",
+      "Take for session": "交給 session",
+      "Post the pickup comment": "發出接手留言",
+      "Move it to {state}": "移到 {state}",
+      "Assign it to {who}": "指派給 {who}",
+      "Next…": "下一步…",
+      "Take {key} for {session}? The board creates a task and the operator tells the session.": "要把 {key} 交給 {session} 嗎？看板會建立任務，operator 會通知該 session。",
+      "Take for {session}": "交給 {session}",
+      "Release {key} from {session}? The session is told, and the take no longer authorizes it to:": "要把 {key} 從 {session} 釋出嗎？該 session 會收到通知，接手不再授權它：",
+      "Release": "釋出",
+      "Release take…": "釋出接手…",
+      "Comment": "留言",
+      "Posted with the tracker token, after the secret guard, ending with \"(via agent-switchboard)\".": "以追蹤系統的 token 發出，先經過機密防護，結尾加上「(via agent-switchboard)」。",
+      "Post comment": "送出留言",
+      "State": "狀態",
+      "Move to": "移到",
+      "Move": "移動",
+      "Assignee": "負責人",
+      "Assign to": "指派給",
+      "Assign": "指派",
+      "Taken: the operator relays it to {session}.": "已接手：operator 會轉送給 {session}。",
+      "Released: the operator tells the session.": "已釋出：operator 會通知該 session。",
+      "Comment posted.": "留言已送出。",
+      "Ticket moved.": "工單已移動。",
+      "Ticket assigned.": "工單已指派。",
+      "Taken, but the tracker refused: {ops}.": "已接手，但追蹤系統拒絕了：{ops}。",
+      "Not done: {why}": "沒有完成：{why}",
     };
   }
 })();

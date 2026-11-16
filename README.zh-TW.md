@@ -512,7 +512,15 @@ pane 標題裡的任務、執行中或閒置、記憶體用量）、已用的 co
 - **留言**。從看板發出的留言（`board ticket comment`、接手時的留言）都會經過機密防護，
   結尾加上 `(via agent-switchboard)`，不含 email。
 
-`board ticket release` 結束接手。看板上的工單面板之後才會加入（`docs/design/tickets-and-api.md`）。
+`board ticket release` 結束接手。
+
+**在看板上**。只有核可者與 release manager 會看到「工單」區塊，其他人看不到。
+貼上工單編號，就能看到標題、狀態、負責人、連結和簡短描述。
+
+- **核可者**還能把工單交給某個 session、留言、移動狀態、指派和釋出。接手與釋出會先要求確認，
+  並顯示授權／不授權的範圍。
+- **Session 卡片**會顯示該 session 的工單 `KEY 已接手`；追蹤系統已關閉、任務卻還在進行時，
+  顯示 `KEY 已在上游關閉`。頁面開著時，顯示中的工單每 5 分鐘重新整理一次。
 
 ### Session 動作：Remote Control 與壓縮
 

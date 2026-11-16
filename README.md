@@ -560,8 +560,16 @@ fails, the take still stands (`partial`). A ticket that is already taken is refu
 - **Comments.** Comments posted from the board (`board ticket comment`, the take's comment) go
   through the secret guard and end with `(via agent-switchboard)`, with no email.
 
-`board ticket release` ends a take. A ticket panel on the board comes later
-(`docs/design/tickets-and-api.md`).
+`board ticket release` ends a take.
+
+**On the board.** Approvers and release managers get a Tickets section; nobody else sees one.
+Paste a ticket number to see its title, status, assignee, link and a short description.
+
+- **Approvers** can also take it for a session, comment, move, assign and release. Take and
+  release ask for confirmation and show the authorizes / does-not text.
+- **Session cards** show `KEY taken` for a session's ticket, and `KEY closed upstream` when the
+  tracker closed it while the task is still going. Shown tickets are refreshed every 5 minutes
+  while the page is open.
 
 ### Session actions: Remote Control and compact
 
