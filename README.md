@@ -667,6 +667,9 @@ to what needs you.
   into a session (prompts, Enter, `/compact`): answer a prompt on its decision card.
 - Hide it with **Hide deck**, or in the profile menu (**Deck panel**). The choice is kept in this
   browser.
+- **Its own theme.** The deck is dark by default, whatever the page theme. The **☾ Dark / ☀ Light**
+  button next to **Hide deck** switches only the deck (light keys keep their state colours at WCAG
+  AA contrast); the page theme stays as set in the profile menu. The choice is kept in this browser.
 
 ### Pomodoro
 

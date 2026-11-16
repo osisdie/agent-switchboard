@@ -28,7 +28,9 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..100,500..800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
 <style>
 /* Layout: a patch panel. Masthead with the lamp counter, a decision strip on top, four jack columns, the message line at the foot. */
-:root {
+/* The Deck (#deck) has a theme of its own, apart from the page's: data-deck-theme="dark" (the
+   default) takes the dark palette below, "light" this light one, then light key faces (see "deck"). */
+:root, .deck[data-deck-theme="light"] {
   color-scheme: light;
   --paper: #edf0f4;
   --panel: #fbfcfd;
@@ -61,6 +63,7 @@
   --dk-face: #1b2430; --dk-edge: #2c3846; --dk-ink: #eef2f7; --dk-muted: #a9b4c3;
   --dk-work: #54c4d5; --dk-ok: #63cf8d; --dk-off: #8b95a4; --dk-amber: #ffb84a;
   --dk-q: #b493ff; --dk-plan: #ff9a5c; --dk-perm: #ff7b6e; --dk-on-ink: #10151c;
+  --dk-drop: rgb(0 0 0 / .35); --dk-blink: 12%;   /* the blink tint: the "!" in kc and the labels stay >= 4.5:1 on it */
   --f-display: "Archivo", "Arial Narrow", system-ui, sans-serif;
   --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --f-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -82,7 +85,7 @@
     --dk-face: #222c38; --dk-edge: #34414f;
   }
 }
-:root[data-theme="dark"] {
+:root[data-theme="dark"], .deck[data-deck-theme="dark"] {
   color-scheme: dark;
   --paper: #0f141a; --panel: #161d25; --ink: #e5eaf1; --muted: #98a4b5; --rule: #2a3440;
   --cord: #7aa9ff; --cord-ink: #0b1220; --cord-soft: #1a2940;
@@ -784,7 +787,19 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 @media (max-width: 480px) { .sys { width: 100%; } }
 
 /* ---------- deck: a key-deck panel (5 x 3 keys and a wide strip) ---------- */
-.deck { display: grid; gap: 10px; }
+.deck { display: grid; gap: 10px; padding: 12px 14px 14px; border-radius: 14px; border: 1px solid var(--rule); background: var(--paper); color: var(--ink); }
+/* Light keys: light faces, state inks dark enough for WCAG AA (4.5:1) on them, white on the red
+   pill. The surround, header and confirm row take the page's light palette (the :root block). */
+.deck[data-deck-theme="light"] {
+  --dk-face: #f7f9fc; --dk-edge: #c5ceda; --dk-ink: #16202c; --dk-muted: #4f5b6c;
+  --dk-work: #0b6a78; --dk-ok: #22703f; --dk-off: #636d7c; --dk-amber: #8a5300;
+  --dk-q: #6a3dc4; --dk-plan: #a3460c; --dk-perm: #b42318; --dk-on-ink: #ffffff;
+  --dk-drop: rgb(22 32 44 / .16); --dk-blink: 16%;   /* the blink tint: the "!" in kc stays >= 4.5:1 on it */
+  --dk-sec: color-mix(in srgb, var(--dk-face) 88%, var(--dk-ink));
+}
+.deck-theme-btn .dt-ico { font-size: 14px; line-height: 1; }
+.deck-theme-btn:focus-visible { outline: 3px solid var(--cord); outline-offset: 2px; border-radius: 17px; }
+#deck-theme-pop { font-weight: 400; }
 .deck-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
 .deck-head h2 { font-size: 24px; font-weight: 720; font-stretch: 85%; }
 .deck-head .hint { color: var(--muted); font-size: 14px; flex: 1 1 260px; }
@@ -792,9 +807,9 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 .deck-body { position: relative; max-width: 860px; }
 .deck-grid { position: relative; overflow: hidden; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; padding: 10px; border-radius: 12px; background: color-mix(in srgb, var(--dk-face) 12%, var(--panel)); border: 1px solid var(--rule); }
 .dcell { position: relative; min-width: 0; display: grid; }
-.dkey { position: relative; display: grid; align-content: space-between; gap: 2px; min-width: 0; min-height: 104px; aspect-ratio: 1 / .86; padding: 9px 10px; border-radius: 10px; border: 1px solid var(--dk-edge); background: var(--dk-face); color: var(--dk-ink); font: inherit; font-size: 12px; line-height: 1.25; text-align: left; cursor: pointer; overflow: hidden; box-shadow: 0 2px 0 rgb(0 0 0 / .35), inset 0 1px 0 rgb(255 255 255 / .06); -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+.dkey { position: relative; display: grid; align-content: space-between; gap: 2px; min-width: 0; min-height: 104px; aspect-ratio: 1 / .86; padding: 9px 10px; border-radius: 10px; border: 1px solid var(--dk-edge); background: var(--dk-face); color: var(--dk-ink); font: inherit; font-size: 12px; line-height: 1.25; text-align: left; cursor: pointer; overflow: hidden; box-shadow: 0 2px 0 var(--dk-drop), inset 0 1px 0 rgb(255 255 255 / .06); -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
 .dkey:hover { border-color: var(--dk-muted); }
-.dkey:active { transform: translateY(1px); box-shadow: 0 1px 0 rgb(0 0 0 / .35); }
+.dkey:active { transform: translateY(1px); box-shadow: 0 1px 0 var(--dk-drop); }
 .dkey:focus-visible { outline: 3px solid var(--cord); outline-offset: 2px; }
 .dkey.empty { cursor: default; opacity: .45; box-shadow: none; }
 .dkey .k-lab { font-family: var(--f-mono); font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--dk-muted); display: flex; justify-content: space-between; gap: 6px; white-space: nowrap; overflow: hidden; }
@@ -814,18 +829,18 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 .dkey.st-done .k-dot { background: var(--dk-ok); }
 .dkey.st-offline .k-dot { background: transparent; box-shadow: inset 0 0 0 2px var(--dk-off); }
 .dkey.st-offline { opacity: .7; }
-.dkey.st-working { box-shadow: inset 0 -3px 0 var(--dk-work), 0 2px 0 rgb(0 0 0 / .35); }
-.dkey.st-done { box-shadow: inset 0 -3px 0 var(--dk-ok), 0 2px 0 rgb(0 0 0 / .35); }
+.dkey.st-working { box-shadow: inset 0 -3px 0 var(--dk-work), 0 2px 0 var(--dk-drop); }
+.dkey.st-done { box-shadow: inset 0 -3px 0 var(--dk-ok), 0 2px 0 var(--dk-drop); }
 /* waiting: the key blinks in the colour of what it waits for */
 .dkey.w-question { --kc: var(--dk-q); }
 .dkey.w-plan { --kc: var(--dk-plan); }
 .dkey.w-permission { --kc: var(--dk-perm); }
 .dkey.waiting { border-color: var(--kc); box-shadow: inset 0 0 0 2px var(--kc), 0 0 14px color-mix(in srgb, var(--kc) 45%, transparent); animation: dk-blink 1s steps(1, end) infinite; }
 .dkey.waiting .k-dot { background: var(--kc); }
-@keyframes dk-blink { 0% { background: color-mix(in srgb, var(--kc) 40%, var(--dk-face)); } 50% { background: var(--dk-face); } }
+@keyframes dk-blink { 0% { background: color-mix(in srgb, var(--kc) var(--dk-blink), var(--dk-face)); } 50% { background: var(--dk-face); } }
 .dkey.waiting .k-bang { display: inline-block; font-weight: 800; color: var(--kc); }
 @media (prefers-reduced-motion: reduce) {
-  .dkey.waiting { animation: none; background: color-mix(in srgb, var(--kc) 30%, var(--dk-face)); }
+  .dkey.waiting { animation: none; background: color-mix(in srgb, var(--kc) calc(var(--dk-blink) * .75), var(--dk-face)); }
   .dkey:active { transform: none; }
   .dkey .k-ring .val { transition: none; }
 }
@@ -875,7 +890,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 .dkey .k-pill.waiting .k-dot { background: var(--kc); }
 .dkey .k-pill.st-offline .k-dot { background: transparent; box-shadow: inset 0 0 0 2px var(--dk-off); }
 /* a key's second action: a small button in its corner (never inside the key's own button) */
-.dsec { position: absolute; z-index: 1; top: 5px; right: 5px; display: inline-flex; align-items: center; justify-content: center; min-width: 30px; height: 30px; padding: 0 7px; border-radius: 8px; border: 1px solid var(--dk-edge); background: color-mix(in srgb, var(--dk-face) 80%, #000); color: var(--dk-ink); font: inherit; font-size: 11px; font-weight: 600; text-decoration: none; cursor: pointer; }
+.dsec { position: absolute; z-index: 1; top: 5px; right: 5px; display: inline-flex; align-items: center; justify-content: center; min-width: 30px; height: 30px; padding: 0 7px; border-radius: 8px; border: 1px solid var(--dk-edge); background: var(--dk-sec, color-mix(in srgb, var(--dk-face) 80%, #000)); color: var(--dk-ink); font: inherit; font-size: 11px; font-weight: 600; text-decoration: none; cursor: pointer; }
 .dsec:hover { border-color: var(--dk-muted); }
 .dcell.has-sec .k-lab { padding-right: 34px; }
 /* the alert wave: a ring in the waiting colour from the key that started waiting */
@@ -888,6 +903,7 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 .deck-confirm .note { flex-basis: 100%; margin: 0; font-size: 13px; }
 .deck.collapsed .deck-body, .deck-confirm[hidden] { display: none; }
 @media (max-width: 620px) {
+  .deck { padding: 8px; }
   .deck-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; padding: 8px; }
   .dkey { aspect-ratio: 1 / .95; min-height: 96px; padding: 8px; }
   .dkey .k-big { font-size: 26px; }
@@ -900,7 +916,8 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 /* ---------- pomodoro: the card ring, the Deck key "🍅 Today", its panel, the celebration ---------- */
 :root { --pomo: #c23b26; --pomo-soft: #fbe4de; --pomo-leaf: #2f8a4c; --dk-pomo: #ff7558; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --pomo: #ff8a70; --pomo-soft: #3a1c15; --pomo-leaf: #63cf8d; } }
-:root[data-theme="dark"] { --pomo: #ff8a70; --pomo-soft: #3a1c15; --pomo-leaf: #63cf8d; }
+:root[data-theme="dark"], .deck[data-deck-theme="dark"] { --pomo: #ff8a70; --pomo-soft: #3a1c15; --pomo-leaf: #63cf8d; }
+.deck[data-deck-theme="light"] { --pomo: #c23b26; --pomo-soft: #fbe4de; --pomo-leaf: #2f8a4c; --dk-pomo: #b0331e; }
 .spomo { position: relative; display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .spomo .pring { flex: none; }
 .spomo .pm-t { color: var(--ink); font-family: var(--f-mono); }
@@ -1077,10 +1094,16 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     </div>
   </header>
 
-  <section class="deck" id="deck" aria-labelledby="h-deck">
+  <section class="deck" id="deck" aria-labelledby="h-deck" data-deck-theme="dark">
+    <script>
+    /* The Deck's own theme before first paint: dark unless this viewer picked light. */
+    (() => { try { if (localStorage.getItem('switchboard.deckTheme') === 'light') document.getElementById('deck').setAttribute('data-deck-theme', 'light'); } catch (e) { /* storage blocked: dark */ } })();
+    </script>
     <div class="deck-head">
       <h2 id="h-deck" data-i18n>Deck</h2>
       <span class="hint" data-i18n>Big keys for a glance. A key jumps to what it shows; nothing here types into a session.</span>
+      <button class="icon-btn deck-theme-btn" id="deck-theme" type="button" aria-label="Deck theme: dark. Switch to light"><span class="dt-ico" id="deck-theme-ico" aria-hidden="true">☾</span><span id="deck-theme-t">Dark</span></button>
+      <div class="u-pop" id="deck-theme-pop" role="tooltip" hidden></div>
       <button class="icon-btn" id="deck-toggle" type="button" aria-expanded="true" aria-controls="deck-body"><span id="deck-toggle-t" data-i18n>Hide deck</span></button>
     </div>
     <div class="deck-body" id="deck-body">
@@ -4506,6 +4529,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
 
   function renderDeck() {
     const deck = $('#deck');
+    renderDeckTheme();
     deck.classList.toggle('collapsed', deckCollapsed);
     const tgl = $('#deck-toggle');
     tgl.setAttribute('aria-expanded', deckCollapsed ? 'false' : 'true');
@@ -4526,6 +4550,46 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     renderDeck();
   }
   $('#deck-toggle').addEventListener('click', () => setDeckCollapsed(!deckCollapsed));
+
+  // The Deck's own theme, apart from the page's: dark by default (a hardware key deck), light on
+  // request. Kept per viewer; the inline script in #deck applies it before first paint. Storage
+  // blocked: dark, and a pick lasts for this page view.
+  const DECK_THEME_KEY = 'switchboard.deckTheme';
+  let deckTheme = (() => { try { return localStorage.getItem(DECK_THEME_KEY) === 'light' ? 'light' : 'dark'; } catch (e) { return 'dark'; } })();
+  function renderDeckThemeTip(pop) {
+    pop.replaceChildren(
+      h('p', { text: tr(deckTheme === 'light' ? 'Switch the Deck to dark' : 'Switch the Deck to light') }),
+      h('p', { text: tr('Only the Deck changes; the page keeps its own theme (profile menu). Kept in this browser.') }));
+  }
+  function renderDeckTheme() {
+    const light = deckTheme === 'light';
+    $('#deck').setAttribute('data-deck-theme', deckTheme);
+    $('#deck-theme').setAttribute('aria-label', tr(light ? 'Deck theme: light. Switch to dark' : 'Deck theme: dark. Switch to light'));
+    $('#deck-theme-ico').textContent = light ? '☀' : '☾';
+    $('#deck-theme-t').textContent = tr(light ? 'Light' : 'Dark');
+    const pop = $('#deck-theme-pop');
+    if (!pop.hidden) { renderDeckThemeTip(pop); placePop($('#deck-theme'), pop); }
+  }
+  function setDeckTheme(v) {
+    deckTheme = v === 'light' ? 'light' : 'dark';
+    try { localStorage.setItem(DECK_THEME_KEY, deckTheme); } catch (e) { /* this page view only */ }
+    renderDeckTheme();
+  }
+  // The tooltip, as on the 🍅 key: on mouse hover and keyboard focus; Escape, blur or leaving closes it.
+  (() => {
+    const btn = $('#deck-theme'), pop = $('#deck-theme-pop');
+    btn.setAttribute('aria-describedby', 'deck-theme-pop');
+    const show = () => { renderDeckThemeTip(pop); pop.hidden = false; placePop(btn, pop); };
+    const hide = () => { pop.hidden = true; };
+    btn.addEventListener('pointerenter', (e) => { if (e.pointerType === 'mouse') show(); });
+    btn.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse' && !btn.matches(':focus-visible')) hide(); });
+    btn.addEventListener('focus', () => { if (btn.matches(':focus-visible')) show(); });
+    btn.addEventListener('blur', hide);
+    btn.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !pop.hidden) { e.preventDefault(); e.stopPropagation(); hide(); } });
+    btn.addEventListener('click', () => setDeckTheme(deckTheme === 'light' ? 'dark' : 'light'));
+  })();
+  window.addEventListener('storage', (e) => { if (e.key === DECK_THEME_KEY) { deckTheme = e.newValue === 'light' ? 'light' : 'dark'; renderDeckTheme(); } });
+  renderDeckTheme();
   window.addEventListener('storage', (e) => { if (e.key === DECK_KEY) { deckCollapsed = e.newValue === 'collapsed'; renderDeck(); } });
 
   /* ------------------------------------------------------------- pomodoro */
@@ -6872,6 +6936,11 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "Big keys for a glance. A key jumps to what it shows; nothing here types into a session.": "一眼看完的大按鍵。按一下就跳到它顯示的地方；這裡不會對任何 session 打字。",
       "Hide deck": "收起面板",
       "Show deck": "展開面板",
+      "Deck theme: dark. Switch to light": "面板主題：深色。切換為淺色",
+      "Deck theme: light. Switch to dark": "面板主題：淺色。切換為深色",
+      "Switch the Deck to light": "把按鍵面板切換為淺色",
+      "Switch the Deck to dark": "把按鍵面板切換為深色",
+      "Only the Deck changes; the page keeps its own theme (profile menu). Kept in this browser.": "只改按鍵面板；頁面保留自己的主題（在個人選單設定）。選擇會記在這個瀏覽器裡。",
       "Deck keys": "面板按鍵",
       "Deck panel": "按鍵面板",
       "Shown": "展開",

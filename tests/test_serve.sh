@@ -390,7 +390,7 @@ grep -q '<meta name="board-mode" content="local">' "$T/body" && ok "page has the
 grep -qi '^content-security-policy:.*script-src .nonce-' "$T/hdr" && ok "page sent with a nonce CSP" || bad "page sent with a nonce CSP"
 nonce="$(sed -n 's/.*script-src .nonce-\([^'"'"']*\).*/\1/p' "$T/hdr" | tr -d '\r')"
 grep -q "<script nonce=\"$nonce\">" "$T/body" && ok "inline script carries the nonce" || bad "inline script carries the nonce"
-eq "every inline script carries the nonce (pre-paint theme + app)" "$(grep -c '<script' "$T/body")/$(grep -c "<script nonce=\"$nonce\">" "$T/body")" "2/2"
+eq "every inline script carries the nonce (pre-paint theme + deck theme + app)" "$(grep -c '<script' "$T/body")/$(grep -c "<script nonce=\"$nonce\">" "$T/body")" "3/3"
 grep -q 'board-mode' "$REPO/artifact/board.html" && ! grep -q '<meta name="board-mode"' "$REPO/artifact/board.html" \
   && ok "artifact source itself has no local-mode meta" || bad "artifact source itself has no local-mode meta"
 # Alert links open the board on a card: /?d=<id> (m=, c=) serves the same page; the server ignores
