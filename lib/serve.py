@@ -115,9 +115,9 @@ STATIC = {
     "/icons/icon-512.png": ("icons/icon-512.png", "image/png"),
     "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"),
 }
-STATIC_CACHE = "private, max-age=86400"
+STATIC_CACHE = "private, max-age=86400"  # private: behind Access, never cached by a shared proxy
 # GET /api/tickets/<ref>: also needs X-Board: 1 and no cross-site Sec-Fetch-Site (Handler.check_fetch).
-TICKET_GET_RE = re.compile(r"/api/tickets/([^/]+)")  # private: behind Access, never cached by a shared proxy
+TICKET_GET_RE = re.compile(r"/api/tickets/([^/]+)")
 
 DEFAULT_PORT = 39410
 MAX_BODY = 16 * 1024

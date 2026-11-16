@@ -678,8 +678,8 @@ tickets:
   it across requests); a 429 with `Retry-After` ≤ `retry_wait_max_seconds` is waited out once,
   a longer one stores `blocked_until` in `$BOARD_HOME/tickets/state/<tracker>.json` and every
   request until then fails at once with `ticket_rate_limited`; 5 upstream failures in a row (a 5xx
-  answer, or a network error: unreachable, timeout, redirect, a cut-off or too slow answer) open a
-  breaker for 60 s (`ticket_upstream`, "paused"); any 2xx resets the count.
+  answer, or a network error: unreachable, timeout, redirect, a cut-off, too slow or over-1-MiB
+  answer) open a breaker for 60 s (`ticket_upstream`, "paused"); any 2xx resets the count.
 - **Cache.** `$BOARD_HOME/tickets/cache/<tracker>__<key>.json` (0600; characters outside
   `[A-Za-z0-9._-]` are `%XX`). A ticket is served from it for `cache_ttl_seconds`, a 404 for
   `not_found_ttl_seconds`; `board ticket get --refresh` skips it. Files older than 7 days are
