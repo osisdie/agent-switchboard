@@ -30,7 +30,11 @@ release_managers: []
 # at most 10 per 10 minutes. Emails (and "local"), matched like approvers.
 askers: []
 # askers: [teammate@example.com]
-# The board's owners. They administer API keys (`board apikey`, docs/contract.md "API keys"):
+# The board's owners. On the self-hosted board only an owner (who is also an approver) answers
+# permission prompts and pane questions, releases held messages, sets owner-away, changes
+# notification settings and acks alerts, uses Remote Control and session actions, and edits
+# lessons; only an owner's presence holds back pushes. With empty owners, approvers count as owners.
+# Owners also administer API keys (`board apikey`, docs/contract.md "API keys"):
 # issue a key to anyone, approve key requests, revoke, rotate, set or extend expiry, change scopes;
 # empty = nobody can approve a key request (approvers can still issue keys to listed people or
 # themselves). Only owners see the Claude account email the sessions run on; with empty owners,

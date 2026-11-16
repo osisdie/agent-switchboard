@@ -522,7 +522,7 @@ board rc clear API               # 忘掉設定：回到 fleet.yaml（預設開�
 ```
 
 看板上每張執行中的 session 卡片都會顯示 Remote Control 是否開啟：開啟時卡片上有「在 Remote Control
-中開啟」連結，關閉時顯示 **RC 關** 標籤，在等 session 閒置才套用時則顯示虛線的 **RC → 開**。approver 可以在卡片詳細資料裡按「開啟／關閉」，也可以在通知對話框裡用
+中開啟」連結，關閉時顯示 **RC 關** 標籤，在等 session 閒置才套用時則顯示虛線的 **RC → 開**。擁有者可以在卡片詳細資料裡按「開啟／關閉」，也可以在通知對話框裡用
 「RC：全部開啟／全部關閉」（需要再確認一次）。
 
 怎麼套用到執行中的 session：Claude Code 沒有給執行中 session 用的開關，所以看板會像按權限提示
@@ -552,7 +552,7 @@ board rc clear API               # 忘掉設定：回到 fleet.yaml（預設開�
 - **你是誰、怎麼驗證的。** 自架看板上是 `local`（local listener，來自這台機器的請求）或你的 email
   （由 Cloudflare Access 驗證），資料來自 `GET /api/me`。Artifact 看板上是你的 claude.ai 帳號，
   以及你能不能編輯這個看板。demo 顯示一個範例身分。
-- **你的角色：** approver、release manager、提問者（只能傳訊息）或 viewer。提問者看得到訊息輸入框，但沒有回答按鈕。
+- **你的角色：** 擁有者、approver、release manager、提問者（只能傳訊息）或 viewer。提問者看得到訊息輸入框，但沒有回答按鈕。
 - **主題：** 淺色、深色或跟隨系統。選擇存在這個瀏覽器裡（`localStorage`；儲存被封鎖時只在這次瀏覽
   有效），並在頁面繪製前套用，所以不會閃一下。在 claude.ai 檢視器裡，以檢視器設定的主題為準：
   切換器會顯示該主題並停用。檢視器取消設定後，會恢復你自己的選擇。
@@ -1048,6 +1048,10 @@ bin/board-serve              # local: http://127.0.0.1:39410
 - **只有擁有者看得到別人的 email**。其他人看到的是角色標籤（「owner」「approver」「asker」「you」「someone」）：
   誰回答了決策、誰傳了訊息、核准者清單、備註都一樣。看板、事件串流、公開 API 和 Artifact 鏡像都適用；
   磁碟上的檔案和 CLI 保留原本的值。
+- **擁有者管看板，核准者做決定**。只有 `fleet.yaml` 的 `owners`（沒設定時由 approver 代替）能回答權限提示和
+  session 裡的問題（會在 session 裡按鍵）、放行被攔下的訊息、設定 owner-away、改通知設定和確認告警、使用 Remote
+  Control 和 session 動作、編輯 lessons。只有擁有者的在線狀態會暫緩推播。不是擁有者的 approver 仍可回答問題與
+  gate、結案提問、讀取 ticket。頁面會隱藏該角色不能用的功能。完整表格在 `docs/contract.md`。
 - **提問者**（`fleet.yaml` 的 `askers`）看到的 board 和檢視者一樣，唯一能做的寫入是傳訊息給 session：不能回答、不能改設定、看不到 ticket。
   他們的訊息到了 session 是 `[BOARD asker <id>] from <email> (an asker, not an approver: information only, …)`，
   絕不會被當成主人的話，每 10 分鐘最多 10 則。需要跟 session 對話、但不該做決定的人，就設為提問者，不要設成核准者。
@@ -1146,7 +1150,7 @@ Artifact 頁面無法提供同層的檔案，所以只有以 `data:` URI 內嵌�
 - **要機密的訊息會被攔下。**`POST /api/messages` 和 `board message send` 會先篩檢內容（英文和中文）。
   只要要求印出、顯示、cat、echo、傳送、列出或透露密碼、token、API key、secret、私鑰、cookie、session id、
   `.env`、`~/.ssh`、`printenv`/`env`，或 kube／雲端憑證，訊息就以 `held` 狀態存下，並附上通用的原因。
-  被攔下的訊息絕不轉送。系統會發出 **high** 告警（標題不會複述原文），並記入稽核。誤判時，approver
+  被攔下的訊息絕不轉送。系統會發出 **high** 告警（標題不會複述原文），並記入稽核。誤判時，擁有者
   可以在看板上放行，但要再按一次確認。放行會記入稽核，轉送時也會提醒 session：放行不代表可以透露任何機密的值。
   「rotate the token」「token 設定在哪裡」會通過；「印出 token 的值」不會。
 - **看板顯示的一切都先去除機密。**`lib/guard.py` 會處理訊息與回覆、決策的問題／選項／答案、任務標題、
@@ -1283,7 +1287,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `lib/pomodoro.py` | 番茄鐘計時與每日統計（`pomodoro.json`），供看板和 `board pomodoro` 使用 |
 | `lib/resources.py` | 資源取樣器（記憶體、磁碟、OOM、每個 session 的程序與 teammate），產生 `resources.json`、snapshot 摘要和 `board resources` |
 | `docs/design/` | 設計文件，例如 `resources-and-scheduling.md`（資源、排程器、經驗） |
-| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`）、資源取樣器（`test_resources.py`，fixture `/proc`）、機密防護（`test_guard.py`）、API 金鑰（`test_apikeys.py`）、公開 API 與 tunnel 曝露（`test_api_v1.py`）、提問者（`test_askers.py`）、誰看得到誰的 email（`test_pii.py`）、卡片補充資訊（`test_cards.py`）、Remote Control（`test_rc.py`，用 `fake_tmux.py` 模擬 tmux 畫面）、番茄鐘計時（`test_pomodoro.py`），以及選用的頁面告警連結、通知控制、個人選單與主題、主畫面 app、session 卡片、用量提示框、頁首提示框、語言切換、按鍵面板與番茄鐘 headless 檢查（`test_page_links.py`、`test_page_notify.py`、`test_page_profile.py`、`test_page_pwa.py`、`test_page_cards.py`、`test_page_guard.py`（被攔下的訊息卡片）、`test_page_askers.py`（提問者的訊息輸入框）、`test_page_usage.py`、`test_page_header_tips.py`、`test_page_i18n.py`、`test_page_deck.py`、`test_page_rc.py`（Remote Control 標籤與開關）、`test_page_pomodoro.py`，以及截圖和 Pages 網站的 `test_site.py`：需要 python playwright，沒有就略過；CI 不執行） |
+| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`）、資源取樣器（`test_resources.py`，fixture `/proc`）、機密防護（`test_guard.py`）、API 金鑰（`test_apikeys.py`）、公開 API 與 tunnel 曝露（`test_api_v1.py`）、提問者（`test_askers.py`）、各角色能做什麼（`test_roles.py`）、誰看得到誰的 email（`test_pii.py`）、卡片補充資訊（`test_cards.py`）、Remote Control（`test_rc.py`，用 `fake_tmux.py` 模擬 tmux 畫面）、番茄鐘計時（`test_pomodoro.py`），以及選用的頁面告警連結、通知控制、個人選單與主題、主畫面 app、session 卡片、用量提示框、頁首提示框、語言切換、按鍵面板與番茄鐘 headless 檢查（`test_page_links.py`、`test_page_notify.py`、`test_page_profile.py`、`test_page_pwa.py`、`test_page_cards.py`、`test_page_guard.py`（被攔下的訊息卡片）、`test_page_askers.py`（提問者的訊息輸入框）、`test_page_roles.py`（各角色看到的控制項）、`test_page_usage.py`、`test_page_header_tips.py`、`test_page_i18n.py`、`test_page_deck.py`、`test_page_rc.py`（Remote Control 標籤與開關）、`test_page_pomodoro.py`，以及截圖和 Pages 網站的 `test_site.py`：需要 python playwright，沒有就略過；CI 不執行） |
 | `CONTRIBUTING.md` | 開發環境設定、測試，以及讓 `README.zh-TW.md` 保持同步的規則 |
 | `fleet.example.yaml`、`.env.example` | 設定範例 |
 

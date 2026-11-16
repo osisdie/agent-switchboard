@@ -542,7 +542,7 @@ On every line, first re-read `operator.json`. If `operator_session` is no longer
 
 1. Read `$BOARD_HOME/messages/<id>.json`: `{id, to, body, by, created_at, status}`. Continue only
    if `status` is `new`. A `held` message never shows up as `message <id> new`: `board-serve` held it
-   because it asks for a secret value, alerted the owner, and only an approver can release it on the
+   because it asks for a secret value, alerted the owner, and only an owner can release it on the
    board (`POST /api/messages/<id>/release`, with a confirm step). Never relay a `held` message.
 2. Resolve `to` and send the line that `board message show <id>` prints. It is
    `[BOARD ask <id>] <body> — reply to BOARD via SendMessage, starting with [re <id>]`, the body

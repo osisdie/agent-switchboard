@@ -499,7 +499,7 @@ Control `by`), the id lists `operator.approver_ids` / `release_manager_ids`, any
 email, and every email inside free text (a note, a message body). Only email-shaped identities are
 masked: `local`, session codes, key ids and the Artifact board's opaque claude.ai user ids stay as
 they are. `me` (the viewer's own identity) is never masked. The raw values stay on disk and in the
-CLI. In local mode the page takes the viewer's roles from `state.approver` / `state.asker` (and
+CLI. In local mode the page takes the viewer's roles from `state.owner` / `state.approver` / `state.asker` (and
 `/api/me`), never by comparing the masked lists. The operator never mirrors an email to the
 Artifact db: it builds every document from **`board mirror state`** (`lib/mirror.py`: the board
 state with every viewer rule applied, no private card text, no ticket text, no account email or
@@ -508,12 +508,40 @@ stdin, masked for an anonymous viewer) before `write_db`. `board task ls --json 
 same view of the tasks. Responses that echo a ticket link (`taken_by`, `released_by`) are masked
 for non-owners too, and so is every `/api/v1/events` frame.
 
+**Who may do what** on the self-hosted board (identity = `local` or a verified Access email;
+"owner" = `fleet.yaml` `owners`, or `approvers` when `owners` is empty):
+
+| Route / control | owner | approver | release manager | asker | viewer |
+|---|---|---|---|---|---|
+| answer a question or gate (`/api/decisions/<id>/answer`) | if approver | yes | production gate/stage only | no | no |
+| answer a **permission** prompt or a **pane question** (keys pressed in a session) | if approver | no | no | no | no |
+| resolve a board ask (`/resolve`) | if approver | yes | no | no | no |
+| send a message (`/api/messages`) | yes | yes | yes | yes (10 per 10 min) | no |
+| release a held message (`/api/messages/<id>/release`) | if approver | no | no | no | no |
+| owner-away (`/api/away`) | if approver | no | no | no | no |
+| notification settings (`/api/notify-prefs`), alert ack (`/api/alerts/ack`) | if approver | no | no | no | no |
+| presence heartbeat (`/api/presence`) | counted (if approver) | 204, ignored | 204, ignored | 204, ignored | 204, ignored |
+| Remote Control (`/api/rc`), session actions (`/api/sessions/<code>/action`) | if approver | no | no | no | no |
+| lessons (`POST /api/lessons`, `/api/lessons/<id>`) | if approver | no | no | no | no |
+| read tickets (`/api/tickets/<ref>`) | if approver or RM | yes | yes | no | no |
+| the Claude account email (`state.account`) | yes | no | no | no | no |
+
+"If approver": owner-only controls run through the board CLI, which checks `approvers` too, so an
+owner who uses them must also be listed in `approvers`. A refusal is 403 `not_owner` (or
+`not_approver`), audited, and the page never shows a control that would get one: it reads
+`state.owner` (and `state.asker`) and shows a short read-only note instead. A presence heartbeat
+from anyone but an owner is answered 204 and not stored, counted or audited, so it can never hold
+back the owner's pushes. The four-eyes rule on a held message counts owners: with one owner, that
+owner may release a message they sent. API key administration (`board apikey`) uses `owners` too,
+but never falls back to approvers.
+
 **Askers** (`fleet.yaml` `askers`, emails and `local`, matched like approvers) see the board as a
 viewer does (every decision's question, session cards, tasks without ticket text, all messages and
 replies) and may write only messages (`POST /api/messages`), so list only people you would let view
 the board. Every other write route refuses them
 (403, audited) exactly as it refuses a viewer: answer, resolve, release, away, notify-prefs,
-presence, alerts ack, rc, lessons, session actions. They read no tickets (`/api/tickets/*` is
+alerts ack, rc, lessons, session actions (a presence heartbeat from anyone but an owner gets 204 and
+is ignored). They read no tickets (`/api/tickets/*` is
 approvers ∪ release managers only). An asker who is not also an approver or release manager:
 
 - gets `"asker": true` and `"can_message": true` in the state; the page shows the composer (with a
@@ -591,7 +619,7 @@ State (`/api/state` and every SSE frame):
 
 ```json
 { "mode": "local", "me": "local|<email>", "writable": true, "can_message": true|false,
-  "asker": true|false, "approver": true|false, "generated_at": 0,
+  "asker": true|false, "approver": true|false, "owner": true|false, "generated_at": 0,
   "account": {"email": "...", "org": "..."|null} | {"hidden": true} | null,
   "sessions":  [ {code, aliases, state, status, task, tmux, remote_url, pending, updated_at, rc, compact} ],
   "decisions": [ decision files, newest 200, without session_id/tmux_pane ],
@@ -635,8 +663,8 @@ session's current task. `approver_ids` is `[]` when nobody may answer.
 
 ```json
 { "identity": "local|<email>", "via": "local|access",
-  "roles": ["approver", "release_manager", "asker"] | ["viewer"],
-  "is_approver": true, "is_release_manager": false, "is_asker": false,
+  "roles": ["owner", "approver", "release_manager", "asker"] | ["viewer"],
+  "is_owner": true, "is_approver": true, "is_release_manager": false, "is_asker": false,
   "reminders": true,
   "api_keys": [ ... ] }
 ```
@@ -648,7 +676,8 @@ session's current task. `approver_ids` is `[]` when nobody may answer.
   JWT). The audit log keeps its own names (`loopback` / `cf-jwt`).
 - `is_approver`: the identity is in `approvers`. `is_release_manager` is the effective rule for a
   production decision: in `release_managers`, or in `approvers` when `release_managers` is empty.
-  `is_asker`: the identity is in `askers` (messages only). `roles` lists what is true, or
+  `is_owner`: the identity is in `owners` (or in `approvers` when `owners` is empty). `is_asker`:
+  the identity is in `askers` (messages only). `roles` lists what is true, or
   `["viewer"]` when none is. All matches are case-insensitive.
 - `api_keys` is **reserved**: the key store exists (`board apikey`, see "API keys"), but this route
   does not fill it yet, so the page shows "API keys are not enabled on this board". Its shape, one
@@ -1482,7 +1511,7 @@ removes a prefs floor so the config (else `info`) applies again.
 **Presence** (`$BOARD_HOME/presence.json`, 0600, `flock` on `presence.lock`, written by
 `board-serve` only): `{<identity>: {at, visible, interaction_at, via}}`. The page sends a
 heartbeat on load, every 30 s while visible, on every visibility change and on `pagehide`
-(`POST /api/presence`, approvers only; the identity is the listener's verified one; the page
+(`POST /api/presence`, owners only (anyone else: 204, ignored); the identity is the listener's verified one; the page
 sends how long it has been idle, `idle_ms`, and the server turns it into `interaction_at` with
 its own clock). An identity
 **is watching** when it is in `approvers` (case-insensitive), its last heartbeat says `visible`,
@@ -1603,7 +1632,7 @@ calls an existing approver-only route after a confirm step.
 - **Reduced motion** (`prefers-reduced-motion: reduce`): no blink (the colour stays), no wave.
 - **Adapters:** the Artifact page (claude.ai db) shows a read-only deck: no acknowledge, mute or
   away actions, for anyone. The demo is an approver whose actions change the page only.
-  `board-serve` shows the actions to approvers only (`approver_ids` contains the viewer) and checks
+  `board-serve` shows the actions to owners only (`state.owner`) and checks
   again on every POST.
 - **Collapse:** the Hide deck button or Account menu → Deck panel; kept in `localStorage`
   (`switchboard.deck` = `collapsed`).
@@ -2297,7 +2326,7 @@ idle session's empty prompt box. It never types free text.
 
 CLI: `board session CODE compact|rc on|rc off|cancel [--by NAME]`, `board session apply
 [CODE...|--pending] [--only rc|compact] [--auto]`, `board session status [--json]`. Board:
-`POST /api/sessions/<code>/action` (approvers only).
+`POST /api/sessions/<code>/action` (owners only).
 
 **Every action, the same guards** (in the style of `board press`). A check that fails before the
 first key sends nothing:
