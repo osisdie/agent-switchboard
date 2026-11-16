@@ -2629,10 +2629,13 @@ CLI: `board resume CODE [CODE...] [--dry-run] [--by NAME] [--json]`, `board resu
 **Claude's limit notice.** `limit_regex` is matched at the **start** of a line's text, and only on
 two kinds of line in the last reply (between the last echoed prompt and the input box): a
 tool-result / system line (`⎿ Usage limit reached · limit resets 3pm`, matched after the `⎿`),
-or the last non-blank line before the box when it is not part of an assistant `●` paragraph (a
-run of non-blank lines that starts with `●`). Assistant prose that mentions limits ("● The API
-enforces a weekly limit", a wrapped "● Usage limit reached is the message …") never counts, and
-neither does tool output whose line does not start with the notice (`⎿ docs/x.md: Usage limit …`).
+or the last non-blank line before the box when no assistant `●` line comes before it in the
+reply. That walk up passes blank lines (Claude draws a reply's later paragraphs indented, without
+`●`) and stops only at a `⎿` line. Assistant prose that mentions limits never counts, in any
+paragraph: "● The API enforces a weekly limit", a wrapped "● … the one that reads / usage limit
+reached …", or "● Summary:" followed by a blank line and "  Weekly limit reached screens are
+handled.". Neither does tool output whose line does not start with the notice (`⎿ docs/x.md:
+Usage limit …`).
 
 **Screens** (Claude Code 2.1.x; the patterns are `fleet.yaml limit_resume.*`, Python regexes):
 
@@ -2690,7 +2693,9 @@ only (`screen: "…"`). `keys` names the keys (`Escape`, `Enter`, `<prompt>`); t
 itself is not logged either.
 
 **What the board shows.** The looping collector passes `--scan-limits`: when the last look is
-`scan_seconds` (30; 0 = never) old and none is running, it starts one **in the background**
+`scan_seconds` (30; 0 = never) old, none is running and it has not started one within
+`scan_seconds` (`$BOARD_HOME/resume-scan.spawned`, so a look that fails every time is still
+started at most once per period), it starts one **in the background**
 (`resume.py --scan-store`, one at a time: flock `resume-scan.run.lock`), so a slow tmux never
 stalls the collector. The look classifies each running session's pane from the last snapshot
 (`display-message` and `capture-pane`, read only; a session with an action running keeps its last

@@ -43,6 +43,8 @@ State:
                                 throttled look at the panes (in the background), what the board's
                                 "usage limit" chip and Resume buttons follow (0600; flock
                                 resume-scan.lock)
+  $BOARD_HOME/resume-scan.spawned  when the collector last started a look (at most one per
+                                scan_seconds, even when every look fails)
   $BOARD_HOME/resume-esc-CODE   when the board last sent Escape to CODE (the gap between runs)
   events.jsonl                  {"type": "resume", code, result, reason, reason_code, state,
                                  keys, by, dry_run, pane}: every attempt and refusal; reason is a
@@ -66,6 +68,7 @@ LIMIT_STATES = ("dialog", "wait", "ready", "idle")
 SCAN_FILE = "resume-scan.json"
 SCAN_LOCK = "resume-scan.lock"        # read-modify-write of resume-scan.json
 SCAN_RUN_LOCK = "resume-scan.run.lock"  # one background look at a time
+SCAN_SPAWNED = "resume-scan.spawned"   # when the collector last started a look (epoch ms)
 EXIT = {"resumed": 0, "dry-run": 0, "skipped": 0, "refused": 3, "partial": 5, "unconfirmed": 6,
         "limited": 6, "failed": 1}
 MARK = "❯"
@@ -151,21 +154,25 @@ def last_reply(lines, top, window=15):
     return lines[max(0, top - 8):top]
 
 
-def _in_bullet(lines, k):
-    """Is line K part of an assistant or tool paragraph (contiguous non-blank lines that start
-    with "●")?"""
-    while k >= 0 and lines[k].strip():
-        if lines[k].strip().startswith(BULLET):
+def _after_bullet(lines, k):
+    """Does an assistant "●" line come before line K in LINES (the reply)? Blank lines do not stop
+    the walk (Claude draws a reply's later paragraphs indented, without "●"); a "⎿" line does (what
+    follows a tool result is not that paragraph's prose)."""
+    for j in range(k - 1, -1, -1):
+        s = lines[j].strip()
+        if s.startswith(TOOL):
+            return False
+        if s.startswith(BULLET):
             return True
-        k -= 1
     return False
 
 
 def limit_notice(lines, c, last_only=True):
     """Claude's own usage-limit notice among LINES, else None. A notice is a tool-result / system
     line ("⎿ Usage limit reached · …") whose text STARTS with limit_regex, or (LAST_ONLY: only
-    the last non-blank line; else any line) a line outside an assistant "●" paragraph that starts
-    with it. Assistant prose that mentions limits never counts."""
+    the last non-blank line; else any line) a line that starts with it and has no assistant "●"
+    line before it in LINES, up to the last "⎿" line (_after_bullet). Assistant prose that
+    mentions limits never counts, in any paragraph of the reply."""
     rx = _rx(c, "limit_regex", re.I)
     nonblank = [k for k, ln in enumerate(lines or []) if ln.strip()]
     for k in nonblank:
@@ -173,7 +180,7 @@ def limit_notice(lines, c, last_only=True):
         if s.startswith(TOOL):
             if rx.match(s[len(TOOL):].strip()):
                 return s
-        elif (not last_only or k == nonblank[-1]) and not s.startswith((BULLET, MARK)) and not _in_bullet(lines, k):
+        elif (not last_only or k == nonblank[-1]) and not s.startswith((BULLET, MARK)) and not _after_bullet(lines, k):
             if rx.match(s):
                 return s
     return None
@@ -294,6 +301,7 @@ class Run:
         ok = self.send("Escape")
         try:
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            os.fchmod(fd, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write("%.3f\n" % time.time())
         except OSError:
@@ -470,9 +478,16 @@ def save_scan(home, doc):
     path = scan_path(home)
     tmp = "%s.tmp.%d" % (path, os.getpid())
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        json.dump(doc, fh, sort_keys=True)
-    os.replace(tmp, path)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh, sort_keys=True)
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def update_scan(home, fn):
@@ -573,6 +588,24 @@ def scan_store(home, cfg):
     return 0
 
 
+def spawned_at(home):
+    try:
+        with open(os.path.join(home, SCAN_SPAWNED), encoding="utf-8") as fh:
+            return int(fh.read().strip() or 0)
+    except (OSError, ValueError):
+        return 0
+
+
+def stamp_spawned(home, now):
+    try:
+        fd = os.open(os.path.join(home, SCAN_SPAWNED), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write("%d\n" % now)
+    except OSError:
+        pass
+
+
 def spawn_scan(home):
     try:
         subprocess.Popen([sys.executable, os.path.realpath(__file__), "--scan-store"],  # noqa: S603
@@ -590,7 +623,10 @@ def annotate(sessions, cfg, home, now, do_scan=False):
     c = conf(cfg)
     every = float(c.get("scan_seconds") or 0)
     doc = load_scan(home)
-    if do_scan and every > 0 and now - int(doc.get("at") or 0) >= every * 1000 and not scan_running(home):
+    if (do_scan and every > 0 and now - int(doc.get("at") or 0) >= every * 1000
+            and now - spawned_at(home) >= every * 1000 and not scan_running(home)):
+        # stamped first: a look that fails every time is still started at most once per scan_seconds
+        stamp_spawned(home, now)
         spawn_scan(home)
     max_age = max(120.0, 4 * every) * 1000
     seen = doc.get("sessions") or {}

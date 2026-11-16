@@ -121,7 +121,12 @@ PROSE = [screen(["● The API enforces a weekly limit; I added a backoff."]),
          screen(["● Done. The rate limiter now logs when the limit resets."]),
          screen(["● Added docs for /rate-limit-options."]),
          screen(["● Usage limit reached is the message the client shows; I", "  matched it in the tests."]),
-         screen(["● Bash(grep -rn limit docs)", "  ⎿  docs/x.md: Usage limit reached · limit resets 3pm"])]
+         screen(["● Bash(grep -rn limit docs)", "  ⎿  docs/x.md: Usage limit reached · limit resets 3pm"]),
+         # later paragraphs of a reply: indented, no "●", after a blank line
+         screen(["● I changed the classifier.", "", "  Usage limit reached is now matched only at line start."]),
+         screen(["● Summary:", "", "  Weekly limit reached screens are handled."]),
+         screen(["● The notice text we look for, after this change, is the one that reads", "  usage limit reached · resets 3pm."]),
+         screen(["● Two paragraphs.", "", "  The first one.", "", "  You've hit your limit is what the client prints."])]
 
 
 def run(*args, env=None):
@@ -237,7 +242,7 @@ def sent_to(pane):
 
 def reset_home():
     for n in os.listdir(HOME):
-        if n.endswith(".lock") or n in ("events.jsonl", "snapshot.json", "resume-scan.json"):
+        if n.endswith(".lock") or n in ("events.jsonl", "snapshot.json", "resume-scan.json", "resume-scan.spawned") or n.startswith("resume-esc-"):
             os.remove(os.path.join(HOME, n))
 
 
@@ -304,8 +309,13 @@ class ClassifyTest(unittest.TestCase):
     def test_prose_is_not_a_notice(self):
         for scr in PROSE:
             self.assertEqual(self.st(scr), "none", scr.split("\n")[-5])
-        # the notice as the last line before the box, outside any ● paragraph, still counts
-        self.assertEqual(self.st(screen(["● Working on it.", "", "You've hit your limit · resets 3pm"])), "idle")
+        # a plain notice line counts only with no "●" before it in the reply (up to a "⎿" line)
+        def bare(reply):                                  # a reply that starts right after the echo
+            return "\n".join(["Claude Code v2", "", "❯ fix the flaky upload test"] + reply + [TOP, "❯" + NB, RULE, FOOT])
+        self.assertEqual(self.st(bare(["You've hit your limit · resets 3pm"])), "idle")
+        self.assertEqual(self.st(screen(["You've hit your limit · resets 3pm"])), "none", "after HEAD's ● reply line")
+        self.assertEqual(self.st(screen(["● Bash(ls)", "  ⎿  a.txt", "", "You've hit your limit · resets 3pm"])), "idle")
+        self.assertEqual(self.st(screen(["● Working on it.", "", "You've hit your limit · resets 3pm"])), "none")
         self.assertEqual(self.st(screen(["You've hit your limit · resets 3pm", "", "● Something after it."])), "none")
 
     def test_wrapped_prompt_box(self):
@@ -664,6 +674,36 @@ class CollectorTest(unittest.TestCase):
         deadline = time.time() + 30
         while time.time() < deadline and (resume.scan_running(HOME) or not resume.load_scan(HOME).get("at")):
             time.sleep(0.2)
+
+    def test_failing_look_is_started_once_per_period(self):
+        started = []
+        real = resume.spawn_scan
+        resume.spawn_scan = lambda home: started.append(home) or True   # a look that never finishes
+        try:
+            cfg = fleet.load_fleet()                                     # scan_seconds: 1
+            for now in (10000, 10100, 10900):                            # "at" never advances
+                resume.annotate([], cfg, HOME, now, do_scan=True)
+            self.assertEqual(len(started), 1, "one start per scan_seconds, not one per collector run")
+            resume.annotate([], cfg, HOME, 11000, do_scan=True)
+            self.assertEqual(len(started), 2)
+            self.assertEqual(os.stat(os.path.join(HOME, resume.SCAN_SPAWNED)).st_mode & 0o777, 0o600)
+        finally:
+            resume.spawn_scan = real
+        # for real: a look that fails (resume-scan.json cannot be written) is not restarted every run
+        os.remove(os.path.join(HOME, resume.SCAN_SPAWNED))
+        os.makedirs(os.path.join(HOME, resume.SCAN_FILE))
+        try:
+            Live()
+            script([DIALOG])
+            for _ in range(4):
+                self.collect("--scan-limits")
+            time.sleep(1.5)
+            self.assertLessEqual(len(self.captures()), 2, self.captures())
+        finally:
+            deadline = time.time() + 10
+            while time.time() < deadline and resume.scan_running(HOME):
+                time.sleep(0.1)
+            os.rmdir(os.path.join(HOME, resume.SCAN_FILE))
 
     def test_scan_off(self):
         write_fleet("  scan_seconds: 0")
