@@ -559,9 +559,13 @@ owner, ...}`. Only an approver answers it on the board; a key never can.
    checks the approver again, creates the task and the link, and prints the verified
    `[BOARD ticket ...]` line you relay under the ticket rules. If this board has no
    `board ticket take` yet, do nothing more: the approval stays on record ("take not available
-   yet"). If the take fails, leave the decision `answered` and tell the owner.
+   yet"). **If the take fails** (a non-zero exit; its error code is on stderr, e.g.
+   `already_taken`, `unknown_session`, `ticket_not_found`): run `board mark <id> stale --reason operator`,
+   so it leaves the queue and the board shows it was not delivered (`board mark` takes a fixed reason
+   code, not free text), and tell the owner why:
+   `board notify --link <id> "take <id> for <request.ref> failed: <code>"`. Don't retry it yourself.
    For `decline` (or any other answer): do nothing.
-4. `board mark <id> relayed` (handled), so it is never taken twice.
+4. Otherwise `board mark <id> relayed` (handled), so it is never taken twice.
 
 ### Relaying a message
 

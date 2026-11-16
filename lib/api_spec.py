@@ -27,8 +27,8 @@ PARAMS = {
     "decision_id": (r"d-[0-9]+-[a-z0-9]+", "A decision id."),
     "task_id": (r"[A-Za-z0-9._-]{1,80}", "A task id."),
     "message_id": (r"m-[0-9]+-[a-z0-9]+", "A board message id."),
-    "ref": (r"(?:[a-z][a-z0-9-]{0,31}:)?[A-Za-z0-9][A-Za-z0-9._-]{0,63}",
-            "A ticket reference: KEY, or provider:KEY."),
+    "ref": (r"(?:[a-z][a-z0-9-]{0,31}:)?[A-Za-z0-9](?:[A-Za-z0-9._-]|%23){0,63}",
+            "A ticket reference: KEY, or provider:KEY. A # in the key is sent as %23."),
 }
 # Stages a key may move a task to (or create it in). deploy, production and maintain need a person.
 API_STAGES = ("plan", "design", "build", "test")

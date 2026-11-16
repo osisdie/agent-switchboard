@@ -199,11 +199,14 @@ def build_path(tool, args):
     path, query = tool["path"], {}
     for k, v in args.items():
         pat = api_spec.PARAMS[k][0] if k in tool["params"] else api_spec.QUERY[k][0]
-        if not isinstance(v, str) or not re.fullmatch(pat, v):
+        # a path value is checked in the form it travels in: ":" stays (a ticket ref is
+        # provider:KEY), anything else is percent-encoded (a "#" in a key becomes %23); the
+        # patterns never allow "/"
+        enc = urllib.parse.quote(v, safe=":") if isinstance(v, str) and k in tool["params"] else v
+        if not isinstance(v, str) or not re.fullmatch(pat, enc):
             raise ValueError("%s: not a valid value" % k)
         if k in tool["params"]:
-            # ":" stays (a ticket ref is provider:KEY); the patterns never allow "/"
-            path = path.replace("{%s}" % k, urllib.parse.quote(v, safe=":"))
+            path = path.replace("{%s}" % k, enc)
         else:
             query[k] = v
     return path + ("?" + urllib.parse.urlencode(sorted(query.items())) if query else "")
@@ -307,7 +310,12 @@ class Server:
             text = "%s: %s" % (body.get("error", "HTTP %d" % status) if isinstance(body, dict) else "HTTP %d" % status,
                                body.get("detail", "") if isinstance(body, dict) else "")
             return {"content": [{"type": "text", "text": text.rstrip(": ")}], "isError": True}
-        out = {"content": [{"type": "text", "text": json.dumps(body, ensure_ascii=False)}], "isError": False}
+        text = json.dumps(body, ensure_ascii=False)
+        if tool["name"] == "send_message" and isinstance(body, dict) and body.get("status") == "held":
+            # still a success (201): the message is stored; but say plainly that nobody gets it
+            text = ("held by the secret guard: not relayed until an owner releases it (message %s). %s"
+                    % (body.get("id"), text))
+        out = {"content": [{"type": "text", "text": text}], "isError": False}
         if isinstance(body, dict):
             out["structuredContent"] = body
         return out

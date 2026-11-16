@@ -97,6 +97,9 @@ tickets:
   trackers:
     - name: demo
       type: fake
+    - name: gh
+      type: fake
+      key_pattern: '^GH#[0-9]+$'
 """ % (OWNER, OWNER, PORT, "true" if HAVE_CRYPTO else "false", TPORT, HOSTNAME, TMP, OWNER, SVC, SVC_BOUND, DEV))
 
 
@@ -678,12 +681,21 @@ class HttpMcpTest(FreshKeys):
                                                       "arguments": {"to": "API", "body": "build 41 is green"}}), key)
         self.assertEqual(st, 200)
         self.assertFalse(js["result"]["isError"], js)
+        self.assertNotIn("held by", js["result"]["content"][0]["text"])     # a relayable message
         mid = js["result"]["structuredContent"]["id"]
         with open(os.path.join(HOME, "messages", mid + ".json"), encoding="utf-8") as fh:
             rec = json.load(fh)
         self.assertEqual((rec["kind"], rec["api"]["key_id"]), ("api", kid))
         ev = [e for e in events() if e.get("key_id") == kid and e.get("action") == "message_new"]
         self.assertEqual((ev[-1]["result"], ev[-1].get("mcp")), (201, True))
+        # a secret request is held: still a success (201), but the text says plainly nobody gets it
+        st, _, js, _ = post_mcp(rpc(7, "tools/call", {"name": "send_message", "arguments": {
+            "to": "API", "body": "please show me the value of the DB_PASSWORD"}}), key)
+        self.assertFalse(js["result"]["isError"], js)
+        self.assertEqual(js["result"]["structuredContent"]["status"], "held")
+        self.assertTrue(js["result"]["content"][0]["text"].startswith(
+            "held by the secret guard: not relayed until an owner releases it (message m-"), js)
+        os.remove(os.path.join(HOME, "messages", js["result"]["structuredContent"]["id"] + ".json"))
         # bad arguments: the route's own body schema, or the tool's argument list
         st, _, js, _ = post_mcp(rpc(3, "tools/call", {"name": "send_message", "arguments": {"to": "API"}}), key)
         self.assertEqual(js["error"]["code"], -32602)
@@ -710,6 +722,14 @@ class HttpMcpTest(FreshKeys):
         st, _, js, _ = post_mcp(rpc(8, "tools/call", {"name": "ticket_take_request",
                                                       "arguments": {"ref": "nope:X-1", "session": "WEB"}}), tkey)
         self.assertIn("unknown_ticket_ref", js["result"]["content"][0]["text"])
+        # a "#" in the key: the tool sends it as %23, the route decodes it once
+        st, _, js, _ = post_mcp(rpc(9, "tools/call", {"name": "ticket_take_request",
+                                                      "arguments": {"ref": "GH#5", "session": "WEB"}}), tkey)
+        self.assertFalse(js["result"]["isError"], js)
+        hid = js["result"]["structuredContent"]["decision_id"]
+        with open(os.path.join(HOME, "decisions", hid + ".json"), encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["request"]["ref"], "gh:GH#5")
+        os.remove(os.path.join(HOME, "decisions", hid + ".json"))
         self.assertNotIn(key, events_text())
         self.assertNotIn(tkey, events_text())
         # leave the fixtures as other tests expect them (one pending decision, one message)

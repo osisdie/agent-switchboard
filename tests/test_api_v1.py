@@ -90,6 +90,9 @@ tickets:
     - name: demo
       type: fake
       key_pattern: '^(PROJ|CAP|DEMO)-[0-9]+$'
+    - name: gh
+      type: fake
+      key_pattern: '^GH#[0-9]+$'
 """ % (OWNER, BOSS, PORT, "true" if remote else "false", fail_per_min, TPORT, HOSTNAME, TMP, BOSS,
        tokens or TOKENS_UNBOUND))
 
@@ -865,6 +868,21 @@ class Writes(Fresh):
             st, _, js = post("/api/v1/tickets/%s/take" % ref, {"session": "API"}, key)
             self.assertEqual((st, js["error"]), (400, err), ref)
         self.assertEqual([r for r in api_rows(key_id=kid) if r.get("result") == 202], [])
+
+    def test_take_ref_with_a_hash(self):
+        """A # in a ticket key travels as %23: the path segment is decoded once, then routed like
+        /api/tickets/<ref> (T1's key rule), and the request stores provider:KEY with the #."""
+        kid, key = mkkey("tickets:take")
+        for ref in ("GH%2342", "gh:GH%2343"):
+            st, _, js = post("/api/v1/tickets/%s/take" % ref, {"session": "API"}, key)
+            self.assertEqual(st, 202, (ref, js))
+            path = os.path.join(HOME, "decisions", js["decision_id"] + ".json")
+            with open(path, encoding="utf-8") as fh:
+                self.assertEqual(json.load(fh)["request"]["ref"], "gh:GH#" + ref[-2:])
+            os.remove(path)
+        st, _, js = post("/api/v1/tickets/GH%23/take", {"session": "API"}, key)       # no number: no tracker
+        self.assertEqual((st, js["error"]), (400, "unknown_ticket_ref"))
+        self.assertEqual(post("/api/v1/tickets/GH%2F42/take", {"session": "API"}, key)[0], 404)   # still no "/"
 
     def test_approve_leads_to_exactly_one_take(self):
         """The operator's step on `take <id> answered` (prompts/board-operator.md): approve -> one

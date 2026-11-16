@@ -1259,7 +1259,15 @@ and messages; **nothing a key writes carries authority**:
   `board ticket take <ref> --session <session> --by <answered_by>`, which checks the approver again
   and produces the verified `[BOARD ticket]` relay; where that command does not exist yet, the
   approval is only recorded. On `decline`, nothing. Either way the operator marks it `relayed`
-  (handled), so a take runs at most once.
+  (handled), so a take runs at most once. If an approved take fails, the operator marks it `stale`
+  with `--reason operator` instead (it leaves the queue; `board mark` takes a fixed reason code, not
+  free text) and tells the owner the error code (`board notify --link <id> "take <id> for <ref>
+  failed: <code>"`).
+- **No fetch when asked.** The request is not checked against the tracker (only routed by
+  `key_pattern`): a key never spends the tracker token, and the route is no oracle for which tickets
+  exist. The take, on approve, fetches the ticket fresh.
+- **A `#` in a ticket key** travels as `%23` in the path (`/api/v1/tickets/WEB%2312/take`); the
+  segment is decoded once, then routed like `/api/tickets/<ref>` (T1's key rule).
 - A key records a PR as `open` or `closed` only, never `merged`: a merge unblocks dependent tasks
   and tells stacked sessions to rebase, so it must come from the session or the harness.
 - A refused write (400, 403, 404, 409, 413, 415) writes nothing; busy stores answer 409 `busy`.
@@ -1406,7 +1414,9 @@ the newest), `ping`, `tools/list`, `tools/call`, `resources/list`, `resources/te
 The two **write** tools (`readOnlyHint: false`) run their `POST` route inside board-serve with the
 tool's arguments as the body: the route's body schema, its handler and one audit row per call
 (`"mcp": true`). `send_message` reaches the session as `[BOARD api <id>] via API key …`,
-information only; `ticket_take_request` only creates a pending `ticket_take_request` decision
+information only; a message the secret guard holds is still a success (201, `status: "held"`),
+and the tool's text then starts with `held by the secret guard: not relayed until an owner
+releases it`. `ticket_take_request` only creates a pending `ticket_take_request` decision
 (its ref routed to a configured tracker: an unknown one is a tool error `unknown_ticket_ref`).
 No tool answers a decision, presses a prompt or approves anything (owner decision Q1).
 

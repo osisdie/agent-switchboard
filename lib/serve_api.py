@@ -863,7 +863,8 @@ class Api:
         [BOARD decision]), written with its `request` in one atomic write. Only an approver answers
         it on the board; on approve the operator runs the take itself (`board ticket take ... --by
         <answered_by>`), which produces the verified [BOARD ticket] relay. A key can never answer it."""
-        S, raw_ref, b = self.S, self.params["ref"], self.body()
+        # the path segment is decoded once (a "#" arrives as %23), then routed: T1's KEY_RE fullmatch
+        S, raw_ref, b = self.S, urllib.parse.unquote(self.params["ref"]), self.body()
         code = b["session"]
         self.known_session(code)
         # the ref must name a configured tracker's ticket (T1 routing): unknown -> 400, ambiguous -> 409;
