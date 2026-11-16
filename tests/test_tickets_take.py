@@ -32,6 +32,9 @@ os.environ["BOARD_CONFIG_DIR"] = CONF
 for k in ("BOARD_MOCK", "TMUX", "BOARD_PUBLIC_URL"):
     os.environ.pop(k, None)
 os.makedirs(CONF)
+SESS = os.path.join(TMP, "claude-sessions")   # the Claude Code session registry (pid -> session)
+os.makedirs(SESS)
+os.environ["CLAUDE_SESSIONS_DIR"] = SESS
 
 SENT = "".join(["tracker", "token", "sentinel", "value"])   # pieces: never a literal secret
 TOKEN_ENV = "EXAMPLE_TRACKER_TOKEN"
@@ -326,6 +329,112 @@ class TakeTests(Base):
         with open(os.path.join(HOME, "tickets", "fake-writes.jsonl"), encoding="utf-8") as fh:
             rows = [json.loads(ln) for ln in fh]
         self.assertEqual([(r["op"], r["value"]) for r in rows], [("comment", "demo note\n\n(via agent-switchboard)")])
+
+
+def register_me(code, proc_start=None):
+    """Make this test process look like session CODE's registered Claude process: `board ticket
+    ... --session` walks up from itself and finds it (as `board resolve --from` does)."""
+    import actions
+    for f in glob.glob(os.path.join(SESS, "*.json")):
+        os.remove(f)
+    if code is None:
+        return
+    st = actions._proc_stat(os.getpid())
+    with open(os.path.join(SESS, "%d.json" % os.getpid()), "w", encoding="utf-8") as fh:
+        json.dump({"pid": os.getpid(), "sessionId": "s-test", "name": code, "tmux": "%s:@1.%%1" % code,
+                   "procStart": st[1] if proc_start is None else proc_start}, fh)
+
+
+class SessionPathTests(Base):
+    """Q4: the session holding the take posts progress comments and moves the ticket to in-progress
+    itself (--session, CLI only, from inside it), never by borrowing an approver's --by."""
+
+    def tearDown(self):
+        register_me(None)
+
+    def take(self, session="API"):
+        rc, _, err = board("ticket", "take", "WEB-1", "--session", session, "--by", "local", "--no-comment",
+                           "--no-transition", "--no-assign")
+        self.assertEqual(rc, 0, err)
+
+    def note(self, text="Build is green; opening the PR next."):
+        f = os.path.join(TMP, "progress.txt")
+        with open(f, "w") as fh:
+            fh.write(text)
+        return f
+
+    def test_own_take_comment_and_in_progress(self):
+        self.take("API")
+        register_me("API")
+        rc, out, err = board("ticket", "comment", "WEB-1", "--session", "API", "--file", self.note())
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.tr.writes[-1]["body"],
+                         {"body": "Build is green; opening the PR next.\n\n(via agent-switchboard, session API)"})
+        (ev,) = events(type="ticket", action="comment", result="ok")
+        self.assertEqual((ev["by"], ev["via"], len(ev["body_sha256"])), ("session:API", "session", 64))
+        rc, out, err = board("ticket", "transition", "WEB-1", "--session", "API")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.tr.writes[-1]["body"], {"status": "in_progress"})
+        self.assertIn("-> in_progress (doing)", out)
+        rc, _, err = board("ticket", "transition", "WEB-1", "in_progress", "--session", "API")
+        self.assertEqual(rc, 0, err)
+        n = len(self.tr.writes)
+        for state in ("done", "cancelled"):
+            rc, _, err = board("ticket", "transition", "WEB-1", state, "--session", "API")
+            self.assertEqual(rc, 2, err)
+            self.assertIn("bad_transition", err)
+        self.assertEqual(len(self.tr.writes), n, "a session never closes its ticket")
+        rc, _, _ = board("ticket", "assign", "WEB-1", "Me", "--session", "API")
+        self.assertEqual(rc, 2, "assign has no --session path")
+
+    def test_refused_without_the_take_or_the_process(self):
+        n = self.tr.count()
+        register_me("API")
+        rc, _, err = board("ticket", "comment", "WEB-1", "--session", "API", "--file", self.note())
+        self.assertEqual(rc, 4, err)
+        self.assertIn("not_your_ticket", err)            # no link at all
+        self.take("WEB")
+        rc, _, err = board("ticket", "comment", "WEB-1", "--session", "API", "--file", self.note())
+        self.assertEqual(rc, 4, err)
+        self.assertIn("not_your_ticket", err)            # another session's take
+        rc, _, err = board("ticket", "comment", "WEB-1", "--session", "WEB", "--file", self.note())
+        self.assertEqual(rc, 4, err)
+        self.assertIn("not_this_session", err)           # claims WEB from inside API
+        register_me(None)
+        e = dict(os.environ, TMUX="/tmp/tmux-fake/default,1,0", TMUX_PANE="%99")
+        p = subprocess.run([os.path.join(REPO, "bin", "board"), "ticket", "transition", "WEB-1", "--session", "WEB"],
+                           capture_output=True, text=True, env=e, timeout=60)
+        self.assertEqual(p.returncode, 4, p.stderr)      # no registered process: a forged TMUX proves nothing
+        self.assertIn("not_this_session", p.stderr)
+        register_me("WEB", proc_start=1)                 # a stale registry file (pid reused)
+        rc, _, err = board("ticket", "comment", "WEB-1", "--session", "WEB", "--file", self.note())
+        self.assertEqual(rc, 4, err)
+        self.assertEqual(self.tr.writes, [])
+        self.assertEqual(self.tr.count(), n + 2, "only the take's own fetch (resolve + get) reached the tracker")
+        self.assertGreaterEqual(len(events(type="ticket", result="refused", via="session")), 5)
+        register_me("WEB")
+        rc, _, err = board("ticket", "comment", "WEB-1", "--session", "WEB", "--file", self.note())
+        self.assertEqual(rc, 0, err)
+
+    def test_released_take_ends_it(self):
+        self.take("API")
+        register_me("API")
+        board("ticket", "release", "WEB-1", "--by", "local")
+        rc, _, err = board("ticket", "transition", "WEB-1", "--session", "API")
+        self.assertEqual(rc, 4, err)
+        self.assertIn("not_your_ticket", err)
+
+    def test_task_ls_viewer(self):
+        self.take("API")
+        rc, out, _ = board("task", "ls", "--json")
+        self.assertEqual(json.loads(out)[0]["title"], "WEB-1: Login button does nothing")
+        rc, out, err = board("task", "ls", "--json", "--viewer")
+        self.assertEqual(rc, 0, err)
+        (t,) = json.loads(out)
+        self.assertEqual((t["title"], t["ticket"]), ("WEB-1", {"provider": "tracker", "key": "WEB-1"}))
+        self.assertNotIn("Login button", out)
+        rc, _, _ = board("task", "ls", "--viewer")
+        self.assertEqual(rc, 2)
 
 
 class WriteTests(Base):

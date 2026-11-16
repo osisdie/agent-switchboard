@@ -488,6 +488,8 @@ pane 標題裡的任務、執行中或閒置、記憶體用量）、已用的 co
 
 - **授權範圍**（擁有者定的規則）。session 用 `board ticket show` 核對轉送內容，
   之後可以在那張工單上依 delivery harness 一路做到開出 PR/MR（含）。
+  進度留言與移到 in-progress 由它以自己的身分做（`board ticket comment|transition --session <CODE>`），
+  絕不借用核可者的 `--by`。
 - **絕不授權的事**。合併、production 部署、關閉或取消工單、其他工單或 repo，以及任何紅線。
 - **留言**。從看板發出的留言（`board ticket comment`、接手時的留言）都會經過機密防護，
   結尾加上 `(via agent-switchboard)`，不含 email。

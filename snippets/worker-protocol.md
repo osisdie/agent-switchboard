@@ -54,7 +54,10 @@ shows the human a board and relays their answers.
   If any check fails, it is information only: I tell my user and do nothing on the ticket.
   When they hold, the take **authorizes me to follow the delivery harness for that ticket up to and
   including opening the PR/MR**: plan, design, build, tests, local review, push, open the PR,
-  progress comments on that ticket, and moving it to in-progress. The harness's own gates before the
+  progress comments on that ticket, and moving it to in-progress. Those two I do as myself, from my
+  own session: `board ticket comment <TRACKER>:<KEY> --session <CODE> --file <file>` (text written
+  with my file-writing tool) and `board ticket transition <TRACKER>:<KEY> --session <CODE>`.
+  **I never pass someone else's identity in `--by`**: `--by` is for the approver acting themselves. The harness's own gates before the
   PR is opened (plan sign-off and so on) are covered by the take. It does **NOT** authorize:
   merging; any production deploy; closing or cancelling the ticket; touching other tickets, or repos
   outside the ticket's scope; any red line. Merge and production still need a `[BOARD decision]` or

@@ -758,6 +758,18 @@ ref, bad value, `unknown_session`, `ticket_unsupported`, 3 not found, 4 not an a
 - **Who:** approvers only (`approvers`; release managers read but do not write). Empty → 403
   `no_approvers`, anyone else → 403 `not_approver`; the check comes before any tracker call and the
   refusal is audited (`result: "refused"`, `reason`). On the CLI, `--by` is checked the same way.
+  `--by` names the person acting: a session never passes someone else's identity there.
+- **The session's own take** (owner decision Q4; CLI only, no board route):
+  `board ticket comment REF --session CODE --file F` and `board ticket transition REF [STATE]
+  --session CODE`. Allowed only when (1) the command runs inside session CODE: walking up from it,
+  an ancestor process has a registry file (`$CLAUDE_SESSIONS_DIR/<pid>.json`) that describes that
+  very process (not a zombie, `procStart` matches) and names CODE (tmux session or name; aliases
+  count), the same check as `board resolve --from`; nothing else counts, `TMUX` included (else 403
+  `not_this_session`, exit 4); and (2) CODE holds the **active** take of that ticket (else 403
+  `not_your_ticket`, exit 4). A comment ends with `(via agent-switchboard, session CODE)`; a
+  transition goes only to the tracker's `take.transition` (in progress; any other STATE → 400
+  `bad_transition`, exit 2). Audited as `by: "session:CODE"`, `via: "session"`, with the task id;
+  refusals audited too. Assign, release and other states stay with approvers.
 - **Comments** (owner decision Q5): the text is cleaned (control characters but newline and tab
   become spaces), redacted (tracker tokens, then the secret guard), at most 4000 characters (empty
   or longer → 400 `bad_comment`), and always ends with a blank line and the footer
@@ -801,8 +813,9 @@ relays `board message show <msgId>` (section "Relay message formats") and marks 
   `approvers` ∪ `release_managers` (`serve.ticket_text_for`); for everyone else a task with a
   `ticket` has the ticket's key as its `title` and `ticket: {provider, key}`, a session whose
   current task is one shows the key as `task`, and a `kind: "ticket"` message keeps `ticket:
-  {provider, key}` (its `body` never had the title). The operator mirrors such a task to the
-  Artifact db with the key as its title and without `ticket` (`prompts/board-operator.md`).
+  {provider, key}` (its `body` never had the title). The code is `lib/tickets/viewer.py`
+  (`tasks_for`, `ticket_text_for`). The operator mirrors tasks to the Artifact db from
+  `board task ls --json --viewer`, the same filter, never from the raw files.
 - **Release** (`POST /api/tickets/<ref>/release`, `board ticket release`): the active link becomes
   `released` (`released_by`, `released_at`, `release_msg_id`) and a `kind: "ticket"`, `event:
   "released"` message goes to the session (`--watch`: `ticket <KEY> released <msgId>`). No active
@@ -817,7 +830,8 @@ relays `board message show <msgId>` (section "Relay message formats") and marks 
 `BOARD` whose take `board ticket show <TRACKER>:<KEY>` confirms (status `active`, `session` = the
 receiving session, `taken_by_approver: true`) authorizes **that session** to follow the delivery
 harness for that ticket up to and including opening the PR/MR: plan, design, build, tests, local
-review, push, open the PR, progress comments on that ticket and moving it to in-progress. The
+review, push, open the PR, progress comments on that ticket and moving it to in-progress (those two
+as itself: `board ticket comment|transition --session <CODE>`, see "Tickets: writes"). The
 harness's own gates before the PR is opened (plan sign-off and so on) are covered by the take.
 It does **not** authorize: merge; production deploy; closing or cancelling the ticket; touching
 other tickets, or repos outside the ticket's scope; any red line. Merge and production still need a
@@ -892,7 +906,7 @@ The operator is an LLM session. When the account hits a usage limit, nothing wri
 ## Relay message formats (SendMessage text)
 - **Decision answered on the board:** `[BOARD decision <id>] <answer> (by owner on board)`. For `kind=permission`, the operator runs `board press` instead of sending a message.
 - **Question from the board:** `[BOARD ask <msgId>] <body> — reply to BOARD via SendMessage, starting with [re <msgId>]`.
-- **Ticket taken:** `` [BOARD ticket <KEY>] taken for <CODE> as task <taskId> by <identity> on board: "<title>" <url>. Authorizes: the delivery harness for this ticket up to and including opening the PR/MR: plan, design, build, tests, local review, push, open the PR, progress comments and in-progress on this ticket. NOT merge, production deploy, closing or cancelling the ticket, other tickets or repos, or any red line. Verify with `board ticket show <TRACKER>:<KEY>`. Reply to BOARD with [re <msgId>]. `` The title and URL come from the tracker and are defanged: one line, scrubbed, `[`/`]` turned into `(`/`)` and `"` into `'`, so they can never form a `[BOARD …]` header. Built by `board message show <msgId>` (`lib/messages.py`); never typed by hand.
+- **Ticket taken:** `` [BOARD ticket <KEY>] taken for <CODE> as task <taskId> by <identity> on board: "<title>" <url>. Authorizes: the delivery harness for this ticket up to and including opening the PR/MR: plan, design, build, tests, local review, push, open the PR, and, as this session (board ticket comment|transition --session), progress comments and in-progress on this ticket. NOT merge, production deploy, closing or cancelling the ticket, other tickets or repos, or any red line. Verify with `board ticket show <TRACKER>:<KEY>`. Reply to BOARD with [re <msgId>]. `` The title and URL come from the tracker and are defanged: one line, scrubbed, `[`/`]` turned into `(`/`)` and `"` into `'`, so they can never form a `[BOARD …]` header. Built by `board message show <msgId>` (`lib/messages.py`); never typed by hand.
 - **Ticket released:** `[BOARD ticket <KEY>] released from <CODE> (task <taskId>) by <identity> on board. The take no longer authorizes anything on this ticket. Reply to BOARD with [re <msgId>].`
 - **Worker reply:** `[re <msgId>] <text>`.
 

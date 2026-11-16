@@ -531,6 +531,8 @@ fails, the take still stands (`partial`). A ticket that is already taken is refu
 
 - **What it authorizes** (the owner's rule). The session checks the relay with `board ticket show`.
   It may then follow the delivery harness on that ticket up to and including opening the PR/MR.
+  It posts progress comments and moves the ticket to in-progress as itself
+  (`board ticket comment|transition --session <CODE>`), never with an approver's `--by`.
 - **What it never authorizes.** Merge, production deploy, closing or cancelling the ticket, other
   tickets or repos, or any red line.
 - **Comments.** Comments posted from the board (`board ticket comment`, the take's comment) go

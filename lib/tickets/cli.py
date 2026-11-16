@@ -9,6 +9,8 @@ usage: board ticket get REF [--refresh] [--json]
        board ticket comment REF --by WHO --file F
        board ticket transition REF STATE --by WHO
        board ticket assign REF NAME --by WHO
+       board ticket comment REF --session CODE --file F
+       board ticket transition REF [STATE] --session CODE
 
   get         REF is KEY (matched against every tracker's key_pattern) or tracker:KEY. Served from
               the cache for tickets.cache_ttl_seconds (60) unless --refresh. Every field is redacted
@@ -24,10 +26,15 @@ usage: board ticket get REF [--refresh] [--json]
   release     end an active take; the session is told.
   comment     post the file's text (scrubbed, plus the footer); transition / assign: the tracker's
               configured write. All writes: WHO must be in approvers.
+  --session   the session that holds an active take of the ticket, run from inside that session
+              (its registered Claude process must be an ancestor of this command): a progress
+              comment (footer "(via agent-switchboard, session CODE)") or the move to the tracker's
+              take.transition (in progress) only. Never pass someone else's identity in --by.
 
 Exit codes: 0 ok, 1 error (upstream, auth, unconfigured, already taken, not taken; doctor: a
             tracker has problems; show: no active take), 2 usage, bad or unknown ref, ambiguous
-            ref (candidates on stderr), bad value, unknown session, 3 not found, 4 not an approver,
+            ref (candidates on stderr), bad value, unknown session, 3 not found, 4 not an approver
+            (--session: not this session, or it holds no active take of the ticket),
             5 rate limited (retry_after on stderr).
 """
 import json
@@ -45,7 +52,7 @@ from tickets import TicketError, writes  # noqa: E402
 
 EXIT = {"ticket_not_found": 3, "ticket_rate_limited": 5, "unknown_ticket_ref": 2, "bad_ticket_ref": 2,
         "ticket_ambiguous": 2, "bad_transition": 2, "bad_comment": 2, "bad_body": 2, "unknown_session": 2,
-        "ticket_unsupported": 2, "not_approver": 4, "no_approvers": 4}
+        "ticket_unsupported": 2, "not_approver": 4, "no_approvers": 4, "not_this_session": 4, "not_your_ticket": 4}
 
 
 def usage(out=sys.stdout):
@@ -193,6 +200,8 @@ def cmd_release(args):
 
 
 def cmd_write(cmd, args):
+    if cmd in ("comment", "transition") and "--session" in args:
+        return cmd_session_write(cmd, args)
     if cmd == "comment":
         (ref,), _, op = parse(args, opts=("--by", "--file"))
         if "--by" not in op or "--file" not in op:
@@ -205,6 +214,23 @@ def cmd_write(cmd, args):
         r = getattr(writes, cmd)(ref, value, op["--by"], via="cli")
     t = r.get("ticket")
     print("ok %s%s" % (cmd, " -> %s (%s)" % (t.get("status"), t.get("status_category")) if t else ""))
+    return 0
+
+
+def cmd_session_write(cmd, args):
+    """The session's own taken ticket (owner decision Q4): no --by, never another identity."""
+    if cmd == "comment":
+        (ref,), _, op = parse(args, opts=("--session", "--file"))
+        if "--file" not in op:
+            raise Usage()
+        r = writes.session_comment(ref, read_file(op["--file"]), op["--session"])
+    else:
+        pos, _, op = parse(args, opts=("--session",), npos=len([a for a in args if not a.startswith("-")]) - 1)
+        if len(pos) not in (1, 2):
+            raise Usage()
+        r = writes.session_transition(pos[0], op["--session"], to=pos[1] if len(pos) == 2 else None)
+    t = r.get("ticket")
+    print("ok %s as session %s%s" % (cmd, op["--session"], " -> %s (%s)" % (t.get("status"), t.get("status_category")) if t else ""))
     return 0
 
 

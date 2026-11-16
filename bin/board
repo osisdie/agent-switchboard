@@ -106,6 +106,8 @@
 #   board ticket take REF --session CODE --by WHO [--comment-file F|--no-comment] [--no-transition] [--no-assign]
 #   board ticket release REF --by WHO
 #   board ticket comment REF --by WHO --file F | transition REF STATE --by WHO | assign REF NAME --by WHO
+#   board ticket comment REF --session CODE --file F | transition REF --session CODE
+#                                              the session's own taken ticket (from inside it)
 #                                              tracker tickets (fleet.yaml tickets.trackers; REF is
 #                                              KEY or tracker:KEY); writes and take: approvers only
 #   board guard scrub|scrub-json|screen|has-marker|secrets
@@ -315,7 +317,9 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
         echo "  --ticket links the task to a tracker ticket (board ticket take sets it)" ;;
     "task stage") echo "usage: board task stage ID STAGE [--artifact key=ref]..."
         echo "  stages: $STAGES; artifact keys: $ARTIFACT_KEYS" ;;
-    "task ls") echo "usage: board task ls [--json]" ;;
+    "task ls") echo "usage: board task ls [--json [--viewer]]"
+        echo "  --viewer: as a board viewer who is not an approver or release manager sees them (a task"
+        echo "  taken from a ticket shows only the ticket's key): the operator mirrors this list" ;;
     "task show") echo "usage: board task show ID" ;;
     "task set"|"task dep"|"task pr"|"task done"|"task pause"|"task resume"|"task drop"|"task block"|"task progress")
         python3 "$REPO/lib/tasks.py" --help | sed -n 's/^  tasks.py /usage: board task /p; s/^   *\(\[\|[a-z]\)/    \1/p' ;;
@@ -1138,14 +1142,22 @@ task_stage() {
 }
 
 task_ls() {
-  local json=0
-  [ "${1:-}" = "--json" ] && json=1
+  local json=0 viewer=0 a
+  for a in "$@"; do
+    case "$a" in
+      --json) json=1 ;;
+      --viewer) viewer=1 ;;   # as a board viewer sees them (Q3: no ticket text); for the Artifact mirror
+      *) sub_usage task ls >&2; exit 2 ;;
+    esac
+  done
+  [ "$viewer" = 0 ] || [ "$json" = 1 ] || { echo "board task ls: --viewer needs --json" >&2; exit 2; }
   local files=("$BOARD_HOME"/tasks/*.json)
   if [ ! -e "${files[0]}" ]; then
     if [ "$json" = 1 ]; then echo "[]"; else echo "no tasks"; fi
     return 0
   fi
   local all; all="$(jq -s 'sort_by(.updated_at)' "${files[@]}")"
+  if [ "$viewer" = 1 ]; then printf '%s' "$all" | python3 "$REPO/lib/tickets/viewer.py" tasks; return; fi
   if [ "$json" = 1 ]; then echo "$all"; return 0; fi
   {
     printf 'ID\tOWNER\tSTAGE\tGATES\tARTIFACTS\tTITLE\tSTATUS\n'

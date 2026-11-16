@@ -61,6 +61,8 @@ STATUS = {
     "unknown_session": 400,
     "no_approvers": 403,
     "not_approver": 403,
+    "not_this_session": 403,
+    "not_your_ticket": 403,
     "already_taken": 409,
     "not_taken": 409,
     "take_failed": 500,

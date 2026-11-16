@@ -44,9 +44,9 @@ DONE_STATUSES = ("done", "dropped")
 # What a take authorizes (owner decision Q4). The relay carries it verbatim; the contract and the
 # worker protocol spell out the same list.
 AUTHORIZES = ("the delivery harness for this ticket up to and including opening the PR/MR: plan, design, "
-              "build, tests, local review, push, open the PR, progress comments and in-progress on this "
-              "ticket. NOT merge, production deploy, closing or cancelling the ticket, other tickets or "
-              "repos, or any red line")
+              "build, tests, local review, push, open the PR, and, as this session (board ticket comment|"
+              "transition --session), progress comments and in-progress on this ticket. NOT merge, "
+              "production deploy, closing or cancelling the ticket, other tickets or repos, or any red line")
 
 
 def now_ms():
@@ -112,13 +112,13 @@ def footer(by, cfg=None):
     return FOOTER
 
 
-def compose_comment(text, by, cfg=None):
+def compose_comment(text, by, cfg=None, footer_text=None):
     if not isinstance(text, str) or not text.strip():
         raise TicketError("bad_comment", "the comment is empty")
     if len(text) > COMMENT_MAX:
         raise TicketError("bad_comment", "the comment is over %d characters" % COMMENT_MAX)
     body = redact(fleet.CONTROL_RE.sub(lambda m: m.group(0) if m.group(0) in "\n\t" else " ", text.strip()))
-    return "%s\n\n%s" % (body, footer(by, cfg))
+    return "%s\n\n%s" % (body, footer_text or footer(by, cfg))
 
 
 def _value(v, what):
@@ -137,6 +137,7 @@ def _after_write(home, prov, key, by, via):
 
 
 def _do(op, ref, value, by, via, home, registry, extra_ev=None):
+    """One tracker write by an already checked identity (an approver, or "session:CODE")."""
     home = home or fleet.ensure_home()
     reg = registry or load()
     prov, key = reg.route(ref)
@@ -166,6 +167,83 @@ def transition(ref, to, by, via="cli", home=None, registry=None, cfg=None):
 def assign(ref, who, by, via="cli", home=None, registry=None, cfg=None):
     by = checked(by, "assign", ref, via, home, cfg)
     return _do("assign", ref, _value(who, "who"), by, via, home, registry)
+
+
+# ------------------------------------------------------------------ the session's own take
+def caller_session_code():
+    """The code of the Claude Code session this command runs in (as bin/board caller_session_code,
+    #27): walking up from this process, the first ancestor with a registry file
+    ($CLAUDE_SESSIONS_DIR/<pid>.json) that describes that very process (actions.same_process: not a
+    zombie, procStart matches) gives its tmux session name, else its name. None when there is none."""
+    import actions  # noqa: WPS433 - lib/actions.py
+    sd, pid = fleet.sessions_dir(), os.getpid()
+    for _ in range(16):
+        if pid <= 1:
+            return None
+        reg = _read_json(os.path.join(sd, "%d.json" % pid))
+        if reg is not None and actions.same_process(reg, pid):
+            t = str(reg.get("tmux") or "").split(":", 1)[0]
+            return t or str(reg.get("name") or "") or None
+        try:
+            with open("/proc/%d/status" % pid, encoding="utf-8") as fh:
+                pid = int(next(ln.split()[1] for ln in fh if ln.startswith("PPid:")))
+        except (OSError, StopIteration, ValueError, IndexError):
+            return None
+    return None
+
+
+def _code(c, cfg):
+    return fleet.alias_map(cfg).get(str(c or ""), str(c or ""))
+
+
+def session_checked(session, action, ref, home, cfg=None, mine=None):
+    """`--session CODE` is the caller's word; it must also be true: this command runs inside CODE's
+    registered Claude process. Fails closed (403 not_this_session), refusals audited."""
+    cfg = cfg if cfg is not None else fleet.load_fleet()
+    mine = caller_session_code() if mine is None else mine
+    if not CODE_RE.fullmatch(str(session or "")) or not mine or _code(mine, cfg) != _code(session, cfg):
+        audit(home, {"action": action, "ref": str(ref)[:128], "by": "session:%s" % str(session)[:64], "via": "session",
+                     "result": "refused", "reason": "not_this_session", "found": str(mine or "")[:64]})
+        raise TicketError("not_this_session", "this command does not run inside session %s" % str(session)[:64])
+    return _code(session, cfg)
+
+
+def _own_take(ref, code, action, home, reg, cfg):
+    """(provider, key, link) when CODE holds an active take of REF, else 403 not_your_ticket."""
+    prov, key = reg.route(ref)
+    link = effective(home, _read_json(link_path(home, prov.name, key)))
+    if not (isinstance(link, dict) and link.get("status") == "active" and _code(link.get("session"), cfg) == code):
+        audit(home, {"action": action, "provider": prov.name, "key": key, "by": "session:" + code, "via": "session",
+                     "result": "refused", "reason": "not_your_ticket"})
+        raise TicketError("not_your_ticket", "%s has no active take of %s" % (code, key))
+    return prov, key, link
+
+
+def session_comment(ref, text, session, home=None, registry=None, cfg=None, mine=None):
+    """A progress comment by the session that holds the take (Q4). CLI only, from inside it."""
+    cfg = cfg if cfg is not None else fleet.load_fleet()
+    home = home or fleet.ensure_home()
+    code = session_checked(session, "comment", ref, home, cfg, mine)
+    prov, key, link = _own_take(ref, code, "comment", home, registry or load(cfg), cfg)
+    body = compose_comment(text, None, cfg, footer_text="(via agent-switchboard, session %s)" % code)
+    return _do("comment", "%s:%s" % (prov.name, key), body, "session:" + code, "session", home, registry,
+               {"body_sha256": sha256(body), "task_id": link.get("task_id")})
+
+
+def session_transition(ref, session, to=None, home=None, registry=None, cfg=None, mine=None):
+    """Move the session's own taken ticket to the tracker's take.transition (in progress) only."""
+    cfg = cfg if cfg is not None else fleet.load_fleet()
+    home = home or fleet.ensure_home()
+    code = session_checked(session, "transition", ref, home, cfg, mine)
+    reg = registry or load(cfg)
+    prov, key, link = _own_take(ref, code, "transition", home, reg, cfg)
+    target = prov.take_spec().get("transition")
+    if not target:
+        raise TicketError("ticket_unsupported", "tracker %s has no take.transition for a session to use" % prov.name)
+    if to not in (None, "", target):
+        raise TicketError("bad_transition", "a session may only move its ticket to %s" % target)
+    return _do("transition", "%s:%s" % (prov.name, key), target, "session:" + code, "session", home, reg,
+               {"to": target, "task_id": link.get("task_id")})
 
 
 # ------------------------------------------------------------------ links
@@ -215,16 +293,25 @@ def links_lock(home, timeout_s=10.0):
         os.close(fd)
 
 
-def effective(home, link):
-    """An active link whose task reached maintain, or is done/dropped, becomes done (written back)."""
-    if not isinstance(link, dict) or link.get("status") != "active":
-        return link
+def _task_ended(home, link):
     tid = str(link.get("task_id") or "")
     task = _read_json(os.path.join(home, "tasks", tid + ".json")) if re.fullmatch(r"[A-Za-z0-9._-]{1,80}", tid) else None
-    if isinstance(task, dict) and (task.get("stage") in DONE_STAGES or task.get("status") in DONE_STATUSES):
-        link = dict(link, status="done", done_at=now_ms())
-        _write_json(link_path(home, link["provider"], link["key"]), link)
-    return link
+    return isinstance(task, dict) and (task.get("stage") in DONE_STAGES or task.get("status") in DONE_STATUSES)
+
+
+def effective(home, link, locked=False):
+    """An active link whose task reached maintain, or is done/dropped, becomes done (written back,
+    under tickets/links/.lock, after reading the file again; locked=True: the caller holds it)."""
+    if not isinstance(link, dict) or link.get("status") != "active" or not _task_ended(home, link):
+        return link
+    path = link_path(home, link["provider"], link["key"])
+    with (contextlib.nullcontext() if locked else links_lock(home)):
+        cur = _read_json(path)
+        if not isinstance(cur, dict) or cur.get("status") != "active" or cur.get("task_id") != link.get("task_id"):
+            return cur or link     # changed meanwhile (released, taken again): the file wins
+        cur = dict(cur, status="done", done_at=now_ms())
+        _write_json(path, cur)
+    return cur
 
 
 def links(home, ref):
@@ -291,7 +378,7 @@ def take(ref, session, by, via="cli", home=None, registry=None, cfg=None,
     ev = {"provider": prov.name, "key": key, "by": by, "via": via, "session": session}
     with links_lock(home):
         cur = _read_json(link_path(home, prov.name, key))
-        cur = effective(home, cur) if cur else None
+        cur = effective(home, cur, locked=True) if cur else None
         if cur and cur.get("status") == "active":
             audit(home, dict(ev, action="take", result="already_taken", task_id=cur.get("task_id")))
             raise TicketError("already_taken", "%s is already taken" % key,
