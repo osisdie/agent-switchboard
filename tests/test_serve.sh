@@ -405,11 +405,11 @@ eq "HEAD /?d=... 200" "$(req HEAD "/?d=d-1-perm" -I)" "200"
 # ---------------------------------------------------------------- GET /api/me
 echo "me:"
 eq "GET /api/me 200" "$(req GET /api/me)" "200"
-eq "me keys" "$(body 'keys | join(",")')" "identity,is_approver,is_asker,is_owner,is_release_manager,reminders,roles,via"
+eq "me keys" "$(body 'keys | join(",")')" "api_keys,identity,is_approver,is_asker,is_owner,is_release_manager,reminders,roles,via"
 eq "me: local identity via the local listener" "$(body '.identity + "/" + .via')" "local/local"
 eq "me: local is an approver (and, with no owners set, the owner)" "$(body '[.roles[], .is_approver] | map(tostring) | join(",")')" "owner,approver,true"
 eq "me: not a release manager (release_managers set)" "$(body .is_release_manager)" "false"
-eq "me: no api_keys before the key backend" "$(body 'has("api_keys")')" "false"
+eq "me: api_keys, none issued yet" "$(body '.api_keys | length')" "0"
 req GET /api/me -H 'X-Echo-Marker: zq-marker-77' -H 'User-Agent: zq-agent-77' >/dev/null
 grep -q 'zq-' "$T/body" && bad "me: request headers are not echoed" "$(cat "$T/body")" || ok "me: request headers are not echoed"
 eq "me: foreign Host refused" "$(req GET /api/me -H 'Host: evil.example')" "421"
