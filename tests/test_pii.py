@@ -350,6 +350,46 @@ class Served(unittest.TestCase):
         st, raw = get("/api/v1/whoami", key=key)
         self.assertEqual(json.loads(raw)["owner"], OWN)            # the key's own owner, to its holder
 
+    def test_mcp(self):
+        """The MCP server (POST /mcp and bin/board-mcp) serves the same masked reads as /api/v1."""
+        def mint():     # one key per transport: each run spends about 12 of a key's burst of 20
+            r = subprocess.run([os.path.join(REPO, "bin", "board"), "apikey", "create", "--name", "mcp reader",
+                                "--owner", OWN, "--by", OWN, "--scopes", "read:state,read:decisions,read:tasks,"
+                                "read:messages", "--rate", "600", "--json"], capture_output=True, text=True, check=True)
+            return json.loads(r.stdout)["key"]
+        key = mint()
+        calls = [("tools/call", {"name": n, "arguments": a}) for n, a in (
+            ("board_state", {}), ("list_sessions", {}), ("list_decisions", {}),
+            ("get_decision", {"decision_id": "d-1-a"}), ("get_decision", {"decision_id": "d-1-b"}),
+            ("list_tasks", {}), ("get_task", {"task_id": "t-1"}),
+            ("get_message", {"message_id": "m-1-b"}))]
+        calls += [("resources/read", {"uri": u}) for u in ("board://state", "board://decisions/d-1-a",
+                                                            "board://tasks/t-1")]
+        batch = [{"jsonrpc": "2.0", "id": i, "method": m, "params": p} for i, (m, p) in enumerate(calls, 1)]
+        c = http.client.HTTPConnection("127.0.0.1", PORT, timeout=30)
+        c.request("POST", "/mcp", body=json.dumps(batch[:6]).encode(), headers={
+            "Host": "127.0.0.1:%d" % PORT, "Content-Type": "application/json", "Authorization": "Bearer " + key})
+        resp = c.getresponse()
+        raw = resp.read().decode()
+        c.close()
+        c = http.client.HTTPConnection("127.0.0.1", PORT, timeout=30)
+        c.request("POST", "/mcp", body=json.dumps(batch[6:]).encode(), headers={
+            "Host": "127.0.0.1:%d" % PORT, "Content-Type": "application/json", "Authorization": "Bearer " + key})
+        raw += c.getresponse().read().decode()
+        c.close()
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(raw.count('"isError": false') + raw.count('"contents"'), len(calls), raw[:300])
+        self.assertEqual(emails_in(raw), [])
+        self.assertIn("approver", raw)                               # labels, not emails
+        env = {k: v for k, v in os.environ.items()}
+        env.update({"BOARD_API_KEY": mint(), "BOARD_API_URL": "http://127.0.0.1:%d" % PORT})
+        out = subprocess.run([os.path.join(REPO, "bin", "board-mcp")], env=env, capture_output=True, text=True,
+                             input="".join(json.dumps(m) + "\n" for m in batch), timeout=60)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(len(out.stdout.splitlines()), len(calls))
+        self.assertFalse([x for x in out.stdout.splitlines() if "error" in json.loads(x)], out.stdout[-300:])
+        self.assertEqual(emails_in(out.stdout + out.stderr), [])
+
     def test_ticket_responses(self):
         """A take / release echoes the link (taken_by, released_by): masked for non-owners."""
         st, raw = post("/api/tickets/take", BOSS, {"ref": "demo:DEMO-1", "session": "API"})
