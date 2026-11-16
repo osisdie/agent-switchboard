@@ -593,6 +593,7 @@ $BOARD_HOME/
 | `GET /` | the board page (nonce CSP, `no-store`). Any query is ignored by the server and never reflected: `/?d=<id>` (alert links, see "Board links in alerts") serves the same page, which reads the query itself. |
 | `GET /api/state` | the state below, built from `$BOARD_HOME`, plus `page_version`: a short hash of `artifact/board.html` as it is now. The page board-serve renders carries its own as `<meta name="board-version">` (both hash the file's bytes as they are on disk). When the two differ (board.html was updated after the tab opened) the page shows a "newer version — Reload" banner and never reloads by itself. The banner comes with the next state frame, which is sent when anything on the board changes (keepalives carry no state), so it can show up some time after the update |
 | `GET /api/me` | who is asking, from the verified identity and `fleet.yaml` only (never from request headers): see "Who am I" below. Same `Host` and identity checks as `/api/state` (no or bad JWT on the tunnel → 401, a forwarded request on the local listener → 403) |
+| `GET /dev`, `/dev/keys`, `/api/dev`, `GET`/`POST /api/apikeys`, `POST /api/apikeys/<kid>` | the developer portal and its key page: see "Developer portal (`/dev`)" |
 | `GET /icon.svg`, `/favicon.png`, `/favicon.ico` (the PNG), `/apple-touch-icon.png` (+ `-precomposed`), `/icons/icon-192.png`, `/icons/icon-512.png`, `/manifest.webmanifest` | a fixed map to files under `artifact/` (nothing else there is served; the request path is never joined onto a directory), with `image/svg+xml`, `image/png` or `application/manifest+json`, `Cache-Control: private, max-age=86400` and `Content-Security-Policy: default-src 'none'`. Same Host and identity checks as every route, so through the tunnel they need Access too. The page itself gets `manifest-src 'self'` in its CSP |
 | `GET /api/pomodoro/day?d=YYYY-MM-DD` | one kept day's per-stream pomodoro breakdown, read-only and on demand (the pushed `pomodoro` view has daily totals only, so SSE stays small): see "Pomodoro". Exactly one `d`, a real date, nothing else in the query (else 400 `bad_request`); a day outside the 14 kept, or no `pomodoro.json` → 404. Same `Host` and identity checks as `/api/state` (anyone who may view the board may read it) |
 | `GET /api/tickets/<ref>` | one tracker ticket, see "Tickets". Because it spends the tracker token's rate limit, it needs `X-Board: 1` (a custom header: a cross-site page can only send it after a CORS preflight, which is never granted) and a `Sec-Fetch-Site` that is absent, `same-origin` or `none`; else 403 `csrf` **before** the identity, the audit or any tracker call. Only `approvers` ∪ `release_managers` (both empty → 403 `no_approvers`; anyone else → 403 `not_approver`), checked **before** any tracker call; refusals are audited (`type: "ticket"`, `result: "refused"`). `<ref>` is percent-decoded once: `KEY` or `tracker:KEY`. → 200 the ticket plus `link: {status, task_id, session, taken_by, taken_at}\|null` (the newest take, from `tickets/links/`) and `tracker: {capabilities, states, take: {comment: bool, transition, assign}}` (what the board panel may offer), or the ticket errors below (`Retry-After` on 429). Same `Host` and identity checks as `/api/state` |
@@ -698,9 +699,9 @@ session's current task. `approver_ids` is `[]` when nobody may answer.
   `is_owner`: the identity is in `owners` (or in `approvers` when `owners` is empty). `is_asker`:
   the identity is in `askers` (messages only). `roles` lists what is true, or
   `["viewer"]` when none is. All matches are case-insensitive.
-- `api_keys` is **reserved**: the key store exists (`board apikey`, see "API keys"), but this route
-  does not fill it yet, so the page shows "API keys are not enabled on this board". Its shape, one
-  entry per key issued to this identity (an owner email, or `local`):
+- `api_keys`: the live keys issued to this identity (an owner email, or `local`; matched
+  case-insensitively), newest first, at most 50, every status. The profile menu lists them and links
+  to `/dev/keys` (see "Developer portal (`/dev`)"). One entry per key:
 
   ```json
   { "id": "<kid>", "name": "Phone shortcut", "scopes": ["read:state"],
@@ -1191,6 +1192,48 @@ never the hash.
 
 **Exit codes** (`board apikey`): 0 ok, 1 unknown key or a key in the wrong state, 2 usage (an
 unknown scope, a bad date or identity), 4 not authorized (nothing written), 8 the key store is busy.
+
+## Developer portal (`/dev`)
+
+`board-serve` serves a portal for developers (`artifact/dev.html`, `lib/serve_dev.py`) on both
+listeners. The board page links to it from the profile menu (local mode only: the Artifact page
+cannot reach it).
+
+| route | does |
+|---|---|
+| `GET /dev`, `/dev/` (API and MCP), `GET /dev/keys` (the key page) | `artifact/dev.html`, served like `GET /`: the same `Host` and identity checks (anyone who may view the board: the local listener, or an allowed Access email on the tunnel; a service token is no identity → 401), a fresh nonce on every inline script (`script-src 'nonce-…'`, `connect-src 'self'`, `default-src 'none'`, `frame-ancestors 'none'`), `Cache-Control: no-store` |
+| `GET /api/dev` | what the portal renders: `openapi` (`lib/api_spec.py`'s live document), `mcp` (the tool table of `lib/mcp_tools.py`: name, scope, route, read or write; the resources), `snippets` (Claude Code HTTP, and stdio on the local listener; Claude Desktop; curl; the health check), `base_url` (`http://127.0.0.1:<port>` or `https://<serve.tunnel.hostname>`), `listener`, `api: {enabled, available}`, `board_mcp` (this clone's `bin/board-mcp`, local listener only), `scopes`, `mock: null` (mock mode comes later), `me: {identity, via, key_owner, can_create, can_approve}`. `X-Board: 1` and no cross-site `Sec-Fetch-Site` (else 403 `csrf`, before identity). Masked for non-owners like `/api/state` |
+| `GET /api/apikeys` | `board apikey ls --all --json --by board:<identity>` → `{keys, me, scopes, default_scopes, listed?}`: owners get every key and `listed` (the people a key may be issued to); everyone else only their own keys. Same `X-Board` / `Sec-Fetch-Site` checks |
+| `POST /api/apikeys` `{action: "create", name, owner, scopes?, expires?}` \| `{action: "request", name, scopes?, expires?}` | `board apikey create\|request ... --json --by board:<identity>` → 201 `{id, key, name, owner, scopes, expires_at, status, shown_once: true}` |
+| `POST /api/apikeys/<kid>` `{action: "approve", scopes?, expires?}` \| `{action: "revoke"}` | `board apikey approve\|revoke <kid> --by board:<identity>` → 200 `{id, action, result: "ok", detail}` |
+
+- **The CLI decides.** Every key action runs `board apikey` (see "API keys") with `--by
+  board:<identity>`, so the page has exactly the CLI's rules and audit (`via: "board"`): owners do
+  everything; approvers create for themselves or a listed person; anyone else requests (pending
+  until an owner approves; an owner may narrow the scopes); everyone sees and revokes their own keys;
+  someone else's key is "no such key". Exit codes map to 4 → 403 `not_authorized`, 2 → 400
+  `bad_request`, 1 → 404 `not_found` ("no such key") or 409 `refused` (a key in the wrong state), 8 →
+  409 `busy`; `detail` is the CLI's reason, scrubbed and masked. A body the routes do not accept
+  (an unknown field or action, a scope that does not exist, an expiry that is not `Nd` or
+  `YYYY-MM-DD`) → 400 `bad_body`. Rotate, expire and scopes stay on the CLI.
+- **The key is shown once.** `create` and `request` return it in that 201 response only
+  (`no-store`); no later route returns it (`GET /api/apikeys`, `/api/me` and the rest show id,
+  name, scopes, times and status). board-serve never logs, stores or audits it; the page shows it
+  in a dialog, keeps it in no storage, and clears it when the dialog closes. A requested key is shown
+  when it is requested and works once an owner approves it (approve shows no key).
+- **A person, never an API key.** The POST routes need `X-Board: 1` and this board's own `Origin`
+  (403 `csrf`), like every board POST; the identity is the board session's (`local`, or the Access
+  email). A key route request that carries any `Authorization` header is refused: 403
+  `api_key_refused`, audited (`type: "apikey"`, `result: "refused"`, `reason: "api_key_refused"`, no
+  key). `/api/v1` has no key route, so an API key alone can never manage keys.
+- **Who sees whose email:** owners see every key's owner and issuer; anyone else gets role labels
+  (`lib/pii.py`, "Who sees whose identity"): their own keys' owner is `you` on the tunnel (`local`
+  on the local listener), the issuer `owner` or `approver`. A refusal's detail is masked too.
+- **Snippets** carry this board's URL and only placeholders for secrets: `$BOARD_API_KEY`, and the
+  Cloudflare Access headers (`$CF_ACCESS_CLIENT_ID`, `$CF_ACCESS_CLIENT_SECRET`) only when the page
+  was reached through the tunnel. Claude Desktop's JSON config uses `<BOARD_API_KEY>`-style
+  placeholders, because it does not expand variables. The health check (whoami, MCP `initialize`,
+  `tools/list`, one read tool) prints names and codes only.
 
 ## Public API (`/api/v1`)
 
