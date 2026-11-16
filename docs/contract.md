@@ -769,7 +769,9 @@ ref, bad value, `unknown_session`, `ticket_unsupported`, 3 not found, 4 not an a
   `not_your_ticket`, exit 4). A comment ends with `(via agent-switchboard, session CODE)`; a
   transition goes only to the tracker's `take.transition` (in progress; any other STATE → 400
   `bad_transition`, exit 2). Audited as `by: "session:CODE"`, `via: "session"`, with the task id;
-  refusals audited too. Assign, release and other states stay with approvers.
+  refusals audited too. Assign, release and other states stay with approvers. `--session` is
+  plumbing for honest sessions, not a security boundary against a hostile local process: it trusts
+  `$CLAUDE_SESSIONS_DIR` and the registry entries in it, the same trust level as `--by` and `--from`.
 - **Comments** (owner decision Q5): the text is cleaned (control characters but newline and tab
   become spaces), redacted (tracker tokens, then the secret guard), at most 4000 characters (empty
   or longer → 400 `bad_comment`), and always ends with a blank line and the footer

@@ -57,7 +57,9 @@ shows the human a board and relays their answers.
   progress comments on that ticket, and moving it to in-progress. Those two I do as myself, from my
   own session: `board ticket comment <TRACKER>:<KEY> --session <CODE> --file <file>` (text written
   with my file-writing tool) and `board ticket transition <TRACKER>:<KEY> --session <CODE>`.
-  **I never pass someone else's identity in `--by`**: `--by` is for the approver acting themselves. The harness's own gates before the
+  **I never pass someone else's identity in `--by`**: `--by` is for the approver acting themselves.
+  (`--session` keeps honest sessions apart; like `--by` and `--from` it trusts the local session
+  registry, so it is not a guard against a hostile process on this machine.) The harness's own gates before the
   PR is opened (plan sign-off and so on) are covered by the take. It does **NOT** authorize:
   merging; any production deploy; closing or cancelling the ticket; touching other tickets, or repos
   outside the ticket's scope; any red line. Merge and production still need a `[BOARD decision]` or
