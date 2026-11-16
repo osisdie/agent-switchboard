@@ -99,3 +99,7 @@ jobs:
         env:
           ASKERS_REQUIRE_CRYPTO: "1"
         run: python3 tests/test_askers.py -v
+      - name: PII masking tests (who sees whose email)
+        env:
+          PII_REQUIRE_CRYPTO: "1"
+        run: python3 tests/test_pii.py -v

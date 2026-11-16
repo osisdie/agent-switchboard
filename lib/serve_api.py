@@ -296,7 +296,9 @@ class Api:
         self.h, self.S, self.rec, self.params, self.query, self.via = h, S, rec, params, query, via
 
     def ok(self, obj):
-        return self.h.send_json(200, obj)
+        """Every read is masked: a key is never an owner, so other people's emails become role
+        labels (lib/pii.py; no "you": a key is not a verified person)."""
+        return self.h.send_json(200, self.S.pii.mask(obj))
 
     def _st(self, kick=False):
         """The board state as a viewer sees it: no private card text, no account, nothing writable."""
@@ -320,7 +322,8 @@ class Api:
 
     def whoami(self):
         r = self.rec
-        return self.ok({"key_id": r["id"], "name": r.get("name"), "owner": r.get("owner"),
+        # the key's own owner, shown to its holder: not masked
+        return self.h.send_json(200, {"key_id": r["id"], "name": r.get("name"), "owner": r.get("owner"),
                         "scopes": list(r.get("scopes") or []), "expires_at": r.get("expires_at"), "mode": "live"})
 
     def sessions(self):
@@ -424,8 +427,8 @@ class Api:
                     h.wfile.write(b"event: revoked\ndata: {}\n\n")
                     h.wfile.flush()
                     return None
-                if changed:
-                    data = json.dumps(self._st(), ensure_ascii=False)
+                if changed:      # the same masked view as every other read (lib/pii.py)
+                    data = json.dumps(self.S.pii.mask(self._st()), ensure_ascii=False)
                     h.wfile.write(("event: state\ndata: %s\n\n" % data).encode("utf-8"))
                 else:
                     h.wfile.write(b": keepalive\n\n")

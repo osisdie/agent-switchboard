@@ -94,8 +94,14 @@ Two triggers. Nothing else wakes you.
 **A. Local changes: `Monitor` on `$BOARD_HOME/snapshot.json`.**
 Waiting costs no tokens. When it fires:
 
-1. Read `snapshot.json`. Compare it with what you last wrote, and keep only changed sessions and
-   decisions.
+1. Run **`board mirror state`** and build every document from its output, never from the raw files
+   in `$BOARD_HOME` (`snapshot.json`, `tasks/`, `decisions/`, `messages/`, `events.jsonl`). It is
+   the board as an anonymous viewer may see it: no private card text, no ticket text, no account
+   email or account hint, and no one's email (role labels such as `approver` or `owner`; claude.ai
+   user ids, `local` and session codes stay as they are). The page's viewers are not all owners,
+   approvers or release managers. Compare it with what you last wrote, and keep only changed
+   sessions and decisions. (A document you must assemble from anything else, pass through
+   `board mask` first; never write an email to the db.)
 2. Send one `write_db` **batch** with the diff:
    - `sessions/{code}`: `code, aliases, state, status, task, tmux, remote_url, pending, updated_at,
      title, repo, branch, last_event, notification_type`. `task` is a short summary you write. Never
@@ -260,8 +266,9 @@ db.
 ### Tasks, gates and the approvals log
 
 - Mirror the tasks into `tasks/{id}` (`id, title, owner, stage, artifacts{}, gates[], updated_at`)
-  in the same diff batch as sessions and decisions, from **`board task ls --json --viewer`**, never
-  from the raw `$BOARD_HOME/tasks/*.json`. That list already hides ticket text: a task taken from a
+  in the same diff batch as sessions and decisions, from the `tasks` of **`board mirror state`**
+  (or `board task ls --json --viewer`, the same view), never from the raw `$BOARD_HOME/tasks/*.json`. That list already hides ticket text and other people's
+  emails (a gate's `approved_by` is a role label). A task taken from a
   tracker ticket has the ticket's key as its `title` and no tracker title or URL, because the
   Artifact page's viewers may not be approvers or release managers, and only they read ticket text
   (owner decision Q3). Use the same title for a session's task in the mirrored session doc, and
