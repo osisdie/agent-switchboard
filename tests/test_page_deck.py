@@ -3,7 +3,10 @@
 the keys in all three adapters (demo, the claude.ai Artifact viewer, board-serve), the HITL key
 (press scrolls to and focuses the longest wait, a second press within 5 s cycles, a later one
 starts over), blink colours by what a session waits for, reduced motion, phone width with no
-horizontal page scroll, zh-TW labels, collapse remembered in localStorage, and the approver-only
+horizontal page scroll, zh-TW labels, collapse remembered in localStorage, the Deck's own theme
+(dark by default under either page theme, a toggle remembered per viewer and applied before first
+paint, independent of the page theme both ways, dark when storage is blocked, the state inks at
+WCAG AA contrast on the light and the dark key faces), and the approver-only
 actions: hidden for non-approvers and on the Artifact page, behind a confirm step on board-serve
 (acknowledge all, also by long press), and the alert wave when a session starts waiting.
 
@@ -83,6 +86,76 @@ CLAUDE_STUB = """(() => {
 })();"""
 
 FAKE_TMUX = "#!/usr/bin/env bash\nexit 0\n"
+
+# The Deck's theme as the page shows it: attributes, the button, and the colours that matter.
+THEME_JS = """() => { const d = document.getElementById('deck'), b = document.getElementById('deck-theme');
+  // a key that is not blinking; every colour as rgb() (a color-mix() computes to color(srgb ...))
+  const key = document.querySelector('#deck-grid .dkey:not(.waiting):not(.stale):not(.st-offline):not(.empty)');
+  const cx = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
+  const c = (el, p) => { if (!el) return null; cx.clearRect(0, 0, 1, 1); cx.fillStyle = '#000'; cx.fillStyle = getComputedStyle(el)[p]; cx.fillRect(0, 0, 1, 1);
+    const x = cx.getImageData(0, 0, 1, 1).data; return 'rgb(' + x[0] + ', ' + x[1] + ', ' + x[2] + ')'; };
+  let stored = null; try { stored = localStorage.getItem('switchboard.deckTheme'); } catch (e) { stored = 'blocked'; }
+  return { page: document.documentElement.getAttribute('data-theme'), deck: d.getAttribute('data-deck-theme'), stored,
+    label: b.getAttribute('aria-label'), text: b.innerText.trim(), described: b.getAttribute('aria-describedby'), tag: b.tagName, type: b.type,
+    surround: c(d, 'backgroundColor'), head: c(document.getElementById('h-deck'), 'color'), hint: c(d.querySelector('.deck-head .hint'), 'color'),
+    btnBg: c(b, 'backgroundColor'), btnInk: c(b, 'color'), grid: c(document.getElementById('deck-grid'), 'backgroundColor'),
+    face: c(key, 'backgroundColor'), ink: c(key, 'color'), pageBg: c(document.body, 'backgroundColor'),
+    scrollW: document.scrollingElement.scrollWidth, vw: innerWidth, btnRight: b.getBoundingClientRect().right }; }"""
+# Every state ink token against the key face (and the ink on the red pill), plus the text the keys
+# draw in a state colour, against that key's own face.
+INKS_JS = """() => { const cs = getComputedStyle(document.getElementById('deck')), v = (n) => cs.getPropertyValue(n).trim();
+  const toks = {}; for (const n of ['face', 'ink', 'muted', 'work', 'ok', 'off', 'amber', 'q', 'plan', 'perm', 'pomo', 'on-ink']) toks[n] = v('--dk-' + n);
+  const texts = [];
+  for (const k of document.querySelectorAll('#deck-grid .dkey:not(.waiting):not(.stale):not(.st-offline):not(.empty)')) {
+    const bg = getComputedStyle(k).backgroundColor;
+    for (const e of k.querySelectorAll('.k-ok, .k-warn, .k-bad, .k-lvl, .k-big, .k-code, .k-sub, .k-title, .k-lab'))
+      if (e.textContent.trim() && e.getBoundingClientRect().width) texts.push({ text: e.textContent.trim().slice(0, 24), color: getComputedStyle(e).color, bg });
+  }
+  return { toks, texts }; }"""
+STATE_INKS = ("work", "ok", "off", "amber", "q", "plan", "perm", "pomo", "muted", "ink")
+
+
+def rgb(c):
+    c = c.strip()
+    if c.startswith("#"):
+        c = c[1:]
+        return tuple(int(c[i:i + 2], 16) for i in (0, 2, 4))
+    parts = c[c.index("(") + 1:c.index(")")].replace(",", " ").replace("/", " ").split()
+    if parts[0] == "srgb":  # color(srgb r g b): what a color-mix() computes to, 0..1
+        return tuple(round(float(x) * 255) for x in parts[1:4])
+    return tuple(int(float(x)) for x in parts[:3])
+
+
+def lum(c):
+    def ch(x):
+        x /= 255
+        return x / 12.92 if x <= 0.03928 else ((x + 0.055) / 1.055) ** 2.4
+    r, g, b = (ch(x) for x in rgb(c))
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def contrast(a, b):
+    la, lb = sorted((lum(a), lum(b)), reverse=True)
+    return (la + 0.05) / (lb + 0.05)
+
+
+def blink_peaks(pg, ink):
+    """A waiting key blinks to color-mix(kc --dk-blink, face) (reduced motion: 3/4 of it): the
+    lowest contrast of its "!" (in kc), the muted labels and the ink on that tint, per kind."""
+    blink = float(pg.evaluate("() => getComputedStyle(document.getElementById('deck')).getPropertyValue('--dk-blink')").strip().rstrip("%")) / 100
+    face, peaks = rgb(ink["toks"]["face"]), {}
+    for kc in ("q", "plan", "perm"):
+        tint = "rgb(%d, %d, %d)" % tuple(round(a * blink + b * (1 - blink)) for a, b in zip(rgb(ink["toks"][kc]), face))
+        peaks[kc] = round(min(contrast(ink["toks"][x], tint) for x in (kc, "muted", "ink")), 2)
+    return blink, peaks
+
+
+def dark(c):
+    return lum(c) < 0.1
+
+
+def light(c):
+    return lum(c) > 0.6
 
 
 def free_port():
@@ -279,6 +352,132 @@ def main():
                   [k[x]["text"] for x in ("s1", "s2", "s3", "burn", "quiet", "away")])
             check("second actions in Chinese", k["hitl"]["sec"][0]["label"] == "確認所有未處理的警示" and k["away"]["sec"][0]["label"] == "關閉主人不在模式",
                   (k["hitl"]["sec"], k["away"]["sec"]))
+            pg.close()
+
+            print("deck theme: its own, dark by default:")
+            pg = new_page("try { localStorage.setItem('switchboard.theme', 'light'); } catch (e) {}", color_scheme="light")
+            pg.goto(PAGE + "?demo=1")
+            pg.wait_for_timeout(500)
+            t = pg.evaluate(THEME_JS)
+            check("light page: the deck is dark (surround, header, keys)", t["page"] == "light" and t["deck"] == "dark" and t["stored"] is None
+                  and dark(t["surround"]) and dark(t["grid"]) and dark(t["face"]) and light(t["head"]) and light(t["ink"])
+                  and contrast(t["hint"], t["surround"]) >= 4.5 and light(t["pageBg"]), t)
+            check("  a real button that names the current and the next state", t["tag"] == "BUTTON" and t["type"] == "button"
+                  and t["label"] == "Deck theme: dark. Switch to light" and t["text"].endswith("Dark") and contrast(t["btnInk"], t["btnBg"]) >= 4.5, t)
+            pg.click("#deck-grid [data-deck=hitl] .dsec")
+            pg.wait_for_timeout(150)
+            cf = pg.evaluate("() => { const b = document.getElementById('deck-confirm'), q = document.getElementById('deck-confirm-q'); return [getComputedStyle(b).backgroundColor, getComputedStyle(q).color]; }")
+            check("  the confirm row is dark too, its text readable", dark(cf[0]) and contrast(cf[0], cf[1]) >= 4.5, cf)
+            pg.click("#deck-confirm-no")
+            pg.hover("#deck-theme")
+            pg.wait_for_timeout(100)
+            tip = pg.evaluate("() => { const p = document.getElementById('deck-theme-pop'), r = p.getBoundingClientRect(); return { open: !p.hidden && r.width > 0, role: p.getAttribute('role'), text: p.innerText, cls: p.className, left: r.left, right: r.right }; }")
+            check("  tooltip on hover, like the header tips (role=tooltip, aria-describedby)", tip["open"] and tip["role"] == "tooltip" and "u-pop" in tip["cls"]
+                  and t["described"] == "deck-theme-pop" and "Switch the Deck to light" in tip["text"] and "page keeps its own theme" in tip["text"], tip)
+            pg.mouse.move(5, 5)
+            pg.wait_for_timeout(100)
+            pg.keyboard.press("Shift")
+            pg.focus("#deck-theme")
+            pg.wait_for_timeout(100)
+            fr = pg.evaluate("() => { const b = document.getElementById('deck-theme'), cs = getComputedStyle(b); return { fv: b.matches(':focus-visible'), style: cs.outlineStyle, width: cs.outlineWidth, open: !document.getElementById('deck-theme-pop').hidden }; }")
+            check("  keyboard focus: a visible focus ring and the tooltip", fr["fv"] and fr["style"] == "solid" and fr["width"] == "3px" and fr["open"], fr)
+            pg.keyboard.press("Escape")
+            check("  Escape closes the tooltip", pg.evaluate("() => document.getElementById('deck-theme-pop').hidden"))
+            pg.keyboard.press("Enter")
+            pg.wait_for_timeout(100)
+            t = pg.evaluate(THEME_JS)
+            check("the toggle makes it light, stored", t["deck"] == "light" and t["stored"] == "light" and t["page"] == "light" and light(t["face"]) and light(t["surround"])
+                  and dark(t["ink"]) and dark(t["head"]) and t["label"] == "Deck theme: light. Switch to dark" and t["text"].endswith("Light"), t)
+            ink = pg.evaluate(INKS_JS)
+            low = {n: round(contrast(ink["toks"][n], ink["toks"]["face"]), 2) for n in STATE_INKS}
+            check("  light faces: every state ink >= 4.5:1 on the face", all(x >= 4.5 for x in low.values()), low)
+            check("  light faces: the ink on the red pill >= 4.5:1", contrast(ink["toks"]["on-ink"], ink["toks"]["perm"]) >= 4.5, ink["toks"])
+            bad = [x for x in ink["texts"] if contrast(x["color"], x["bg"]) < 4.5]
+            check("  light faces: the text the keys draw >= 4.5:1", ink["texts"] and not bad, bad)
+            blink, peaks = blink_peaks(pg, ink)
+            check("  light faces, at the blink: the waiting colour's \"!\" and the labels >= 4.5:1", all(v >= 4.5 for v in peaks.values()), (blink, peaks))
+            pg.reload()
+            pg.wait_for_timeout(500)
+            t = pg.evaluate(THEME_JS)
+            check("still light after a reload", t["deck"] == "light" and t["text"].endswith("Light") and t["page"] == "light", t)
+            pg.click("#acct-btn")
+            pg.click("input[name=sb-theme][value=dark]", force=True)
+            pg.wait_for_timeout(100)
+            t = pg.evaluate(THEME_JS)
+            check("the page theme toggle leaves the deck alone", t["page"] == "dark" and t["deck"] == "light" and t["stored"] == "light"
+                  and light(t["face"]) and light(t["surround"]) and dark(t["pageBg"]), t)
+            pg.keyboard.press("Escape")
+            pg.click("#deck-theme")
+            pg.wait_for_timeout(100)
+            t = pg.evaluate(THEME_JS)
+            check("  and the deck toggle leaves the page alone", t["deck"] == "dark" and t["page"] == "dark"
+                  and pg.evaluate("() => localStorage.getItem('switchboard.theme')") == "dark" and dark(t["face"]), t)
+            ink = pg.evaluate(INKS_JS)
+            low = {n: round(contrast(ink["toks"][n], ink["toks"]["face"]), 2) for n in STATE_INKS}
+            check("  dark faces: every state ink >= 4.5:1 too", all(x >= 4.5 for x in low.values())
+                  and contrast(ink["toks"]["on-ink"], ink["toks"]["perm"]) >= 4.5, low)
+            blink, peaks = blink_peaks(pg, ink)
+            check("  dark faces, at the blink: the waiting colour's \"!\" and the labels >= 4.5:1", all(v >= 4.5 for v in peaks.values()), (blink, peaks))
+            pg.close()
+
+            pg = new_page(color_scheme="dark")
+            pg.goto(PAGE + "?demo=1")
+            pg.wait_for_timeout(500)
+            t = pg.evaluate(THEME_JS)
+            check("system theme, dark: the deck is dark, keys as before", t["page"] is None and t["deck"] == "dark" and t["face"] == "rgb(34, 44, 56)" and dark(t["surround"]), t)
+            pg.close()
+
+            pg = new_page("Object.defineProperty(window, 'localStorage', { configurable: true, get() { throw new Error('blocked'); } });", color_scheme="light")
+            pg.goto(PAGE + "?demo=1")
+            pg.wait_for_timeout(500)
+            t = pg.evaluate(THEME_JS)
+            check("storage blocked: dark", t["deck"] == "dark" and t["stored"] == "blocked" and dark(t["face"]) and len(pg.evaluate(KEYS_JS)) == 17, t)
+            pg.click("#deck-theme")
+            pg.wait_for_timeout(100)
+            check("  the toggle still works for this page view", pg.evaluate(THEME_JS)["deck"] == "light")
+            pg.close()
+            pg = new_page("try { localStorage.setItem('switchboard.deckTheme', '<b>purple</b>'); } catch (e) {}")
+            pg.goto(PAGE + "?demo=1")
+            pg.wait_for_timeout(400)
+            check("a stored value that is not light: dark", pg.evaluate(THEME_JS)["deck"] == "dark")
+            pg.close()
+
+            # Before first paint: the page with the app script cut off still shows the stored theme.
+            with open(os.path.join(REPO, "artifact", "board.html"), encoding="utf-8") as fh:
+                src = fh.read()
+            cut = src.rindex("<script>")
+            pre = os.path.join(tmp, "board-preapp.html")
+            with open(pre, "w", encoding="utf-8") as fh:
+                fh.write(src[:cut] + src[src.index("</script>", cut) + len("</script>"):])
+            pg = new_page("try { localStorage.setItem('switchboard.deckTheme', 'light'); } catch (e) {}")
+            pg.goto("file://" + pre)
+            pg.wait_for_timeout(200)
+            pp = pg.evaluate("() => [document.getElementById('deck').getAttribute('data-deck-theme'), getComputedStyle(document.getElementById('deck')).backgroundColor, typeof window.switchboardTheme]")
+            check("applied before the app script runs (no flash)", pp[0] == "light" and light(pp[1]) and pp[2] == "object", pp)
+            pg.close()
+
+            for pt in ("light", "dark"):
+                for dt in ("dark", "light"):
+                    pg = new_page("try { localStorage.setItem('switchboard.theme', '%s'); localStorage.setItem('switchboard.deckTheme', '%s'); } catch (e) {}" % (pt, dt),
+                                  viewport={"width": 390, "height": 844}, has_touch=True)
+                    pg.goto(PAGE + "?demo=1")
+                    pg.wait_for_timeout(400)
+                    t = pg.evaluate(THEME_JS)
+                    check("390 px, page %s, deck %s: no side scroll, the button on screen" % (pt, dt), t["page"] == pt and t["deck"] == dt
+                          and t["scrollW"] <= t["vw"] and t["btnRight"] <= t["vw"] - 16 and (dark if dt == "dark" else light)(t["face"]), t)
+                    pg.close()
+
+            pg = new_page("try { localStorage.setItem('switchboard.lang', 'zh-TW'); } catch (e) {}")
+            pg.goto(PAGE + "?demo=1")
+            pg.wait_for_timeout(400)
+            pg.hover("#deck-theme")
+            pg.wait_for_timeout(100)
+            z = pg.evaluate("() => [document.getElementById('deck-theme').getAttribute('aria-label'), document.getElementById('deck-theme').innerText.trim(), document.getElementById('deck-theme-pop').innerText]")
+            check("zh-TW: label, text and tooltip", z[0] == "面板主題：深色。切換為淺色" and z[1].endswith("深色") and "把按鍵面板切換為淺色" in z[2] and "頁面保留自己的主題" in z[2], z)
+            pg.click("#deck-theme")
+            pg.wait_for_timeout(100)
+            z = pg.evaluate("() => [document.getElementById('deck-theme').getAttribute('aria-label'), document.getElementById('deck-theme').innerText.trim()]")
+            check("  after the toggle", z[0] == "面板主題：淺色。切換為深色" and z[1].endswith("淺色"), z)
             pg.close()
 
             print("claude adapter (Artifact): read-only deck:")

@@ -170,8 +170,9 @@ def main():
             css = re.sub(r"\s+", " ", src)
             check("dark tokens under media + :not([data-theme=light])",
                   '@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { color-scheme: dark;' in css)
-            check("dark tokens under :root[data-theme=dark]", ':root[data-theme="dark"] { color-scheme: dark;' in css)
-            check(":root sets color-scheme light", ":root { color-scheme: light;" in css)
+            # (the Deck's own theme shares these blocks: data-deck-theme on #deck)
+            check("dark tokens under :root[data-theme=dark]", re.search(r':root\[data-theme="dark"\](, \.deck\[data-deck-theme="dark"\])? \{ color-scheme: dark;', css))
+            check(":root sets color-scheme light", re.search(r':root(, \.deck\[data-deck-theme="light"\])? \{ color-scheme: light;', css))
 
             print("demo adapter, phone width:")
             pg = new_page(ORDER_INIT)

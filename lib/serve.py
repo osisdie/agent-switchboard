@@ -942,7 +942,7 @@ def render_page(nonce):
         raw = fh.read()
     version = file_version(raw)
     body = OWN_CHARSET_RE.sub("", raw.decode("utf-8"), count=1)
-    # Every inline <script> (the pre-paint theme script and the app) gets the CSP nonce;
+    # Every inline <script> (the pre-paint theme script, the Deck theme one and the app) gets the CSP nonce;
     # nothing else in the page is executable.
     body = body.replace("<script>", '<script nonce="%s">' % nonce)
     head = ('<!doctype html>\n<html lang="en"><head><meta charset="utf-8">'

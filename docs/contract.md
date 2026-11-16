@@ -1762,6 +1762,10 @@ calls an existing approver-only route after a confirm step.
   again on every POST.
 - **Collapse:** the Hide deck button or Account menu → Deck panel; kept in `localStorage`
   (`switchboard.deck` = `collapsed`).
+- **Theme:** the deck's own, apart from the page theme: `data-deck-theme` on `#deck`, `dark` by
+  default (also when storage is blocked), `light` by the ☾ / ☀ button next to Hide deck; kept in
+  `localStorage` (`switchboard.deckTheme` = `dark` | `light`), applied by a small inline script in
+  `#deck` before first paint. Light keys re-tune every state ink to WCAG AA (4.5:1) on the face.
 - Out of scope on purpose: keys that type into a session (prompts, Enter, `/compact`, Esc). A
   session's prompt is answered on its decision card, by the existing rules.
 - Related project: [ulanzi-lab](https://github.com/osisdie/ulanzi-lab), a hardware key-deck dashboard (5 × 3 keys) that shows the same HITL and usage
