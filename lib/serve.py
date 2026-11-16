@@ -2211,11 +2211,13 @@ def main(argv):
     if cfg["tunnel"]:
         info.append("emails   %s" % (", ".join(sorted(tunnel_allowed(fcfg))) or "(none: every tunnel request refused)"))
     api = serve_api.api_settings(fcfg)
+    toks = ", ".join("%s (%s)" % (cn, "unbound" if o is None else "bound: " + (", ".join(sorted(o)) or "nobody"))
+                     for cn, o in sorted(api["service_tokens"].items()))
     info.append("api      %s" % ("off (serve.api.enabled)" if not api["enabled"] else
                                  "/api/v1 and /mcp with a board API key; tunnel: %s" % (
                                      "off" if not cfg["tunnel"] else "off (serve.api.remote: false)"
                                      if not api["remote"] else "Access service tokens %s or an allowed email" % (
-                                         ", ".join(sorted(api["service_tokens"])) or "(none listed)"))))
+                                         toks or "(none listed)"))))
     if fleet.id_list(fcfg, "askers"):
         info.append("askers   %s (message only)" % ", ".join(fleet.id_list(fcfg, "askers")))
     info.append("answers  %s" % ("approvers: " + ", ".join(approvers) if approvers

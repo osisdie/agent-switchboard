@@ -1350,6 +1350,18 @@ table (`lib/api_spec.py`), published as `GET /api/v1/openapi.json`.
   Access **service token** listed in `serve.tunnel.api_service_tokens` (or an allowed email): two
   independent secrets, and nothing reaches board-serve unauthenticated. `serve.api.remote: false`
   keeps the API on the local listener only.
+- **Bind each service token to its person.** Map every token to the people whose keys may come
+  with it; a leaked token plus someone else's valid key is then refused (403
+  `token_key_mismatch`). Give each person their own token, so revoking one affects nobody else.
+  The plain list form still works but is unbound, and `board doctor` warns about it:
+
+  ```yaml
+  serve:
+    tunnel:
+      api_service_tokens:
+        <alice's client id>.access: alice@example.com
+        <bob's client id>.access: bob@example.com
+  ```
 - **Limits:** each key has a rate (`rate_per_min`, burst 20), failed key checks are limited per
   key id or source (requests with no key at all cost nothing), a revoked key ends its event
   stream, cross-site browser requests are refused, and there are no CORS headers. Calls are

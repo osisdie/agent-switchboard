@@ -1201,8 +1201,9 @@ Transfer-Encoding, a body on a GET dropped and the connection closed):
 2. The listener. **Local**: a direct loopback request (forwarding headers: 403). **Tunnel**:
    `serve.api.remote` not `false` (else 403 `api_remote_disabled`), and a verified Cloudflare
    Access JWT (401 without or with a bad one) that is either a **service token** whose
-   `common_name` is in `serve.tunnel.api_service_tokens`, or an email in the tunnel's allowed
-   emails (for a person using the API from a browser tool). Anything else: 403 `not_allowed`. A
+   `common_name` is in `serve.tunnel.api_service_tokens` (bound to its people: step 4), or an
+   email in the tunnel's allowed emails (for a person using the API from a browser tool). Anything
+   else: 403 `not_allowed`. A
    service token is never a person: the board's own routes still refuse it (401).
 3. The route (404) and its query (400).
 4. The key. **No `Authorization` header** → 401 `unauthenticated` with `WWW-Authenticate: Bearer`
@@ -1216,7 +1217,11 @@ Transfer-Encoding, a body on a GET dropped and the connection closed):
    `serve.api.auth_fail_per_min` (default 10) a minute; past it, 429 with `Retry-After` and no
    audit row. A spent kid bucket still lets the **real** key through (it is checked first), so
    guessing a kid's secret can't lock its holder out; a spent source bucket refuses its junk.
-   The limiter tables live in memory and drop entries idle for a minute. Then the route's scope (403 `insufficient_scope`), then the key's rate: a
+   The limiter tables live in memory and drop entries idle for a minute. Then, on the tunnel, a
+   **bound service token** (see "Exposure"): the key's `owner` must be one of the token's people
+   (case-insensitive), else 403 `token_key_mismatch`, counted and audited like a failed key
+   (`reason: token_key_mismatch`, `token: <common_name>`, `key_id`). It comes after the key check,
+   so a bad key is still 401. Then the route's scope (403 `insufficient_scope`), then the key's rate: a
    token bucket of `rate_per_min` with a burst of 20 (429 `rate_limited`, `Retry-After`).
    `last_used_at` is recorded (at most once a minute). The Access cookie (`CF_Authorization`) and
    `local` are never credentials here.
@@ -1234,8 +1239,26 @@ serve:
     remote: true           # false: local listener only; the tunnel answers 403 api_remote_disabled
     auth_fail_per_min: 10
   tunnel:
-    api_service_tokens: [<client id>.access]   # Access service tokens allowed on /api/v1
+    api_service_tokens:                        # Access service tokens allowed on /api/v1
+      <alice's client id>.access: alice@example.com          # bound: only alice's keys
+      <shared client id>.access: [bob@example.com, carol@example.com]
 ```
+
+**Bind every service token to its people.** `api_service_tokens` is a mapping from a token's
+`common_name` (its client id; names and people compared case-insensitively) to the person, or
+list of people, whose API keys may come with it: a call through a bound token with a key whose
+`owner` is not listed is 403 `token_key_mismatch`, so a leaked token plus someone else's valid key
+gets nowhere. A token mapped to nobody (`[]`) refuses every call. The old form, a list (or a single
+string) of common names, still works but is **unbound**: any valid key passes with it, and
+`board doctor` warns `unbound service token <cn>: map it to its user`. Mapping entries can sit in
+the list next to old names (`[<cn>, {<cn2>: alice@example.com}]`); a name both bound and unbound
+counts as bound. Prefer **one service token per person**: revoking it in Access (or removing its
+entry) affects nobody else. `board-serve --check` lists each token as bound or unbound.
+`email:` access (a person's own Access login) is not affected. The binding is checked when a request
+is authenticated: an open `/api/v1/events` stream re-checks its key before every frame but the
+binding only when it reconnects, so after changing a token's people, a stream already open keeps
+running until it reconnects (restart board-serve to cut it at once). `POST /mcp` is checked on
+every request.
 
 On Cloudflare, add a **Service Auth** policy for the service token to the board's Access
 application. A client then sends `CF-Access-Client-Id` / `CF-Access-Client-Secret` (Access turns
@@ -1244,8 +1267,9 @@ never reaches board-serve unauthenticated. There is no Access bypass for the API
 
 **Audit** (`events.jsonl`, type `api`): every refused key check (`action: "auth_fail"`, `key_id`
 when the key had the right shape, `reason`, `route`, `via`, `client`, `result`), every
-`insufficient_scope`, and each key's successful use of a route at most once a minute per
-board-serve process (`action` = the route's handler, with `owner` and `name`). `client` is `loopback`,
+`insufficient_scope`, every `token_key_mismatch` (with `token`), and each key's successful use of a
+route at most once a minute per board-serve process (`action` = the route's handler, with `owner`
+and `name`, and `token_owner_ok: true` when a bound service token's binding was checked). `client` is `loopback`,
 `service:<common_name>` or `email:<email>`. Never a key.
 
 ## MCP

@@ -2408,6 +2408,13 @@ print(("ok " if reminders.tzinfo(tz) else "bad ") + tz if tz else "")' "$REPO/li
     "ok "*) ok "reminders.timezone ${rtz#ok }" ;;
     "bad "*) warn "reminders.timezone ${rtz#bad } is not a known time zone — reminders use this machine's local time" ;;
   esac
+  local tok
+  while read -r kind tok; do
+    case "$kind" in
+      unbound) warn "unbound service token $tok: map it to its user (serve.tunnel.api_service_tokens: {$tok: email})" ;;
+      nobody) warn "service token $tok is mapped to no one: every API call through it is refused" ;;
+    esac
+  done < <(python3 "$FLEET" service-tokens-check 2>/dev/null)
 
   echo "install:"
   local settings="${CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"
