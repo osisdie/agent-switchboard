@@ -17,6 +17,24 @@ resume_fallback_seconds: 15   # fleet-up: start fresh only if `claude -r NAME` e
 #   auto_apply: true            # the collector runs pending actions when a session goes idle
 #   queue_hours: 12             # a queued compact older than this is dropped
 #   compact_seconds: 600        # how long to watch a compact before reporting "started"
+# Resume after a usage limit (`board resume CODE...|--all`, the board's Resume buttons; owners only;
+# docs/contract.md "Resume after a usage limit"). The screen patterns default to Claude Code 2.1.x;
+# override one only when Claude Code changes its screens (Python regexes).
+# limit_resume:
+#   prompt: "Quota is available again. Continue where you left off."
+#   scan_seconds: 30            # the collector's background look at the panes; 0 = never
+#   confirm_seconds: 10         # how long to wait for each next screen, and for the session to work
+#   esc_gap_seconds: 1.5        # Escapes to one session at least this far apart (double Escape = rewind)
+#   max_steps: 4
+#   lines: 40                   # how much of the pane is read
+#   limit_regex: '(claude (ai )?)?usage limit (reached|has reset|reset)|you.ve hit your (usage |session |weekly )?limit|...'
+#   dialog_title_regex: 'What do you want to do\?'
+#   dialog_row_regex: '^(\d+\.\s*)?(Stop and wait for limit to reset|Upgrade your plan|...)\s*$'
+#   dialog_stop_regex: '^(\d+\.\s*)?Stop\s*$'
+#   dialog_footer_regex: 'Esc to cancel'
+#   wait_regex: 'continuing (automatically|shortly)\b.*esc to cancel'
+#   ready_regex: 'press enter to continue'
+#   prefill: continue
 
 # Who may decide: board user ids (the artifact page's user.id()), or with the self-hosted board
 # emails and "local".

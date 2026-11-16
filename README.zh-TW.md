@@ -980,17 +980,17 @@ Deck 顯示 `⚠ 1 小時 29 分 後到 5h 上限`；不會時顯示 `速度 OK`
 ```bash
 board resume --all --dry-run     # 哪些 session 停在上限，以及各自第一步會送的按鍵
 board resume --all               # 讓它們繼續；其他 session 會略過，不送任何按鍵
-board resume API                 # 只處理一個 session
+board resume API WEB             # 只處理這幾個 session
 ```
 
 它會先讀取 pane，再送出最少的按鍵：用 Escape 關掉對話框（等同對話框自己的「Stop」；絕不選列，因為有些選項會花錢或換帳號），
 或取消等待；接著輸入繼續用的提示（`fleet.yaml` 的 `limit_resume.prompt`，預設為「Quota is available again.
 Continue where you left off.」），確認輸入框裡的文字無誤後才按 Enter。每按一個鍵都會重新讀取 pane，
-遇到任何預期外的畫面就停下。畫面不是已知的上限狀態時，什麼都不送（exit 3）。每次嘗試都會記錄在
-`events.jsonl`。
+遇到任何預期外的畫面就停下。它只認 Claude 自己的上限通知，助理回覆裡單純提到上限的文字不算；畫面不是已知的
+上限狀態時，什麼都不送（exit 3）。每次嘗試都會記錄在 `events.jsonl`。
 
 在看板上，停在上限的 session 會顯示 **用量上限** 標籤（collector 每 30 秒看一次 pane），擁有者則可以在
-卡片詳情裡按 **繼續**，或在橫幅上按 **全部繼續**，兩者都有確認步驟。畫面的比對樣式放在 `fleet.yaml` 的
+卡片詳情裡按 **繼續**，或在橫幅上按 **全部繼續**，兩者都有確認步驟；全部繼續只處理橫幅上列出的 session。畫面的比對樣式放在 `fleet.yaml` 的
 `limit_resume`；Claude Code 改版換了畫面時再調整。詳見 [docs/contract.md](docs/contract.md) 的
 「Resume after a usage limit」。
 

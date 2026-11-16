@@ -1089,19 +1089,20 @@ resets), resume them all at once instead of visiting each pane:
 ```bash
 board resume --all --dry-run     # which sessions are at a limit, and the first keys for each
 board resume --all               # resume them; the others are skipped, nothing sent to them
-board resume API                 # one session
+board resume API WEB             # these sessions
 ```
 
 It reads the pane and sends the fewest keys: Escape closes the dialog (its own "Stop"; never a
 row, since some rows spend money or change the account) or cancels the wait, then it types the
 resume prompt (`limit_resume.prompt` in `fleet.yaml`, default "Quota is available again. Continue
 where you left off."), checks it in the box and presses Enter. It reads the pane again after every
-key and stops at anything unexpected. A screen that is not a known limit state gets nothing (exit
-3). Every attempt is audited in `events.jsonl`.
+key and stops at anything unexpected. It acts only on Claude's own limit notices, never on an
+assistant reply that merely mentions limits, and a screen that is not a known limit state gets
+nothing (exit 3). Every attempt is audited in `events.jsonl`.
 
 On the board, a session at a limit shows a **usage limit** chip (the collector looks at the panes
 every 30 s), and the owner gets **Resume** in the card's details and **Resume all** in a banner,
-both with a confirm step. The screen patterns are in `fleet.yaml limit_resume`; adjust them when
+both with a confirm step; Resume all resumes exactly the sessions the banner lists. The screen patterns are in `fleet.yaml limit_resume`; adjust them when
 Claude Code changes its screens. Details: [docs/contract.md](docs/contract.md), "Resume after a
 usage limit".
 

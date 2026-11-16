@@ -217,8 +217,9 @@ def main():
             check("  audited by board-serve", audit and audit[-1].get("result") == "ok", audit)
             page.click("[data-resume=all]")
             page.click("[data-resume=all-confirm]")
-            audit2 = wait_for(lambda: [e for e in events(home, "serve") if e.get("action") == "resume" and e.get("code") == "all"])
-            check("Resume all (confirmed) → POST /api/resume all", bool(audit2), events(home, "serve"))
+            audit2 = wait_for(lambda: [e for e in events(home, "serve") if e.get("action") == "resume"][1:])
+            check("Resume all (confirmed) → POST /api/resume with exactly the codes shown", audit2 and audit2[-1].get("codes") == ["CP"],
+                  events(home, "serve"))
             srv.terminate()
             srv.wait()
 

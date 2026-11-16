@@ -110,22 +110,27 @@ DEFAULTS = {
         # Two Escapes at least this far apart: a quick double Escape opens Claude's rewind menu.
         "esc_gap_seconds": 1.5,
         "max_steps": 4,
-        # The usage-limit options dialog: its title, one of its own rows (one is enough), and the
-        # footer. It is closed with Escape (its own cancel = "Stop"), never by a row.
+        # The usage-limit options dialog: its title, its rows, and the footer. It counts only with
+        # a limit notice in it or right above it and at least two of its rows, one of them
+        # limit-specific (dialog_row_regex; a bare "Stop" alone is any picker's). It is closed with
+        # Escape (its own cancel = "Stop"), never by a row.
         "dialog_title_regex": r"What do you want to do\?",
-        "dialog_row_regex": r"^(\d+\.\s*)?(Stop and wait for limit to reset|Stop|Wait here, then continue automatically\b.*"
+        "dialog_row_regex": r"^(\d+\.\s*)?(Stop and wait for limit to reset|Wait here, then continue automatically\b.*"
                             r"|Don.t continue automatically|Upgrade your plan|Switch to (usage|extra)\b.*"
                             r"|Add funds to continue\b.*|Ask your admin for more usage)\s*$",
+        "dialog_stop_regex": r"^(\d+\.\s*)?Stop\s*$",
         "dialog_footer_regex": r"Esc to cancel",
         # Claude's automatic continue, armed: a line below the input box.
         "wait_regex": r"continuing (automatically|shortly)\b.*esc to cancel",
         # The limit has reset and the box holds Claude's prefilled text: a line below the box.
         "ready_regex": r"press enter to continue",
         "prefill": "continue",
-        # The last reply above an idle input box says the session stopped on a usage limit.
-        "limit_regex": r"usage limit reached|hit your (usage )?limit|out of (extra )?usage|5-hour limit|weekly limit"
-                       r"|limit (will )?resets?\b|automatic continue (was )?(cancelled|turned off|stopped|did not run)"
-                       r"|/rate-limit-options",
+        # Claude's own limit notice, matched at the START of a "⎿" line's text, or of the last line
+        # before the input box when it is not part of an assistant "●" paragraph (case-insensitive).
+        # Assistant prose that mentions limits never counts.
+        "limit_regex": r"(claude (ai )?)?usage limit (reached|has reset|reset)|you.ve hit your (usage |session |weekly )?limit"
+                       r"|(5-hour|weekly|session|opus|sonnet) limit reached"
+                       r"|automatic continue (was )?(cancelled|turned off|stopped|did not run)",
     },
     # Remote Control at start (bin/fleet-up): unset_do_not_track starts claude with
     # `env -u DO_NOT_TRACK` (Claude Code ignores Remote Control while DO_NOT_TRACK is set).

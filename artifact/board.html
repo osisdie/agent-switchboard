@@ -2855,7 +2855,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     if (!awayEditor()) return box;
     if (ask) {
       box.append(h('span', { class: 'note', text: tr('Resume {code}? Use it once quota is available again. Its screen is read first; nothing is sent unless it still shows the usage limit.', { code: s.code }) }),
-        h('button', { class: 'btn primary', type: 'button', disabled: busy || null, dataset: { resume: 'confirm' }, onclick: () => { delete S.drafts.resumeAsk; resumeSessions(s.code); }, text: tr('Yes, resume') }),
+        h('button', { class: 'btn primary', type: 'button', disabled: busy || null, dataset: { resume: 'confirm' }, onclick: () => { delete S.drafts.resumeAsk; resumeSessions([s.code], 'resume:' + s.code); }, text: tr('Yes, resume') }),
         h('button', { class: 'btn', type: 'button', dataset: { resume: 'cancel' }, onclick: () => { delete S.drafts.resumeAsk; renderBoard(); }, text: tr('Cancel') }));
     } else {
       box.append(h('button', { class: 'btn', type: 'button', disabled: busy || null, dataset: { resume: 'ask' },
@@ -2863,17 +2863,18 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     }
     return box;
   }
-  function resumeSessions(code) {
-    const key = 'resume:' + code;
+  // CODES: exactly the sessions the owner saw and confirmed (one card, or the banner's list); the
+  // server resumes those and no other.
+  function resumeSessions(codes, key) {
     if (S.demo) {
-      S.sessions = S.sessions.map((x) => (code === 'all' || x.code === code ? Object.assign({}, x, { limit: null }) : x));
+      S.sessions = S.sessions.map((x) => (codes.includes(x.code) ? Object.assign({}, x, { limit: null }) : x));
       renderAll(); toast(tr('Demo: shown on this page only. Nothing was saved or sent.'));
       return;
     }
     if (!isLocal() || !adapter.resume || S.busy.has(key)) return;
     S.busy.add(key); renderAll();
-    adapter.resume(code).then(() => toast(code === 'all' ? tr('Resuming the sessions at a usage limit. Each card updates when its session is working again.')
-      : tr('Resuming {code}. The card updates when the session is working again.', { code })))
+    adapter.resume(codes).then(() => toast(codes.length > 1 ? tr('Resuming the sessions at a usage limit. Each card updates when its session is working again.')
+      : tr('Resuming {code}. The card updates when the session is working again.', { code: codes[0] })))
       .catch((e) => handleWriteError(e)).finally(() => { S.busy.delete(key); renderAll(); });
   }
   function limitBanner(box) {
@@ -2886,7 +2887,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     if (awayEditor()) {
       if (ask) {
         b.append(h('p', { text: tr('Resume them all? Use it once quota is available again (another account, or the reset). Each screen is read first; a session that no longer shows the limit gets nothing.') }),
-          h('button', { class: 'btn primary', type: 'button', disabled: busy || null, dataset: { resume: 'all-confirm' }, onclick: () => { S.drafts.resumeAll = false; resumeSessions('all'); }, text: tr('Yes, resume all') }),
+          h('button', { class: 'btn primary', type: 'button', disabled: busy || null, dataset: { resume: 'all-confirm' }, onclick: () => { S.drafts.resumeAll = false; resumeSessions(stuck.map((x) => x.code), 'resume:all'); }, text: tr('Yes, resume all') }),
           h('button', { class: 'btn', type: 'button', dataset: { resume: 'all-cancel' }, onclick: () => { S.drafts.resumeAll = false; renderBanners(); }, text: tr('Cancel') }));
       } else {
         b.append(h('button', { class: 'btn', type: 'button', disabled: busy || null, dataset: { resume: 'all' }, onclick: () => { S.drafts.resumeAll = true; renderBanners(); }, text: tr('Resume all') }));
@@ -5842,8 +5843,9 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       setRc(code, state) { return post('/api/rc', { code, state }); },
       // Approvers only: an allowlisted session action (compact | rc_on | rc_off), never free text.
       sessionAction(code, action) { return post('/api/sessions/' + encodeURIComponent(code) + '/action', { action }); },
-      // Owners only; board-serve runs `board resume CODE|--all --by board:<identity>` in the background.
-      resume(code) { return post('/api/resume', { code }); },
+      // Owners only; board-serve runs `board resume CODE... --by board:<identity>` in the background,
+      // for exactly these codes.
+      resume(codes) { return post('/api/resume', { codes }); },
       // Approvers only; board-serve runs `board lesson add|edit|activate|retire|delete --by board:<identity>`.
       addLesson(body) { return post('/api/lessons', body); },
       // One kept day's per-stream pomodoro breakdown (the pushed view has daily totals only).

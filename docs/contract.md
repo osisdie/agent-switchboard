@@ -607,7 +607,7 @@ $BOARD_HOME/
 | `POST /api/presence` `{visible, idle_ms?}` | The page's presence heartbeat. `visible` boolean; `idle_ms` integer ms since the viewer last clicked, tapped, scrolled or typed, at most 86400000 (a day), or null (else 400 `bad_body`). The server records `interaction_at = <server now> − max(0, idle_ms)`, so a page clock that runs fast changes nothing. Any time the page sends (`interaction_at` in the body) is ignored: without `idle_ms` the last interaction is unknown, so the viewer does not count as watching. Same approver rule as `/api/notify-prefs`. Recorded in `presence.json` under the listener's verified identity, never one from the body → 200 `{status: "ok", visible}`. Audited only when the identity's `visible` changes. |
 | `POST /api/alerts/ack` `{scope: "all"}` | The Deck panel's "acknowledge all". `scope` other than `"all"` → 400 `bad_scope`. Same approver rule as `/api/notify-prefs` (empty `approvers` → 403 `no_approvers`; not an approver → 403 `not_approver`, audited, nothing acked). Otherwise `board ack --by board:<identity> '*'` (argv, no shell): every unacked key in `alerts.json` gets `acked_at` and `acked_by: board:<identity>`, the same as `board ack '*'` in a terminal → 200 `{status: "ok", acked: <n>}` (`0` when nothing was open). Escalation stops; nothing leaves the board, and a condition that opens again alerts again. Failure → 500 `ack_failed`. |
 | `POST /api/sessions/<code>/action` `{action}` | A session action. `action` other than `compact`, `rc_on`, `rc_off` → 400 `bad_action`; `<code>` not a session in the snapshot or `fleet.yaml` → 404 `not_found`; nothing run. Empty `approvers` → 403 `no_approvers`; identity not in `approvers` → 403 `not_approver`, audited (`session-action`), nothing written. Otherwise `board session <code> compact --by board:<identity> --queue-only`, or `board rc on\|off <code> --by board:<identity> --no-apply` (argv, no shell) → 200 `{status: "ok", action, code, rc}`; then `board session apply <code> --only compact\|rc` starts in the background, and the page follows the result through the snapshot. Failure → 500 `action_failed`. |
-| `POST /api/resume` `{code}` | Resume sessions stuck on a usage limit (see "Resume after a usage limit"). Who is asking is checked first: empty `approvers` → 403 `no_approvers`; not an approver → 403 `not_approver`; an approver who is not an owner → 403 `not_owner`; each audited (`type: "serve"`, `action: "resume"`, `result: "refused"`), nothing run. Then `code`: not `"all"` and not a session in the snapshot or `fleet.yaml` (or not a string) → 400 `bad_code`. Otherwise `board resume <code>\|--all --by board:<identity>` starts in the background (argv, no shell) → 200 `{status: "started", code}`, audited `result: "ok"`; each session's attempt lands in `events.jsonl` (`type: "resume"`) and the page follows the snapshot (`limit` disappears once the session works again). It cannot start → 500 `resume_failed`. |
+| `POST /api/resume` `{code}` \| `{codes: [...]}` | Resume sessions stuck on a usage limit (see "Resume after a usage limit"), **exactly the codes named**: the page sends the codes it showed the owner (one card, or the banner's list). Who is asking is checked first: empty `approvers` → 403 `no_approvers`; not an approver → 403 `not_approver`; an approver who is not an owner → 403 `not_owner`; each audited (`type: "serve"`, `action: "resume"`, `result: "refused"`), nothing run. Then the input: exactly one of `code` (a string) and `codes` (a list of 1–64 distinct strings), each a session in the snapshot or `fleet.yaml` (`"all"` and anything else → 400 `bad_code`; nothing run). Otherwise `board resume CODE... --by board:<identity>` starts in the background (argv, no shell) → 200 `{status: "started", codes}`, audited `result: "ok"` with `codes`; each session's attempt lands in `events.jsonl` (`type: "resume"`) and the page follows the snapshot (`limit` disappears once the session works again). It cannot start → 500 `resume_failed`. |
 | `POST /api/rc` `{code, state}` | Remote Control. `state` other than `on`/`off` → 400 `bad_state`; `code` not `"all"` and not `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`, or not a session in the snapshot or `fleet.yaml` → 400 `bad_code`; nothing run. Empty `approvers` → 403 `no_approvers`; identity not in `approvers` → 403 `not_approver`, audited, nothing written. Otherwise `board rc on\|off <code> --by board:<identity> --no-apply` (argv, no shell) → 200 `{status: "ok", rc}` (the new `rc` state), then `board rc apply <code>` (`--pending` for `all`) starts in the background: the page follows the result through the snapshot. Failure → 500 `rc_failed`. |
 | `POST /api/away` `{state: "on"\|"off", said?}` | `state` other than `on`/`off` → 400 `bad_state`; `said` not a string or over 500 chars → 400 `bad_said`. Empty `approvers` → 403 `no_approvers`; identity not in `approvers` → 403 `not_approver`, audited, nothing written. Otherwise `board away on\|off --by board:<identity> [--said <said>]` (argv, no shell; `on` without `said` records "away (set on the board)") → 200 `{away: true\|false, status: "on"\|"off"\|"unchanged"}`. `on` while already away keeps the existing record (`unchanged`). Failure → 500 `away_failed`. |
 
@@ -2622,36 +2622,49 @@ When the account runs out of quota, each Claude Code session stops on one of a f
 quota is back (the owner switched accounts, or the limit reset), `board resume` gets them going
 again without a visit to every pane.
 
-CLI: `board resume CODE [--dry-run] [--by NAME] [--json]`, `board resume --all [...]`, `board
-resume scan [--json]` (read-only). Board: `POST /api/resume` (owners only), the card's **Resume**
-row and the banner's **Resume all**.
+CLI: `board resume CODE [CODE...] [--dry-run] [--by NAME] [--json]`, `board resume --all [...]`,
+`board resume --scan [--json]` (read-only). Board: `POST /api/resume` (owners only), the card's
+**Resume** row and the banner's **Resume all**.
+
+**Claude's limit notice.** `limit_regex` is matched at the **start** of a line's text, and only on
+two kinds of line in the last reply (between the last echoed prompt and the input box): a
+tool-result / system line (`⎿ Usage limit reached · limit resets 3pm`, matched after the `⎿`),
+or the last non-blank line before the box when it is not part of an assistant `●` paragraph (a
+run of non-blank lines that starts with `●`). Assistant prose that mentions limits ("● The API
+enforces a weekly limit", a wrapped "● Usage limit reached is the message …") never counts, and
+neither does tool output whose line does not start with the notice (`⎿ docs/x.md: Usage limit …`).
 
 **Screens** (Claude Code 2.1.x; the patterns are `fleet.yaml limit_resume.*`, Python regexes):
 
 | state | what the pane shows | keys |
 |---|---|---|
-| `dialog` | no input box; the options dialog: `dialog_title_regex` ("What do you want to do?"), one of its rows (`dialog_row_regex`: "Stop and wait for limit to reset", "Stop", "Wait here, then continue automatically …", "Upgrade your plan", …) and its footer (`dialog_footer_regex`, "Esc to cancel"), below the last echoed prompt | `Escape` (the dialog's own cancel, the same as its "Stop" row) |
+| `dialog` | no input box; below the last echoed prompt and within 20 lines above the footer (`dialog_footer_regex`, "Esc to cancel"): the title (`dialog_title_regex`, "What do you want to do?"), **at least two distinct rows** of the dialog, at least one of them limit-specific (`dialog_row_regex`: "Stop and wait for limit to reset", "Wait here, then continue automatically …", "Upgrade your plan", "Add funds …", …; a bare "Stop", `dialog_stop_regex`, counts only beside one), and a limit notice (any line of that block, by the rule above). Another picker with a "Stop" option, or the title and rows without a limit notice, is not it | `Escape` (the dialog's own cancel, the same as its "Stop" row) |
 | `wait` | Claude's automatic continue is armed: below the input box, `wait_regex` ("Continuing automatically at 3pm · Esc to cancel") | `Escape` (cancels the wait) |
-| `ready` | the box holds Claude's own prefill (`prefill`, "continue") and either below it `ready_regex` ("Press enter to continue") or a limit message in the last reply | `Enter` |
-| `idle` | an empty input box (the "Session actions" idle checks: no `esc to interrupt`, no dialog footer or vim mode below it) and, between the last echoed prompt and the box, `limit_regex` ("Usage limit reached", "You've hit your limit", "Automatic continue cancelled", …) | `limit_resume.prompt` typed (`send-keys -l`), read back from the box, then `Enter` |
+| `ready` | the box holds Claude's own prefill (`prefill`, "continue") and either below it `ready_regex` ("Press enter to continue") or a limit notice in the last reply | `Enter` |
+| `idle` | an empty input box (the "Session actions" idle checks: no `esc to interrupt`, no dialog footer or vim mode below it) under a limit notice ("Usage limit reached", "You've hit your limit", "Automatic continue cancelled", …) | `limit_resume.prompt` typed (`send-keys -l`), read back from the box, then `Enter` |
+
+An empty box **without** a limit notice is `none` (not at a limit), also right after one of the
+board's keys: the prompt is never typed there.
 
 The dialog is never answered with a row number: its rows move between versions and plans, and
 some of them spend money or change the account ("Upgrade your plan", "Add funds …").
 
 **Steps and guards.** Every check before the first key sends nothing (`refused`, exit 3):
-1. The session must be running (the "Session actions" process checks), with a tmux pane that
-   belongs to it (`check_pane`). Else `refused` (`reason_code` `offline` / `pane`).
+1. The code must be a session code (no teammate rows, `CODE/name`), the session running (the
+   "Session actions" process checks), with a tmux pane that belongs to it (`check_pane`). Else
+   `refused`, `reason_code` `offline` or `pane`.
 2. One action at a time per session: the same `actions-<code>.lock` as session actions (waits
    `session_actions.lock_wait_seconds`; else `refused`, `locked`).
 3. The last `lines` (40) lines of `capture-pane` are classified. Anything but the four states
-   above (a healthy idle session, a working one, another dialog, the owner's own text in the box,
-   a limit message only in older scrollback) → `refused`, `reason_code` `not_limited`, nothing sent.
-   An unusable `prompt` (empty, over 500 characters, control characters) → `refused`, `config`.
+   above (a healthy idle session, a working one, another picker, the owner's own text in the box,
+   a limit notice only in older scrollback, an empty pane) → `refused`, `not_limited`. An unusable
+   `prompt` (empty, over 500 characters, control characters) → `refused`, `config`.
 4. After each key the pane is read again until it changes (up to `confirm_seconds`, 10). The next
    screen must be one the key leads to: `dialog` → `wait`, `ready` or `idle`; `wait` → `ready` or
-   `idle`; an empty box right after one of our keys counts as `idle`. Anything else → `partial`
-   (exit 5): nothing more is sent. Two Escapes are at least `esc_gap_seconds` (1.5) apart: a quick
-   double Escape opens Claude's rewind menu. At most `max_steps` (4) steps.
+   `idle`. Anything else (`none` included) → `partial` (exit 5): nothing more is sent. Escapes
+   to one session are at least `esc_gap_seconds` (1.5) apart, also across runs: the time of the
+   last one is kept in `$BOARD_HOME/resume-esc-<CODE>` (0600), read and written under the
+   session lock (a quick double Escape opens Claude's rewind menu). At most `max_steps` (4) steps.
 5. Typed text must show in the box (whitespace ignored, so a wrapped box still matches) within
    3 s, and the session must still be running; else `partial`, Enter not pressed. A trailing `;`
    is sent as `\;` (tmux would read it as a command separator).
@@ -2659,45 +2672,55 @@ some of them spend money or change the account ("Upgrade your plan", "Add funds 
    prompt is echoed above an empty box. The limit dialog or wait again → `limited` (exit 6: no
    quota yet; nothing else sent). Nothing within `confirm_seconds` → `unconfirmed` (6).
 
-`--all` reads every running session with a pane and acts only on the ones in a limit state; the
-others are reported `skipped` (nothing sent, not audited). Exit: the worst of the sessions it acted
-on, 0 when there was nothing to do. `--dry-run` prints the state and the first keys, sends
-nothing (exit 0 for a limit state, 3 otherwise).
+Several CODEs (at most 64, distinct) run one after another; the exit code is the worst. `--all`
+reads every running session with a pane and acts only on the ones in a limit state; the others are
+reported `skipped` (nothing sent, not audited); exit 0 when there was nothing to do. `--all` is a
+terminal convenience: the board never sends it (see `POST /api/resume`). `--dry-run` prints the
+state and the first keys, sends nothing (exit 0 for a limit state, 3 otherwise).
 
 Results and exit codes: `resumed`, `dry-run`, `skipped` (0); `failed` (1); `refused` (3);
-`partial` (5); `unconfirmed`, `limited` (6). 2 is a usage error (no CODE and no `--all`, both, an
-unknown session, a bad `--by`).
+`partial` (5); `unconfirmed`, `limited` (6). 2 is a usage error (no CODE and no `--all`, both, a
+repeated or unknown session, a bad `--by`, `--scan` with anything else).
 
 Every attempt and refusal appends `{type: "resume", code, result, reason, reason_code, state,
-keys, by, dry_run, pane}` to `events.jsonl`. `keys` names the keys (`Escape`, `Enter`,
-`<prompt>`); the prompt text itself is not logged.
+keys, by, dry_run, pane}` to `events.jsonl`. `reason` is a fixed text and `reason_code` is set
+where the refusal happens (`not_limited`, `offline`, `pane`, `locked`, `config`; `null` when not
+refused). No pane text is logged: the line that decided the state is printed on the terminal
+only (`screen: "…"`). `keys` names the keys (`Escape`, `Enter`, `<prompt>`); the prompt text
+itself is not logged either.
 
-**What the board shows.** The looping collector passes `--scan-limits`: every `scan_seconds` (30;
-0 = never) it classifies each running session's pane (`display-message` and `capture-pane`, read
-only; a session with an action running is skipped) into `$BOARD_HOME/resume-scan.json` (0600,
-`{at, sessions: {CODE: {sid, state, since, at}}}`). A `--once` run never reads panes; it uses the
-last look. `board resume` records each session's state right after it acts, so the card follows
-at once. Sessions at a limit get `limit` in the snapshot, the card a "usage limit" chip (every
-viewer), and owners a **Resume** row in the card (with a confirm step) and **Resume all** in a
-banner. The buttons appear only where a limit was seen, so a healthy session never offers one;
-the server and the CLI check again either way.
+**What the board shows.** The looping collector passes `--scan-limits`: when the last look is
+`scan_seconds` (30; 0 = never) old and none is running, it starts one **in the background**
+(`resume.py --scan-store`, one at a time: flock `resume-scan.run.lock`), so a slow tmux never
+stalls the collector. The look classifies each running session's pane from the last snapshot
+(`display-message` and `capture-pane`, read only; a session with an action running keeps its last
+look) into `$BOARD_HOME/resume-scan.json` (0600, `{at, sessions: {CODE: {sid, state, since,
+at}}}`); the next collector run shows it. A `--once` run never reads panes. `board resume` records
+each session's state right after it acts, or after it refused a session that is no longer at a
+limit, so the card follows at once. Both write the file under flock `resume-scan.lock`, and a
+look never overwrites an entry written after it started. Sessions at a limit get `limit` in the
+snapshot, the card a "usage limit" chip (every viewer), and owners a **Resume** row in the card
+and **Resume all** in a banner that lists the sessions, each with a confirm step. Resume all
+sends exactly the listed codes. The buttons appear only where a limit was seen, so a healthy
+session never offers one; the server and the CLI check again either way.
 
-`fleet.yaml`:
+`fleet.yaml` (defaults shown, the long patterns shortened; see `fleet.example.yaml`):
 ```yaml
 limit_resume:
   prompt: "Quota is available again. Continue where you left off."
   lines: 40
-  scan_seconds: 30        # the collector's look at the panes; 0 = never
+  scan_seconds: 30        # the collector's background look at the panes; 0 = never
   confirm_seconds: 10
   esc_gap_seconds: 1.5
   max_steps: 4
   dialog_title_regex: 'What do you want to do\?'
-  dialog_row_regex: '^(\d+\.\s*)?(Stop and wait for limit to reset|Stop|Upgrade your plan|...)\s*$'
+  dialog_row_regex: '^(\d+\.\s*)?(Stop and wait for limit to reset|Upgrade your plan|...)\s*$'
+  dialog_stop_regex: '^(\d+\.\s*)?Stop\s*$'
   dialog_footer_regex: 'Esc to cancel'
   wait_regex: 'continuing (automatically|shortly)\b.*esc to cancel'      # case-insensitive
   ready_regex: 'press enter to continue'                                  # case-insensitive
   prefill: continue
-  limit_regex: 'usage limit reached|hit your (usage )?limit|...'          # case-insensitive
+  limit_regex: '(claude (ai )?)?usage limit (reached|has reset|reset)|you.ve hit your ...'   # case-insensitive, at the start
 ```
 The box and busy patterns are shared with "Session actions" (`session_actions.rule_regex`,
 `prompt_regex`, `busy_regex`, `dialog_regex`, `mode_regex`). A pattern that does not compile falls

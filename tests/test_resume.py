@@ -110,6 +110,18 @@ OTHER_PICKER = "\n".join(HEAD + ["   Something else entirely", "   ❯ Yes", "  
 OLD_NEWS = screen(["  ⎿  Usage limit reached · continuing automatically at 3pm · esc to cancel",
                    "   What do you want to do?", "❯ go on", "● Done."])
 USER_TEXT = screen([LIMIT_MSG], box="❯ my own half-typed idea")
+# An AskUserQuestion picker that happens to share the title and have a "Stop" option.
+ASK_STOP = "\n".join(HEAD + ["   What do you want to do?", "   ❯ 1. Continue", "     2. Stop", "",
+                             "   Enter to select · ↑/↓ to navigate · Esc to cancel"])
+# The limit dialog's title and rows, but no limit notice anywhere (someone's own menu).
+DIALOG_NO_NOTICE = "\n".join(HEAD + ["   What do you want to do?", "   ❯ 1. Stop and wait for limit to reset",
+                                     "     2. Upgrade your plan", "", "   Enter to confirm · Esc to cancel"])
+# Assistant prose about limits: never a limit notice.
+PROSE = [screen(["● The API enforces a weekly limit; I added a backoff."]),
+         screen(["● Done. The rate limiter now logs when the limit resets."]),
+         screen(["● Added docs for /rate-limit-options."]),
+         screen(["● Usage limit reached is the message the client shows; I", "  matched it in the tests."]),
+         screen(["● Bash(grep -rn limit docs)", "  ⎿  docs/x.md: Usage limit reached · limit resets 3pm"])]
 
 
 def run(*args, env=None):
@@ -275,9 +287,26 @@ class ClassifyTest(unittest.TestCase):
 
     def test_patterns_are_configurable(self):
         self.assertEqual(self.st(IDLE, limit_regex="nothing will match this"), "none")
-        self.assertEqual(self.st(HEALTHY, limit_regex="passes 50 runs"), "idle")
+        quota = screen(["  ⎿  Quota exhausted for today"])
+        self.assertEqual(self.st(quota), "none")
+        self.assertEqual(self.st(quota, limit_regex="quota exhausted"), "idle")
+        self.assertEqual(self.st(HEALTHY, limit_regex="done"), "none", "a ● paragraph never counts")
         bad = self.st(IDLE, limit_regex="([")             # a broken pattern falls back to the default
         self.assertEqual(bad, "idle")
+
+    def test_not_a_dialog(self):
+        self.assertEqual(self.st(ASK_STOP), "unknown", "a picker with a Stop option is not the limit dialog")
+        self.assertEqual(self.st(DIALOG_NO_NOTICE), "unknown", "no limit notice: not the limit dialog")
+        only_stop = DIALOG.replace("     2. Wait here, then continue automatically at 3pm\n", "").replace("     3. Upgrade your plan\n", "")
+        only_stop = only_stop.replace("1. Stop and wait for limit to reset", "1. Stop")
+        self.assertEqual(self.st(only_stop), "unknown", "a bare Stop needs a limit-specific row beside it")
+
+    def test_prose_is_not_a_notice(self):
+        for scr in PROSE:
+            self.assertEqual(self.st(scr), "none", scr.split("\n")[-5])
+        # the notice as the last line before the box, outside any ● paragraph, still counts
+        self.assertEqual(self.st(screen(["● Working on it.", "", "You've hit your limit · resets 3pm"])), "idle")
+        self.assertEqual(self.st(screen(["You've hit your limit · resets 3pm", "", "● Something after it."])), "none")
 
     def test_wrapped_prompt_box(self):
         for cut in (26, 30):                                   # at a space, inside a word
@@ -316,7 +345,7 @@ class CliTest(unittest.TestCase):
 
     def test_not_limited_refuses_with_nothing_sent(self):
         Live()
-        for scr in (HEALTHY, WORKING, OTHER_PICKER, USER_TEXT, OLD_NEWS):
+        for scr in (HEALTHY, WORKING, OTHER_PICKER, USER_TEXT, OLD_NEWS, ASK_STOP, DIALOG_NO_NOTICE, *PROSE):
             script([scr])
             rc, out, err = board("resume", "CP")
             self.assertEqual(rc, 3, out + err)
@@ -398,6 +427,49 @@ class CliTest(unittest.TestCase):
         self.assertEqual(sent(), ["Escape"], "nothing after the unexpected screen")
         self.assertEqual(events()[-1]["result"], "partial")
 
+    def test_dialog_then_plain_box_types_nothing(self):
+        Live()
+        script([DIALOG, HEALTHY])
+        rc, out, _ = board("resume", "CP")
+        self.assertEqual(rc, 5, out)
+        self.assertEqual(sent(), ["Escape"], "an empty box without a limit notice: nothing typed")
+        self.assertIn("the screen shows none", out)
+
+    def test_pane_text_is_not_logged(self):
+        Live()
+        for scr in (DIALOG, IDLE, WAIT, HEALTHY):
+            script([scr])
+            rc, out, _ = board("resume", "CP", "--dry-run")
+        script([DIALOG])
+        rc, out, _ = board("resume", "CP", "--dry-run")
+        self.assertIn('screen: "1. Stop and wait for limit to reset"', out, "the snippet is for the terminal")
+        with open(os.path.join(HOME, "events.jsonl")) as fh:
+            raw = fh.read()
+        for text in ("Usage limit reached", "3pm", "Stop and wait", "Continuing automatically"):
+            self.assertNotIn(text, raw)
+        script([""])
+        rc, out, _ = board("resume", "CP")
+        self.assertEqual((rc, events()[-1]["reason_code"]), (3, "not_limited"), "the pane is empty: not 'pane'")
+
+    def test_escape_gap_across_runs(self):
+        import actions
+        write_fleet("  esc_gap_seconds: 0.5")
+        times, real = [], actions._send  # noqa: SLF001
+        actions._send = lambda *a, **k: times.append(time.time()) or True  # noqa: SLF001
+        try:
+            with open(resume.esc_path(HOME, "CP"), "w") as fh:
+                fh.write("%.3f\n" % time.time())          # an earlier run's Escape, just now
+            t0 = time.time()
+            r = resume.Run(HOME, fleet.load_fleet(), {"code": "CP", "tmux_pane": "%42"})
+            r.escape()
+            self.assertGreaterEqual(times[0] - t0, 0.4)
+            r2 = resume.Run(HOME, fleet.load_fleet(), {"code": "CP", "tmux_pane": "%42"})
+            r2.escape()                                       # a second run right after
+            self.assertGreaterEqual(times[1] - times[0], 0.45)
+            self.assertEqual(os.stat(resume.esc_path(HOME, "CP")).st_mode & 0o777, 0o600)
+        finally:
+            actions._send = real  # noqa: SLF001
+
     def test_dialog_that_stays_open_is_partial(self):
         Live()
         script([DIALOG])
@@ -454,6 +526,8 @@ class CliTest(unittest.TestCase):
         self.assertEqual(board("resume", "CP", "--all")[0], 2)
         self.assertEqual(board("resume", "a b")[0], 2)
         self.assertEqual(board("resume", "CP", "--by", "bad who")[0], 2)
+        self.assertEqual(board("resume", "CP", "CP")[0], 2)
+        self.assertEqual(board("resume", "--scan", "CP")[0], 2)
         self.assertEqual(sent(), [])
 
     def test_lock_held_refuses(self):
@@ -487,10 +561,36 @@ class CliTest(unittest.TestCase):
         self.assertEqual({r["code"]: r["result"] for r in json.loads(out)}, {"CP": "skipped", "QA": "skipped"})
         self.assertEqual(sent(), [])
 
+    def test_several_codes(self):
+        Live()
+        Live(code="QA", sid="s-qa", pane="%43")
+        script([IDLE, TYPED, WORKING], panes={"%43": {"session": "QA", "screen": HEALTHY}})
+        rc, out, _ = board("resume", "CP", "QA")
+        self.assertEqual(rc, 3, out)                     # QA refused (not at a limit), CP resumed
+        self.assertIn("CP: resumed", out)
+        self.assertIn("QA: refused", out)
+        self.assertEqual(sent_to("%43"), [])
+
+    def test_scan_merge_keeps_newer_entries(self):
+        import actions
+        reset_home()
+        resume.remember(HOME, {"code": "CP", "session_id": "s-cp"}, "idle", now=2000)
+        resume.scan(HOME, fleet.load_fleet(), [], now=1000)          # a look that started earlier
+        self.assertEqual(resume.load_scan(HOME)["sessions"]["CP"]["state"], "idle")
+        resume.remember(HOME, {"code": "QA", "session_id": "s-qa"}, "wait", now=500)
+        lock = actions.SessionLock(HOME, "QA")
+        self.assertTrue(lock.acquire(0))
+        try:
+            doc = resume.scan(HOME, fleet.load_fleet(), [{"code": "QA"}], now=3000)
+        finally:
+            lock.release()
+        self.assertEqual(doc["sessions"]["QA"]["state"], "wait", "a busy session keeps its last look")
+        self.assertNotIn("CP", resume.scan(HOME, fleet.load_fleet(), [], now=4000)["sessions"])
+
     def test_scan(self):
         Live()
         script([WAIT])
-        rc, out, _ = board("resume", "scan", "--json")
+        rc, out, _ = board("resume", "--scan", "--json")
         self.assertEqual((rc, json.loads(out)), (0, {"CP": "wait"}))
         self.assertEqual(sent(), [])
 
@@ -510,40 +610,74 @@ class CollectorTest(unittest.TestCase):
         with open(os.path.join(HOME, "snapshot.json")) as fh:
             return {s["code"]: s for s in json.load(fh)["sessions"]}
 
+    def scanned(self, after=0, timeout=15):
+        """Runs the looping collector's step until the background look (started by it) has
+        finished after AFTER (ms), then once more so the snapshot carries it."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            self.collect("--scan-limits")
+            if int(resume.load_scan(HOME).get("at") or 0) > after and not resume.scan_running(HOME):
+                return self.collect()
+            time.sleep(0.2)
+        self.fail("the background look did not finish")
+
+    def captures(self):
+        if not os.path.exists(LOG):
+            return []
+        with open(LOG) as fh:
+            return [ln for ln in fh if ln.startswith("capture-pane")]
+
     def test_limit_on_the_row(self):
         Live()
         script([DIALOG])
         rows = self.collect()
         self.assertNotIn("limit", rows["CP"], "--once without --scan-limits never reads panes")
-        if os.path.exists(LOG):
-            with open(LOG) as fh:
-                self.assertFalse([ln for ln in fh if ln.startswith("capture-pane")])
-        rows = self.collect("--scan-limits")
+        self.assertEqual(self.captures(), [])
+        rows = self.scanned()
         self.assertEqual(rows["CP"]["limit"]["state"], "dialog")
         since = rows["CP"]["limit"]["since"]
         self.assertEqual(sent(), [], "the collector only looks")
         self.assertEqual(os.stat(os.path.join(HOME, "resume-scan.json")).st_mode & 0o777, 0o600)
-        rows = self.collect()                               # a later --once keeps the last look
-        self.assertEqual(rows["CP"]["limit"], {"state": "dialog", "since": since})
+        self.assertEqual(self.collect()["CP"]["limit"], {"state": "dialog", "since": since})
         time.sleep(1.1)
-        rows = self.collect("--scan-limits")                # same state: `since` does not move
+        rows = self.scanned(after=resume.load_scan(HOME)["at"])     # same state: `since` stays
         self.assertEqual(rows["CP"]["limit"]["since"], since)
         script([HEALTHY])
         time.sleep(1.1)
-        rows = self.collect("--scan-limits")
+        rows = self.scanned(after=resume.load_scan(HOME)["at"])
         self.assertNotIn("limit", rows["CP"])
+
+    def test_the_look_never_blocks_the_collector(self):
+        Live()
+        slow = os.path.join(TMP, "slowbin")
+        os.makedirs(slow, exist_ok=True)
+        with open(os.path.join(slow, "tmux"), "w") as fh:     # every tmux call takes 3 s
+            fh.write('#!/bin/sh\nsleep 3\nexec %s %s "$@"\n' % (sys.executable, os.path.join(REPO, "tests", "fake_tmux.py")))
+        os.chmod(os.path.join(slow, "tmux"), 0o755)
+        script([DIALOG])
+        self.collect()
+        t0 = time.time()
+        rc, out, err = run(sys.executable, os.path.join(REPO, "lib", "collect.py"), "--no-notify", "--scan-limits",
+                           env={"PATH": slow + os.pathsep + os.environ["PATH"]})
+        self.assertEqual(rc, 0, out + err)
+        self.assertLess(time.time() - t0, 6, "the collector returns while the look runs in the background")
+        deadline = time.time() + 30
+        while time.time() < deadline and (resume.scan_running(HOME) or not resume.load_scan(HOME).get("at")):
+            time.sleep(0.2)
 
     def test_scan_off(self):
         write_fleet("  scan_seconds: 0")
         Live()
         script([DIALOG])
-        rows = self.collect("--scan-limits")
-        self.assertNotIn("limit", rows["CP"])
+        self.collect("--scan-limits")
+        time.sleep(1)
+        self.assertNotIn("limit", self.collect()["CP"])
+        self.assertEqual(self.captures(), [])
 
     def test_resume_updates_the_row(self):
         Live()
         script([IDLE])
-        self.assertEqual(self.collect("--scan-limits")["CP"]["limit"]["state"], "idle")
+        self.assertEqual(self.scanned()["CP"]["limit"]["state"], "idle")
         script([IDLE, TYPED, WORKING])
         self.assertEqual(board("resume", "CP")[0], 0)
         self.assertNotIn("limit", self.collect()["CP"])
@@ -551,7 +685,7 @@ class CollectorTest(unittest.TestCase):
     def test_refusal_clears_a_stale_look(self):
         Live()
         script([IDLE])
-        self.assertEqual(self.collect("--scan-limits")["CP"]["limit"]["state"], "idle")
+        self.assertEqual(self.scanned()["CP"]["limit"]["state"], "idle")
         script([HEALTHY])                          # resumed by hand in the meantime
         self.assertEqual(board("resume", "CP")[0], 3)
         self.assertNotIn("limit", self.collect()["CP"])
@@ -625,7 +759,15 @@ class ServeTest(unittest.TestCase):
                  ("unknown session", {"code": "NOPE"}, None, 400),
                  ("bad code", {"code": "a b"}, None, 400),
                  ("not a string", {"code": ["CP"]}, None, 400),
-                 ("missing", {}, None, 400)]
+                 ("missing", {}, None, 400),
+                 ("all is not accepted", {"code": "all"}, None, 400),
+                 ("all in codes", {"codes": ["all"]}, None, 400),
+                 ("both", {"code": "CP", "codes": ["CP"]}, None, 400),
+                 ("empty codes", {"codes": []}, None, 400),
+                 ("repeated", {"codes": ["CP", "CP"]}, None, 400),
+                 ("an option", {"codes": ["--all"]}, None, 400),
+                 ("too many", {"codes": ["CP"] + ["S%d" % i for i in range(64)]}, None, 400),
+                 ("codes not a list", {"codes": "CP"}, None, 400)]
         for name, body, hdrs, want in cases:
             with self.subTest(name):
                 st, js = self.post(body, hdrs)
@@ -640,15 +782,16 @@ class ServeTest(unittest.TestCase):
         self.assertEqual(sent(), ["-l|--|" + PROMPT, "Enter"])
         audit = [e for e in events("serve") if e.get("action") == "resume"]
         self.assertEqual(audit[-1]["result"], "ok")
-        # all: a healthy pane gets nothing
-        script([HEALTHY])
-        st, js = self.post({"code": "all"})
-        self.assertEqual(st, 200, js)
-        deadline = time.time() + 20
-        while time.time() < deadline and not os.path.exists(TCFG + ".state"):
-            time.sleep(0.2)
-        time.sleep(1.5)
-        self.assertEqual(sent(), [])
+        # exactly the confirmed codes: QA is at a limit too, but only CP was named
+        Live(code="QA", sid="s-qa", pane="%43")
+        script([IDLE, TYPED, WORKING], panes={"%43": {"session": "QA", "screen": IDLE}})
+        n = len(events())
+        st, js = self.post({"codes": ["CP"]})
+        self.assertEqual((st, js["codes"]), (200, ["CP"]), js)
+        evs = self.wait_event(n + 1)
+        self.assertEqual([e["code"] for e in evs[n:]], ["CP"])
+        self.assertEqual(sent_to("%43"), [])
+        self.assertEqual([e for e in events("serve") if e.get("action") == "resume"][-1]["codes"], ["CP"])
 
     def test_non_owner_403(self):
         # an approver who is not an owner: 403 not_owner, audited, nothing run
