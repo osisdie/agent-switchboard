@@ -203,6 +203,14 @@ sessions:
 #     idle_seconds: 900         # and an interaction at most this old (0 = no idle limit)
 # Urgent always breaks through mutes and presence, unless a mute has --include-urgent.
 
+# Reminders (lib/reminders.py; `board remind`, the board's ⏰ Reminders panel): the owner's own alarms.
+# The collector sends a notice `lead` minutes before and one at the time, at the reminder's level,
+# through mutes unless the reminder says --no-breakthrough. Only owners (else approvers) see them.
+# reminders:
+#   default_lead_min: 5
+#   default_level: high         # info | warn | high | urgent
+#   timezone: ""                # IANA name for wall times (e.g. Asia/Taipei); empty = this machine's
+
 # Tickets (lib/tickets; docs/contract.md "Tickets"): read issue-tracker tickets with
 # `board ticket get REF` and the board's GET /api/tickets/<ref> (approvers and release managers only).
 # REF is KEY or tracker:KEY. A KEY that several trackers' key_pattern match is refused as ambiguous,

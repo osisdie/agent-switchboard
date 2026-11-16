@@ -565,6 +565,7 @@ def _open_episode(prev, alert, now):
         "kind": alert.get("kind") or "generic", "escalate": bool(alert.get("escalate")),
         "repeat": alert.get("repeat", True), "resets_at": alert.get("resets_at"),
         "board": alert.get("board"),
+        **({"breakthrough": True} if alert.get("breakthrough") else {}),
     }
 
 
@@ -620,7 +621,8 @@ def _deliver(key, e, now, env, cfg, force=False):
         return res
     routes = (cfg.get("routes") or {}).get(lvl) or []
     channels = [c for c in routes if c in ADAPTERS and enabled(c, env)]
-    channels, held = prefs.filter_channels(channels, lvl, cfg, now, approvers=cfg.get("approvers"))
+    channels, held = prefs.filter_channels(channels, lvl, cfg, now, approvers=cfg.get("approvers"),
+                                           breakthrough=bool(e.get("breakthrough")))
     for c, why in held.items():
         log_event({"ts": now, "type": "alert-suppressed", "key": key, "channel": c, "level": lvl, "reason": why})
     if held:
@@ -653,8 +655,11 @@ def _deliver(key, e, now, env, cfg, force=False):
 # ------------------------------------------------------------------ public API
 
 def send(level, key, title, body="", url=None, kind=None, escalate=None, repeat=None, resets_at=None,
-         board=None, now=None, env=None, cfg=None):
-    """Raise (or re-raise) alert KEY at LEVEL. Never raises; returns a result dict."""
+         board=None, now=None, env=None, cfg=None, breakthrough=False):
+    """Raise (or re-raise) alert KEY at LEVEL. Never raises; returns a result dict.
+
+    breakthrough=True (a reminder the owner set: lib/reminders.py) gets urgent's rule for mutes at
+    any level: a mute without include_urgent does not hold it. Min levels and presence still apply."""
     try:
         if level not in LEVELS:
             raise ValueError("unknown level: %s" % level)
@@ -667,6 +672,8 @@ def send(level, key, title, body="", url=None, kind=None, escalate=None, repeat=
             repeat = bool(escalate)  # only alerts that can be acked/resolved re-alert
         alert = {"level": level, "title": title, "body": body, "url": url, "kind": kind, "escalate": escalate,
                  "repeat": repeat, "resets_at": resets_at, "board": board}
+        if breakthrough:
+            alert["breakthrough"] = True
         with Store() as st:
             e = st.data.get(key)
             if e is None or e.get("acked_at") or e.get("resolved"):

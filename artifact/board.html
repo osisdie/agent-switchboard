@@ -190,6 +190,27 @@ time { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .banner.demo strong { font-family: var(--f-mono); font-size: 13px; letter-spacing: .12em; color: var(--lamp); }
 .banner.warn { border-color: color-mix(in srgb, var(--deny) 40%, var(--rule)); }
 .banners { display: grid; gap: 10px; }
+/* reminders: the sticky banner (inside the sticky section nav) and the panel */
+.rm-banner { display: grid; gap: 6px; padding: 0 16px 8px; }
+.rmb { max-width: 1360px; width: 100%; margin-inline: auto; box-sizing: border-box; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 8px 12px; border-radius: var(--r); border: 1px solid color-mix(in srgb, var(--lamp) 50%, var(--rule)); background: var(--lamp-soft); color: var(--lamp-ink); min-width: 0; }
+.rmb-ic { font-size: 18px; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.rmb-t { overflow-wrap: anywhere; min-width: 0; flex: 1 1 160px; }
+.rmb-left { font-weight: 700; font-variant-numeric: tabular-nums; }
+.rmb-acts { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.rm-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+.rm-form input, .rm-form select { font: inherit; font-size: 14px; min-height: 36px; min-width: 0; padding: 6px 10px; border: 1px solid var(--rule); border-radius: 5px; background: var(--paper); color: var(--ink); }
+.rm-form #rm-title { flex: 1 1 200px; }
+.rm-form #rm-lead { width: 5.5em; }
+.rm-form label { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; color: var(--muted); }
+.rm-err { color: var(--deny); font-size: 14px; margin: 0 0 8px; min-height: 0; }
+.rm-err:empty { display: none; }
+.rm-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.rmrow { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid var(--rule); border-radius: var(--r); background: var(--panel); min-width: 0; }
+.rmrow.ph-soon, .rmrow.ph-due { border-color: color-mix(in srgb, var(--lamp) 50%, var(--rule)); }
+.rmrow.ph-done, .rmrow.ph-missed { opacity: .7; }
+.rmtitle { overflow-wrap: anywhere; min-width: 0; }
+.rmtime { font-weight: 700; }
 /* notification controls */
 .banner.mute { background: var(--lamp-soft); border-color: color-mix(in srgb, var(--lamp) 40%, var(--rule)); }
 .banner.mute strong { color: var(--lamp-ink); }
@@ -1031,12 +1052,14 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
         <li><a href="#board" data-spy="board"><span data-i18n>Board</span> <span class="badge" id="nav-board">0</span></a></li>
         <li><a href="#resources" data-spy="resources"><span data-i18n>Resources</span> <span class="badge" id="nav-res" title="idle teammates" data-i18n-attr="title">0</span></a></li>
         <li><a href="#lessons" data-spy="lessons"><span data-i18n>Lessons</span> <span class="badge" id="nav-ls" title="active lessons" data-i18n-attr="title">0</span></a></li>
+        <li id="nav-rm-li" hidden><a href="#reminders" data-spy="reminders"><span data-i18n>Reminders</span> <span class="badge" id="nav-rm">0</span></a></li>
         <li><a href="#messages" data-spy="messages"><span data-i18n>Messages</span> <span class="badge" id="nav-msg">0</span></a></li>
         <li><a href="#approvals" data-spy="approvals"><span data-i18n>Approvals</span> <span class="badge" id="nav-appr">0</span></a></li>
       </ul>
       <button class="icon-btn" id="notif-btn" type="button" aria-haspopup="dialog" title="Push notifications: mute, triage and presence" data-i18n-attr="title"><span class="nlamp unknown" id="notif-lamp" aria-hidden="true"></span><span id="notif-label" data-i18n>Notifications</span></button>
       <button class="icon-btn" id="info-btn" type="button" aria-haspopup="dialog" title="Versions, cost and how this works" data-i18n-attr="title">ⓘ <span data-i18n>Info</span></button>
     </div>
+    <div class="rm-banner" id="rm-banner" hidden aria-live="assertive"></div>
   </nav>
 
   <div class="banners" id="banners" aria-live="polite"></div>
@@ -1124,6 +1147,25 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     <p class="readonly-note" id="ls-readonly" hidden></p>
     <div class="empty" id="ls-empty"></div>
     <ol class="lessons" id="ls-list"></ol>
+  </section>
+
+  <section class="sec" id="reminders" aria-labelledby="h-reminders" hidden>
+    <div class="sec-head">
+      <h2 id="h-reminders"><span aria-hidden="true">⏰</span> <span data-i18n>Reminders</span></h2>
+      <span class="hint" data-i18n>Your own alarms: a notice a few minutes early and one on time, to your notification channels. Only you see them.</span>
+    </div>
+    <form class="rm-form" id="rm-form">
+      <input type="time" id="rm-at" required aria-label="Time" data-i18n-attr="aria-label">
+      <input type="text" id="rm-title" maxlength="200" required placeholder="What, e.g. Meeting" aria-label="Title" data-i18n-attr="placeholder aria-label">
+      <label><span data-i18n>Minutes early</span> <input type="number" id="rm-lead" min="0" max="1440" step="1" value="5"></label>
+      <select id="rm-level" aria-label="Level" data-i18n-attr="aria-label"><option value="high" data-i18n>high</option><option value="urgent" data-i18n>urgent</option><option value="warn" data-i18n>warn</option><option value="info" data-i18n>info</option></select>
+      <select id="rm-repeat" aria-label="Repeat" data-i18n-attr="aria-label"><option value="once" data-i18n>Once</option><option value="daily" data-i18n>Every day</option><option value="weekdays" data-i18n>Weekdays (Mon–Fri)</option></select>
+      <button class="btn primary" type="submit" data-i18n>Add reminder</button>
+    </form>
+    <p class="rm-err" id="rm-err" role="alert"></p>
+    <p class="readonly-note" id="rm-note" hidden></p>
+    <div class="empty" id="rm-empty"><strong data-i18n>No reminders.</strong><span data-i18n>Add one above, or run board remind add "Meeting" --at 15:00 in a terminal.</span></div>
+    <ol class="rm-list" id="rm-list"></ol>
   </section>
 
   <section class="sec" id="messages" aria-labelledby="h-messages">
@@ -2989,6 +3031,224 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
         h('span', { class: 'from' }, h('span', { text: str(r.from) || '?' }), timeEl(r.created_at)),
         h('p', { text: str(r.body) })))) : null);
   }
+  /* --------------------------------------------------------------- reminders */
+  // The owner's own alarms (lib/reminders.py; GET/POST /api/reminders). Only the owner (fleet.yaml
+  // owners, else approvers) gets anything: for everyone else the route answers 403 and the panel,
+  // its nav entry and the banner stay absent (no count either). The collector sends the notices;
+  // the page lists, adds, acks, snoozes and deletes, and shows a sticky countdown banner inside a
+  // reminder's lead window. A chime plays once at T - lead, only after a click or key on the page
+  // (no autoplay). Text only ever goes through textContent.
+  const RM_POLL_MS = 30000;
+  const RM_LEVELS = ['high', 'urgent', 'warn', 'info'];
+  const RM_REPEATS = { once: 'Once', daily: 'Every day', weekdays: 'Weekdays (Mon–Fri)' };
+  const RM = { list: [], owner: null, offset: 0, loading: false, busy: new Set(), confirm: null, err: null,
+    form: { at: '', title: '', lead: 5, level: 'high', repeat: 'once' }, chimed: new Set(), gesture: false, audio: null,
+    poll: null, tick: null, demoSeq: 0 };
+  const rmNow = () => Date.now() + RM.offset;
+  // soon: inside the lead window; due: T passed and not acked (open for a while); else upcoming.
+  function rmPhase(r, now) {
+    if (r.state !== 'active') return str(r.state);
+    if (r.phase === 'acked') return 'acked';
+    if (r.next_at && now >= r.next_at) return 'due';
+    if (r.lead_at && now >= r.lead_at) return 'soon';
+    return 'upcoming';
+  }
+  function mmss(ms) {
+    const s = Math.max(0, Math.round(ms / 1000));
+    const hh = Math.floor(s / 3600), mm = Math.floor((s % 3600) / 60), ss = s % 60;
+    return (hh ? hh + ':' + String(mm).padStart(2, '0') : String(mm)) + ':' + String(ss).padStart(2, '0');
+  }
+  const rmUsable = () => S.demo || (isLocal() && !!adapter && !!adapter.reminders);
+  async function rmLoad() {
+    if (!rmUsable() || RM.loading) { renderReminders(); return; }
+    if (S.demo) { RM.owner = true; renderReminders(); return; }
+    // /api/me says whether this viewer has reminders: nobody else ever asks the route (no 403s).
+    if (!P.me) return;                 // loadMe() calls back here once it knows
+    if (P.me.reminders !== true) { RM.owner = false; RM.list = []; renderReminders(); rmSchedule(); return; }
+    RM.loading = true;
+    try {
+      const j = await adapter.reminders();
+      RM.owner = true; RM.err = null;
+      RM.list = objs(j.reminders);
+      if (typeof j.now === 'number') RM.offset = j.now - Date.now();
+    } catch (e) {
+      if (e && (e.status === 403 || e.status === 401)) { RM.owner = false; RM.list = []; }
+      else RM.err = str(e && e.message) || tr('the board server did not answer');
+    } finally { RM.loading = false; renderReminders(); rmSchedule(); }
+  }
+  function rmSchedule() {
+    const on = RM.owner === true && rmUsable();
+    if (on && !RM.poll && !S.demo) RM.poll = setInterval(() => { if (document.visibilityState === 'visible') rmLoad(); }, RM_POLL_MS);
+    if (on && !RM.tick) RM.tick = setInterval(rmTick, 1000);
+    if (!on) { clearInterval(RM.poll); clearInterval(RM.tick); RM.poll = RM.tick = null; }
+  }
+  // Every second: the countdowns, the banner, and the chime when a reminder enters its window.
+  function rmTick() {
+    const now = rmNow();
+    for (const r of RM.list) {
+      const k = r.id + '@' + r.next_at;
+      if (rmPhase(r, now) === 'soon' && !RM.chimed.has(k)) { RM.chimed.add(k); chime(); }
+    }
+    renderRmBanner();
+    for (const el of document.querySelectorAll('[data-rm-count]')) {
+      const t = Number(el.dataset.rmCount);
+      el.textContent = t > now ? tr('in {t}', { t: mmss(t - now) }) : tr('now');
+    }
+  }
+  function chime() {
+    if (!RM.gesture) return;   // no autoplay: only after the viewer clicked or typed on this page
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      RM.audio = RM.audio || new AC();
+      const ctx = RM.audio, t0 = ctx.currentTime;
+      for (const [i, f] of [[0, 880], [1, 1175]]) {
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.frequency.value = f; o.type = 'sine';
+        g.gain.setValueAtTime(0.0001, t0 + i * 0.25);
+        g.gain.exponentialRampToValueAtTime(0.2, t0 + i * 0.25 + 0.02);
+        g.gain.exponentialRampToValueAtTime(0.0001, t0 + i * 0.25 + 0.22);
+        o.connect(g).connect(ctx.destination);
+        o.start(t0 + i * 0.25); o.stop(t0 + i * 0.25 + 0.24);
+      }
+    } catch (e) { /* no sound: the banner still shows */ }
+  }
+  for (const ev of ['pointerdown', 'keydown']) window.addEventListener(ev, () => { RM.gesture = true; }, { once: true, capture: true });
+  function renderReminders() {
+    const show = RM.owner === true && rmUsable();
+    $('#reminders').hidden = !show; $('#nav-rm-li').hidden = !show;
+    renderRmBanner();
+    if (!show) return;
+    const now = rmNow();
+    const active = RM.list.filter((r) => r.state === 'active');
+    $('#nav-rm').textContent = active.length;
+    const note = $('#rm-note');
+    note.textContent = S.demo ? tr('Sample reminders. On the self-hosted board the collector sends them to your notification channels.') : (RM.err ? tr('Could not load reminders: {why}', { why: RM.err }) : '');
+    note.hidden = !note.textContent;
+    const list = $('#rm-list'); list.textContent = '';
+    $('#rm-empty').hidden = RM.list.length > 0;
+    for (const r of RM.list) list.append(rmRow(r, now));
+  }
+  function rmRow(r, now) {
+    const ph = rmPhase(r, now), id = str(r.id), busy = RM.busy.has(id);
+    const li = h('li', { class: 'rmrow ph-' + ph, dataset: { id } });
+    li.append(h('div', { class: 'lhead' },
+      h('span', { class: 'rmtime mono', text: str(r.at) }),
+      h('strong', { class: 'rmtitle', text: str(r.title) }),
+      h('span', { class: 'lst ' + (ph === 'soon' || ph === 'due' ? 'on' : ph === 'upcoming' ? 'active' : ''), text: tr(ph) })));
+    const meta = h('div', { class: 'dmeta' });
+    if (r.state === 'active' && r.next_at) {
+      meta.append(h('span', { text: new Date(r.next_at).toLocaleString(locale(), { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }) }),
+        h('span', { dataset: { rmCount: String(r.next_at) }, text: r.next_at > now ? tr('in {t}', { t: mmss(r.next_at - now) }) : tr('now') }));
+    }
+    meta.append(h('span', { text: tr('{n} min early', { n: Number(r.lead_min) || 0 }) }),
+      h('span', { text: tr(RM_REPEATS[r.repeat] || str(r.repeat)) }),
+      h('span', { text: tr('level {level}', { level: str(r.level) }) + (r.breakthrough ? '' : ' · ' + tr('obeys mutes')) }));
+    li.append(meta);
+    const acts = h('div', { class: 'lacts' });
+    if (RM.confirm === id) {
+      acts.append(h('span', { class: 'lconfirm', text: tr('Delete this reminder?') }),
+        h('button', { class: 'btn deny solid', type: 'button', disabled: busy, onclick: () => rmDo(id, 'delete'), text: tr('Delete') }),
+        h('button', { class: 'btn', type: 'button', onclick: () => { RM.confirm = null; renderReminders(); }, text: tr('Cancel') }));
+    } else {
+      if (ph === 'soon' || ph === 'due') {
+        acts.append(h('button', { class: 'btn allow', type: 'button', disabled: busy, onclick: () => rmDo(id, 'ack'), text: tr('Ack') }),
+          h('button', { class: 'btn', type: 'button', disabled: busy, onclick: () => rmDo(id, 'snooze'), text: tr('Snooze 5 min') }));
+      }
+      acts.append(h('button', { class: 'btn deny', type: 'button', disabled: busy, onclick: () => { RM.confirm = id; renderReminders(); }, text: tr('Delete…') }));
+    }
+    li.append(acts);
+    return li;
+  }
+  function renderRmBanner() {
+    const box = $('#rm-banner');
+    const now = rmNow();
+    const hot = RM.owner === true && rmUsable() ? RM.list.filter((r) => ['soon', 'due'].includes(rmPhase(r, now))) : [];
+    box.hidden = !hot.length;
+    const sig = hot.map((r) => r.id + rmPhase(r, now) + RM.busy.has(r.id)).join('|');
+    if (box.dataset.sig === sig) {
+      for (const el of box.querySelectorAll('[data-rm-left]')) {
+        const t = Number(el.dataset.rmLeft);
+        el.textContent = t > now ? tr('in {t}', { t: mmss(t - now) }) : tr('now');
+      }
+      return;
+    }
+    box.dataset.sig = sig; box.textContent = '';
+    for (const r of hot) {
+      const id = str(r.id), busy = RM.busy.has(id);
+      // #rm-banner is the one live region: a row is announced once when it appears (its time in
+      // words, set once); the per-second countdown is aria-hidden, so it is never re-read.
+      const left = r.next_at - now;
+      box.append(h('div', { class: 'rmb' },
+        h('span', { class: 'rmb-ic', 'aria-hidden': 'true', text: '⏰' }),
+        h('strong', { class: 'rmb-t', text: str(r.title) }),
+        h('span', { class: 'mono', text: str(r.at) }),
+        h('span', { class: 'sr-only', text: left > 0 ? tr('in {n} minutes', { n: Math.max(1, Math.round(left / 60000)) }) : tr('now') }),
+        h('span', { class: 'rmb-left mono', 'aria-hidden': 'true', dataset: { rmLeft: String(r.next_at) }, text: left > 0 ? tr('in {t}', { t: mmss(left) }) : tr('now') }),
+        h('span', { class: 'rmb-acts' },
+          h('button', { class: 'btn allow solid', type: 'button', disabled: busy, onclick: () => rmDo(id, 'ack'), text: tr('Ack') }),
+          h('button', { class: 'btn', type: 'button', disabled: busy, onclick: () => rmDo(id, 'snooze'), text: tr('Snooze 5 min') }))));
+    }
+  }
+  const RM_DONE = { ack: 'Reminder acknowledged.', snooze: 'Snoozed for 5 minutes.', delete: 'Reminder deleted.' };
+  async function rmDo(id, action) {
+    if (RM.busy.has(id) || !rmUsable()) return;
+    RM.busy.add(id); renderReminders();
+    try {
+      if (S.demo) demoRm(id, action);
+      else await adapter.reminderAct(id, action === 'snooze' ? { action, minutes: 5 } : { action });
+      if (action === 'delete') RM.confirm = null;
+      toast(tr(RM_DONE[action]));
+    } catch (e) {
+      toast(tr('Not saved: {why}', { why: str(e && e.message) || tr('the board server refused it') }), true);
+    } finally { RM.busy.delete(id); if (!S.demo) await rmLoad(); renderReminders(); }
+  }
+  async function rmAdd(e) {
+    e.preventDefault();
+    if (!rmUsable() || RM.busy.has('add')) return;
+    const f = RM.form, at = str($('#rm-at').value), title = str($('#rm-title').value).trim();
+    const lead = Number($('#rm-lead').value);
+    const errEl = $('#rm-err'); errEl.textContent = '';
+    if (!/^\d{2}:\d{2}$/.test(at) || !title) { errEl.textContent = tr('A time and a title, please.'); return; }
+    if (!Number.isInteger(lead) || lead < 0 || lead > 1440) { errEl.textContent = tr('Minutes early: 0 to 1440.'); return; }
+    Object.assign(f, { at, title, lead, level: $('#rm-level').value, repeat: $('#rm-repeat').value });
+    RM.busy.add('add');
+    try {
+      let note = null;
+      if (S.demo) demoRmAdd(f);
+      else note = (await adapter.addReminder({ title, at, lead_min: lead, level: f.level, repeat: f.repeat })).note;
+      $('#rm-title').value = ''; f.title = '';
+      toast(note ? tr('Reminder set. {note}', { note: str(note) }) : tr('Reminder set.'));
+    } catch (err) {
+      errEl.textContent = tr('Not saved: {why}', { why: str(err && err.message) || tr('the board server refused it') });
+    } finally { RM.busy.delete('add'); if (!S.demo) await rmLoad(); renderReminders(); }
+  }
+  // Demo: reminders kept in the page; nothing is sent.
+  function demoRmInit() {
+    const now = Date.now(), min = 60000, at = (t) => new Date(t).toTimeString().slice(0, 5);
+    const soon = now + 3 * min + 20000, later = now + 26 * 3600 * 1000;
+    RM.list = [
+      { id: 'r-demo-1', title: 'Design review with the web team', at: at(soon), lead_min: 5, level: 'high', repeat: 'once', breakthrough: true, state: 'active', next_at: soon, lead_at: soon - 5 * min },
+      { id: 'r-demo-2', title: 'Daily standup', at: at(later), lead_min: 5, level: 'high', repeat: 'weekdays', breakthrough: true, state: 'active', next_at: later, lead_at: later - 5 * min },
+      { id: 'r-demo-3', title: 'Water the plants', at: '18:00', lead_min: 0, level: 'info', repeat: 'daily', breakthrough: false, state: 'active', next_at: now + 5 * 3600 * 1000, lead_at: now + 5 * 3600 * 1000 },
+    ];
+    RM.owner = true; RM.offset = 0;
+  }
+  function demoRm(id, action) {
+    const r = RM.list.find((x) => x.id === id);
+    if (!r) return;
+    if (action === 'delete') RM.list = RM.list.filter((x) => x.id !== id);
+    if (action === 'ack') { r.state = r.repeat === 'once' ? 'done' : 'active'; if (r.repeat !== 'once') { r.next_at += 86400000; r.lead_at += 86400000; } }
+    if (action === 'snooze') { r.next_at = Date.now() + 5 * 60000; r.lead_at = r.next_at - r.lead_min * 60000; }
+  }
+  function demoRmAdd(f) {
+    const [hh, mm] = f.at.split(':').map(Number), d = new Date(); d.setHours(hh, mm, 0, 0);
+    if (d.getTime() <= Date.now()) d.setDate(d.getDate() + 1);
+    RM.list.push({ id: 'r-demo-n' + (++RM.demoSeq), title: f.title, at: f.at, lead_min: f.lead, level: f.level, repeat: f.repeat, breakthrough: true,
+      state: 'active', next_at: d.getTime(), lead_at: d.getTime() - f.lead * 60000 });
+    RM.list.sort((a, b) => (a.next_at || 0) - (b.next_at || 0));
+  }
+
   /* ----------------------------------------------------------------- lessons */
   // What the scheduler learned (board-serve state.lessons, lib/lessons.py). Approvers on the
   // self-hosted board add, edit, activate, retire and delete them; everyone else reads. Rules come
@@ -4322,7 +4582,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
   }
 
   wirePops();
-  function renderAll() { renderHeader(); renderBanners(); renderNotif(); renderDecisions(); renderConsensus(); renderTasks(); renderBoard(); renderMessages(); renderApprovals(); renderResources(); renderLessons(); if ($('#info').open) renderLedger(); openLinked(); }
+  function renderAll() { renderHeader(); renderBanners(); renderNotif(); renderDecisions(); renderConsensus(); renderTasks(); renderBoard(); renderMessages(); renderApprovals(); renderResources(); renderLessons(); renderReminders(); if (!RM.tried && rmUsable() && !S.demo && S.mode === 'live' && P.me) { RM.tried = true; rmLoad(); } if ($('#info').open) renderLedger(); openLinked(); }
 
   /* ----------------------------------------------------------- deep links */
   // Alerts link to <board>/?d=<decision id> (m= message, c= consensus); a #<id> or #dec-<id> hash
@@ -4567,6 +4827,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
   });
   $('#composer').addEventListener('submit', (e) => { e.preventDefault(); sendMessage(); });
   $('#ls-q').addEventListener('input', (e) => { S.lsQ = e.target.value; renderLessons(); });
+  $('#rm-form').addEventListener('submit', rmAdd);
   $('#ls-filter').addEventListener('change', (e) => { S.lsFilter = e.target.value; renderLessons(); });
   $('#ls-add').addEventListener('click', () => openLessonForm(null));
 
@@ -4655,7 +4916,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
   function spy() {
     const line = nav.getBoundingClientRect().bottom + 24;
     let current = 'decisions';
-    for (const id of ['decisions', 'consensus', 'lifecycle', 'board', 'resources', 'lessons', 'messages', 'approvals']) { const el = document.getElementById(id); if (el && el.getBoundingClientRect().top <= line) current = id; }
+    for (const id of ['decisions', 'consensus', 'lifecycle', 'board', 'resources', 'lessons', 'reminders', 'messages', 'approvals']) { const el = document.getElementById(id); if (el && el.getBoundingClientRect().top <= line) current = id; }
     if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4) current = 'approvals';
     for (const a of spyLinks) a.setAttribute('aria-current', a.dataset.spy === current ? 'true' : 'false');
   }
@@ -4871,6 +5132,10 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       // One kept day's per-stream pomodoro breakdown (the pushed view has daily totals only).
       pomodoroDay(day) { return call('/api/pomodoro/day?d=' + encodeURIComponent(day)); },
       lessonAction(id, body) { return post('/api/lessons/' + encodeURIComponent(id), body); },
+      // The owner's reminders: 403 for anyone else (the page then shows nothing of them).
+      reminders() { return call('/api/reminders', { headers: { 'X-Board': '1' } }); },
+      addReminder(body) { return post('/api/reminders', body); },
+      reminderAct(id, body) { return post('/api/reminders/' + encodeURIComponent(id), body); },
       presence(visible, interactionAt, leaving) {
         return call('/api/presence', { method: 'POST', keepalive: !!leaving, headers: { 'Content-Type': 'application/json', 'X-Board': '1' },
           // A duration, not a time: board-serve applies it to its own clock.
@@ -4943,7 +5208,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     P.loading = true; P.tried = true;
     fetch('/api/me', { credentials: 'same-origin', cache: 'no-store' })
       .then((r) => (r.ok ? r.json() : null)).catch(() => null)
-      .then((j) => { P.loading = false; if (j && typeof j === 'object' && j.identity) P.me = j; renderProfile(); });
+      .then((j) => { P.loading = false; if (j && typeof j === 'object' && j.identity) P.me = j; renderProfile(); rmLoad(); });
   }
   function loadClaudeMe() {
     if (P.claudeTried || !userNs || typeof userNs.me !== 'function') return;
@@ -5091,7 +5356,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
   /* ---------------------------------------------------------------- demo */
   function enterDemo() {
     const now = Date.now(), min = 60000;
-    S.demo = true; S.mode = 'demo'; S.me = 'u_demo_you'; S.userReady = true; S.writable = true; S.feedError = null; S.slow = false;
+    S.demo = true; S.mode = 'demo'; S.me = 'u_demo_you';
+    demoRmInit(); rmSchedule(); S.userReady = true; S.writable = true; S.feedError = null; S.slow = false;
     S.account = { email: 'you@example.com', org: 'Example Org' };
     const frozen = params.get('offline') === '1';
     S.operator = { heartbeat_at: now - (frozen ? 47 : 2) * min, version: 'demo', owner_id: 'u_demo_you', approver_ids: ['u_demo_you', 'u_demo_lead'],
@@ -6285,6 +6551,39 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "Lesson saved.": "經驗已儲存。",
       "Lesson added.": "經驗已新增。",
       "The board server refused it.": "看板伺服器拒絕了。",
+      "soon": "即將到來",
+      "acked": "已確認",
+      "missed": "錯過",
+      "in {t}": "還有 {t}",
+      "Sample reminders. On the self-hosted board the collector sends them to your notification channels.": "這些是示範提醒。在自架看板上，collector 會把它們送到你的通知管道。",
+      "Could not load reminders: {why}": "無法載入提醒：{why}",
+      "the board server did not answer": "看板伺服器沒有回應",
+      "{n} min early": "提前 {n} 分鐘",
+      "Once": "一次",
+      "Every day": "每天",
+      "Weekdays (Mon–Fri)": "平日（週一到週五）",
+      "level {level}": "等級 {level}",
+      "obeys mutes": "遵守靜音",
+      "Delete this reminder?": "要刪除這個提醒嗎？",
+      "Ack": "確認",
+      "Snooze 5 min": "延後 5 分鐘",
+      "Reminder acknowledged.": "提醒已確認。",
+      "Snoozed for 5 minutes.": "已延後 5 分鐘。",
+      "Reminder deleted.": "提醒已刪除。",
+      "A time and a title, please.": "請填時間和標題。",
+      "Minutes early: 0 to 1440.": "提前分鐘數：0 到 1440。",
+      "Reminder set. {note}": "提醒已設定。{note}",
+      "Reminder set.": "提醒已設定。",
+      "in {n} minutes": "還有 {n} 分鐘",
+      "Reminders": "提醒",
+      "Your own alarms: a notice a few minutes early and one on time, to your notification channels. Only you see them.": "你自己的鬧鐘：提前幾分鐘通知一次、準時再通知一次，送到你的通知管道。只有你看得到。",
+      "Time": "時間",
+      "What, e.g. Meeting": "事項，例如：會議",
+      "Minutes early": "提前分鐘",
+      "Repeat": "重複",
+      "Add reminder": "新增提醒",
+      "No reminders.": "沒有提醒。",
+      "Add one above, or run board remind add \"Meeting\" --at 15:00 in a terminal.": "在上面新增，或在終端機執行 board remind add \"Meeting\" --at 15:00。",
     };
   }
 })();

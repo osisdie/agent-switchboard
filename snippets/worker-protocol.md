@@ -110,6 +110,10 @@ shows the human a board and relays their answers.
 - Consensus never answers a board `ask` or a gate, and it is never a `[BOARD decision]`.
 - When `BOARD` sends `[BOARD away on|off] … Reply [re <tag>] ack`, I reply `[re <tag>] ack`.
 
+### Reminders
+- Reminders (`board remind`, the board's ⏰ panel) are the owner's own alarms. I never create,
+  ack, snooze or delete one; if the owner asks me for a reminder, I tell them the command to run.
+
 ### Replying to the board
 - When `BOARD` sends `[BOARD ask <msgId>] …`, reply with `SendMessage` to `BOARD`. The reply starts
   with `[re <msgId>]`:

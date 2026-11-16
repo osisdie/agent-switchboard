@@ -102,6 +102,12 @@
 #                                              API keys (lib/apikeys.py): shown once, only a
 #                                              peppered hash kept; owners administer every key,
 #                                              approvers issue to listed people, anyone requests
+#   board remind add "title" --at 15:00|3pm [--date YYYY-MM-DD] [--lead 5] [--level info|warn|high|urgent]
+#                (--at is 24-hour unless it ends in am/pm; 123 is 01:23)
+#                [--repeat once|daily|weekdays] [--no-breakthrough]
+#   board remind ls [--json] | rm ID | snooze ID [5m] | ack ID
+#                                              the owner's reminders (lib/reminders.py): a notice at
+#                                              T - lead and at T, through mutes unless --no-breakthrough
 #   board ticket get REF [--refresh] [--json] | doctor [--json] | show REF [--json]
 #   board ticket take REF --session CODE --by WHO [--comment-file F|--no-comment] [--no-transition] [--no-assign]
 #   board ticket release REF --by WHO
@@ -2363,6 +2369,15 @@ cmd_doctor() {
     warn "askers not in serve.tunnel.allowed_emails (it is set, so it wins; they cannot reach the board through the tunnel): $(printf '%s' "$miss" | paste -sd, - | sed 's/,/, /g')"
   fi
 
+  local rtz
+  rtz="$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import reminders
+tz = reminders.settings()["timezone"]
+print(("ok " if reminders.tzinfo(tz) else "bad ") + tz if tz else "")' "$REPO/lib" 2>/dev/null)"
+  case "$rtz" in
+    "ok "*) ok "reminders.timezone ${rtz#ok }" ;;
+    "bad "*) warn "reminders.timezone ${rtz#bad } is not a known time zone — reminders use this machine's local time" ;;
+  esac
+
   echo "install:"
   local settings="${CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"
   if [ -f "$settings" ] && jq -e '[.hooks // {} | .[][]?.hooks[]?.command // empty | select(test("board-hook\\.sh"))] | length > 0' "$settings" >/dev/null 2>&1; then
@@ -2486,6 +2501,7 @@ case "$sub" in
       *) exec python3 "$REPO/lib/apikeys.py" "$@" ;;
     esac ;;
   ticket) guarded python3 "$REPO/lib/tickets/cli.py" "$@" ;;
+  remind) [ $# -gt 0 ] || { python3 "$REPO/lib/reminders.py" --help; exit 2; }; exec python3 "$REPO/lib/reminders.py" "$@" ;;
   guard) [ $# -gt 0 ] || { python3 "$GUARD" --help; exit 2; }; exec python3 "$GUARD" "$@" ;;
   # JSON on stdin -> the same with other people's emails replaced by role labels (lib/pii.py), for
   # anything the operator mirrors to the Artifact db

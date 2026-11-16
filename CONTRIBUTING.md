@@ -24,6 +24,7 @@ python3 tests/test_pomodoro.py -v
 python3 tests/test_scheduler.py -v
 python3 tests/test_tickets.py -v
 python3 tests/test_tickets_take.py -v
+python3 tests/test_reminders.py -v
 python3 scripts/check-readme-sync.py
 ```
 

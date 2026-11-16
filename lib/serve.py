@@ -54,6 +54,11 @@ listeners (docs/contract.md, "Local adapter API"):
                                        lib/api_spec.py, spec at /api/v1/openapi.json): a board API
                                        key (Authorization: Bearer asb_live_…) on either listener;
                                        on the tunnel also an allowed Access service token or email
+  GET  /api/reminders                  the owner's reminders (owners, else approvers; X-Board: 1 and
+                                       no cross-site Sec-Fetch-Site); 403 for everyone else
+  POST /api/reminders                  {"title", "at", "date"?, "lead_min"?, "level"?, "repeat"?,
+                                       "breakthrough"?}  (owner only; lib/reminders.py)
+  POST /api/reminders/<id>             {"action": "ack"|"snooze"|"delete", "minutes"?}  (owner only)
   GET  /api/tickets/<ref>              one tracker ticket (lib/tickets): X-Board: 1 and no cross-site
                                        Sec-Fetch-Site (else 403 csrf, before anything else);
                                        approvers ∪ release_managers only, checked before any
@@ -96,6 +101,7 @@ import notify  # noqa: E402
 import actions  # noqa: E402
 import prefs  # noqa: E402
 import rc  # noqa: E402
+import reminders  # noqa: E402
 import resources  # noqa: E402
 import pii  # noqa: E402
 import serve_api  # noqa: E402
@@ -1048,7 +1054,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         try:
             self.check_host()
             path = urllib.parse.urlsplit(self.path).path
-            if TICKET_GET_RE.fullmatch(path):
+            if TICKET_GET_RE.fullmatch(path) or path == "/api/reminders":
                 self.check_fetch()   # before identity, audit or any tracker call
             ident, via = self.identity()
         except Refused as exc:
@@ -1062,6 +1068,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.events(ident, via)
         if path == "/api/me":
             return self.send_json(200, self.me_for(ident, via))
+        if path == "/api/reminders":
+            return self.reminders_get(ident, via)
         if path == "/api/lessons":
             q = (urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("q") or [""])[0].lower()[:200]
             rows = lessons.board_view(self.server.home, 10 ** 6)
@@ -1096,6 +1104,71 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if view is None:
             return self.send_json(404, {"error": "not_found"})
         return self.send_json(200, guard.scrub_tree(view))
+
+    # -- reminders (lib/reminders.py): the owner's own; nobody else sees them, not even a count
+    def reminder_owner(self, ident, via, action):
+        """The configured spelling of an owner (fleet.yaml owners, else approvers), else 403."""
+        if not reminders.owners():
+            self.audit(ident, via, "reminder-" + action, result="refused", reason="no owners configured")
+            raise Refused(403, "no_owners", "fleet.yaml owners and approvers are empty: nobody has reminders")
+        by = reminders.owner_of(ident)
+        if by is None:
+            self.audit(ident, via, "reminder-" + action, result="refused", reason="not an owner")
+            raise Refused(403, "not_owner", "reminders belong to the board's owner")
+        return by
+
+    def reminders_get(self, ident, via):
+        """GET /api/reminders (X-Board, same-origin): the owner's reminders, each with its next
+        time, lead window and phase, plus the server's `now` for the page's countdown."""
+        try:
+            self.reminder_owner(ident, via, "read")
+        except Refused as exc:
+            return self.refuse(exc)
+        return self.send_json(200, reminders.board_view(self.server.home))
+
+    def reminder_add(self, body, ident, via):
+        """POST /api/reminders {title, at, date?, lead_min?, level?, repeat?, breakthrough?}."""
+        by = self.reminder_owner(ident, via, "add")
+        allowed = {"title", "at", "date", "lead_min", "level", "repeat", "breakthrough"}
+        if set(body) - allowed or not isinstance(body.get("title"), str) or not isinstance(body.get("at"), str) \
+                or not all(isinstance(body.get(k), (str, type(None))) for k in ("date", "level", "repeat")) \
+                or not isinstance(body.get("lead_min"), (int, type(None))) or isinstance(body.get("lead_min"), bool) \
+                or not isinstance(body.get("breakthrough", True), bool):
+            raise Refused(400, "bad_body", "title and at (strings); date, level, repeat (strings); lead_min (int); "
+                                           "breakthrough (bool)")
+        try:
+            r, note = reminders.add(self.server.home, body["title"], body["at"], body.get("date"), body.get("lead_min"),
+                                    body.get("level"), body.get("repeat") or "once", body.get("breakthrough", True),
+                                    "board:%s" % by)
+        except reminders.Bad as exc:
+            raise Refused(400, "bad_reminder", str(exc)) from exc
+        except reminders.Busy as exc:
+            raise Refused(409, "busy", str(exc)) from exc
+        self.audit(ident, via, "reminder-add", id=r["id"], result="ok")
+        return self.send_json(201, {"reminder": guard.scrub_tree(reminders.view(r, reminders.now_ms())), "note": note})
+
+    def reminder_act(self, rid, body, ident, via):
+        """POST /api/reminders/<id> {action: ack|snooze|delete, minutes?}."""
+        by = self.reminder_owner(ident, via, "act")
+        action = body.get("action")
+        if action not in ("ack", "snooze", "delete") or set(body) - {"action", "minutes"}:
+            raise Refused(400, "bad_action", "action is ack, snooze or delete")
+        minutes = body.get("minutes", 5)
+        if action == "snooze" and (not isinstance(minutes, int) or isinstance(minutes, bool) or not 1 <= minutes <= 720):
+            raise Refused(400, "bad_minutes", "minutes is 1-720")
+        if not reminders.ID_RE.fullmatch(rid):
+            raise Refused(404, "not_found", "no such reminder")
+        try:
+            r = reminders.act(self.server.home, rid, action, "board:%s" % by, minutes=minutes * 60000)
+        except reminders.NotFound as exc:
+            raise Refused(404, "not_found", "no such reminder") from exc
+        except reminders.Bad as exc:
+            raise Refused(409, "bad_state", str(exc)) from exc
+        except reminders.Busy as exc:
+            raise Refused(409, "busy", str(exc)) from exc
+        self.audit(ident, via, "reminder-" + action, id=rid, result="ok")
+        return self.send_json(200, {"status": "ok", "action": action,
+                                    "reminder": guard.scrub_tree(reminders.view(r, reminders.now_ms())) if r else None})
 
     def ticket_get(self, raw_ref, ident, via):
         """GET /api/tickets/<ref>: approvers ∪ release_managers only (the tracker token reads what
@@ -1211,8 +1284,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def me_for(self, ident, via):
         """GET /api/me: built only from the verified identity and fleet.yaml, never from request
         headers. api_keys is added by the key backend once it exists (docs/contract.md)."""
+        cfg = fleet.load_fleet()
         me = {"identity": ident, "via": "access" if via == "cf-jwt" else "local"}
-        me.update(roles_of(fleet.load_fleet(), ident))
+        me.update(roles_of(cfg, ident))
+        # Whether this identity has reminders (the owner): the page asks /api/reminders only then.
+        me["reminders"] = reminders.owner_of(ident, cfg) is not None
         return me
 
     def static(self, name, ctype):
@@ -1306,6 +1382,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if m:
                 body = self.read_body()
                 return self.ticket_write(m.group(1), m.group(2), body, ident, via)
+            if path == "/api/reminders":
+                body = self.read_body()
+                return self.reminder_add(body, ident, via)
+            m = re.fullmatch(r"/api/reminders/([^/]+)", path)
+            if m:
+                body = self.read_body()
+                return self.reminder_act(m.group(1), body, ident, via)
             if path == "/api/messages":
                 body = self.read_body()
                 return self.message(body, ident, via)
