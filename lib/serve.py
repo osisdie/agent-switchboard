@@ -59,6 +59,9 @@ listeners (docs/contract.md, "Local adapter API"):
   POST /api/reminders                  {"title", "at", "date"?, "lead_min"?, "level"?, "repeat"?,
                                        "breakthrough"?}  (owner only; lib/reminders.py)
   POST /api/reminders/<id>             {"action": "ack"|"snooze"|"delete", "minutes"?}  (owner only)
+  POST /mcp                            the MCP server over Streamable HTTP (JSON responses; tools and
+                                       resources from lib/mcp_tools.py): the same key, listener and
+                                       cross-site rules as /api/v1, each tool call checked as its route
   GET  /api/tickets/<ref>              one tracker ticket (lib/tickets): X-Board: 1 and no cross-site
                                        Sec-Fetch-Site (else 403 csrf, before anything else);
                                        approvers ∪ release_managers only, checked before any
@@ -1054,6 +1057,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         if serve_api.is_v1(self.path):
             return serve_api.handle(self, _SELF)
+        if serve_api.is_mcp(self.path):
+            return serve_api.handle_mcp(self, _SELF)   # POST only: 405 after the cross-site checks
         try:
             self.check_host()
             path = urllib.parse.urlsplit(self.path).path
@@ -1362,6 +1367,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         if serve_api.is_v1(self.path):
             return serve_api.handle(self, _SELF)   # read-only: 405, the body drained
+        if serve_api.is_mcp(self.path):
+            return serve_api.handle_mcp(self, _SELF)
         try:
             origins = self.check_host()
             ident, via = self.identity()
@@ -2205,7 +2212,7 @@ def main(argv):
         info.append("emails   %s" % (", ".join(sorted(tunnel_allowed(fcfg))) or "(none: every tunnel request refused)"))
     api = serve_api.api_settings(fcfg)
     info.append("api      %s" % ("off (serve.api.enabled)" if not api["enabled"] else
-                                 "/api/v1 with a board API key; tunnel: %s" % (
+                                 "/api/v1 and /mcp with a board API key; tunnel: %s" % (
                                      "off" if not cfg["tunnel"] else "off (serve.api.remote: false)"
                                      if not api["remote"] else "Access service tokens %s or an allowed email" % (
                                          ", ".join(sorted(api["service_tokens"])) or "(none listed)"))))

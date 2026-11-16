@@ -563,7 +563,8 @@ The cloudflared ingress points at the **tunnel** listener only. The tunnel liste
 module. There is no unverified-header mode.
 
 `/api/v1/*` on either listener follows its own rules (a board API key on every call; on the tunnel
-also an allowed Access service token or email): see "Public API (`/api/v1`)".
+also an allowed Access service token or email): see "Public API (`/api/v1`)". `POST /mcp` follows
+the same rules: see "MCP".
 
 Extra files under `$BOARD_HOME`:
 
@@ -1073,7 +1074,7 @@ The operator is an LLM session. When the account hits a usage limit, nothing wri
 
 ## API keys
 
-API keys are the only identity on `/api/v1` (see "Public API") and, later, its MCP server. This
+API keys are the only identity on `/api/v1` (see "Public API") and its MCP server (see "MCP"). This
 section covers the key store and its CLI. A key is **issued to a person** and is
 **attribution, never authority**: no key answers a decision, presses a prompt, sets owner-away,
 votes in consensus, passes a production gate or manages keys. Anything that needs authority becomes
@@ -1163,7 +1164,8 @@ unknown scope, a bad date or identity), 4 not authorized (nothing written), 8 th
 
 A read-only JSON API on `board-serve` for scripts and services (`lib/serve_api.py`). Its routes
 are one table, `lib/api_spec.py`: the router dispatches from it and `GET /api/v1/openapi.json` is
-generated from it (a test checks that the two are equal). Writes, tickets and MCP come later.
+generated from it (a test checks that the two are equal). Writes and tickets come later; the MCP
+server is a client of these routes (see "MCP").
 
 **Identity: a board API key, always.** `Authorization: Bearer asb_live_…` (see "API keys"). The
 local listener's `local` and a tunnel email never count on their own: without a key every route
@@ -1245,6 +1247,76 @@ when the key had the right shape, `reason`, `route`, `via`, `client`, `result`),
 `insufficient_scope`, and each key's successful use of a route at most once a minute per
 board-serve process (`action` = the route's handler, with `owner` and `name`). `client` is `loopback`,
 `service:<common_name>` or `email:<email>`. Never a key.
+
+## MCP
+
+The board as an MCP server, for Claude Code, Claude Desktop or any MCP client. One tool table
+(`lib/mcp_tools.py`) behind two transports:
+
+- **stdio**: `bin/board-mcp`, a thin client of `/api/v1` over HTTP(S). Env: `BOARD_API_KEY`
+  (required, even locally: any worker session can start an MCP server), `BOARD_API_URL` (default
+  `http://127.0.0.1:39410`; `https` unless the host is loopback, no credentials, query or
+  fragment), and optionally `CF_ACCESS_CLIENT_ID` + `CF_ACCESS_CLIENT_SECRET` (both or neither),
+  sent as `CF-Access-Client-Id` / `CF-Access-Client-Secret` for a board behind Cloudflare Access.
+  A missing key, a key not in the key's shape (one line, no spaces), a bad URL, half a service
+  token or one with spaces or control characters: a fixed message on stderr (never a piece of the
+  value) and exit 2, before any request. JSON-RPC 2.0, one message (or batch, at most 10) per line on stdin and stdout; stdout
+  carries nothing else; a line over 1 MiB is answered `-32600` and skipped. Redirects are never
+  followed (the key would go wherever one points); no proxy is used for a loopback board.
+- **Streamable HTTP**: `POST /mcp` on board-serve, either listener. JSON responses only: no SSE
+  stream (`GET /mcp` is 405, `Allow: POST`), no `Mcp-Session-Id`; a body of notifications only is
+  `202` with no body. The same checks as `/api/v1`, in the same order: the cross-site refusals
+  (`Sec-Fetch-Site`, a foreign `Origin`: 403 `cross_site`), the Host allowlist (421),
+  `Content-Type: application/json` (415), an `MCP-Protocol-Version` header, when sent, that this
+  server speaks (400 `bad_protocol_version`), the listener (on the tunnel: an allowed Access service
+  token or email), then the key (any valid key: 401 / 403 `key_wrong_env` / 429, audited and
+  limited exactly as on `/api/v1`, with `route: "/mcp"`, `action: "mcp"`), then the body (Content-Length
+  required, at most 16 KiB: 413). Each tool call then runs **as its `/api/v1` route** inside
+  board-serve: the route's scope (403 `insufficient_scope`, audited), the key's rate (one token per
+  call), the route's handler and its viewer filter, and the success audit (`"mcp": true`).
+
+Methods: `initialize` (versions `2025-06-18`, `2025-03-26`, `2024-11-05`; another is answered with
+the newest), `ping`, `tools/list`, `tools/call`, `resources/list`, `resources/templates/list`,
+`resources/read`. Notifications get no answer. `initialize` makes no network call.
+
+| Tool (`readOnlyHint`) | `/api/v1` route | Scope |
+|---|---|---|
+| `board_state` | `GET /state` | `read:state` |
+| `list_sessions` | `GET /sessions` | `read:state` |
+| `list_decisions` (`status`?) | `GET /decisions` | `read:decisions` |
+| `get_decision` (`decision_id`) | `GET /decisions/{id}` | `read:decisions` |
+| `list_tasks` | `GET /tasks` | `read:tasks` |
+| `get_task` (`task_id`) | `GET /tasks/{id}` | `read:tasks` |
+| `get_message` (`message_id`) | `GET /messages/{id}` | `read:messages` |
+
+Resources: `board://state` (`read:state`), `board://openapi` (any key), and the templates
+`board://decisions/{decision_id}` (`read:decisions`) and `board://tasks/{task_id}` (`read:tasks`).
+Each tool's scope and argument patterns (its `inputSchema`, `additionalProperties: false`) come
+from the route table in `lib/api_spec.py`; arguments are checked before any request (`-32602`).
+
+**Scope discovery.** `tools/list`, `resources/list` and `resources/templates/list` show only what
+the key's scopes allow. stdio learns them from `GET /api/v1/whoami` (any valid key, no board data),
+cached for 60 s, so a rescoped or revoked key shows within a minute; `/mcp` has the key record
+already. Listing is a convenience, not the check: `tools/call` never consults it, and the board
+refuses an out-of-scope call itself.
+
+**Results.** A tool's JSON is the route's answer, as `content` text and as `structuredContent`.
+Every string in it, keys included, goes through the board's defang (`lib/messages.py`): `[BOARD`
+becomes `(BOARD`, also with fullwidth or CJK brackets, fullwidth letters or invisible characters in
+between, so text a session or person wrote can never pass for a relay line. The board's secret guard has run over it already,
+and ticket text stays hidden (decision Q3), as on `/api/v1`.
+
+**Errors.** The board refusing the client (401, `key_wrong_env`, a listener or Access refusal, a
+redirect, a non-JSON 401/403 from Access): JSON-RPC error `-32001` with the board's error code.
+An unreachable board or a non-JSON answer: `-32003`. An unknown resource, or one the board does not
+have: `-32002`. A route's own refusal (`not_found`, `insufficient_scope`, `rate_limited` with its
+wait): a tool result with `isError: true`. Neither the key nor the Access secret appears in any
+answer, error or stderr line.
+
+**No authority.** There is no tool to answer a decision, press a prompt, set away, vote, pass a
+gate or manage keys, and none will be added (decision Q1). Write tools (`send_message`,
+`create_task`, `set_task_stage`, ticket tools) come with the `/api/v1` write routes; ticket tools
+only once `/api/v1` has ticket routes.
 
 ## Secret guardrails
 

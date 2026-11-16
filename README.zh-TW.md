@@ -1173,7 +1173,7 @@ Artifact 頁面無法提供同層的檔案，所以只有以 `data:` URI 內嵌�
 
 ### API 金鑰
 
-API 金鑰給呼叫看板 `/api/v1`（見下節；MCP server 之後才有）的腳本與服務使用。用 `board apikey`
+API 金鑰給呼叫看板 `/api/v1`（見下節）以及它的 MCP server（見「連接 MCP client」）的腳本與服務使用。用 `board apikey`
 管理；金鑰頁面在之後的改動才會加上。規則如下（細節見 `docs/contract.md` 的 "API keys"）：
 
 - **金鑰屬於一個人**（`--owner`，email 或 `local`）。這只是標明歸屬，不代表任何權限：金鑰不能回答
@@ -1222,6 +1222,63 @@ curl -s -H "Authorization: Bearer $BOARD_API_KEY" "http://127.0.0.1:39410/api/v1
 curl -s -H "CF-Access-Client-Id: $CF_ID" -H "CF-Access-Client-Secret: $CF_SECRET" \
      -H "Authorization: Bearer $BOARD_API_KEY" https://board.example.com/api/v1/whoami
 ```
+
+<a id="connect-an-mcp-client"></a>
+
+### 連接 MCP client
+
+看板本身也是一個 MCP server，Claude Code、Claude Desktop 或任何 MCP client 都能用 API 金鑰讀取它：
+工具有 `board_state`、`list_sessions`、`list_decisions`、`get_decision`、`list_tasks`、`get_task`、
+`get_message`，資源有 `board://state`、`board://decisions/{id}`、`board://tasks/{id}`、
+`board://openapi`。client 只看得到金鑰 scope 允許的工具。它是唯讀的，而且和所有金鑰一樣永遠不能回答
+決策；看板文字裡的 `[BOARD` 會變成 `(BOARD` 送出。兩種傳輸方式共用一張工具表（`lib/mcp_tools.py`；
+細節見 `docs/contract.md` 的 "MCP"）：
+
+- **stdio**：本 repo clone 裡的 `bin/board-mcp`，是 `/api/v1` 的精簡 client。環境變數：
+  `BOARD_API_KEY`（必填，本機也要）、`BOARD_API_URL`（預設 `http://127.0.0.1:39410`；非 loopback
+  一律要 https），看板在 Cloudflare Access 後面時再加 `CF_ACCESS_CLIENT_ID` + `CF_ACCESS_CLIENT_SECRET`。
+- **HTTP**：board-serve 上的 `POST /mcp`，用同一把金鑰、和 `/api/v1` 相同的規則。不需要 clone。
+
+Claude Code，在看板所在的機器上（金鑰從環境變數取得；不要把它貼進會 commit 的檔案）：
+
+```bash
+claude mcp add board -e BOARD_API_KEY="$BOARD_API_KEY" -- "$SWITCHBOARD_DIR/bin/board-mcp"
+# or over HTTP:
+claude mcp add --transport http board http://127.0.0.1:39410/mcp \
+  --header "Authorization: Bearer $BOARD_API_KEY"
+```
+
+從另一台機器、經過 Cloudflare Access（方案 A：一個列在 `serve.tunnel.api_service_tokens` 的 Access
+service token，再加上金鑰）：
+
+```bash
+claude mcp add --transport http board https://board.example.com/mcp \
+  --header "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" \
+  --header "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET" \
+  --header "Authorization: Bearer $BOARD_API_KEY"
+```
+
+Claude Desktop（`claude_desktop_config.json`，stdio；把每個 `<...>` 換成自己的值，本機看板就拿掉兩行
+`CF_ACCESS_*`）：
+
+```json
+{
+  "mcpServers": {
+    "board": {
+      "command": "<path to the clone>/bin/board-mcp",
+      "env": {
+        "BOARD_API_URL": "https://board.example.com",
+        "BOARD_API_KEY": "<BOARD_API_KEY>",
+        "CF_ACCESS_CLIENT_ID": "<CF_ACCESS_CLIENT_ID>",
+        "CF_ACCESS_CLIENT_SECRET": "<CF_ACCESS_CLIENT_SECRET>"
+      }
+    }
+  }
+}
+```
+
+沒有金鑰時 `board-mcp` 會立刻停下並在 stderr 說明；金鑰被拒絕時回傳 MCP 錯誤（`-32001`），附上看板給的
+原因。金鑰和 Access secret 都不會被印出來。
 
 ## 機密與去識別化
 
@@ -1279,6 +1336,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `docs/assets/screenshots/` | README 和 Pages 網站用的截圖（`scripts/screenshots.py`） |
 | `.gitleaks.toml` | gitleaks 預設規則、一條針對看板 API 金鑰的規則，加上針對測試 fixture 的小範圍允許清單 |
 | `lib/serve_api.py`、`lib/api_spec.py` | 唯讀公開 API `/api/v1`：金鑰、scope 與速率檢查，tunnel 的 service token 規則，以及產生 `openapi.json` 的路由表 |
+| `bin/board-mcp`、`lib/mcp_tools.py` | MCP server：一張唯讀工具表，透過 stdio（`board-mcp`，`/api/v1` 的 client）和 board-serve 上的 `POST /mcp` 提供 |
 | `lib/apikeys.py` | API 金鑰：金鑰儲存（加 pepper 的雜湊，0600）、誰能發放／核准／輪替／撤銷，以及 `/api/v1` 之後會用的驗證（`board apikey`） |
 | `lib/away.py` | 為 snapshot 和 `board-serve` 讀取 owner-away 模式與共識項目 |
 | `lib/tickets/` | 工單：追蹤系統 provider（`http-json`、`fake`）、依 key 路由、快取、速率限制、防 SSRF 的 HTTP 用戶端；`board ticket get\|doctor` |
@@ -1287,7 +1345,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `lib/pomodoro.py` | 番茄鐘計時與每日統計（`pomodoro.json`），供看板和 `board pomodoro` 使用 |
 | `lib/resources.py` | 資源取樣器（記憶體、磁碟、OOM、每個 session 的程序與 teammate），產生 `resources.json`、snapshot 摘要和 `board resources` |
 | `docs/design/` | 設計文件，例如 `resources-and-scheduling.md`（資源、排程器、經驗） |
-| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`）、資源取樣器（`test_resources.py`，fixture `/proc`）、機密防護（`test_guard.py`）、API 金鑰（`test_apikeys.py`）、公開 API 與 tunnel 曝露（`test_api_v1.py`）、提問者（`test_askers.py`）、各角色能做什麼（`test_roles.py`）、誰看得到誰的 email（`test_pii.py`）、卡片補充資訊（`test_cards.py`）、Remote Control（`test_rc.py`，用 `fake_tmux.py` 模擬 tmux 畫面）、番茄鐘計時（`test_pomodoro.py`），以及選用的頁面告警連結、通知控制、個人選單與主題、主畫面 app、session 卡片、用量提示框、頁首提示框、語言切換、按鍵面板與番茄鐘 headless 檢查（`test_page_links.py`、`test_page_notify.py`、`test_page_profile.py`、`test_page_pwa.py`、`test_page_cards.py`、`test_page_guard.py`（被攔下的訊息卡片）、`test_page_askers.py`（提問者的訊息輸入框）、`test_page_roles.py`（各角色看到的控制項）、`test_page_usage.py`、`test_page_header_tips.py`、`test_page_i18n.py`、`test_page_deck.py`、`test_page_rc.py`（Remote Control 標籤與開關）、`test_page_pomodoro.py`，以及截圖和 Pages 網站的 `test_site.py`：需要 python playwright，沒有就略過；CI 不執行） |
+| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`）、資源取樣器（`test_resources.py`，fixture `/proc`）、機密防護（`test_guard.py`）、API 金鑰（`test_apikeys.py`）、公開 API 與 tunnel 曝露（`test_api_v1.py`）、MCP server（`test_mcp.py`）、提問者（`test_askers.py`）、各角色能做什麼（`test_roles.py`）、誰看得到誰的 email（`test_pii.py`）、卡片補充資訊（`test_cards.py`）、Remote Control（`test_rc.py`，用 `fake_tmux.py` 模擬 tmux 畫面）、番茄鐘計時（`test_pomodoro.py`），以及選用的頁面告警連結、通知控制、個人選單與主題、主畫面 app、session 卡片、用量提示框、頁首提示框、語言切換、按鍵面板與番茄鐘 headless 檢查（`test_page_links.py`、`test_page_notify.py`、`test_page_profile.py`、`test_page_pwa.py`、`test_page_cards.py`、`test_page_guard.py`（被攔下的訊息卡片）、`test_page_askers.py`（提問者的訊息輸入框）、`test_page_roles.py`（各角色看到的控制項）、`test_page_usage.py`、`test_page_header_tips.py`、`test_page_i18n.py`、`test_page_deck.py`、`test_page_rc.py`（Remote Control 標籤與開關）、`test_page_pomodoro.py`，以及截圖和 Pages 網站的 `test_site.py`：需要 python playwright，沒有就略過；CI 不執行） |
 | `CONTRIBUTING.md` | 開發環境設定、測試，以及讓 `README.zh-TW.md` 保持同步的規則 |
 | `fleet.example.yaml`、`.env.example` | 設定範例 |
 

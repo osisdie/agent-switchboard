@@ -23,6 +23,10 @@ Order of checks, for every request (after board-serve's framing rules):
   5. the handler. No response ever carries an Access-Control-* header (no CORS).
 Audited in events.jsonl as type "api": every refusal at step 4, and each (key, route) success at
 most once a minute. Never a key.
+
+POST /mcp (handle_mcp) is the MCP server's HTTP transport (lib/mcp_tools.py): the same steps 0-4 for
+the key, then each tool call runs as its /api/v1 route here: grant() (scope, rate, audit with
+"mcp": true) and the route's own Api handler.
 """
 import glob
 import json
@@ -128,15 +132,7 @@ def handle(h, S):
     """Serve one /api/v1 request on handler h (S: the serve module, for its helpers)."""
     via = "tunnel" if h.server.kind == "tunnel" else "local"
     try:
-        if (h.headers.get("Sec-Fetch-Site") or "").strip().lower() in ("cross-site", "same-site"):
-            raise ApiError(403, "cross_site", "the API is not for cross-site browser requests")
-        try:
-            origins = h.check_host()
-        except S.Refused as exc:
-            raise ApiError(exc.status, exc.error, exc.detail) from None
-        origin = h.headers.get("Origin")
-        if origin is not None and origin.strip().lower() not in origins:
-            raise ApiError(403, "cross_site", "a foreign Origin; the API is not for cross-site browser requests")
+        _browser_checks(h, S)
         if h.command not in ("GET", "HEAD"):
             raise ApiError(405, "method_not_allowed", "the API is read-only", {"Allow": "GET, HEAD"})
         cfg = fleet.load_fleet()
@@ -267,10 +263,22 @@ def authenticate(h, st, route, via, client):
         if reason == "wrong_env":
             fail(403, "key_wrong_env", "a test key works only on the mock board", reason)
         fail(401, "invalid_key", "the key is not valid", reason)
+    grant(h, rec, route, via, client, now)
+    rec["_key"] = key  # for the SSE stream's re-check; never written or logged
+    rec["_ttl"] = st["request_ttl_ms"]
+    return rec
+
+
+def grant(h, rec, route, via, client, now, mcp=False):
+    """A verified key on a route: its scope (403 insufficient_scope, audited), its rate (429), and
+    the success audit (at most once a minute per key and route). /mcp runs every tool call through
+    this too (mcp=True: audited with "mcp": true)."""
     who = {"key_id": rec["id"], "owner": rec.get("owner"), "name": rec.get("name"), "route": route["path"],
            "via": via, "client": client}
+    if mcp:
+        who["mcp"] = True
     scope = route["scope"]
-    if scope is not None and scope not in (rec.get("scopes") or []):
+    if scope not in (None, "public") and scope not in (rec.get("scopes") or []):
         _audit(h, dict(who, action=route["handler"], result=403, reason="insufficient_scope"))
         raise ApiError(403, "insufficient_scope", "this route needs the %s scope" % scope)
     rate = rec.get("rate_per_min") if isinstance(rec.get("rate_per_min"), int) else apikeys.DEFAULT_RATE
@@ -278,16 +286,143 @@ def authenticate(h, st, route, via, client):
     if not ok:
         raise ApiError(429, "rate_limited", "over %d requests a minute" % rate, {"Retry-After": str(wait)})
     apikeys.mark_used(rec["id"], h.server.home)
+    mark = (rec["id"], route["handler"], mcp)
     with _lock:
-        last = _audited.get((rec["id"], route["handler"]))
+        last = _audited.get(mark)
         due = last is None or now - last >= AUDIT_EVERY_S
         if due:
-            _audited[(rec["id"], route["handler"])] = now
+            _audited[mark] = now
     if due:
         _audit(h, dict(who, action=route["handler"], result=200))
-    rec["_key"] = key  # for the SSE stream's re-check; never written or logged
-    rec["_ttl"] = st["request_ttl_ms"]
-    return rec
+
+
+# ------------------------------------------------------------------ MCP (POST /mcp)
+MCP_PATH = "/mcp"
+MCP_ROUTE = {"path": MCP_PATH, "scope": None, "handler": "mcp"}
+
+
+def is_mcp(raw_path):
+    return urllib.parse.urlsplit(raw_path).path == MCP_PATH
+
+
+def _browser_checks(h, S):
+    """Step 0 and the Host allowlist, as for /api/v1: no cross-site browser request."""
+    if (h.headers.get("Sec-Fetch-Site") or "").strip().lower() in ("cross-site", "same-site"):
+        raise ApiError(403, "cross_site", "the API is not for cross-site browser requests")
+    try:
+        origins = h.check_host()
+    except S.Refused as exc:
+        raise ApiError(exc.status, exc.error, exc.detail) from None
+    origin = h.headers.get("Origin")
+    if origin is not None and origin.strip().lower() not in origins:
+        raise ApiError(403, "cross_site", "a foreign Origin; the API is not for cross-site browser requests")
+
+
+class _Capture:
+    """The request handler as an Api handler sees it, but send_json keeps the answer instead of
+    writing it: /mcp calls the very /api/v1 handlers in process."""
+
+    def __init__(self, h):
+        self._h, self.out = h, None
+
+    def __getattr__(self, name):
+        return getattr(self._h, name)
+
+    def send_json(self, status, obj, extra=None):
+        self.out = (status, obj)
+
+
+class _McpBackend:
+    """mcp_tools' backend inside board-serve: each call is the /api/v1 route itself (match, query,
+    scope, rate, audit, handler), for the key that authenticated this /mcp request."""
+
+    def __init__(self, h, S, rec, via, client):
+        self.h, self.S, self.rec, self.via, self.client = h, S, rec, via, client
+
+    def scopes(self):
+        return list(self.rec.get("scopes") or [])
+
+    def get(self, path):
+        split = urllib.parse.urlsplit(path)
+        try:
+            route, params = match(split.path)
+            if route["method"] != "GET" or route["handler"] == "events":
+                raise ApiError(404, "not_found")
+            query = parse_query(route, split.query)
+            grant(self.h, self.rec, route, self.via, self.client, time.monotonic(), mcp=True)
+            cap = _Capture(self.h)
+            getattr(Api(cap, self.S, self.rec, params, query, self.via), route["handler"])()
+            return cap.out or (500, {"error": "internal"})
+        except ApiError as exc:
+            detail = exc.detail
+            if exc.headers.get("Retry-After"):
+                detail = "%s (retry after %s s)" % (detail, exc.headers["Retry-After"])
+            return exc.status, {"error": exc.error, "detail": detail}
+
+
+def _read_mcp_body(h, S):
+    try:
+        n = int(h.headers.get("Content-Length") or "-1")
+    except ValueError:
+        n = -1
+    if n < 0:
+        raise ApiError(411, "length_required", "Content-Length required")
+    if n > S.MAX_BODY:
+        raise ApiError(413, "too_large", "body over %d bytes" % S.MAX_BODY)
+    raw = h.rfile.read(n)
+    h.body_read = True
+    return raw
+
+
+def handle_mcp(h, S):
+    """POST /mcp: MCP Streamable HTTP, JSON responses only (no SSE stream, no session id). The same
+    checks as /api/v1, in the same order, then the key (any valid key: each tool call is checked
+    against its own route's scope), then the JSON-RPC body (application/json, at most 16 KiB)."""
+    import mcp_tools   # here: board-serve needs it only when /mcp is used
+    via = "tunnel" if h.server.kind == "tunnel" else "local"
+    try:
+        _browser_checks(h, S)
+        if h.command != "POST":
+            raise ApiError(405, "method_not_allowed", "MCP over HTTP: POST JSON-RPC (no SSE stream)",
+                           {"Allow": "POST"})
+        if (h.headers.get("Content-Type") or "").split(";")[0].strip().lower() != "application/json":
+            raise ApiError(415, "json_only", "Content-Type must be application/json")
+        pv = h.headers.get("MCP-Protocol-Version")
+        if pv is not None and pv.strip() not in mcp_tools.PROTOCOL_VERSIONS:
+            raise ApiError(400, "bad_protocol_version", "MCP-Protocol-Version: one of %s"
+                           % ", ".join(mcp_tools.PROTOCOL_VERSIONS))
+        cfg = fleet.load_fleet()
+        st = api_settings(cfg)
+        if not st["enabled"]:
+            raise ApiError(404, "not_found", "the API is off (serve.api.enabled)")
+        client = listener_check(h, S, cfg, st)
+        if urllib.parse.urlsplit(h.path).query:
+            raise ApiError(400, "bad_request", "query: none accepted")
+        rec = authenticate(h, st, MCP_ROUTE, via, client)
+        raw = _read_mcp_body(h, S)
+        out = mcp_tools.Server(_McpBackend(h, S, rec, via, client)).handle_raw(raw)
+        if out is None:
+            h.send_response(202)
+            h.send_header("Content-Length", "0")
+            h.common_headers()
+            h.end_headers()
+            return None
+        data = out.encode("utf-8")
+        h.send_response(200)
+        h.send_header("Content-Type", "application/json; charset=utf-8")
+        h.send_header("Content-Length", str(len(data)))
+        h.common_headers()
+        h.end_headers()
+        if h.command != "HEAD":
+            h.wfile.write(data)
+        return None
+    except ApiError as exc:
+        if h.command == "POST" and not getattr(h, "body_read", False):
+            h.drain_body()
+        return h.send_json(exc.status, {"error": exc.error, "detail": exc.detail}, dict(exc.headers))
+    except Exception as exc:  # noqa: BLE001 - answer with JSON, never drop the connection
+        S.log("%s /mcp failed: %r" % (h.command, exc))
+        return h.send_json(500, {"error": "internal"})
 
 
 # ------------------------------------------------------------------ handlers

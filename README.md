@@ -1308,9 +1308,9 @@ never values.
 
 ### API keys
 
-API keys are for scripts and services that call the board's `/api/v1` (below; an MCP server comes
-later). `board apikey` manages them; the key page comes in a later change. The rules (details in
-`docs/contract.md`, "API keys"):
+API keys are for scripts and services that call the board's `/api/v1` (below) and its MCP server
+("Connect an MCP client"). `board apikey` manages them; the key page comes in a later change. The
+rules (details in `docs/contract.md`, "API keys"):
 
 - **A key belongs to a person** (`--owner`, an email or `local`). That is attribution, never
   authority: no key answers a decision, presses a prompt, sets owner-away, votes, passes a
@@ -1360,6 +1360,64 @@ curl -s -H "Authorization: Bearer $BOARD_API_KEY" "http://127.0.0.1:39410/api/v1
 curl -s -H "CF-Access-Client-Id: $CF_ID" -H "CF-Access-Client-Secret: $CF_SECRET" \
      -H "Authorization: Bearer $BOARD_API_KEY" https://board.example.com/api/v1/whoami
 ```
+
+### Connect an MCP client
+
+The board is also an MCP server, so Claude Code, Claude Desktop or any MCP client can read it with
+an API key: tools `board_state`, `list_sessions`, `list_decisions`, `get_decision`, `list_tasks`,
+`get_task`, `get_message`, and resources `board://state`, `board://decisions/{id}`,
+`board://tasks/{id}`, `board://openapi`. A client sees only the tools its key's scopes allow. It is
+read-only, and like every key it can never answer a decision; `[BOARD` in board text arrives as
+`(BOARD`. Two transports, one tool table (`lib/mcp_tools.py`; details in `docs/contract.md`, "MCP"):
+
+- **stdio**: `bin/board-mcp` from a clone of this repo, a thin client of `/api/v1`. Env:
+  `BOARD_API_KEY` (required, even locally), `BOARD_API_URL` (default `http://127.0.0.1:39410`;
+  https for anything but loopback) and, for a board behind Cloudflare Access,
+  `CF_ACCESS_CLIENT_ID` + `CF_ACCESS_CLIENT_SECRET`.
+- **HTTP**: `POST /mcp` on board-serve, with the same key and the same rules as `/api/v1`. No
+  clone needed.
+
+Claude Code, on the board's machine (the key comes from your environment; never paste it into a
+file you commit):
+
+```bash
+claude mcp add board -e BOARD_API_KEY="$BOARD_API_KEY" -- "$SWITCHBOARD_DIR/bin/board-mcp"
+# or over HTTP:
+claude mcp add --transport http board http://127.0.0.1:39410/mcp \
+  --header "Authorization: Bearer $BOARD_API_KEY"
+```
+
+From another machine, through Cloudflare Access (option A: an Access service token listed in
+`serve.tunnel.api_service_tokens`, plus the key):
+
+```bash
+claude mcp add --transport http board https://board.example.com/mcp \
+  --header "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" \
+  --header "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET" \
+  --header "Authorization: Bearer $BOARD_API_KEY"
+```
+
+Claude Desktop (`claude_desktop_config.json`, stdio; replace each `<...>` with your own value, and
+drop the two `CF_ACCESS_*` lines for a local board):
+
+```json
+{
+  "mcpServers": {
+    "board": {
+      "command": "<path to the clone>/bin/board-mcp",
+      "env": {
+        "BOARD_API_URL": "https://board.example.com",
+        "BOARD_API_KEY": "<BOARD_API_KEY>",
+        "CF_ACCESS_CLIENT_ID": "<CF_ACCESS_CLIENT_ID>",
+        "CF_ACCESS_CLIENT_SECRET": "<CF_ACCESS_CLIENT_SECRET>"
+      }
+    }
+  }
+}
+```
+
+A missing key stops `board-mcp` at once with a message on stderr; a refused key is an MCP error
+(`-32001`) naming the board's reason. Neither the key nor the Access secret is ever printed.
 
 ## Secrets & sanitization
 
@@ -1419,6 +1477,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `docs/assets/screenshots/` | Screenshots for the README and the Pages site (`scripts/screenshots.py`) |
 | `.gitleaks.toml` | gitleaks default rules, a rule for board API keys, and a narrow allowlist for test fixtures |
 | `lib/serve_api.py`, `lib/api_spec.py` | The public read-only API `/api/v1`: key, scope and rate checks, the tunnel's service-token rule, and the route table that `openapi.json` is generated from |
+| `bin/board-mcp`, `lib/mcp_tools.py` | The MCP server: one read-only tool table over stdio (`board-mcp`, a client of `/api/v1`) and `POST /mcp` on board-serve |
 | `lib/apikeys.py` | API keys: the store (peppered hashes, 0600), who may issue, approve, rotate and revoke them, and the check `/api/v1` will use (`board apikey`) |
 | `lib/away.py` | Reads owner-away mode and consensus items for the snapshot and `board-serve` |
 | `lib/tickets/` | Tickets: tracker providers (`http-json`, `fake`), routing by key, cache, rate limits, the SSRF-safe HTTP client; `board ticket get\|doctor` |
@@ -1427,7 +1486,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `lib/pomodoro.py` | Pomodoro timer and daily tallies (`pomodoro.json`) for the board and `board pomodoro` |
 | `lib/resources.py` | Resources sampler (memory, disks, OOM, per-session processes and teammates) for `resources.json`, the snapshot digest and `board resources` |
 | `docs/design/` | Design notes, e.g. `resources-and-scheduling.md` (resources, scheduler, lessons) |
-| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), the resources sampler (`test_resources.py`, fixture `/proc`), the secret guardrails (`test_guard.py`), API keys (`test_apikeys.py`), the public API and its tunnel exposure (`test_api_v1.py`), askers (`test_askers.py`), who may do what per role (`test_roles.py`), who sees whose email (`test_pii.py`), the card extras (`test_cards.py`), Remote Control (`test_rc.py`, scripted tmux in `fake_tmux.py`), the pomodoro timer (`test_pomodoro.py`), and the optional headless checks of the page's alert links, notifications control, profile menu and theme, home-screen app, session cards, usage popover, header popovers, language toggle, Deck panel and pomodoro (`test_page_links.py`, `test_page_notify.py`, `test_page_profile.py`, `test_page_pwa.py`, `test_page_cards.py`, `test_page_guard.py` (held-message cards), `test_page_askers.py` (the asker's composer), `test_page_roles.py` (controls per role), `test_page_usage.py`, `test_page_header_tips.py`, `test_page_i18n.py`, `test_page_deck.py`, `test_page_rc.py` (Remote Control chip and switches), `test_page_pomodoro.py`, plus `test_site.py` for the screenshots and the Pages site: need python playwright, skip without it; not run in CI) |
+| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), the resources sampler (`test_resources.py`, fixture `/proc`), the secret guardrails (`test_guard.py`), API keys (`test_apikeys.py`), the public API and its tunnel exposure (`test_api_v1.py`), the MCP server (`test_mcp.py`), askers (`test_askers.py`), who may do what per role (`test_roles.py`), who sees whose email (`test_pii.py`), the card extras (`test_cards.py`), Remote Control (`test_rc.py`, scripted tmux in `fake_tmux.py`), the pomodoro timer (`test_pomodoro.py`), and the optional headless checks of the page's alert links, notifications control, profile menu and theme, home-screen app, session cards, usage popover, header popovers, language toggle, Deck panel and pomodoro (`test_page_links.py`, `test_page_notify.py`, `test_page_profile.py`, `test_page_pwa.py`, `test_page_cards.py`, `test_page_guard.py` (held-message cards), `test_page_askers.py` (the asker's composer), `test_page_roles.py` (controls per role), `test_page_usage.py`, `test_page_header_tips.py`, `test_page_i18n.py`, `test_page_deck.py`, `test_page_rc.py` (Remote Control chip and switches), `test_page_pomodoro.py`, plus `test_site.py` for the screenshots and the Pages site: need python playwright, skip without it; not run in CI) |
 | `CONTRIBUTING.md` | Dev setup, tests, and the rule for keeping `README.zh-TW.md` in sync |
 | `fleet.example.yaml`, `.env.example` | Example config |
 
