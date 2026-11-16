@@ -791,13 +791,32 @@ class EndToEnd(unittest.TestCase):
         r = board("guard", "screen", HELD_TEXT)
         self.assertEqual(r.returncode, 1)
 
+    def test_05b_desktop_kill_switch_beats_explicit_env(self):
+        """ALERT_DESKTOP=0 in the process environment wins over an explicit env dict, so a test or
+        probe can never pop a real desktop toast on a machine that has powershell.exe/notify-send."""
+        import notify
+        self.assertEqual(os.environ.get("ALERT_DESKTOP"), "0")
+        # Pretend a desktop notifier exists (CI runners have none), so this fails if the guard goes.
+        orig_which = notify.shutil.which
+        notify.shutil.which = lambda name, *a, **k: "/fake/bin/" + name
+        try:
+            del os.environ["ALERT_DESKTOP"]
+            try:
+                self.assertTrue(notify.enabled("desktop", {"ALERT_DESKTOP": "1"}))
+            finally:
+                os.environ["ALERT_DESKTOP"] = "0"
+            self.assertFalse(notify.enabled("desktop", {}))
+            self.assertFalse(notify.enabled("desktop", {"ALERT_DESKTOP": "1"}))
+        finally:
+            notify.shutil.which = orig_which
+
     def test_06_alerts_and_mirror_views(self):
         import notify
         sent = []
         orig = notify.http_post
         notify.http_post = lambda url, payload, headers=None: (sent.append(json.dumps(payload)) or (True, None))
         try:
-            env = {"ALERT_WEBHOOK_URL": "https://hooks.example.invalid/x"}
+            env = {"ALERT_WEBHOOK_URL": "https://hooks.example.invalid/x", "ALERT_DESKTOP": "0"}
             r = notify.send("urgent", "test:guard", "token %s" % SENTINEL, "pw %s\nkey %s" % (SENTINEL_PW, SENTINEL_URL),
                             env=env)
         finally:
