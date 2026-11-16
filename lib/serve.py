@@ -18,7 +18,11 @@ listeners (docs/contract.md, "Local adapter API"):
   GET  /api/state                      the board state (sessions, decisions, tasks, resources,
                                        pomodoro, ...)
   GET  /api/events                     Server-Sent Events: the full state on every change
-  GET  /api/me                         who is asking: identity, how it was verified, roles
+  GET  /api/me                         who is asking: identity, how it was verified, roles, and
+                                       the API keys issued to them (never a key or a hash)
+  GET  /dev, /dev/keys                 the developer portal (artifact/dev.html) and its key page;
+       /api/dev, /api/apikeys          GET /api/apikeys and POST /api/apikeys[/<kid>] run `board
+                                       apikey ... --by board:<identity>` (lib/serve_dev.py)
   GET  /icon.svg, /favicon.png, /favicon.ico, /apple-touch-icon.png, /icons/icon-{192,512}.png,
        /manifest.webmanifest           icons and the web app manifest (fixed list, same checks)
   POST /api/decisions/<id>/answer      {"answer": "..."}   (via `board answer` / `board press`)
@@ -116,6 +120,7 @@ import reminders  # noqa: E402
 import resources  # noqa: E402
 import pii  # noqa: E402
 import serve_api  # noqa: E402
+import serve_dev  # noqa: E402
 
 _SELF = sys.modules[__name__]   # handed to serve_api for its helpers (no second import of this file)
 import tickets  # noqa: E402
@@ -368,6 +373,22 @@ def self_release_refused(rec, ident, approvers):
     who = str(ident or "").strip().lower()
     return (len(approvers) > 1 and who != "local"
             and str(rec.get("by") or "").strip().lower() == who)
+
+
+def own_keys(home, ident, cfg):
+    """The API keys issued to one identity, for GET /api/me (the profile menu): id, name, scopes,
+    times and status only. Never a key, never a hash, never anyone else's key."""
+    import apikeys
+    who, now = str(ident or "").strip().lower(), now_ms()
+    ttl = apikeys.request_ttl_ms(cfg)
+    rows = []
+    for rec in apikeys.load_all(home):
+        if str(rec.get("owner") or "").strip().lower() != who or rec.get("kind", "live") != "live":
+            continue
+        v = apikeys.view(rec, now, ttl)
+        rows.append({k: v[k] for k in ("id", "name", "scopes", "created_at", "expires_at", "last_used_at", "status")})
+    rows.sort(key=lambda r: (-(r.get("created_at") or 0), r["id"]))
+    return rows[:50]
 
 
 def tunnel_allowed(cfg):
@@ -1187,7 +1208,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         try:
             self.check_host()
             path = urllib.parse.urlsplit(self.path).path
-            if TICKET_GET_RE.fullmatch(path) or path == "/api/reminders" or path == "/api/messages":
+            if TICKET_GET_RE.fullmatch(path) or path == "/api/reminders" or path == "/api/messages" \
+                    or serve_dev.fetch_checked(path):
                 self.check_fetch()   # before identity, audit or any tracker call
             ident, via = self.identity()
         except Refused as exc:
@@ -1220,6 +1242,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         m = TICKET_GET_RE.fullmatch(path)
         if m:
             return self.ticket_get(m.group(1), ident, via)
+        if serve_dev.is_get(path):          # the developer portal and its key routes
+            return serve_dev.get(self, _SELF, path, ident, via)
         if path in STATIC:
             return self.static(*STATIC[path])
         return self.send_json(404, {"error": "not_found"})
@@ -1458,12 +1482,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def me_for(self, ident, via):
         """GET /api/me: built only from the verified identity and fleet.yaml, never from request
-        headers. api_keys is added by the key backend once it exists (docs/contract.md)."""
+        headers. api_keys: the keys issued to this identity, newest first (never a key or a hash)."""
         cfg = fleet.load_fleet()
         me = {"identity": ident, "via": "access" if via == "cf-jwt" else "local"}
         me.update(roles_of(cfg, ident))
         # Whether this identity has reminders (the owner): the page asks /api/reminders only then.
         me["reminders"] = reminders.owner_of(ident, cfg) is not None
+        me["api_keys"] = own_keys(self.server.home, ident, cfg)
         return me
 
     def static(self, name, ctype):
@@ -1540,6 +1565,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             ident, via = self.identity()
             self.check_csrf(origins)
             path = urllib.parse.urlsplit(self.path).path
+            if serve_dev.is_post(path):     # API keys from the portal: `board apikey --by board:<ident>`
+                return serve_dev.post(self, _SELF, path, ident, via)
             m = re.fullmatch(r"/api/decisions/([^/]+)/answer", path)
             if m:
                 body = self.read_body()

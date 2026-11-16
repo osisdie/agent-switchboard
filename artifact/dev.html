@@ -1,0 +1,613 @@
+<meta charset="utf-8"><!-- first, so a page opened from disk (file://) never falls back to windows-1252 -->
+<title>Agent Switchboard · Developers</title>
+<script>
+/* Theme before first paint: the board's own choice (switchboard.theme), else the system's. */
+(() => {
+  let own = null;
+  try { own = localStorage.getItem('switchboard.theme'); } catch (e) { /* storage blocked */ }
+  if (own === 'light' || own === 'dark') document.documentElement.setAttribute('data-theme', own);
+})();
+</script>
+<style>
+/* The developer portal (/dev) and its key page (/dev/keys), served by board-serve (lib/serve_dev.py). */
+:root {
+  color-scheme: light;
+  --paper: #edf0f4; --panel: #fbfcfd; --ink: #16202c; --muted: #586477; --rule: #d3d9e2;
+  --cord: #1d5bb8; --cord-ink: #ffffff; --cord-soft: #e2ebf9;
+  --lamp: #a96400; --lamp-soft: #fff0d3; --ok: #2a7548; --ok-soft: #e0f1e6;
+  --off: #737d8c; --off-soft: #e5e8ed; --deny: #b42318; --deny-soft: #fde6e3;
+  --code-bg: #f3f5f8;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --r: 6px;
+  --gutter-l: max(16px, env(safe-area-inset-left, 0px));
+  --gutter-r: max(16px, env(safe-area-inset-right, 0px));
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --paper: #0f141a; --panel: #161d25; --ink: #e5eaf1; --muted: #98a4b5; --rule: #2a3440;
+    --cord: #7aa9ff; --cord-ink: #0b1220; --cord-soft: #1a2940;
+    --lamp: #ffb84a; --lamp-soft: #33250f; --ok: #63cf8d; --ok-soft: #14301f;
+    --off: #8b95a4; --off-soft: #222a34; --deny: #ff8f82; --deny-soft: #3b1a17; --code-bg: #10161d;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --paper: #0f141a; --panel: #161d25; --ink: #e5eaf1; --muted: #98a4b5; --rule: #2a3440;
+  --cord: #7aa9ff; --cord-ink: #0b1220; --cord-soft: #1a2940;
+  --lamp: #ffb84a; --lamp-soft: #33250f; --ok: #63cf8d; --ok-soft: #14301f;
+  --off: #8b95a4; --off-soft: #222a34; --deny: #ff8f82; --deny-soft: #3b1a17; --code-bg: #10161d;
+}
+* { box-sizing: border-box; }
+html { scroll-padding-top: calc(env(safe-area-inset-top, 0px) + 64px); }
+body { background: var(--paper); color: var(--ink); font-family: var(--f-body); font-size: 15px; line-height: 1.5;
+  padding-left: var(--gutter-l); padding-right: var(--gutter-r); padding-block: 0 48px; }
+a { color: var(--cord); }
+code, pre, kbd { font-family: var(--f-mono); font-size: 13px; }
+:focus-visible { outline: 2px solid var(--cord); outline-offset: 2px; }
+.top { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--paper);
+  border-bottom: 1px solid var(--rule); display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px;
+  padding-block: 10px; margin-inline: calc(-1 * var(--gutter-l)) calc(-1 * var(--gutter-r));
+  padding-left: var(--gutter-l); padding-right: var(--gutter-r); }
+.top h1 { font-size: 17px; margin: 0; letter-spacing: .01em; }
+.top nav { display: flex; flex-wrap: wrap; gap: 4px; }
+.top nav a { text-decoration: none; padding: 4px 10px; border-radius: 999px; color: var(--ink); border: 1px solid transparent; }
+.top nav a[aria-current="page"] { background: var(--cord); color: var(--cord-ink); }
+.top nav a:not([aria-current="page"]):hover { border-color: var(--rule); }
+.who { margin-left: auto; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 32px; max-width: 1180px; margin: 24px auto 0; }
+.toc { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 72px); align-self: start; font-size: 14px; }
+.toc summary { font-weight: 600; cursor: pointer; list-style: none; }
+.toc summary::-webkit-details-marker { display: none; }
+.toc ol { list-style: none; margin: 8px 0 0; padding: 0; border-left: 2px solid var(--rule); }
+.toc a { display: block; padding: 3px 12px; margin-left: -2px; border-left: 2px solid transparent; color: var(--muted); text-decoration: none; }
+.toc a.on { color: var(--ink); border-left-color: var(--cord); font-weight: 600; }
+main { min-width: 0; }
+section.doc { background: var(--panel); border: 1px solid var(--rule); border-radius: var(--r); padding: 4px 20px 20px; margin-bottom: 20px; }
+section.doc > h2 { font-size: 19px; margin: 16px 0 8px; }
+h3 { font-size: 15px; margin: 18px 0 6px; }
+p.lead { color: var(--muted); margin-top: 0; }
+.note { background: var(--lamp-soft); border-left: 3px solid var(--lamp); padding: 8px 12px; border-radius: 0 var(--r) var(--r) 0; margin: 12px 0; }
+.note.ok { background: var(--ok-soft); border-left-color: var(--ok); }
+.note.bad { background: var(--deny-soft); border-left-color: var(--deny); }
+.snip { margin: 12px 0 16px; }
+.snip-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.snip-head h3 { margin: 0; }
+pre { background: var(--code-bg); border: 1px solid var(--rule); border-radius: var(--r); padding: 10px 12px; margin: 0;
+  overflow-x: auto; white-space: pre; tab-size: 2; }
+.scroll { overflow-x: auto; position: relative; }   /* relative: keeps .vh labels inside the scroller */
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { text-align: left; vertical-align: top; padding: 6px 8px; border-bottom: 1px solid var(--rule); }
+th { font-weight: 600; color: var(--muted); font-size: 12.5px; text-transform: uppercase; letter-spacing: .04em; }
+td code { overflow-wrap: anywhere; }
+button, .btn { font: inherit; font-size: 14px; border: 1px solid var(--rule); background: var(--panel); color: var(--ink);
+  border-radius: var(--r); padding: 5px 12px; cursor: pointer; min-height: 32px; }
+button.primary { background: var(--cord); color: var(--cord-ink); border-color: var(--cord); }
+button.danger { color: var(--deny); border-color: var(--deny); }
+button:disabled { opacity: .55; cursor: not-allowed; }
+button.copy { font-size: 12.5px; padding: 2px 10px; min-height: 28px; }
+.scope-group > h3 { display: flex; align-items: center; gap: 8px; }
+.chip { display: inline-block; font-family: var(--f-mono); font-size: 12px; padding: 1px 8px; border-radius: 999px;
+  background: var(--cord-soft); color: var(--ink); border: 1px solid var(--rule); white-space: nowrap; }
+.chip.public { background: var(--ok-soft); }
+.chip.st-active { background: var(--ok-soft); }
+.chip.st-pending { background: var(--lamp-soft); }
+.chip.st-revoked, .chip.st-expired { background: var(--off-soft); color: var(--muted); }
+details.op { border: 1px solid var(--rule); border-radius: var(--r); margin: 8px 0; background: var(--panel); }
+details.op > summary { cursor: pointer; padding: 8px 10px; display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
+details.op > div { padding: 0 12px 12px; }
+.m { font-family: var(--f-mono); font-size: 12px; font-weight: 600; padding: 1px 6px; border-radius: 4px; background: var(--cord); color: var(--cord-ink); }
+.m.post { background: var(--lamp); color: var(--panel); }
+.path { font-family: var(--f-mono); font-size: 13.5px; overflow-wrap: anywhere; }
+.sum { color: var(--muted); font-size: 14px; flex-basis: 100%; }
+.muted { color: var(--muted); }
+.vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+form.keyform { display: grid; gap: 12px; max-width: 640px; }
+label.f { display: grid; gap: 4px; font-weight: 600; font-size: 14px; }
+label.f span.h { font-weight: 400; color: var(--muted); font-size: 13px; }
+input[type="text"], input[type="email"], select { font: inherit; font-size: 14px; padding: 6px 8px; border: 1px solid var(--rule);
+  border-radius: var(--r); background: var(--panel); color: var(--ink); width: 100%; max-width: 420px; }
+fieldset { border: 1px solid var(--rule); border-radius: var(--r); padding: 8px 12px; margin: 0; }
+legend { font-weight: 600; font-size: 14px; padding: 0 4px; }
+.checks { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.checks label { display: inline-flex; gap: 6px; align-items: center; font-family: var(--f-mono); font-size: 13px; }
+.row-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+tr.sub td { background: var(--code-bg); }
+.status { margin: 8px 0; min-height: 1.5em; }
+.modal { position: fixed; inset: 0; z-index: 20; background: rgb(0 0 0 / .45); display: grid; place-items: center;
+  padding: 16px var(--gutter-r) 16px var(--gutter-l); }
+.modal > div { background: var(--panel); color: var(--ink); border: 1px solid var(--rule); border-radius: var(--r);
+  padding: 16px 20px; width: min(640px, 100%); max-height: 100%; overflow: auto; }
+.modal h2 { margin: 0 0 8px; font-size: 18px; }
+.keybox { display: flex; gap: 8px; align-items: stretch; flex-wrap: wrap; margin: 12px 0; }
+.keybox code { flex: 1 1 280px; min-width: 0; padding: 8px 10px; background: var(--code-bg); border: 1px solid var(--rule);
+  border-radius: var(--r); overflow-wrap: anywhere; user-select: all; }
+@media (max-width: 860px) {
+  .layout { grid-template-columns: minmax(0, 1fr); gap: 12px; margin-top: 12px; }
+  .toc { position: static; background: var(--panel); border: 1px solid var(--rule); border-radius: var(--r); padding: 8px 12px; }
+  .toc summary::after { content: " ▾"; color: var(--muted); }
+  .who { margin-left: 0; flex-basis: 100%; }
+  section.doc { padding: 4px 14px 14px; }
+}
+@media (min-width: 861px) { .toc summary { pointer-events: none; } }
+</style>
+
+<header class="top">
+  <h1>Agent Switchboard · Developers</h1>
+  <nav aria-label="Portal">
+    <a href="/">Board</a>
+    <a href="/dev" id="nav-dev">API &amp; MCP</a>
+    <a href="/dev/keys" id="nav-keys">API keys</a>
+  </nav>
+  <span class="who" id="who"></span>
+</header>
+
+<div class="layout">
+  <details class="toc" id="toc" open>
+    <summary>On this page</summary>
+    <ol id="toc-list"></ol>
+  </details>
+  <main id="main">
+    <p class="note bad" id="load-error" hidden></p>
+
+    <div id="v-dev" hidden>
+      <section class="doc" id="start" aria-labelledby="start-h">
+        <h2 id="start-h">Start here</h2>
+        <p class="lead">The board's public API (<code>/api/v1</code>) and its MCP server (<code>/mcp</code>), for scripts, services and MCP clients. Everything below is generated from this board's live route table.</p>
+        <ol>
+          <li>Get an API key on <a href="/dev/keys">API keys</a>. It is shown once: keep it in an environment variable (<code>BOARD_API_KEY</code>), never in a file you commit.</li>
+          <li id="start-cf" hidden>This board is reached through Cloudflare Access: a client also needs an Access service token (<code>CF_ACCESS_CLIENT_ID</code>, <code>CF_ACCESS_CLIENT_SECRET</code>) listed in <code>serve.tunnel.api_service_tokens</code>, from the board's owner.</li>
+          <li>Connect a client (below), then run the health check.</li>
+        </ol>
+        <p class="note" id="api-off" hidden></p>
+        <p class="muted">A key reads what a board viewer sees and never decides: no route or tool answers a decision, presses a prompt or manages keys.</p>
+      </section>
+
+      <section class="doc" id="connect" aria-labelledby="connect-h">
+        <h2 id="connect-h">Connect</h2>
+        <p class="lead" id="connect-base"></p>
+        <div id="snips"></div>
+      </section>
+
+      <section class="doc" id="health" aria-labelledby="health-h">
+        <h2 id="health-h">Health check</h2>
+        <p class="lead">Four calls: who the key is, MCP <code>initialize</code>, <code>tools/list</code>, and one read tool. Paste into bash with <code>BOARD_API_KEY</code> set; the output is names and codes only.</p>
+        <div id="health-snip"></div>
+      </section>
+
+      <section class="doc" id="reference" aria-labelledby="reference-h">
+        <h2 id="reference-h">API reference</h2>
+        <p class="lead" id="ref-lead">Routes grouped by the scope a key needs. Also as <a href="/api/v1/openapi.json">/api/v1/openapi.json</a> (OpenAPI 3.1).</p>
+        <div id="ref"></div>
+      </section>
+
+      <section class="doc" id="mcp" aria-labelledby="mcp-h">
+        <h2 id="mcp-h">MCP tools</h2>
+        <p class="lead">A client sees only the tools its key's scopes allow. Each call is checked as its <code>/api/v1</code> route.</p>
+        <div class="scroll"><table id="mcp-tools"><thead><tr><th scope="col">Tool</th><th scope="col">Scope</th><th scope="col">Kind</th><th scope="col">Route</th><th scope="col">What it does</th></tr></thead><tbody></tbody></table></div>
+        <h3>Resources</h3>
+        <div class="scroll"><table id="mcp-res"><thead><tr><th scope="col">URI</th><th scope="col">Scope</th><th scope="col">Title</th></tr></thead><tbody></tbody></table></div>
+      </section>
+
+      <section class="doc" id="errors" aria-labelledby="errors-h">
+        <h2 id="errors-h">Troubleshooting</h2>
+        <p class="lead">Errors are JSON: <code>{"error": "&lt;code&gt;", "detail": "…"}</code>. Over MCP, an access error is JSON-RPC error <code>-32001</code> naming the same code; a route's own refusal is a tool result with <code>isError: true</code>.</p>
+        <div class="scroll"><table id="err-table"><thead><tr><th scope="col">Status</th><th scope="col">Code</th><th scope="col">Means</th><th scope="col">Fix</th></tr></thead><tbody></tbody></table></div>
+      </section>
+
+      <section class="doc" id="try" aria-labelledby="try-h">
+        <h2 id="try-h">Try it</h2>
+        <p class="note">Not available yet: a try-it console against a mock board (no live data, a demo key) comes with the board's mock mode. Until then, use the health check above with your own key.</p>
+      </section>
+    </div>
+
+    <div id="v-keys" hidden>
+      <section class="doc" id="mine" aria-labelledby="mine-h">
+        <h2 id="mine-h">API keys</h2>
+        <p class="lead" id="keys-lead"></p>
+        <p class="status" id="keys-status" role="status" aria-live="polite"></p>
+        <div class="scroll"><table id="keys-table"><thead><tr><th scope="col">Name</th><th scope="col" class="col-owner">Owner</th><th scope="col">Scopes</th><th scope="col">Status</th><th scope="col">Created</th><th scope="col">Expires</th><th scope="col">Last used</th><th scope="col"><span class="vh">Actions</span></th></tr></thead><tbody></tbody></table></div>
+        <p class="muted" id="keys-empty" hidden>No keys yet.</p>
+      </section>
+
+      <section class="doc" id="new" aria-labelledby="new-h">
+        <h2 id="new-h">New key</h2>
+        <p class="lead" id="new-lead"></p>
+        <form class="keyform" id="keyform" novalidate>
+          <label class="f">Name <span class="h">A plain label, such as "CI reader" (no secrets).</span>
+            <input type="text" id="k-name" maxlength="60" required autocomplete="off"></label>
+          <label class="f" id="k-owner-l" hidden>Issued to <span class="h" id="k-owner-h"></span>
+            <input type="text" id="k-owner" maxlength="254" autocomplete="off" list="k-listed" spellcheck="false"></label>
+          <datalist id="k-listed"></datalist>
+          <fieldset><legend>Scopes</legend><div class="checks" id="k-scopes"></div></fieldset>
+          <label class="f">Expires <select id="k-exp"><option value="30d">in 30 days</option><option value="90d" selected>in 90 days</option><option value="180d">in 180 days</option><option value="365d">in 365 days</option></select></label>
+          <div><button type="submit" class="primary" id="k-submit">Create key</button></div>
+        </form>
+        <p class="muted">Rotate, change the expiry or change scopes with <code>board apikey rotate|expire|scopes</code> (owners).</p>
+      </section>
+    </div>
+  </main>
+</div>
+
+<div class="modal" id="once" role="dialog" aria-modal="true" aria-labelledby="once-h" hidden>
+  <div>
+    <h2 id="once-h">Your new key</h2>
+    <p id="once-what"></p>
+    <div class="keybox"><code id="once-key"></code><button type="button" class="copy" id="once-copy">Copy</button></div>
+    <p class="note"><strong>Copy it now: it is never shown again.</strong> The board keeps only a hash. Put it in an environment variable, not in a file you commit.</p>
+    <p><button type="button" class="primary" id="once-done">I have copied it</button></p>
+  </div>
+</div>
+
+<script>
+(() => {
+  'use strict';
+  const $ = (s, r = document) => r.querySelector(s);
+  const str = (v) => (v === null || v === undefined ? '' : String(v));
+  function h(tag, attrs, ...kids) {
+    const el = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs || {})) {
+      if (v === null || v === undefined || v === false) continue;
+      if (k === 'text') el.textContent = str(v);
+      else if (k === 'class') el.className = v;
+      else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+      else el.setAttribute(k, v === true ? '' : v);
+    }
+    for (const k of kids.flat()) if (k !== null && k !== undefined && k !== false) el.append(k instanceof Node ? k : document.createTextNode(str(k)));
+    return el;
+  }
+  const keysView = location.pathname.replace(/\/+$/, '') === '/dev/keys';
+  const D = { info: null, keys: null, me: null, scopes: [], listed: [] };
+
+  async function api(method, path, body) {
+    const opts = { method, credentials: 'same-origin', cache: 'no-store', headers: { 'X-Board': '1' } };
+    if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+    let r;
+    try { r = await fetch(path, opts); } catch (e) { return { ok: false, status: 0, body: { error: 'offline', detail: 'the board did not answer' } }; }
+    let j = null;
+    try { j = await r.json(); } catch (e) { j = null; }
+    return { ok: r.ok, status: r.status, body: j };
+  }
+  const errText = (res) => (res.body && res.body.detail ? str(res.body.detail) : res.body && res.body.error ? str(res.body.error) : 'HTTP ' + res.status);
+
+  function copyBtn(get, label) {
+    const b = h('button', { type: 'button', class: 'copy', text: 'Copy', 'aria-label': label || 'Copy' });
+    b.addEventListener('click', async () => {
+      const text = get();
+      let ok = false;
+      try { await navigator.clipboard.writeText(text); ok = true; } catch (e) { ok = false; }
+      b.textContent = ok ? 'Copied' : 'Select and copy';
+      setTimeout(() => { b.textContent = 'Copy'; }, 1600);
+    });
+    return b;
+  }
+
+  // ------------------------------------------------------------ table of contents
+  function buildToc() {
+    const list = $('#toc-list');
+    list.textContent = '';
+    const view = keysView ? $('#v-keys') : $('#v-dev');
+    const secs = [...view.querySelectorAll('section.doc[id]')];
+    for (const s of secs) {
+      const t = s.querySelector('h2');
+      list.append(h('li', {}, h('a', { href: '#' + s.id, text: t ? t.textContent : s.id })));
+    }
+    const links = new Map([...list.querySelectorAll('a')].map((a) => [a.getAttribute('href').slice(1), a]));
+    const mark = (id) => { for (const [k, a] of links) { a.classList.toggle('on', k === id); if (k === id) a.setAttribute('aria-current', 'true'); else a.removeAttribute('aria-current'); } };
+    if ('IntersectionObserver' in window) {
+      const seen = new Map();
+      const io = new IntersectionObserver((ents) => {
+        for (const e of ents) seen.set(e.target.id, e.isIntersecting ? e.boundingClientRect.top : null);
+        const vis = [...seen].filter(([, t]) => t !== null).sort((a, b) => a[1] - b[1]);
+        if (vis.length) mark(vis[0][0]);
+      }, { rootMargin: '-64px 0px -55% 0px' });
+      secs.forEach((s) => io.observe(s));
+    }
+    if (secs.length) mark(secs[0].id);
+    const toc = $('#toc');
+    const narrow = window.matchMedia('(max-width: 860px)');
+    const fit = () => { toc.open = !narrow.matches; };
+    fit();
+    narrow.addEventListener('change', fit);
+    list.addEventListener('click', (e) => { if (e.target.closest('a') && narrow.matches) toc.open = false; });
+  }
+
+  // ------------------------------------------------------------ the portal
+  function snippet(s) {
+    return h('div', { class: 'snip', id: 'snip-' + s.id },
+      h('div', { class: 'snip-head' }, h('h3', { text: s.title }), copyBtn(() => s.text, 'Copy: ' + s.title)),
+      h('pre', { tabindex: '0', 'aria-label': s.title }, h('code', { text: s.text })),
+      s.note ? h('p', { class: 'muted', text: s.note }) : null);
+  }
+  function typeOf(s) {
+    if (!s || typeof s !== 'object') return 'any';
+    if ('const' in s) return JSON.stringify(s.const);
+    if (Array.isArray(s.enum)) return s.enum.map((x) => JSON.stringify(x)).join(' | ');
+    if (Array.isArray(s.anyOf)) return s.anyOf.map(typeOf).join(' | ');
+    if (s.type === 'array') return typeOf(s.items) + '[]';
+    let t = str(s.type || 'object');
+    if (s.pattern) t += ' ' + s.pattern;
+    if (s.maxLength) t += ' (≤ ' + s.maxLength + ')';
+    if (s.minimum !== undefined || s.maximum !== undefined) t += ' (' + str(s.minimum) + '..' + str(s.maximum) + ')';
+    return t;
+  }
+  function fieldsTable(schema) {
+    const props = schema && schema.properties ? schema.properties : null;
+    if (!props || !Object.keys(props).length) return h('p', { class: 'muted', text: typeOf(schema) });
+    const req = new Set(schema.required || []);
+    return h('div', { class: 'scroll' }, h('table', {},
+      h('thead', {}, h('tr', {}, h('th', { scope: 'col', text: 'Field' }), h('th', { scope: 'col', text: 'Type' }), h('th', { scope: 'col', text: 'Required' }))),
+      h('tbody', {}, Object.entries(props).map(([k, v]) => h('tr', {}, h('td', {}, h('code', { text: k })), h('td', {}, h('code', { text: typeOf(v) })), h('td', { text: req.has(k) ? 'yes' : '' }))))));
+  }
+  function example(path, op) {
+    const base = D.info.base_url;
+    const filled = path.replace(/\{([a-z_]+)\}/g, (m, n) => '<' + n + '>');
+    const lines = ['curl -s "${H[@]}" \\'];
+    const body = op.requestBody && op.requestBody.content && op.requestBody.content['application/json'];
+    if (body) {
+      const sch = body.schema || {};
+      const ex = {};
+      for (const k of sch.required || []) ex[k] = '<' + k + '>';
+      lines.push("  -H 'Content-Type: application/json' -d '" + JSON.stringify(ex) + "' \\");
+    }
+    lines.push('  "' + base + filled + '"');
+    return lines.join('\n');
+  }
+  function renderRef() {
+    const spec = D.info.openapi, ref = $('#ref');
+    ref.textContent = '';
+    const order = ['public', 'any'].concat(D.info.scopes || []);
+    const groups = new Map();
+    for (const [path, ops] of Object.entries(spec.paths || {})) {
+      for (const [method, op] of Object.entries(ops)) {
+        const g = Array.isArray(op.security) && !op.security.length ? 'public' : op['x-scope'] || 'any';
+        if (!groups.has(g)) groups.set(g, []);
+        groups.get(g).push({ path, method, op });
+      }
+    }
+    const keys = [...groups.keys()].sort((a, b) => (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99));
+    const label = { public: 'No key needed', any: 'Any valid key' };
+    for (const g of keys) {
+      const sec = h('div', { class: 'scope-group', id: 'scope-' + g.replace(/[^a-z0-9]+/gi, '-') },
+        h('h3', {}, h('span', { class: 'chip' + (g === 'public' ? ' public' : ''), text: label[g] ? g : 'scope ' + g }), label[g] ? h('span', { class: 'muted', text: label[g] }) : null));
+      for (const { path, method, op } of groups.get(g)) {
+        const params = op.parameters || [];
+        const resp = Object.entries(op.responses || {}).sort((a, b) => a[0].localeCompare(b[0]));
+        const ok = resp.find(([c]) => c.startsWith('2'));
+        const okSchema = ok && ok[1].content ? Object.values(ok[1].content)[0].schema : null;
+        const body = op.requestBody && op.requestBody.content && op.requestBody.content['application/json'];
+        sec.append(h('details', { class: 'op', 'data-op': method.toUpperCase() + ' ' + path },
+          h('summary', {}, h('span', { class: 'm ' + method, text: method.toUpperCase() }), h('span', { class: 'path', text: path }), h('span', { class: 'sum', text: str(op.summary) })),
+          h('div', {},
+            params.length ? [h('h3', { text: 'Parameters' }), h('div', { class: 'scroll' }, h('table', {},
+              h('thead', {}, h('tr', {}, h('th', { scope: 'col', text: 'Name' }), h('th', { scope: 'col', text: 'In' }), h('th', { scope: 'col', text: 'Format' }), h('th', { scope: 'col', text: 'About' }))),
+              h('tbody', {}, params.map((p) => h('tr', {}, h('td', {}, h('code', { text: p.name + (p.required ? '' : '?') })), h('td', { text: p.in }), h('td', {}, h('code', { text: typeOf(p.schema) })), h('td', { text: str(p.description) }))))))] : null,
+            body ? [h('h3', { text: 'Body (application/json)' }), fieldsTable(body.schema)] : null,
+            h('h3', { text: 'Responses' }),
+            h('ul', {}, resp.map(([c, r]) => h('li', {}, h('code', { text: c }), ' ', str(r.description)))),
+            okSchema && okSchema.properties ? [h('h3', { text: 'Response fields' }), fieldsTable(okSchema)] : null,
+            h('h3', { text: 'Example' }),
+            h('pre', { tabindex: '0' }, h('code', { text: example(path, op) })))));
+      }
+      ref.append(sec);
+    }
+  }
+  function renderMcp() {
+    const tb = $('#mcp-tools tbody'), rb = $('#mcp-res tbody');
+    tb.textContent = ''; rb.textContent = '';
+    for (const t of D.info.mcp.tools) {
+      tb.append(h('tr', { 'data-tool': t.name }, h('td', {}, h('code', { text: t.name })), h('td', {}, h('span', { class: 'chip', text: t.scope || 'any' })),
+        h('td', { text: t.read_only ? 'read' : t.destructive ? 'write (destructive)' : 'write' }),
+        h('td', {}, h('code', { text: t.method + ' ' + t.path })), h('td', { text: t.description })));
+    }
+    for (const r of D.info.mcp.resources) rb.append(h('tr', {}, h('td', {}, h('code', { text: r.uri })), h('td', {}, h('span', { class: 'chip', text: r.scope || 'any' })), h('td', { text: r.title })));
+  }
+  // The codes come from lib/serve_api.py (tests/test_dev.py checks each one is still there).
+  const ERRORS = [
+    ['401', 'unauthenticated', 'No Authorization header (or, through the tunnel, no Cloudflare Access token).', 'Send Authorization: Bearer $BOARD_API_KEY (and the Access headers through the tunnel).'],
+    ['401', 'invalid_key', 'The key is malformed, unknown, revoked, expired, or a request no owner approved yet.', 'Check its status on API keys. A pending request works once an owner approves it.'],
+    ['403', 'insufficient_scope', 'The key lacks the scope this route or tool needs.', 'Ask an owner for a key with that scope (board apikey scopes reissues it).'],
+    ['403', 'key_wrong_env', 'A test key (asb_test_) on the live board.', 'Use a live key (asb_live_).'],
+    ['403', 'token_key_mismatch', 'Through the tunnel: the Access service token is bound to other people than this key\'s owner.', 'Use your own service token with your own key (serve.tunnel.api_service_tokens).'],
+    ['403', 'identity_key_mismatch', 'Through the tunnel with your Access login: the key is not issued to that email.', 'Use a key issued to you.'],
+    ['403', 'not_allowed', 'The Access identity may not use the API.', 'The owner lists the service token in serve.tunnel.api_service_tokens.'],
+    ['403', 'api_remote_disabled', 'The API is served on the local listener only (serve.api.remote: false).', 'Call it on the board\'s machine, or ask the owner.'],
+    ['403', 'cross_site', 'A browser request from another site.', 'Call the API from a script or server, not a web page.'],
+    ['429', 'rate_limited', 'Over the key\'s rate (rate_per_min, burst 20), or too many failed key checks.', 'Wait for Retry-After seconds.'],
+    ['302', '(Access login page)', 'Through the tunnel without the Cloudflare headers: Access redirects to its login page, so curl prints HTML or nothing and jq fails.', 'Send CF-Access-Client-Id and CF-Access-Client-Secret ($CF_ACCESS_CLIENT_ID, $CF_ACCESS_CLIENT_SECRET).'],
+  ];
+  function renderErrors() {
+    const tb = $('#err-table tbody');
+    tb.textContent = '';
+    for (const [st, code, means, fix] of ERRORS) tb.append(h('tr', { 'data-code': code }, h('td', { text: st }), h('td', {}, h('code', { text: code })), h('td', { text: means }), h('td', { text: fix })));
+  }
+  function renderDev() {
+    const i = D.info, tunnel = i.listener === 'tunnel';
+    $('#start-cf').hidden = !tunnel;
+    $('#connect-base').textContent = 'This board: ' + i.base_url + (tunnel ? ' (through Cloudflare Access)' : ' (the local listener: only from this machine)');
+    const off = $('#api-off');
+    off.hidden = !!(i.api && i.api.available);
+    off.textContent = i.api && !i.api.enabled ? 'The API is off on this board (serve.api.enabled: false).' : 'The API is served on the local listener only (serve.api.remote: false): connect from the board\'s machine.';
+    const snips = $('#snips');
+    snips.textContent = '';
+    for (const s of i.snippets || []) {
+      if (s.id === 'health') { $('#health-snip').textContent = ''; $('#health-snip').append(snippet(s)); } else snips.append(snippet(s));
+    }
+    renderRef();
+    renderMcp();
+    renderErrors();
+  }
+
+  // ------------------------------------------------------------ the key page
+  const fmtDay = (ms) => (typeof ms === 'number' ? new Date(ms).toISOString().slice(0, 10) : '—');
+  function setStatus(text, bad) {
+    const s = $('#keys-status');
+    s.textContent = text || '';
+    s.className = 'status' + (text ? (bad ? ' note bad' : ' note ok') : '');
+  }
+  function scopeChecks(box, scopes, checked, name) {
+    box.textContent = '';
+    for (const s of scopes) {
+      box.append(h('label', {}, h('input', { type: 'checkbox', name, value: s, checked: checked.includes(s) }), s));
+    }
+  }
+  const checkedOf = (box) => [...box.querySelectorAll('input[type=checkbox]:checked')].map((c) => c.value);
+  function renderKeys() {
+    const me = D.me || {};
+    const owner = !!me.key_owner;
+    $('#keys-lead').textContent = owner ? 'You are a key owner: every key on this board is listed. Approve requests, or revoke any key.'
+      : 'The keys issued to you. You can revoke your own keys at any time.';
+    document.querySelectorAll('.col-owner').forEach((c) => { c.hidden = !owner; });
+    const tb = $('#keys-table tbody');
+    tb.textContent = '';
+    const rows = D.keys || [];
+    $('#keys-empty').hidden = rows.length > 0;
+    $('#keys-table').hidden = rows.length === 0;
+    for (const k of rows) {
+      const st = str(k.status);
+      const live = st === 'active' || st === 'pending';
+      const tr = h('tr', { 'data-kid': k.id },
+        h('td', {}, h('div', { text: str(k.name) }), h('code', { class: 'muted', text: k.id })),
+        owner ? h('td', { text: str(k.owner) }) : null,
+        h('td', {}, (k.scopes || []).map((s) => [h('span', { class: 'chip', text: s }), ' '])),
+        h('td', {}, h('span', { class: 'chip st-' + st, text: st + (k.reason && st !== 'active' ? ' (' + k.reason + ')' : '') })),
+        h('td', { text: fmtDay(k.created_at) }), h('td', { text: fmtDay(k.expires_at) }), h('td', { text: k.last_used_at ? fmtDay(k.last_used_at) : 'never' }),
+        h('td', {}, h('div', { class: 'row-actions' },
+          owner && st === 'pending' ? h('button', { type: 'button', class: 'primary', 'data-act': 'approve', text: 'Approve…', onclick: () => approveRow(tr, k) }) : null,
+          live ? h('button', { type: 'button', class: 'danger', 'data-act': 'revoke', text: st === 'pending' ? (!owner || k.owner === me.identity ? 'Withdraw' : 'Deny') : 'Revoke', onclick: (e) => revoke(e.currentTarget, k) }) : null)));
+      tb.append(tr);
+    }
+  }
+  function revoke(btn, k) {
+    if (btn.dataset.armed !== '1') {
+      btn.dataset.armed = '1';
+      const was = btn.textContent;
+      btn.textContent = 'Confirm: ' + was.toLowerCase() + ' ' + str(k.name);
+      setTimeout(() => { if (btn.isConnected && btn.dataset.armed === '1') { btn.dataset.armed = ''; btn.textContent = was; } }, 6000);
+      return;
+    }
+    btn.disabled = true;
+    api('POST', '/api/apikeys/' + encodeURIComponent(k.id), { action: 'revoke' }).then((res) => {
+      setStatus(res.ok ? str(k.name) + ': ' + str(res.body && res.body.detail) : 'Not done: ' + errText(res), !res.ok);
+      loadKeys();
+    });
+  }
+  function approveRow(tr, k) {
+    const open = tr.nextElementSibling && tr.nextElementSibling.classList.contains('sub');
+    if (open) { tr.nextElementSibling.remove(); return; }
+    const box = h('div', { class: 'checks' });
+    scopeChecks(box, k.scopes || [], k.scopes || [], 'ap-' + k.id);
+    const exp = h('select', { 'aria-label': 'Expires' }, h('option', { value: '', text: 'as requested' }),
+      ['30d', '90d', '180d', '365d'].map((v) => h('option', { value: v, text: 'in ' + v.replace('d', ' days') })));
+    const go = h('button', { type: 'button', class: 'primary', text: 'Approve with these scopes' });
+    go.addEventListener('click', () => {
+      const scopes = checkedOf(box);
+      if (!scopes.length) { setStatus('Pick at least one scope (only the requested ones, or fewer).', true); return; }
+      const body = { action: 'approve', scopes };
+      if (exp.value) body.expires = exp.value;
+      go.disabled = true;
+      api('POST', '/api/apikeys/' + encodeURIComponent(k.id), body).then((res) => {
+        setStatus(res.ok ? str(res.body && res.body.detail) : 'Not approved: ' + errText(res), !res.ok);
+        loadKeys();
+      });
+    });
+    const cols = tr.children.length;
+    tr.after(h('tr', { class: 'sub' }, h('td', { colspan: String(cols) },
+      h('fieldset', {}, h('legend', { text: 'Approve "' + str(k.name) + '": scopes (the requested ones, or fewer)' }), box),
+      h('p', {}, exp, ' ', go))));
+  }
+  function renderForm() {
+    const me = D.me || {};
+    const create = !!me.can_create;
+    $('#new-lead').textContent = me.key_owner ? 'Issue a key to anyone listed on this board, or to yourself.'
+      : create ? 'As an approver you can issue a key to yourself or to a person listed on this board (fleet.yaml).'
+        : 'Request a key for yourself. You see it once, now; it starts working when an owner approves it (an owner may narrow its scopes). A request lapses after 14 days.';
+    $('#k-submit').textContent = create ? 'Create key' : 'Request key';
+    $('#k-owner-l').hidden = !create;
+    $('#k-owner-h').textContent = me.key_owner ? 'An email listed on this board, or local.' : 'Yourself, or the email of a person listed on this board. You do not see that list: ask an owner for the address.';
+    if (create && !$('#k-owner').value) $('#k-owner').value = str(me.identity);
+    const dl = $('#k-listed');
+    dl.textContent = '';
+    for (const p of D.listed || []) dl.append(h('option', { value: p }));
+    const box = $('#k-scopes');
+    if (!box.children.length) scopeChecks(box, D.scopes, D.defaultScopes || ['read:state'], 'scope');
+  }
+  function showOnce(res, requested) {
+    const m = $('#once');
+    $('#once-what').textContent = (requested ? 'Requested: "' : 'Created: "') + str(res.name) + '" for ' + str(res.owner) + ', scopes ' + (res.scopes || []).join(', ') + ', expires ' + fmtDay(res.expires_at) + '.' +
+      (requested ? ' It works once an owner approves it.' : '');
+    $('#once-key').textContent = str(res.key);
+    m.hidden = false;
+    $('#once-copy').focus();
+  }
+  function closeOnce() {
+    $('#once-key').textContent = '';     // the key leaves the page: nothing keeps it
+    $('#once').hidden = true;
+    $('#k-name').focus();
+  }
+  $('#once-copy').addEventListener('click', async () => {
+    const b = $('#once-copy');
+    try { await navigator.clipboard.writeText($('#once-key').textContent); b.textContent = 'Copied'; } catch (e) {
+      const r = document.createRange(); r.selectNodeContents($('#once-key'));
+      const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); b.textContent = 'Selected: copy it';
+    }
+  });
+  $('#once-done').addEventListener('click', closeOnce);
+  // Leaving the page (or the back/forward cache keeping it) drops the key too.
+  window.addEventListener('pagehide', () => { $('#once-key').textContent = ''; $('#once').hidden = true; });
+  $('#once').addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); closeOnce(); } });
+  $('#keyform').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const me = D.me || {};
+    const name = $('#k-name').value.trim();
+    const scopes = checkedOf($('#k-scopes'));
+    if (!name) { setStatus('Give the key a name.', true); $('#k-name').focus(); return; }
+    if (!scopes.length) { setStatus('Pick at least one scope.', true); return; }
+    const body = { action: me.can_create ? 'create' : 'request', name, scopes, expires: $('#k-exp').value };
+    if (me.can_create) body.owner = $('#k-owner').value.trim();
+    const btn = $('#k-submit');
+    btn.disabled = true;
+    api('POST', '/api/apikeys', body).then((res) => {
+      btn.disabled = false;
+      if (res.ok && res.body && res.body.key) {
+        setStatus('');
+        $('#k-name').value = '';
+        showOnce(res.body, body.action === 'request');
+        res.body.key = null;
+      } else setStatus('Not done: ' + errText(res), true);
+      loadKeys();
+    });
+  });
+  async function loadKeys() {
+    const res = await api('GET', '/api/apikeys');
+    if (!res.ok || !res.body) { setStatus('Could not load keys: ' + errText(res), true); return; }
+    D.keys = Array.isArray(res.body.keys) ? res.body.keys : [];
+    D.me = res.body.me || {};
+    D.scopes = res.body.scopes || [];
+    D.defaultScopes = res.body.default_scopes || [];
+    D.listed = res.body.listed || [];
+    renderKeys();
+    renderForm();
+  }
+
+  // ------------------------------------------------------------ start
+  if (!keysView) $('#nav-dev').setAttribute('aria-current', 'page'); else $('#nav-keys').setAttribute('aria-current', 'page');
+  $(keysView ? '#v-keys' : '#v-dev').hidden = false;
+  document.title = keysView ? 'API keys · Agent Switchboard' : 'Developers · Agent Switchboard';
+  buildToc();
+  api('GET', '/api/dev').then((res) => {
+    if (!res.ok || !res.body) {
+      const e = $('#load-error');
+      e.hidden = false;
+      e.textContent = location.protocol === 'file:' ? 'Open this page from board-serve (/dev): it reads the board\'s live API table.' : 'Could not load the portal: ' + errText(res);
+      return;
+    }
+    D.info = res.body;
+    const me = res.body.me || {};
+    $('#who').textContent = 'Signed in as ' + str(me.identity) + (me.via === 'access' ? ' (Cloudflare Access)' : ' (this machine)');
+    if (!keysView) renderDev();
+  });
+  if (keysView) loadKeys();
+})();
+</script>

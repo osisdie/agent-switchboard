@@ -1212,7 +1212,8 @@ Artifact 頁面無法提供同層的檔案，所以只有以 `data:` URI 內嵌�
 ### API 金鑰
 
 API 金鑰給呼叫看板 `/api/v1`（見下節）以及它的 MCP server（見「連接 MCP client」）的腳本與服務使用。用 `board apikey`
-管理；金鑰頁面在之後的改動才會加上。規則如下（細節見 `docs/contract.md` 的 "API keys"）：
+或看板的金鑰頁面 `/dev/keys`（見「開發者入口」）管理，兩者規則相同（細節見 `docs/contract.md` 的
+"API keys"）：
 
 - **金鑰屬於一個人**（`--owner`，email 或 `local`）。這只是標明歸屬，不代表任何權限：金鑰不能回答
   決策、按權限提示、設定 owner-away、投票、通過 production gate，也不能管理金鑰。
@@ -1336,6 +1337,28 @@ Claude Desktop（`claude_desktop_config.json`，stdio；把每個 `<...>` 換成
 沒有金鑰時 `board-mcp` 會立刻停下並在 stderr 說明；金鑰被拒絕時回傳 MCP 錯誤（`-32001`），附上看板給的
 原因。金鑰和 Access secret 都不會被印出來。
 
+### 開發者入口（`/dev`）
+
+`board-serve` 也提供一個給開發者的頁面，從看板的個人選單就能連過去。看得到看板的人都看得到它：
+本機 listener，或 tunnel 上允許的 Access email。
+
+- **`/dev`** 依每條路由需要的 scope 分組，呈現即時的路由表（`/api/v1/openapi.json`），另外有 MCP
+  工具表、填好這個看板網址的 Claude Code（HTTP 與 stdio）、Claude Desktop 和 curl 設定片段、健康檢查
+  （whoami、MCP `initialize`、`tools/list` 和一個讀取工具，只印名稱和代碼），以及錯誤代碼表。機密一律
+  是佔位符（`$BOARD_API_KEY`；`$CF_ACCESS_CLIENT_ID`／`$CF_ACCESS_CLIENT_SECRET` 只在透過 tunnel
+  開啟時出現）。對 mock 看板的試用主控台之後才會加上。
+- **`/dev/keys`** 是金鑰頁面，規則和 `board apikey` 一樣，因為它就是執行那個 CLI：
+  `board apikey ... --by board:<你>`。你看得到、也能撤銷自己的金鑰。approver 可以發金鑰給自己或
+  `fleet.yaml` 列出的人。其他人可以申請金鑰，在 owner 核准前一直是 pending（owner 可以在頁面上縮小
+  scope）。owner 看得到所有金鑰。
+- **新金鑰只顯示一次**：在產生它的那一個回應裡，用對話框顯示。對話框一關，頁面就丟掉它；不會儲存、
+  記錄或稽核。申請的金鑰在申請當下顯示，等 owner 核准後才能使用。
+- **只有登入的人能管理金鑰**：頁面的請求帶著看板的登入身分（本機 listener 或你的 Access email），
+  並通過 CSRF 檢查。帶著 API 金鑰的請求一律拒絕（403 `api_key_refused`，會稽核）。非 owner 永遠看不到
+  別人的 email。
+
+輪替金鑰、變更期限和變更 scope 仍在 CLI 進行（`board apikey rotate|expire|scopes`，限 owner）。
+
 ## 機密與去識別化
 
 任何東西離開你的機器之前，都會先經過兩項檢查。詳見
@@ -1393,6 +1416,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `docs/assets/screenshots/` | README 和 Pages 網站用的截圖（`scripts/screenshots.py`） |
 | `.gitleaks.toml` | gitleaks 預設規則、一條針對看板 API 金鑰的規則，加上針對測試 fixture 的小範圍允許清單 |
 | `lib/serve_api.py`、`lib/api_spec.py` | 公開 API `/api/v1`：金鑰、scope 與速率檢查，tunnel 的 service token 規則，寫入（任務、訊息、接手申請），以及產生 `openapi.json` 的路由表 |
+| `artifact/dev.html`、`lib/serve_dev.py` | 開發者入口（`/dev`）與金鑰頁面（`/dev/keys`）：從即時路由表產生的 API 參考、MCP 工具、連線設定片段，以及透過 `board apikey` 建立／申請／核准／撤銷金鑰 |
 | `bin/board-mcp`、`lib/mcp_tools.py` | MCP server：一張工具表（讀取，以及寫入 `send_message` 和 `ticket_take_request`），透過 stdio（`board-mcp`，`/api/v1` 的 client）和 board-serve 上的 `POST /mcp` 提供 |
 | `lib/apikeys.py` | API 金鑰：金鑰儲存（加 pepper 的雜湊，0600）、誰能發放／核准／輪替／撤銷，以及 `/api/v1` 之後會用的驗證（`board apikey`） |
 | `lib/away.py` | 為 snapshot 和 `board-serve` 讀取 owner-away 模式與共識項目 |
@@ -1402,7 +1426,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `lib/pomodoro.py` | 番茄鐘計時與每日統計（`pomodoro.json`），供看板和 `board pomodoro` 使用 |
 | `lib/resources.py` | 資源取樣器（記憶體、磁碟、OOM、每個 session 的程序與 teammate），產生 `resources.json`、snapshot 摘要和 `board resources` |
 | `docs/design/` | 設計文件，例如 `resources-and-scheduling.md`（資源、排程器、經驗） |
-| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`）、資源取樣器（`test_resources.py`，fixture `/proc`）、機密防護（`test_guard.py`）、API 金鑰（`test_apikeys.py`）、公開 API 與 tunnel 曝露（`test_api_v1.py`）、MCP server（`test_mcp.py`）、提問者（`test_askers.py`）、各角色能做什麼（`test_roles.py`）、誰看得到誰的 email（`test_pii.py`）、卡片補充資訊（`test_cards.py`）、Remote Control（`test_rc.py`，用 `fake_tmux.py` 模擬 tmux 畫面）、用量上限後繼續（`test_resume.py`：模擬的 tmux，加上在私有 tmux server 上跑 `fake_claude_tui.py` 假 Claude 畫面）、番茄鐘計時（`test_pomodoro.py`），以及選用的頁面告警連結、通知控制、個人選單與主題、主畫面 app、session 卡片、用量提示框、頁首提示框、語言切換、按鍵面板與番茄鐘 headless 檢查（`test_page_links.py`、`test_page_notify.py`、`test_page_profile.py`、`test_page_pwa.py`、`test_page_cards.py`、`test_page_guard.py`（被攔下的訊息卡片）、`test_page_askers.py`（提問者的訊息輸入框）、`test_page_messages.py`（最近的對話與歷史）、`test_page_roles.py`（各角色看到的控制項）、`test_page_usage.py`、`test_page_header_tips.py`、`test_page_i18n.py`、`test_page_deck.py`、`test_page_rc.py`（Remote Control 標籤與開關）、`test_page_resume.py`（用量上限標籤、繼續與全部繼續）、`test_page_pomodoro.py`，以及截圖和 Pages 網站的 `test_site.py`：需要 python playwright，沒有就略過；CI 不執行） |
+| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`）、資源取樣器（`test_resources.py`，fixture `/proc`）、機密防護（`test_guard.py`）、API 金鑰（`test_apikeys.py`）、公開 API 與 tunnel 曝露（`test_api_v1.py`）、MCP server（`test_mcp.py`）、提問者（`test_askers.py`）、各角色能做什麼（`test_roles.py`）、誰看得到誰的 email（`test_pii.py`）、開發者入口與金鑰頁面（`test_dev.py`）、卡片補充資訊（`test_cards.py`）、Remote Control（`test_rc.py`，用 `fake_tmux.py` 模擬 tmux 畫面）、用量上限後繼續（`test_resume.py`：模擬的 tmux，加上在私有 tmux server 上跑 `fake_claude_tui.py` 假 Claude 畫面）、番茄鐘計時（`test_pomodoro.py`），以及選用的頁面告警連結、通知控制、個人選單與主題、主畫面 app、session 卡片、用量提示框、頁首提示框、語言切換、按鍵面板與番茄鐘 headless 檢查（`test_page_links.py`、`test_page_notify.py`、`test_page_profile.py`、`test_page_pwa.py`、`test_page_cards.py`、`test_page_guard.py`（被攔下的訊息卡片）、`test_page_askers.py`（提問者的訊息輸入框）、`test_page_messages.py`（最近的對話與歷史）、`test_page_roles.py`（各角色看到的控制項）、`test_page_usage.py`、`test_page_header_tips.py`、`test_page_i18n.py`、`test_page_deck.py`、`test_page_rc.py`（Remote Control 標籤與開關）、`test_page_resume.py`（用量上限標籤、繼續與全部繼續）、`test_page_pomodoro.py`、`test_page_dev.py`（開發者入口與金鑰頁面），以及截圖和 Pages 網站的 `test_site.py`：需要 python playwright，沒有就略過；CI 不執行） |
 | `CONTRIBUTING.md` | 開發環境設定、測試，以及讓 `README.zh-TW.md` 保持同步的規則 |
 | `fleet.example.yaml`、`.env.example` | 設定範例 |
 

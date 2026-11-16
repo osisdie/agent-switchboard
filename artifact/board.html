@@ -673,6 +673,8 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 .keys .status.active { background: var(--ok-soft); color: var(--ok); }
 .keys li.revoked, .keys li.expired { opacity: .72; }
 .acct-out { justify-self: start; font-weight: 500; }
+.acct-dev { margin-top: 6px; }
+.acct-dev a { font-weight: 500; }
 @media (max-width: 860px) {
   .mast { padding-right: 0; }
   .brand { padding-right: 56px; }
@@ -1057,6 +1059,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
           <h3 id="acct-keys-h" data-i18n>My API keys</h3>
           <p class="acct-note" id="acct-keys-off" data-i18n>API keys are not enabled on this board.</p>
           <ul class="keys" id="acct-keys" hidden></ul>
+          <p class="acct-note acct-dev" id="acct-dev" hidden><a href="/dev/keys" id="acct-dev-keys" data-i18n>Manage API keys</a> · <a href="/dev" id="acct-dev-portal" data-i18n>Developer portal (API, MCP)</a></p>
         </section>
         <a class="acct-out" id="acct-out" href="/cdn-cgi/access/logout" hidden data-i18n>Sign out of Cloudflare Access</a>
       </div>
@@ -5929,7 +5932,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
   });
 
   const P = { me: null, tried: false, loading: false, claude: null, claudeTried: false };
-  // Local adapter: GET /api/me (identity, via, roles; api_keys once the key backend exists).
+  // Local adapter: GET /api/me (identity, via, roles, and api_keys: the keys issued to this identity).
   function loadMe() {
     if (!isLocal() || S.mode !== 'live' || P.loading) return;
     P.loading = true; P.tried = true;
@@ -5965,8 +5968,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
   function demoKeys() {
     const now = Date.now(), day = 86400000;
     return [
-      { id: 'key_demo_2', name: 'Phone shortcut', scopes: ['state:read', 'decisions:answer'], created_at: now - 12 * day, expires_at: now + 78 * day, last_used_at: now - 3 * 3600000, status: 'active' },
-      { id: 'key_demo_1', name: 'Old laptop', scopes: ['state:read'], created_at: now - 140 * day, expires_at: null, last_used_at: now - 61 * day, status: 'revoked' },
+      { id: 'key_demo_2', name: 'Phone shortcut', scopes: ['read:state', 'read:decisions'], created_at: now - 12 * day, expires_at: now + 78 * day, last_used_at: now - 3 * 3600000, status: 'active' },
+      { id: 'key_demo_1', name: 'Old laptop', scopes: ['read:state'], created_at: now - 140 * day, expires_at: null, last_used_at: now - 61 * day, status: 'revoked' },
     ];
   }
   function profileInfo() {
@@ -6032,6 +6035,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     for (const r of info.roles || []) roles.append(h('li', { class: r, text: trMap(ROLE_LABEL, r) }));
     if (!info.roles) roles.append(h('li', { text: tr('Roles not known yet') }));
     renderKeys(info.keys);
+    // The developer portal and the key page are board-serve routes (lib/serve_dev.py): local mode only.
+    $('#acct-dev').hidden = !(isLocal() && !S.demo);
     $('#acct-out').hidden = !info.access;
     renderTheme();
     renderLang();
@@ -6983,6 +6988,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "Following the theme set in the claude.ai viewer. Change it there.": "依照 claude.ai 檢視器設定的主題。請在那裡修改。",
       "My API keys": "我的 API 金鑰",
       "API keys are not enabled on this board.": "這個看板沒有啟用 API 金鑰。",
+      "Manage API keys": "管理 API 金鑰",
+      "Developer portal (API, MCP)": "開發者入口（API、MCP）",
       "Sign out of Cloudflare Access": "登出 Cloudflare Access",
       "Account, theme, language and API keys": "帳號、主題、語言和 API 金鑰",
       "Your roles on this board": "你在這個看板的角色",

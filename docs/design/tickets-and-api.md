@@ -398,3 +398,22 @@ Where T1 differs from the text above (`docs/contract.md`, "Tickets", is binding)
   cards get a `KEY taken` / `KEY closed upstream` chip from `task.ticket` (approvers and release
   managers only).
 - Demo mode has three sample tickets; Artifact mode shows a note (the page cannot reach trackers).
+
+## Implementation notes (A5)
+
+- **Routes:** `GET /dev` and `/dev/keys` serve `artifact/dev.html` (one page, two views); `GET
+  /api/dev` gives it the live OpenAPI document, the MCP tool table and ready-made snippets;
+  `GET`/`POST /api/apikeys` and `POST /api/apikeys/<kid>` are the key page's routes (the design's
+  `POST /api/apikeys`). All in `lib/serve_dev.py`; `docs/contract.md`, "Developer portal (`/dev`)",
+  is binding.
+- **One rule set:** every key action runs `board apikey ... --by board:<identity>` (the addendum's
+  "every admin action goes through the CLI"), so the page cannot drift from the CLI's permissions or
+  audit. The page offers create, request, approve (with narrowing) and revoke; rotate, expire and
+  scopes stay on the CLI for now.
+- **Shown once:** create and request return the key in their 201 response only. A request's key
+  is shown when it is requested (the CLI hands it out then) and works after an owner approves it;
+  approve returns no key. The page clears it when its dialog closes.
+- **An API key never manages keys:** the key routes take the board session only, and refuse any
+  request that carries an `Authorization` header (403 `api_key_refused`, audited).
+- **Not yet:** the try-it console and test keys wait for mock mode (A4); `/dev` says so. `GET
+  /api/me` now fills `api_keys`, so the profile menu lists the person's keys and links to `/dev/keys`.

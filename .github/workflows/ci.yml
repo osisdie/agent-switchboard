@@ -97,6 +97,10 @@ jobs:
         env:
           MCP_REQUIRE_CRYPTO: "1"
         run: python3 tests/test_mcp.py -v
+      - name: developer portal (/dev, /dev/keys) tests
+        env:
+          DEV_REQUIRE_CRYPTO: "1"
+        run: python3 tests/test_dev.py -v
       - name: tickets tests
         run: python3 tests/test_tickets.py -v
       - name: ticket take tests

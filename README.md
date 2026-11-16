@@ -1354,8 +1354,9 @@ never values.
 ### API keys
 
 API keys are for scripts and services that call the board's `/api/v1` (below) and its MCP server
-("Connect an MCP client"). `board apikey` manages them; the key page comes in a later change. The
-rules (details in `docs/contract.md`, "API keys"):
+("Connect an MCP client"). Manage them on the board's key page, `/dev/keys` (see "Developer
+portal"), or with `board apikey`; both follow the same rules (details in `docs/contract.md`, "API
+keys"):
 
 - **A key belongs to a person** (`--owner`, an email or `local`). That is attribution, never
   authority: no key answers a decision, presses a prompt, sets owner-away, votes, passes a
@@ -1488,6 +1489,33 @@ drop the two `CF_ACCESS_*` lines for a local board):
 A missing key stops `board-mcp` at once with a message on stderr; a refused key is an MCP error
 (`-32001`) naming the board's reason. Neither the key nor the Access secret is ever printed.
 
+### Developer portal (`/dev`)
+
+`board-serve` also serves a page for developers, linked from the board's profile menu. Whoever can
+see the board can see it: the local listener, or an allowed Access email on the tunnel.
+
+- **`/dev`** renders the live route table (`/api/v1/openapi.json`) grouped by the scope each route
+  needs, plus the MCP tool table, ready-made snippets for Claude Code (HTTP and stdio), Claude
+  Desktop and curl with this board's URL filled in, a health check (whoami, MCP `initialize`,
+  `tools/list` and one read tool, printing only names and codes), and a table of error codes. The
+  secrets stay placeholders (`$BOARD_API_KEY`, and `$CF_ACCESS_CLIENT_ID` /
+  `$CF_ACCESS_CLIENT_SECRET`, which appear only when you reach the board through the tunnel). A
+  try-it console against a mock board comes later.
+- **`/dev/keys`** is the key page, with the same rules as `board apikey`, because it runs that
+  CLI: `board apikey ... --by board:<you>`. You see and revoke your own keys. An approver creates
+  keys for themselves or for a person listed in `fleet.yaml`. Anyone else requests a key, which
+  stays pending until an owner approves it (owners can narrow its scopes there). Owners see every
+  key.
+- **A new key is shown once**, in a dialog, in the one response that made it. The page drops it
+  when the dialog closes; nothing stores, logs or audits it. A request shows its key when it is
+  made, and the key starts working once an owner approves it.
+- **Only a signed-in person manages keys**: the page's requests carry the board's session (the
+  local listener or your Access email) and its CSRF checks. A request that carries an API key is
+  refused (403 `api_key_refused`, audited). Non-owners never see other people's emails.
+
+Rotating a key, changing its expiry and changing its scopes stay on the CLI (`board apikey
+rotate|expire|scopes`, owners).
+
 ## Secrets & sanitization
 
 Two checks run before anything leaves your machine. Details are in
@@ -1547,6 +1575,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `docs/assets/screenshots/` | Screenshots for the README and the Pages site (`scripts/screenshots.py`) |
 | `.gitleaks.toml` | gitleaks default rules, a rule for board API keys, and a narrow allowlist for test fixtures |
 | `lib/serve_api.py`, `lib/api_spec.py` | The public API `/api/v1`: key, scope and rate checks, the tunnel's service-token rule, the writes (tasks, messages, take requests) and the route table that `openapi.json` is generated from |
+| `artifact/dev.html`, `lib/serve_dev.py` | The developer portal (`/dev`) and key page (`/dev/keys`): the API reference from the live route table, MCP tools, connection snippets, and key create / request / approve / revoke through `board apikey` |
 | `bin/board-mcp`, `lib/mcp_tools.py` | The MCP server: one tool table (reads, and the writes `send_message` and `ticket_take_request`) over stdio (`board-mcp`, a client of `/api/v1`) and `POST /mcp` on board-serve |
 | `lib/apikeys.py` | API keys: the store (peppered hashes, 0600), who may issue, approve, rotate and revoke them, and the check `/api/v1` will use (`board apikey`) |
 | `lib/away.py` | Reads owner-away mode and consensus items for the snapshot and `board-serve` |
@@ -1556,7 +1585,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `lib/pomodoro.py` | Pomodoro timer and daily tallies (`pomodoro.json`) for the board and `board pomodoro` |
 | `lib/resources.py` | Resources sampler (memory, disks, OOM, per-session processes and teammates) for `resources.json`, the snapshot digest and `board resources` |
 | `docs/design/` | Design notes, e.g. `resources-and-scheduling.md` (resources, scheduler, lessons) |
-| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), the resources sampler (`test_resources.py`, fixture `/proc`), the secret guardrails (`test_guard.py`), API keys (`test_apikeys.py`), the public API and its tunnel exposure (`test_api_v1.py`), the MCP server (`test_mcp.py`), askers (`test_askers.py`), who may do what per role (`test_roles.py`), who sees whose email (`test_pii.py`), the card extras (`test_cards.py`), Remote Control (`test_rc.py`, scripted tmux in `fake_tmux.py`), resuming after a usage limit (`test_resume.py`: scripted tmux, plus a fake Claude screen in `fake_claude_tui.py` on a private tmux server), the pomodoro timer (`test_pomodoro.py`), and the optional headless checks of the page's alert links, notifications control, profile menu and theme, home-screen app, session cards, usage popover, header popovers, language toggle, Deck panel and pomodoro (`test_page_links.py`, `test_page_notify.py`, `test_page_profile.py`, `test_page_pwa.py`, `test_page_cards.py`, `test_page_guard.py` (held-message cards), `test_page_askers.py` (the asker's composer), `test_page_messages.py` (recent threads and history), `test_page_roles.py` (controls per role), `test_page_usage.py`, `test_page_header_tips.py`, `test_page_i18n.py`, `test_page_deck.py`, `test_page_rc.py` (Remote Control chip and switches), `test_page_resume.py` (the usage-limit chip, Resume and Resume all), `test_page_pomodoro.py`, plus `test_site.py` for the screenshots and the Pages site: need python playwright, skip without it; not run in CI) |
+| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), the resources sampler (`test_resources.py`, fixture `/proc`), the secret guardrails (`test_guard.py`), API keys (`test_apikeys.py`), the public API and its tunnel exposure (`test_api_v1.py`), the MCP server (`test_mcp.py`), askers (`test_askers.py`), who may do what per role (`test_roles.py`), who sees whose email (`test_pii.py`), the developer portal and key page (`test_dev.py`), the card extras (`test_cards.py`), Remote Control (`test_rc.py`, scripted tmux in `fake_tmux.py`), resuming after a usage limit (`test_resume.py`: scripted tmux, plus a fake Claude screen in `fake_claude_tui.py` on a private tmux server), the pomodoro timer (`test_pomodoro.py`), and the optional headless checks of the page's alert links, notifications control, profile menu and theme, home-screen app, session cards, usage popover, header popovers, language toggle, Deck panel and pomodoro (`test_page_links.py`, `test_page_notify.py`, `test_page_profile.py`, `test_page_pwa.py`, `test_page_cards.py`, `test_page_guard.py` (held-message cards), `test_page_askers.py` (the asker's composer), `test_page_messages.py` (recent threads and history), `test_page_roles.py` (controls per role), `test_page_usage.py`, `test_page_header_tips.py`, `test_page_i18n.py`, `test_page_deck.py`, `test_page_rc.py` (Remote Control chip and switches), `test_page_resume.py` (the usage-limit chip, Resume and Resume all), `test_page_pomodoro.py`, `test_page_dev.py` (the developer portal and key page), plus `test_site.py` for the screenshots and the Pages site: need python playwright, skip without it; not run in CI) |
 | `CONTRIBUTING.md` | Dev setup, tests, and the rule for keeping `README.zh-TW.md` in sync |
 | `fleet.example.yaml`, `.env.example` | Example config |
 
