@@ -18,6 +18,9 @@ import fleet  # noqa: E402
 from . import NAME_RE, TicketError, net, tpl
 from .limits import Limiter, parse_retry_after
 
+RESERVED_HEADERS = ("host", "content-length", "content-type", "transfer-encoding", "connection", "accept",
+                    "user-agent", "upgrade", "te", "trailer", "proxy-authorization", "cookie")
+SAFE_VALUE_RE = re.compile(r"[A-Za-z0-9._~-]{1,200}")
 ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
 HEADER_RE = re.compile(r"[A-Za-z0-9-]{1,64}")
 SCHEME_RE = re.compile(r"[A-Za-z][A-Za-z0-9-]{0,31}")
@@ -123,7 +126,7 @@ class Provider:
         raise TicketError("ticket_unconfigured", "tracker %s cannot read tickets" % self.name)
 
     def doctor(self):
-        return {"name": self.name, "type": self.type or str(self.spec.get("type") or "")[:40],
+        return {"name": self.name, "type": self.type or str(self.spec.get("type") or "")[:40], "warnings": [],
                 "key_pattern": self.key_pattern, "capabilities": list(self.capabilities),
                 "rate_per_min": self.rate, "ok": not self.problems, "problems": list(self.problems)}
 
@@ -150,6 +153,8 @@ class HttpJsonProvider(Provider):
             self.scheme = "" if self.scheme in (None, "") else str(self.scheme)
             if not HEADER_RE.fullmatch(self.header):
                 self.problems.append("auth.header is not a header name")
+            elif self.header.lower() in RESERVED_HEADERS:
+                self.problems.append("auth.header %s is reserved (it would break the request)" % self.header)
             if self.scheme and not SCHEME_RE.fullmatch(self.scheme):
                 self.problems.append("auth.scheme is not a word")
             self.token, self.token_source, problem = read_token(auth, self.cfg_dir)
@@ -273,14 +278,18 @@ class HttpJsonProvider(Provider):
                         raise TicketError("ticket_not_found", "%s: %s did not resolve" % (self.name, key))
                     if isinstance(val, bool) or not isinstance(val, (str, int, float)):
                         raise TicketError("ticket_upstream", "%s: resolve gave a non-scalar %s" % (self.name, var))
-                    ctx[var] = str(val)
+                    val = str(val)
+                    # The tracker's answer feeds later path segments: plain id characters only.
+                    if not SAFE_VALUE_RE.fullmatch(val) or val in (".", ".."):
+                        raise TicketError("ticket_upstream", "%s: resolve gave an unsafe %s" % (self.name, var))
+                    ctx[var] = val
             g = self.get_spec
             doc = self.fetch(g, ctx)
             raw = {f: tpl.lookup(doc, expr, ctx) for f, expr in g["map"].items()}
             if raw.get("title") is None:
                 raise TicketError("ticket_upstream", "%s: the answer has no title at %s" % (self.name, g["map"]["title"]))
             raw.setdefault("id", ctx.get("id"))
-            raw["url"] = tpl.fill_text(g["link"], ctx) if g.get("link") else None
+            raw["url"] = tpl.fill_link(g["link"], ctx) if g.get("link") else None
             raw["status_category_map"] = g.get("status_category")
             return raw
         except tpl.TemplateError as exc:
@@ -289,6 +298,10 @@ class HttpJsonProvider(Provider):
     def doctor(self):
         d = super().doctor()
         d["host"] = urllib.parse.urlsplit(self.base).netloc if self.base else None
+        host = urllib.parse.urlsplit(self.base).hostname if self.base else ""
+        if host and re.fullmatch(r"[0-9.]+", host) and host != "127.0.0.1":
+            d["warnings"] = ["base_url is an IP address: the certificate cannot match a host name, and the "
+                             "address may change; prefer the tracker's DNS name"]
         if self.auth is None and self.spec.get("auth") == "none":
             d["token"] = "none"
         else:

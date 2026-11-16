@@ -44,6 +44,15 @@ def fill_path(tpl, ctx):
     return PLACEHOLDER_RE.sub(seg, tpl)
 
 
+def fill_link(tpl, ctx):
+    """A link for people (get.link): each value percent-encoded as one segment; None when a value
+    is missing (the ticket then has no url)."""
+    try:
+        return PLACEHOLDER_RE.sub(lambda m: urllib.parse.quote(_scalar(ctx, m.group(1)), safe=""), str(tpl))
+    except TemplateError:
+        return None
+
+
 def fill_text(tpl, ctx):
     return PLACEHOLDER_RE.sub(lambda m: _scalar(ctx, m.group(1)), str(tpl))
 

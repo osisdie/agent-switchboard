@@ -38,10 +38,12 @@ class Cache:
             return None
         if not isinstance(doc, dict):
             return None
+        if doc.get("provider") != prov or doc.get("key") != key:
+            return None     # another (provider, key) that maps to the same file name
         age = self.now() * 1000 - (doc.get("fetched_at") or 0)
         if doc.get("not_found"):
             return NOT_FOUND if 0 <= age < not_found_ttl * 1000 else None
-        if 0 <= age < ttl * 1000 and doc.get("provider") == prov and doc.get("key") == key:
+        if 0 <= age < ttl * 1000:
             return doc
         return None
 

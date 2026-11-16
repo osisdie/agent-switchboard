@@ -696,6 +696,10 @@ class EndToEnd(unittest.TestCase):
         for tup in re.findall(r"path in \(([^)]*)\)", get_src):
             routes |= set(re.findall(r'"([^"]+)"', tup))
         routes |= set(re.findall(r'fullmatch\(r"([^"]+)", path\)', get_src + post_src))
+        # A route regex kept at module level (TICKET_GET_RE = re.compile(r"/api/...")) and used here.
+        for name, pat in re.findall(r'^(\w+_RE) = re\.compile\(r"(/[^"]+)"\)', src, re.M):
+            if name + ".fullmatch(path)" in get_src + post_src:
+                routes.add(pat)
         self.assertEqual(routes, {
             "/", "/index.html", "/api/state", "/api/events", "/api/me",
             "/api/messages", "/api/away", "/api/notify-prefs", "/api/presence", "/api/alerts/ack", "/api/rc",

@@ -6,10 +6,12 @@
     host and port) before anything is sent;
   - redirects are never followed (a 3xx is an upstream error), so the token never travels to
     another host;
-  - no proxy for 127.0.0.1 / localhost; 10 s timeout; a response body over 1 MiB is refused;
+  - no proxy for 127.0.0.1 / localhost; 10 s per socket operation and 20 s for the whole
+    exchange; a response body over 1 MiB is refused;
   - the token goes in one header only, and a value with CR/LF is refused.
 """
 import json
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -18,7 +20,8 @@ import fleet  # noqa: E402  (lib/ is on sys.path: see tickets/__init__.py)
 
 from . import TicketError, tpl, warn
 
-TIMEOUT_S = 10
+TIMEOUT_S = 10          # per socket operation
+DEADLINE_S = 20         # the whole exchange: a body trickled in byte by byte is cut off
 MAX_BODY = 1024 * 1024
 ERR_CLIP = 300
 
@@ -30,7 +33,7 @@ class Response:
     def json(self):
         try:
             return json.loads(self.body.decode("utf-8"))
-        except (ValueError, UnicodeDecodeError) as exc:
+        except (ValueError, UnicodeDecodeError, RecursionError) as exc:   # RecursionError: absurd nesting
             raise TicketError("ticket_upstream", "the tracker's answer is not JSON") from exc
 
 
@@ -58,7 +61,22 @@ def build_url(base, path_tpl, ctx, query=None):
     return url
 
 
-def request(base, method, url, headers, body=None, timeout=TIMEOUT_S, opener=None):
+def _read(resp, deadline):
+    """The body, at most MAX_BODY + 1 bytes, read in chunks until EOF or the deadline."""
+    src = resp if hasattr(resp, "read1") else getattr(resp, "fp", None)
+    read = getattr(src, "read1", None) or resp.read
+    out = bytearray()
+    while len(out) <= MAX_BODY:
+        if time.monotonic() > deadline:
+            raise TicketError("ticket_upstream", "the tracker's answer took too long")
+        chunk = read(min(65536, MAX_BODY + 1 - len(out)))
+        if not chunk:
+            break
+        out += chunk
+    return bytes(out)
+
+
+def request(base, method, url, headers, body=None, timeout=TIMEOUT_S, opener=None, deadline_s=DEADLINE_S):
     """One HTTP exchange. Returns a Response for 2xx and 4xx/5xx statuses the caller maps; raises
     TicketError for a redirect, a network failure or an oversized body."""
     host = urllib.parse.urlsplit(base).hostname
@@ -77,6 +95,7 @@ def request(base, method, url, headers, body=None, timeout=TIMEOUT_S, opener=Non
         data = json.dumps(body).encode("utf-8")
         hdrs["Content-Type"] = "application/json"
     req = urllib.request.Request(url, data=data, method=method, headers=hdrs)
+    deadline = time.monotonic() + deadline_s
     try:
         resp = opener.open(req, timeout=timeout)
         status = resp.status
@@ -90,7 +109,7 @@ def request(base, method, url, headers, body=None, timeout=TIMEOUT_S, opener=Non
             warn("%s %s: redirect to another location refused (HTTP %d)" % (method, url, status))
             raise TicketError("ticket_upstream", "the tracker answered with a redirect (not followed)")
         try:
-            raw = resp.read(MAX_BODY + 1)
+            raw = _read(resp, deadline)
         except (OSError, ValueError) as exc:
             raise TicketError("ticket_upstream", "the tracker's answer was cut off") from exc
         if len(raw) > MAX_BODY:

@@ -112,6 +112,16 @@ def home_text():
     return "\n".join(out)
 
 
+def jload(path):
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def jsave(path, doc):
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh)
+
+
 def events():
     try:
         with open(os.path.join(HOME, "events.jsonl"), encoding="utf-8") as fh:
@@ -189,13 +199,13 @@ class GetTests(Base):
         self.assertEqual(events()[-1]["result"], "cache")
         f = os.path.join(HOME, "tickets", "cache", "tracker__WEB-2.json")
         self.assertEqual(stat.S_IMODE(os.stat(f).st_mode), 0o600)
-        self.assertEqual(json.load(open(f))["title"], "Second")
+        self.assertEqual(jload(f)["title"], "Second")
         rc, _, _ = run("get", "WEB-2", "--refresh")
         self.assertEqual(self.tr.count(), n + 2, "--refresh fetches again")
         # Expired: fetched_at older than the TTL.
-        doc = json.load(open(f))
+        doc = jload(f)
         doc["fetched_at"] -= 61000
-        json.dump(doc, open(f, "w"))
+        jsave(f, doc)
         run("get", "WEB-2")
         self.assertEqual(self.tr.count(), n + 4)
         # TTL 0: never served from the cache.
@@ -226,6 +236,11 @@ class GetTests(Base):
         self.assertFalse(os.path.exists(c.path("tracker", "WEB-50")))
         self.assertTrue(os.path.exists(c.path("tracker", "WEB-51")))
         self.assertEqual(os.path.basename(c.path("t", "A/../b#1")), "t__A%2F..%2Fb%231.json")
+        # "a" + "b__c" and "a__b" + "c" share a file name: a hit must name the same provider and key.
+        self.assertEqual(c.path("a", "b__c"), c.path("a__b", "c"))
+        c.put_not_found("a", "b__c")
+        self.assertIsNone(c.get("a__b", "c", 60, 30))
+        self.assertIs(c.get("a", "b__c", 60, 30), cache.NOT_FOUND)
 
     def test_fake_provider_and_mock(self):
         write_fleet("tickets:\n  trackers:\n    - name: demo\n      type: fake\n" + http_json_tracker(self.tr.port))
@@ -380,21 +395,20 @@ class SsrfTests(Base):
         self.assertEqual(self.other.count(), n, "the redirect target was never contacted")
 
     def test_host_pinned(self):
-        # A resolved value is one encoded segment: it cannot climb the path or name another host.
-        n = self.tr.count()
-        rc, _, err = run("get", "WEB-13")
-        self.assertEqual(rc, 0, err)
-        last = self.tr.requests[-1]
-        self.assertEqual(last["host"], "127.0.0.1:%d" % self.tr.port)
-        self.assertEqual(last["raw"], "/api/v1/projects/..%2F..%2Fadmin%40evil.example.com/issues/u-13")
-        self.assertEqual(self.tr.count(), n + 2)
-        # ".." as a whole segment is refused before any request.
-        n = self.tr.count()
-        rc, _, err = run("get", "WEB-12")
-        self.assertEqual(rc, 1)
-        self.assertIn("ticket_upstream", err)
-        self.assertEqual(self.tr.count(), n + 1, "only the resolve call went out")
+        # A value the tracker's resolve answer gives is checked before it goes into a later path:
+        # "../../admin@evil.example.com" and ".." are refused, and only the resolve call went out.
+        for key in ("WEB-13", "WEB-12"):
+            n = self.tr.count()
+            rc, _, err = run("get", key)
+            self.assertEqual(rc, 1, err)
+            self.assertIn("ticket_upstream", err)
+            self.assertIn("unsafe", err)
+            self.assertEqual(self.tr.count(), n + 1, "only the resolve call went out")
+            self.assertEqual(self.tr.requests[-1]["path"], "/api/v1/issues/resolve")
+        # Even a value that got through stays one encoded segment on the pinned host.
         base = "https://tracker.example.com"
+        self.assertEqual(net.build_url(base, "/p/{project}/i/{id}", {"project": "../../admin@evil.example.com", "id": "u"}),
+                         base + "/p/..%2F..%2Fadmin%40evil.example.com/i/u")
         for ctx in ({"id": "@evil.example.com"}, {"id": "//evil.example.com"}, {"id": "x?y#z"}, {"id": "%2e%2e"}):
             url = net.build_url(base, "/i/{id}", ctx)
             self.assertTrue(url.startswith(base + "/i/"), url)
@@ -403,6 +417,52 @@ class SsrfTests(Base):
             net.build_url(base, "/i/{id}", {"id": ".."})
         with self.assertRaises(TicketError):
             net.build_url(base, "@evil.example.com/{id}", {"id": "1"})
+        self.assertEqual(tpl.fill_link("https://t.example.com/p/{project}/{key}", {"project": "a b/c", "key": "WEB-1"}),
+                         "https://t.example.com/p/a%20b%2Fc/WEB-1")
+        self.assertIsNone(tpl.fill_link("https://t.example.com/{nope}", {}))
+
+    def test_deep_json_and_deadline(self):
+        with self.assertRaises(TicketError) as cm:
+            net.Response(200, {}, b"[" * 200000).json()
+        self.assertEqual(cm.exception.code, "ticket_upstream")
+        # A server that trickles its body: cut off at the overall deadline, not per byte.
+        import socket as _s
+        import threading
+        srv = _s.socket()
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        port = srv.getsockname()[1]
+
+        def trickle():
+            c, _ = srv.accept()
+            c.recv(4096)
+            c.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100000\r\n\r\n")
+            try:
+                for _ in range(40):
+                    c.sendall(b" ")
+                    time.sleep(0.1)
+            except OSError:
+                pass
+            c.close()
+        threading.Thread(target=trickle, daemon=True).start()
+        base = "http://127.0.0.1:%d" % port
+        t0 = time.time()
+        with self.assertRaises(TicketError) as cm:
+            net.request(base, "GET", base + "/x", {}, deadline_s=0.5)
+        self.assertIn("too long", cm.exception.detail)
+        self.assertLess(time.time() - t0, 2.5)
+        srv.close()
+
+    def test_reserved_header_and_ip_warning(self):
+        write_fleet("tickets:\n  trackers:\n" + http_json_tracker(self.tr.port).replace("header: Authorization", "header: Host"))
+        self.assertTrue(any("reserved" in p for p in tickets.load().providers[0].problems))
+        write_fleet("tickets:\n  trackers:\n" + http_json_tracker(self.tr.port).replace("http://127.0.0.1:%d" % self.tr.port,
+                                                                                          "https://10.0.0.5"))
+        d = tickets.doctor()[0]
+        self.assertTrue(d["ok"], d)
+        self.assertTrue(any("IP address" in w for w in d["warnings"]), d)
+        rc, out, _ = run("doctor")
+        self.assertIn("! base_url is an IP address", out)
 
     def test_bad_path_templates_refused(self):
         for path in ("//evil.example.com/x/{id}", "https://evil.example.com/{id}", "/a/../b/{id}", "/a?x={id}",
@@ -454,7 +514,7 @@ class LimitTests(Base):
         rc, _, err = run("get", "WEB-1", "--refresh")
         self.assertEqual(rc, 5, err)
         self.assertEqual(self.tr.count(), n, "while backing off, nothing is sent")
-        st = json.load(open(os.path.join(HOME, "tickets", "state", "tracker.json")))
+        st = jload(os.path.join(HOME, "tickets", "state", "tracker.json"))
         self.assertGreater(st["blocked_until"], time.time() + 100)
         self.assertEqual(limits.parse_retry_after("Wed, 21 Oct 2015 07:28:00 GMT"), 0)
         self.assertEqual(limits.parse_retry_after("junk"), 60)
@@ -520,14 +580,32 @@ class RouteTests(Base):
         reset_home()
 
     @classmethod
-    def get(cls, path):
-        req = urllib.request.Request("http://127.0.0.1:%d%s" % (cls.port, path))
+    def get(cls, path, headers=None):
+        req = urllib.request.Request("http://127.0.0.1:%d%s" % (cls.port, path),
+                                     headers={"X-Board": "1"} if headers is None else headers)
         try:
             with urllib.request.urlopen(req, timeout=20) as r:
                 return r.status, r.read().decode(), dict(r.headers)
         except urllib.error.HTTPError as e:
             with e:
                 return e.code, e.read().decode(), dict(e.headers)
+
+    def test_csrf_before_anything(self):
+        """GET /api/tickets/<ref> spends the tracker's rate limit: without X-Board: 1, or from
+        another site, it is refused before the identity, the audit or any tracker call."""
+        write_fleet(self.fleet(approvers="[local]"))
+        n, ev = self.tr.count(), len(events())
+        for hdrs in ({}, {"Sec-Fetch-Site": "cross-site"}, {"X-Board": "1", "Sec-Fetch-Site": "cross-site"},
+                     {"X-Board": "1", "Sec-Fetch-Site": "same-site"}, {"X-Board": "0"}):
+            with self.subTest(headers=hdrs):
+                st, body, _ = self.get("/api/tickets/WEB-1", headers=hdrs)
+                self.assertEqual((st, json.loads(body)["error"]), (403, "csrf"))
+        self.assertEqual(self.tr.count(), n, "no tracker call")
+        self.assertEqual(len(events()), ev, "nothing audited")
+        self.assertFalse(os.path.exists(os.path.join(HOME, "tickets", "state", "tracker.json")))
+        for site in ("same-origin", "none"):
+            st, body, _ = self.get("/api/tickets/WEB-1", headers={"X-Board": "1", "Sec-Fetch-Site": site})
+            self.assertEqual(st, 200, body)
 
     def test_non_approver_403_before_any_tracker_call(self):
         write_fleet(self.fleet(approvers="[owner@example.com]"))

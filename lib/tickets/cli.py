@@ -91,6 +91,8 @@ def cmd_doctor(args):
             r.get("key_pattern")))
         for p in r["problems"]:
             print("     - %s" % p)
+        for w in r.get("warnings") or []:
+            print("     ! %s" % w)
     return 0 if all(r["ok"] for r in rows) else 1
 
 

@@ -54,8 +54,10 @@ listeners (docs/contract.md, "Local adapter API"):
                                        lib/api_spec.py, spec at /api/v1/openapi.json): a board API
                                        key (Authorization: Bearer asb_live_…) on either listener;
                                        on the tunnel also an allowed Access service token or email
-  GET  /api/tickets/<ref>              one tracker ticket (lib/tickets): approvers ∪ release_managers
-                                       only, checked before any tracker call; cached, redacted
+  GET  /api/tickets/<ref>              one tracker ticket (lib/tickets): X-Board: 1 and no cross-site
+                                       Sec-Fetch-Site (else 403 csrf, before anything else);
+                                       approvers ∪ release_managers only, checked before any
+                                       tracker call; cached, redacted
 
 --check prints the resolved settings and exits. --watch serves nothing: it prints one line per
 item the local-mode operator must relay (see prompts/board-operator.md, "Local mode").
@@ -113,7 +115,9 @@ STATIC = {
     "/icons/icon-512.png": ("icons/icon-512.png", "image/png"),
     "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"),
 }
-STATIC_CACHE = "private, max-age=86400"  # private: behind Access, never cached by a shared proxy
+STATIC_CACHE = "private, max-age=86400"
+# GET /api/tickets/<ref>: also needs X-Board: 1 and no cross-site Sec-Fetch-Site (Handler.check_fetch).
+TICKET_GET_RE = re.compile(r"/api/tickets/([^/]+)")  # private: behind Access, never cached by a shared proxy
 
 DEFAULT_PORT = 39410
 MAX_BODY = 16 * 1024
@@ -928,6 +932,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
             raise Refused(403, "not_allowed", "not allowed on this board")
         return email, "cf-jwt"
 
+    def check_fetch(self):
+        """A GET with side effects (GET /api/tickets/<ref> spends the tracker token's rate limit):
+        only the board page's own fetch. `X-Board: 1` is a custom header, so a cross-site page can
+        only send it after a CORS preflight, which this server never grants; a browser's
+        Sec-Fetch-Site other than same-origin (or none: typed in) is refused as well. An <img> or a
+        link from another site to the loopback listener gets 403 before anything else runs."""
+        if self.headers.get("X-Board") != "1":
+            raise Refused(403, "csrf", "X-Board: 1 header required")
+        site = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
+        if site and site not in ("same-origin", "none"):
+            raise Refused(403, "csrf", "cross-site request refused")
+
     def check_csrf(self, origins):
         if self.headers.get("X-Board") != "1":
             raise Refused(403, "csrf", "X-Board: 1 header required")
@@ -980,10 +996,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return serve_api.handle(self, _SELF)
         try:
             self.check_host()
+            path = urllib.parse.urlsplit(self.path).path
+            if TICKET_GET_RE.fullmatch(path):
+                self.check_fetch()   # before identity, audit or any tracker call
             ident, via = self.identity()
         except Refused as exc:
             return self.refuse(exc)
-        path = urllib.parse.urlsplit(self.path).path
         if path in ("/", "/index.html"):
             return self.page()
         if path == "/api/state":
@@ -1004,7 +1022,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "lessons": rows, "can_edit": match_id(ident, fleet.id_list(cfg, "approvers")) is not None}))
         if path == "/api/pomodoro/day":
             return self.pomodoro_day()
-        m = re.fullmatch(r"/api/tickets/([^/]+)", path)
+        m = TICKET_GET_RE.fullmatch(path)
         if m:
             return self.ticket_get(m.group(1), ident, via)
         if path in STATIC:
