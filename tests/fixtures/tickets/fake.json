@@ -1,0 +1,16 @@
+{
+ "status_category": {"todo": ["backlog", "todo"], "doing": ["in_progress"], "done": ["done", "cancelled"]},
+ "tickets": {
+  "DEMO-1": {"title": "Add a health endpoint to the API", "status": "todo", "assignee": null,
+             "description": "<p>The API needs <b>/healthz</b> for the load balancer.</p>",
+             "updated_at": "2026-11-01T09:00:00Z", "url": "https://tracker.example.com/projects/demo/issues/DEMO-1"},
+  "DEMO-2": {"title": "Fix the login redirect loop", "status": "in_progress",
+             "assignee": {"id": "u-7", "name": "Alex Example"},
+             "description": "Users on the web app are sent back to /login after signing in.",
+             "updated_at": "2026-11-10T15:30:00Z", "url": "https://tracker.example.com/projects/demo/issues/DEMO-2"},
+  "DEMO-3": {"title": "Retire the old export job", "status": "done", "assignee": "Sam Example",
+             "description": "Replaced by the streaming export.", "updated_at": "2026-10-20T08:00:00Z",
+             "url": "https://tracker.example.com/projects/demo/issues/DEMO-3"},
+  "DEMO-9": {"error": "ticket_auth"}
+ }
+}

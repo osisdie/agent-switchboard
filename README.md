@@ -505,6 +505,26 @@ Workers reply with `[re <msgId>] …`, and replies thread under the message. **M
 information, never approvals.** A message that asks a session for a secret value is held, not
 relayed (see [Secret guardrails](#secret-guardrails)).
 
+### Tickets
+
+`board ticket get WEB-12` reads a ticket from the issue trackers listed under `tickets.trackers` in
+`fleet.yaml` (see `fleet.example.yaml`). The board serves the same thing as `GET /api/tickets/<ref>`,
+but only to approvers and release managers: the tracker token can read whatever its owner can.
+
+- **Which tracker.** Every tracker's `key_pattern` is tried. A key that two trackers both accept is
+  refused as ambiguous until you name one (`tracker:WEB-12`), so list your project prefixes.
+- **Generic.** The `http-json` type describes a JSON API in config: an optional `resolve` call,
+  the `get` path, a field map and status categories. `fake` reads fixtures for demos and tests.
+- **Safe by default.** https only, the host pinned to `base_url`, no redirects, 10 s and 1 MiB
+  limits. Tokens come from an environment variable (or `.env`) or a 0600 file. They never appear
+  in output, logs, the cache or the audit trail.
+- **Gentle on the tracker.** Answers are cached for 60 s. A per-tracker rate limit applies, the
+  tracker's 429 `Retry-After` is honoured, and the tracker is paused after repeated failures.
+
+`board ticket doctor` checks every tracker and says whether its token is set (never its value).
+Writes, taking a ticket into a task, and a ticket panel on the board come later
+(`docs/design/tickets-and-api.md`).
+
 ### Session actions: Remote Control and compact
 
 Remote Control lets you open a session from claude.ai/code or the Claude app. Turn it on or off
@@ -1352,6 +1372,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `lib/serve_api.py`, `lib/api_spec.py` | The public read-only API `/api/v1`: key, scope and rate checks, the tunnel's service-token rule, and the route table that `openapi.json` is generated from |
 | `lib/apikeys.py` | API keys: the store (peppered hashes, 0600), who may issue, approve, rotate and revoke them, and the check `/api/v1` will use (`board apikey`) |
 | `lib/away.py` | Reads owner-away mode and consensus items for the snapshot and `board-serve` |
+| `lib/tickets/` | Tickets: tracker providers (`http-json`, `fake`), routing by key, cache, rate limits, the SSRF-safe HTTP client; `board ticket get\|doctor` |
 | `lib/guard.py`, `lib/messages.py` | Secret guardrails: the outbound scrubber and the inbound secret-request screen; board messages and replies through them (held, release, reply) |
 | `lib/cards.py` | Card extras for board-serve (`cards.json`): teammates and their tasks, the session meter, recent tool calls, the last message and prompt (approvers only), ahead/behind, time in state |
 | `lib/pomodoro.py` | Pomodoro timer and daily tallies (`pomodoro.json`) for the board and `board pomodoro` |

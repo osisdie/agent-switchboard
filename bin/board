@@ -101,6 +101,9 @@
 #                                              API keys (lib/apikeys.py): shown once, only a
 #                                              peppered hash kept; owners administer every key,
 #                                              approvers issue to listed people, anyone requests
+#   board ticket get REF [--refresh] [--json] | doctor [--json]
+#                                              read a tracker ticket (fleet.yaml tickets.trackers;
+#                                              REF is KEY or provider:KEY); doctor: token set/unset
 #   board guard scrub|scrub-json|screen|has-marker|secrets
 #                                              the secret guard (lib/guard.py) for scripts
 #   board doctor                               check dependencies and installation
@@ -411,6 +414,7 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
     "consensus vote") echo "usage: board consensus vote ID agree|object --from CODE [--note T|--note-file PATH]" ;;
     "consensus ls") echo "usage: board consensus ls [--all]   (default: pending, plus anything decided in the last 24 h)" ;;
     "consensus show") echo "usage: board consensus show ID [--markdown]   (--markdown: a block to paste into the PR/ticket)" ;;
+    ticket) python3 "$REPO/lib/tickets/cli.py" --help ;;
     *) usage ;;
   esac
 }
@@ -2377,7 +2381,7 @@ case "$sub" in
   # leading -h/--help asks for help.
   answer)
     case "${1:-}" in -h|--help) sub_usage answer; exit 0 ;; esac ;;
-  ls|snapshot|ask|decisions|mark|resolve|press|limit|notify|doctor|ack|unmute|notify-level|notify-presence|resources|rc|session|pomodoro|schedule|lesson)
+  ls|snapshot|ask|decisions|mark|resolve|press|limit|notify|doctor|ack|unmute|notify-level|notify-presence|resources|rc|session|pomodoro|schedule|lesson|ticket)
     if wants_help "$@"; then sub_usage "$sub"; exit 0; fi ;;
   # proposals, notes and the owner's words are free text: only -h/--help right after the
   # subcommand (or instead of it) asks for help.
@@ -2433,6 +2437,7 @@ case "$sub" in
       ls|show) guarded python3 "$REPO/lib/apikeys.py" "$@" ;;
       *) exec python3 "$REPO/lib/apikeys.py" "$@" ;;
     esac ;;
+  ticket) guarded python3 "$REPO/lib/tickets/cli.py" "$@" ;;
   guard) [ $# -gt 0 ] || { python3 "$GUARD" --help; exit 2; }; exec python3 "$GUARD" "$@" ;;
   -h|--help|help) usage ;;
   "") usage; exit 2 ;;

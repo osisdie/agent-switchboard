@@ -54,6 +54,10 @@ listeners (docs/contract.md, "Local adapter API"):
                                        lib/api_spec.py, spec at /api/v1/openapi.json): a board API
                                        key (Authorization: Bearer asb_live_…) on either listener;
                                        on the tunnel also an allowed Access service token or email
+  GET  /api/tickets/<ref>              one tracker ticket (lib/tickets): X-Board: 1 and no cross-site
+                                       Sec-Fetch-Site (else 403 csrf, before anything else);
+                                       approvers ∪ release_managers only, checked before any
+                                       tracker call; cached, redacted
 
 --check prints the resolved settings and exits. --watch serves nothing: it prints one line per
 item the local-mode operator must relay (see prompts/board-operator.md, "Local mode").
@@ -91,6 +95,7 @@ import resources  # noqa: E402
 import serve_api  # noqa: E402
 
 _SELF = sys.modules[__name__]   # handed to serve_api for its helpers (no second import of this file)
+import tickets  # noqa: E402
 
 REPO = fleet.REPO
 BOARD = os.path.join(REPO, "bin", "board")
@@ -111,6 +116,8 @@ STATIC = {
     "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"),
 }
 STATIC_CACHE = "private, max-age=86400"  # private: behind Access, never cached by a shared proxy
+# GET /api/tickets/<ref>: also needs X-Board: 1 and no cross-site Sec-Fetch-Site (Handler.check_fetch).
+TICKET_GET_RE = re.compile(r"/api/tickets/([^/]+)")
 
 DEFAULT_PORT = 39410
 MAX_BODY = 16 * 1024
@@ -925,6 +932,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
             raise Refused(403, "not_allowed", "not allowed on this board")
         return email, "cf-jwt"
 
+    def check_fetch(self):
+        """A GET with side effects (GET /api/tickets/<ref> spends the tracker token's rate limit):
+        only the board page's own fetch. `X-Board: 1` is a custom header, so a cross-site page can
+        only send it after a CORS preflight, which this server never grants; a browser's
+        Sec-Fetch-Site other than same-origin (or none: typed in) is refused as well. An <img> or a
+        link from another site to the loopback listener gets 403 before anything else runs."""
+        if self.headers.get("X-Board") != "1":
+            raise Refused(403, "csrf", "X-Board: 1 header required")
+        site = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
+        if site and site not in ("same-origin", "none"):
+            raise Refused(403, "csrf", "cross-site request refused")
+
     def check_csrf(self, origins):
         if self.headers.get("X-Board") != "1":
             raise Refused(403, "csrf", "X-Board: 1 header required")
@@ -977,10 +996,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return serve_api.handle(self, _SELF)
         try:
             self.check_host()
+            path = urllib.parse.urlsplit(self.path).path
+            if TICKET_GET_RE.fullmatch(path):
+                self.check_fetch()   # before identity, audit or any tracker call
             ident, via = self.identity()
         except Refused as exc:
             return self.refuse(exc)
-        path = urllib.parse.urlsplit(self.path).path
         if path in ("/", "/index.html"):
             return self.page()
         if path == "/api/state":
@@ -1001,6 +1022,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "lessons": rows, "can_edit": match_id(ident, fleet.id_list(cfg, "approvers")) is not None}))
         if path == "/api/pomodoro/day":
             return self.pomodoro_day()
+        m = TICKET_GET_RE.fullmatch(path)
+        if m:
+            return self.ticket_get(m.group(1), ident, via)
         if path in STATIC:
             return self.static(*STATIC[path])
         return self.send_json(404, {"error": "not_found"})
@@ -1020,6 +1044,31 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if view is None:
             return self.send_json(404, {"error": "not_found"})
         return self.send_json(200, guard.scrub_tree(view))
+
+    def ticket_get(self, raw_ref, ident, via):
+        """GET /api/tickets/<ref>: approvers ∪ release_managers only (the tracker token reads what
+        its owner can, so plain viewers never get tickets). Identity first, then the tracker."""
+        cfg = fleet.load_fleet()
+        readers = fleet.id_list(cfg, "approvers") + fleet.id_list(cfg, "release_managers")
+        ref = urllib.parse.unquote(raw_ref)[:tickets.REF_MAX + 1]
+        if not readers:
+            tickets.audit(self.server.home, {"action": "get", "ref": ref, "by": ident, "via": via,
+                                             "result": "refused", "reason": "no approvers configured"})
+            return self.send_json(403, {"error": "no_approvers", "detail": "fleet.yaml approvers is empty: nobody may read tickets"})
+        by = match_id(ident, readers)
+        if by is None:
+            tickets.audit(self.server.home, {"action": "get", "ref": ref, "by": ident, "via": via,
+                                             "result": "refused", "reason": "not an approver or release manager"})
+            return self.send_json(403, {"error": "not_approver", "detail": "only approvers and release managers read tickets"})
+        try:
+            t = tickets.get(ref, by=by, via=via, home=self.server.home)
+        except tickets.TicketError as exc:
+            extra = {"Retry-After": str(int(exc.retry_after))} if exc.status == 429 and exc.retry_after else None
+            return self.send_json(exc.status, exc.to_json(), extra)
+        except Exception as exc:  # noqa: BLE001 - never a traceback (or a header) in a response
+            log("tickets: unexpected %s" % type(exc).__name__)
+            return self.send_json(502, {"error": "ticket_upstream", "detail": "unexpected error"})
+        return self.send_json(200, tickets.redact_tree(t))
 
     def state_for(self, ident):
         with self.server.hub.cond:

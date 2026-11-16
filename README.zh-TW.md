@@ -464,6 +464,24 @@ pane 標題裡的任務、執行中或閒置、記憶體用量）、已用的 co
 `[re <msgId>] …` 回覆，回覆會串在原訊息底下。**訊息只是資訊，絕不是核准。**
 向 session 要機密值的訊息會被攔下，不會轉送（見[機密防護](#secret-guardrails)）。
 
+### 工單（Tickets）
+
+`board ticket get WEB-12` 會從 `fleet.yaml` 的 `tickets.trackers` 列出的議題追蹤系統讀取工單
+（範例見 `fleet.example.yaml`）。看板也以 `GET /api/tickets/<ref>` 提供同樣內容，但只給 approvers
+與 release managers：追蹤系統的 token 能讀到它擁有者能讀的一切。
+
+- **由哪個追蹤系統處理**。逐一比對每個追蹤系統的 `key_pattern`。兩個系統都接受的 key 會被視為不明確而拒絕，
+  直到你指明是哪一個（`tracker:WEB-12`），所以請列出各自的專案前綴。
+- **通用**。`http-json` 類型用設定描述一個 JSON API：可選的 `resolve` 呼叫、`get` 路徑、欄位對應與狀態分類。
+  `fake` 讀取 fixture，用於展示與測試。
+- **預設就安全**。只用 https，主機固定為 `base_url`，不跟隨轉址，10 秒與 1 MiB 上限。token 來自環境變數
+  （或 `.env`）或權限 0600 的檔案，絕不出現在輸出、日誌、快取或稽核紀錄裡。
+- **不給追蹤系統添麻煩**。回應快取 60 秒。每個追蹤系統有自己的速率限制，會遵守對方 429 的 `Retry-After`，
+  連續失敗時會暫停該追蹤系統。
+
+`board ticket doctor` 檢查每個追蹤系統，並告訴你 token 是否已設定（絕不顯示值）。
+寫入、把工單接成任務，以及看板上的工單面板之後才會加入（`docs/design/tickets-and-api.md`）。
+
 ### Session 動作：Remote Control 與壓縮
 
 Remote Control 讓你從 claude.ai/code 或 Claude app 打開 session。可以逐一 session 開關，也可以
@@ -1224,6 +1242,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `lib/serve_api.py`、`lib/api_spec.py` | 唯讀公開 API `/api/v1`：金鑰、scope 與速率檢查，tunnel 的 service token 規則，以及產生 `openapi.json` 的路由表 |
 | `lib/apikeys.py` | API 金鑰：金鑰儲存（加 pepper 的雜湊，0600）、誰能發放／核准／輪替／撤銷，以及 `/api/v1` 之後會用的驗證（`board apikey`） |
 | `lib/away.py` | 為 snapshot 和 `board-serve` 讀取 owner-away 模式與共識項目 |
+| `lib/tickets/` | 工單：追蹤系統 provider（`http-json`、`fake`）、依 key 路由、快取、速率限制、防 SSRF 的 HTTP 用戶端；`board ticket get\|doctor` |
 | `lib/guard.py`、`lib/messages.py` | 機密防護：對外的去除機密與對內的要機密篩檢；看板訊息與回覆都經過它們（攔下、放行、回覆） |
 | `lib/cards.py` | board-serve 用的卡片補充資訊（`cards.json`）：teammate 與其任務、session 用量、最近的工具呼叫、最後一則訊息與指示（僅核可者）、領先／落後、狀態持續時間 |
 | `lib/pomodoro.py` | 番茄鐘計時與每日統計（`pomodoro.json`），供看板和 `board pomodoro` 使用 |
