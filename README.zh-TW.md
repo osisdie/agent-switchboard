@@ -1116,8 +1116,8 @@ Artifact 頁面無法提供同層的檔案，所以只有以 `data:` URI 內嵌�
 
 ### API 金鑰
 
-API 金鑰給之後要呼叫看板 `/api/v1`（和它的 MCP server）的腳本與服務使用。現在可以用 `board apikey`
-管理；路由和金鑰頁面在之後的改動才會加上。規則如下（細節見 `docs/contract.md` 的 "API keys"）：
+API 金鑰給呼叫看板 `/api/v1`（見下節；MCP server 之後才有）的腳本與服務使用。用 `board apikey`
+管理；金鑰頁面在之後的改動才會加上。規則如下（細節見 `docs/contract.md` 的 "API keys"）：
 
 - **金鑰屬於一個人**（`--owner`，email 或 `local`）。這只是標明歸屬，不代表任何權限：金鑰不能回答
   決策、按權限提示、設定 owner-away、投票、通過 production gate，也不能管理金鑰。
@@ -1140,6 +1140,30 @@ board apikey approve <id> --by owner@example.com
 board apikey ls --by dev@example.com            # id, name, scopes, created, expires, last used, status
 board apikey rotate <id> --grace 24h --by owner@example.com
 board apikey revoke <id> --by dev@example.com
+```
+
+<a id="public-api-apiv1"></a>
+
+### 公開 API（`/api/v1`）
+
+`board-serve` 另外提供一組唯讀的 JSON API 給腳本與服務：看板狀態、session、決策、任務、排程、番茄鐘和
+訊息，以及 Server-Sent Events。路由集中在一張表（`lib/api_spec.py`），並以 `GET /api/v1/openapi.json`
+公開。
+
+- **每次呼叫都要金鑰**：`Authorization: Bearer asb_live_…`，而且要有該路由的 scope（`read:state`、
+  `read:decisions`、`read:tasks`、`read:messages`）。人在這台機器上（`local`）或登入了 Access 都不夠。
+  金鑰看到的內容和一般檢視者相同，API 也從不寫入。
+- **從遠端呼叫一樣要經過 Cloudflare Access**。走 tunnel 時，呼叫還需要一個已驗證、列在
+  `serve.tunnel.api_service_tokens` 的 Access **service token**（或允許的 email）：兩把互相獨立的
+  機密，沒有驗證過的請求碰不到 board-serve。設定 `serve.api.remote: false` 就只在本機 listener 提供 API。
+- **限制**：每把金鑰有速率上限（`rate_per_min`，burst 20），驗證失敗的次數依金鑰 id 或來源限制（完全
+  沒帶金鑰的請求不計入），撤銷的金鑰會結束它的事件串流，跨站的瀏覽器請求一律拒絕，也沒有 CORS
+  header。每次呼叫都記入稽核，附上金鑰的擁有者和名稱。
+
+```bash
+curl -s -H "Authorization: Bearer $BOARD_API_KEY" "http://127.0.0.1:39410/api/v1/decisions?status=pending"
+curl -s -H "CF-Access-Client-Id: $CF_ID" -H "CF-Access-Client-Secret: $CF_SECRET" \
+     -H "Authorization: Bearer $BOARD_API_KEY" https://board.example.com/api/v1/whoami
 ```
 
 ## 機密與去識別化
@@ -1197,6 +1221,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `.github/workflows/pages.yml` | 建置靜態 demo 網站並部署到 GitHub Pages（push 到 main 時） |
 | `docs/assets/screenshots/` | README 和 Pages 網站用的截圖（`scripts/screenshots.py`） |
 | `.gitleaks.toml` | gitleaks 預設規則、一條針對看板 API 金鑰的規則，加上針對測試 fixture 的小範圍允許清單 |
+| `lib/serve_api.py`、`lib/api_spec.py` | 唯讀公開 API `/api/v1`：金鑰、scope 與速率檢查，tunnel 的 service token 規則，以及產生 `openapi.json` 的路由表 |
 | `lib/apikeys.py` | API 金鑰：金鑰儲存（加 pepper 的雜湊，0600）、誰能發放／核准／輪替／撤銷，以及 `/api/v1` 之後會用的驗證（`board apikey`） |
 | `lib/away.py` | 為 snapshot 和 `board-serve` 讀取 owner-away 模式與共識項目 |
 | `lib/guard.py`、`lib/messages.py` | 機密防護：對外的去除機密與對內的要機密篩檢；看板訊息與回覆都經過它們（攔下、放行、回覆） |
@@ -1204,7 +1229,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `lib/pomodoro.py` | 番茄鐘計時與每日統計（`pomodoro.json`），供看板和 `board pomodoro` 使用 |
 | `lib/resources.py` | 資源取樣器（記憶體、磁碟、OOM、每個 session 的程序與 teammate），產生 `resources.json`、snapshot 摘要和 `board resources` |
 | `docs/design/` | 設計文件，例如 `resources-and-scheduling.md`（資源、排程器、經驗） |
-| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`）、資源取樣器（`test_resources.py`，fixture `/proc`）、機密防護（`test_guard.py`）、API 金鑰（`test_apikeys.py`）、卡片補充資訊（`test_cards.py`）、Remote Control（`test_rc.py`，用 `fake_tmux.py` 模擬 tmux 畫面）、番茄鐘計時（`test_pomodoro.py`），以及選用的頁面告警連結、通知控制、個人選單與主題、主畫面 app、session 卡片、用量提示框、頁首提示框、語言切換、按鍵面板與番茄鐘 headless 檢查（`test_page_links.py`、`test_page_notify.py`、`test_page_profile.py`、`test_page_pwa.py`、`test_page_cards.py`、`test_page_guard.py`（被攔下的訊息卡片）、`test_page_usage.py`、`test_page_header_tips.py`、`test_page_i18n.py`、`test_page_deck.py`、`test_page_rc.py`（Remote Control 標籤與開關）、`test_page_pomodoro.py`，以及截圖和 Pages 網站的 `test_site.py`：需要 python playwright，沒有就略過；CI 不執行） |
+| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`）、資源取樣器（`test_resources.py`，fixture `/proc`）、機密防護（`test_guard.py`）、API 金鑰（`test_apikeys.py`）、公開 API 與 tunnel 曝露（`test_api_v1.py`）、卡片補充資訊（`test_cards.py`）、Remote Control（`test_rc.py`，用 `fake_tmux.py` 模擬 tmux 畫面）、番茄鐘計時（`test_pomodoro.py`），以及選用的頁面告警連結、通知控制、個人選單與主題、主畫面 app、session 卡片、用量提示框、頁首提示框、語言切換、按鍵面板與番茄鐘 headless 檢查（`test_page_links.py`、`test_page_notify.py`、`test_page_profile.py`、`test_page_pwa.py`、`test_page_cards.py`、`test_page_guard.py`（被攔下的訊息卡片）、`test_page_usage.py`、`test_page_header_tips.py`、`test_page_i18n.py`、`test_page_deck.py`、`test_page_rc.py`（Remote Control 標籤與開關）、`test_page_pomodoro.py`，以及截圖和 Pages 網站的 `test_site.py`：需要 python playwright，沒有就略過；CI 不執行） |
 | `CONTRIBUTING.md` | 開發環境設定、測試，以及讓 `README.zh-TW.md` 保持同步的規則 |
 | `fleet.example.yaml`、`.env.example` | 設定範例 |
 

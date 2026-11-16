@@ -48,6 +48,14 @@ serve:
   #   team_domain: yourteam.cloudflareaccess.com
   #   aud: "<Application Audience (AUD) Tag>"   # needs python3 cryptography to verify tokens
   #   allowed_emails: [viewer@example.com]     # who may open it at all (default: approvers ∪ release_managers)
+  #   api_service_tokens: [<client id>.access] # Access service tokens (common_name) allowed on /api/v1
+  # The public read-only API, /api/v1 (docs/contract.md "Public API"): a board API key
+  # (`board apikey`) on every call. On the tunnel also a verified Access service token from
+  # api_service_tokens (or an allowed email), so the internet never reaches it unauthenticated.
+  # api:
+  #   enabled: true                    # false: /api/v1 is off on both listeners
+  #   remote: true                     # false: local listener only (the tunnel answers 403)
+  #   auth_fail_per_min: 10            # failed key checks per source before 429
 
 # Public URL of the board (the self-hosted board behind Cloudflare Access). When set, alerts carry a
 # link that opens the board on the item: <board_url>/?d=<decision id> (?c= consensus, ?m= message),

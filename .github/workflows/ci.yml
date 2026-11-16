@@ -87,3 +87,7 @@ jobs:
         env:
           APIKEYS_REQUIRE_GITLEAKS: "1"
         run: python3 tests/test_apikeys.py -v
+      - name: public API (/api/v1) tests
+        env:
+          API_REQUIRE_CRYPTO: "1"
+        run: python3 tests/test_api_v1.py -v

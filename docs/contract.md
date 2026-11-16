@@ -489,6 +489,9 @@ The cloudflared ingress points at the **tunnel** listener only. The tunnel liste
 (exit 2, with the reason) without `hostname`, `team_domain`, `aud` and the python `cryptography`
 module. There is no unverified-header mode.
 
+`/api/v1/*` on either listener follows its own rules (a board API key on every call; on the tunnel
+also an allowed Access service token or email): see "Public API (`/api/v1`)".
+
 Extra files under `$BOARD_HOME`:
 
 ```
@@ -690,8 +693,8 @@ The operator is an LLM session. When the account hits a usage limit, nothing wri
 
 ## API keys
 
-API keys are the only identity on the coming `/api/v1` (and its MCP server). This section covers
-the key store and its CLI; the routes come later. A key is **issued to a person** and is
+API keys are the only identity on `/api/v1` (see "Public API") and, later, its MCP server. This
+section covers the key store and its CLI. A key is **issued to a person** and is
 **attribution, never authority**: no key answers a decision, presses a prompt, sets owner-away,
 votes in consensus, passes a production gate or manages keys. Anything that needs authority becomes
 a pending board decision for an approver.
@@ -774,6 +777,89 @@ never the hash.
 
 **Exit codes** (`board apikey`): 0 ok, 1 unknown key or a key in the wrong state, 2 usage (an
 unknown scope, a bad date or identity), 4 not authorized (nothing written), 8 the key store is busy.
+
+## Public API (`/api/v1`)
+
+A read-only JSON API on `board-serve` for scripts and services (`lib/serve_api.py`). Its routes
+are one table, `lib/api_spec.py`: the router dispatches from it and `GET /api/v1/openapi.json` is
+generated from it (a test checks that the two are equal). Writes, tickets and MCP come later.
+
+**Identity: a board API key, always.** `Authorization: Bearer asb_live_…` (see "API keys"). The
+local listener's `local` and a tunnel email never count on their own: without a key every route
+but `openapi.json` answers 401. A key is attribution only; the state it reads is the **viewer's**
+view (no private card text, no account, `writable: false`).
+
+| Route (GET; HEAD too, except events) | Scope | |
+|---|---|---|
+| `/api/v1/openapi.json` | none (no key) | this API's OpenAPI 3.1 document |
+| `/api/v1/whoami` | any valid key | `{key_id, name, owner, scopes, expires_at, mode: "live"}` |
+| `/api/v1/state` | `read:state` | the board state as a viewer sees it (`mode: "api"`) |
+| `/api/v1/events` | `read:state` | SSE, `event: state` on every change; the key is checked before a stream slot is taken and again before each frame and keepalive, and a revoked or expired key ends the stream with `event: revoked`. At most 8 API streams per listener, apart from the page's own (503 `too_many_streams`) |
+| `/api/v1/sessions`, `/api/v1/sessions/{code}` | `read:state` | session rows (cards without private text) |
+| `/api/v1/pomodoro`, `/api/v1/pomodoro/day?d=YYYY-MM-DD` | `read:state` | the pomodoro view; one kept day |
+| `/api/v1/decisions[?status=S]`, `/api/v1/decisions/{id}` | `read:decisions` | the latest 200 decisions; one decision |
+| `/api/v1/tasks`, `/api/v1/tasks/{id}`, `/api/v1/schedule` | `read:tasks` | the latest 50 tasks; one task; the scheduler's mode and lessons |
+| `/api/v1/messages/{id}` | `read:messages` | one message with its replies (a held message stays held) |
+
+Everything served is scrubbed by the secret guard, as on the board. Path parameters and query
+values must match their patterns in the table; any other query parameter is a 400.
+
+**Order of checks** (after the framing rules every board-serve route has: one Content-Length, no
+Transfer-Encoding, a body on a GET dropped and the connection closed):
+
+0. **No cross-site browser requests**, before anything else: `Sec-Fetch-Site: cross-site` or
+   `same-site` → 403 `cross_site`; after the Host check, an `Origin` that is not this listener's
+   own (`http://127.0.0.1:<port>` / `http://localhost:<port>`, or `https://<hostname>` on the
+   tunnel; `null` included) → 403 `cross_site`. API clients send neither, so a hostile page can't
+   make a browser call the API, not even without a key.
+1. Method: GET or HEAD, else 405 (`Allow: GET, HEAD`; a POST body is drained). Host allowlist: 421.
+2. The listener. **Local**: a direct loopback request (forwarding headers: 403). **Tunnel**:
+   `serve.api.remote` not `false` (else 403 `api_remote_disabled`), and a verified Cloudflare
+   Access JWT (401 without or with a bad one) that is either a **service token** whose
+   `common_name` is in `serve.tunnel.api_service_tokens`, or an email in the tunnel's allowed
+   emails (for a person using the API from a browser tool). Anything else: 403 `not_allowed`. A
+   service token is never a person: the board's own routes still refuse it (401).
+3. The route (404) and its query (400).
+4. The key. **No `Authorization` header** → 401 `unauthenticated` with `WWW-Authenticate: Bearer`
+   at once: not counted toward any limit and not audited (only an in-memory count), so keyless
+   requests can't burn anyone's budget or flood the audit log. A header that is not exactly one
+   `Bearer <key>` in the key's shape → 401 `invalid_key` (`reason: malformed`; the shape is checked
+   before any file is read); unknown, tampered, pending, revoked or expired → 401 `invalid_key`
+   (one generic answer); an `asb_test_` key → 403 `key_wrong_env`. These failures are audited and
+   counted **per kid** when the key has the shape of one (someone guessing that key's secret,
+   from anywhere), else **per source** (the tunnel's `Cf-Connecting-Ip`, else the listener), up to
+   `serve.api.auth_fail_per_min` (default 10) a minute; past it, 429 with `Retry-After` for that
+   kid or that source. Then the route's scope (403 `insufficient_scope`), then the key's rate: a
+   token bucket of `rate_per_min` with a burst of 20 (429 `rate_limited`, `Retry-After`).
+   `last_used_at` is recorded (at most once a minute). The Access cookie (`CF_Authorization`) and
+   `local` are never credentials here.
+5. The handler.
+
+No response carries an `Access-Control-*` header: a cross-origin browser call fails its preflight
+(OPTIONS is 405). Errors are `{"error": code, "detail": text}`.
+
+**Exposure** (`fleet.yaml` `serve.api`, owner decision: Access in front, plus a key):
+
+```yaml
+serve:
+  api:
+    enabled: true          # false: /api/v1 is off on both listeners (404)
+    remote: true           # false: local listener only; the tunnel answers 403 api_remote_disabled
+    auth_fail_per_min: 10
+  tunnel:
+    api_service_tokens: [<client id>.access]   # Access service tokens allowed on /api/v1
+```
+
+On Cloudflare, add a **Service Auth** policy for the service token to the board's Access
+application. A client then sends `CF-Access-Client-Id` / `CF-Access-Client-Secret` (Access turns
+them into the JWT) and `Authorization: Bearer asb_live_…`: two independent secrets, and the internet
+never reaches board-serve unauthenticated. There is no Access bypass for the API.
+
+**Audit** (`events.jsonl`, type `api`): every refused key check (`action: "auth_fail"`, `key_id`
+when the key had the right shape, `reason`, `route`, `via`, `client`, `result`), every
+`insufficient_scope`, and each key's successful use of a route at most once a minute
+(`action` = the route's handler, with `owner` and `name`). `client` is `loopback`,
+`service:<common_name>` or `email:<email>`. Never a key.
 
 ## Secret guardrails
 
