@@ -608,7 +608,9 @@ Today adds them all up.
   the sessions / teammates split, today's streams and person-hours of focus, the champion (most 🍅,
   ties broken by focus) and runner-up, the last 14 days, then one row per session with its teammates
   folded under it (the top 10 with something today, "Show all", a filter past 10; a name cut short
-  shows in full on hover, focus or a tap). Hovering or focusing
+  shows in full on hover, focus or a tap). Click, tap or arrow-key to any of the 14 days to see that
+  day's total, champion and sessions (board-serve fetches a past day only when you pick it,
+  `GET /api/pomodoro/day`; the Artifact shows daily totals only). Hovering or focusing
   the 🍅 (the key, the panel title) explains what counts. A finished pomodoro gets a
   short burst of tomatoes (none with *reduce motion*).
 - `board pomodoro [today|week] [--json|--mirror]` prints the same tallies in a terminal (`--mirror`:

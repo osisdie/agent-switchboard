@@ -582,6 +582,11 @@ class EndToEnd(unittest.TestCase):
                                                           "by": "local", "created_at": now, "status": "replied"})
         wj(os.path.join(HOME, "messages", "m-1-a", "replies", "r-1-a.json"),
            {"id": "r-1-a", "from": "INFRA", "body": "it is %s and %s" % (SENTINEL_PW, pk), "created_at": now})
+        today = time.strftime("%Y-%m-%d", time.localtime(now / 1000))
+        wj(os.path.join(HOME, "pomodoro.json"), {"version": 2, "at": now, "settings": {"tz": SENTINEL_PW, "mode": "accumulate"},
+                                                 "sessions": {}, "days": {today: {"INFRA": {"done": 1, "focus_ms": 1500000, "note": SENTINEL},
+                                                                                  "INFRA/" + SENTINEL_URL: {"done": 1, "focus_ms": 1}}},
+                                                 "notified": {}, "extra": SENTINEL_URL})
         wj(os.path.join(HOME, "owner-away"), {"since": now, "by": "INFRA", "said": "back soon %s" % SENTINEL})
         wj(os.path.join(HOME, "consensus", "c-1-a.json"), {
             "id": "c-1-a", "kind": "consensus", "from": "INFRA", "participants": ["INFRA", "CP"],
@@ -642,6 +647,10 @@ class EndToEnd(unittest.TestCase):
         state = json.loads(body)
         self.assertIn("[redacted:BOARD_TEST_TOKEN]", json.dumps(state["messages"]))
         self.assertEqual(state["sessions"][0]["pending"]["tool_use_id"], "tu_1")
+        st, body = self.get("/api/pomodoro/day?d=" + time.strftime("%Y-%m-%d"))
+        self.assertEqual(st, 200, body)
+        self.assertClean(body, "/api/pomodoro/day")
+        self.assertEqual(json.loads(body)["sessions"], {"INFRA": {"done": 1, "focus_ms": 1500000}})
         for path in ("/api/me", "/", "/manifest.webmanifest"):
             st, body = self.get(path)
             self.assertEqual(st, 200, path)
@@ -691,7 +700,7 @@ class EndToEnd(unittest.TestCase):
             "/", "/index.html", "/api/state", "/api/events", "/api/me",
             "/api/messages", "/api/away", "/api/notify-prefs", "/api/presence", "/api/alerts/ack", "/api/rc",
             "/api/decisions/([^/]+)/answer", "/api/decisions/([^/]+)/resolve", "/api/messages/([^/]+)/release",
-            "/api/sessions/([^/]+)/action", "/api/lessons", "/api/lessons/([^/]+)"})
+            "/api/sessions/([^/]+)/action", "/api/lessons", "/api/lessons/([^/]+)", "/api/pomodoro/day"})
         self.assertIn("if path in STATIC:", get_src)
         self.assertNotIn("os.environ", get_src + post_src)
         self.assertNotIn("open(", get_src + post_src)
@@ -989,7 +998,7 @@ class EndToEnd(unittest.TestCase):
     def test_07_everything_stored_is_clean(self):
         """Except the inputs this test planted by hand, nothing under BOARD_HOME carries a sentinel."""
         planted = {"snapshot.json", "t-1-a.json", "d-1-q.json", "m-1-a.json", "r-1-a.json", "owner-away", "c-1-a.json",
-                   "operator.json", "ledger.json"}
+                   "operator.json", "ledger.json", "pomodoro.json"}
         for d, _, files in os.walk(HOME):
             for f in files:
                 if f in planted:

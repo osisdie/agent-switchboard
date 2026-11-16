@@ -899,12 +899,26 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
 .pm-bar i { display: block; width: 100%; border-radius: 3px 3px 0 0; background: color-mix(in srgb, var(--pomo) 45%, var(--rule)); }
 .pm-day.today .pm-bar i { background: var(--pomo); }
 .pm-day.today .pm-d { color: var(--ink); font-weight: 650; }
+/* each day is a tab: click, tap, Enter/Space, arrow keys; the picked one is tinted and underlined */
+button.pm-day { font-family: inherit; line-height: inherit; background: none; border: 0; padding: 0; margin: 0; border-radius: 4px; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+button.pm-day:hover { background: color-mix(in srgb, var(--pomo) 7%, transparent); }
+button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1px; }
+.pm-day[aria-selected="true"] { background: color-mix(in srgb, var(--pomo) 15%, transparent); box-shadow: inset 0 -2px 0 var(--pomo); }
+.pm-day[aria-selected="true"] .pm-bar i { background: var(--pomo); }
+.pm-day[aria-selected="true"] .pm-d, .pm-day[aria-selected="true"] .pm-n { color: var(--pomo); font-weight: 700; }
+.pm-dtot { font-size: 15px; margin: 0 0 4px; }
+.pm-dayview .pm-champ { margin: 4px 0 8px; }
+.pm-load::before { content: "⏳ "; }
+.pm-err { color: var(--ink); }
+.pm-err .pm-retry { font: inherit; color: var(--cord); background: none; border: 0; padding: 0 2px; text-decoration: underline; cursor: pointer; }
+.pm-err .pm-retry:focus-visible { outline: 2px solid var(--cord); outline-offset: 2px; border-radius: 3px; }
 .pm-rules { margin-top: 14px; }
 @media (max-width: 620px) {
   .dcell.wide { grid-column: span 2; }
   .pm-list li { grid-template-columns: minmax(0, 1fr) auto auto 3.2em; }
   .pm-list .pm-tom { display: none; }   /* the ×N says it; the name gets the room */
   .pm-hist { gap: 2px; height: 100px; }
+  #pomo .info-in { padding-inline: 12px; }   /* 14 day tabs at a 24 px pitch or more on a 390 px phone */
   .pm-day { font-size: 10px; }
 }
 </style>
@@ -3777,8 +3791,8 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
       + '<path class="pr-leaf" d="M20 3c-2 2-5 3-7 3 2 1 4 2 5 4 1-2 1-4 2-7zm0 0c2 2 5 3 7 3-2 1-4 2-5 4-1-2-1-4-2-7z"/>';
     return svg;
   }
-  function pomoLabel(code, done, cur, team) {
-    const parts = [tr('{n} 🍅 today', { n: done })];
+  function pomoLabel(code, done, cur, team, past) {
+    const parts = [past ? tr('{n} 🍅', { n: done }) : tr('{n} 🍅 today', { n: done })];   // past: a day picked in the chart
     if (cur && cur.clock && (cur.ms || cur.live)) parts.unshift(tr('Pomodoro {t} of {full}', { t: mmss(cur.ms), full: mmss(cur.full) }) + (cur.live ? '' : ' (' + tr('paused') + ')'));
     if (team && team.n) parts.push(tr('{k} teammates: {n} 🍅, {focus} focus', { k: team.n, n: team.done, focus: pomoDur(team.focus) }));
     return [code].concat(parts).join(' · ');
@@ -3896,6 +3910,7 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
   }
   function openPomo() {
     const d = $('#pomo');
+    if (!d.open) { pomoSel = null; pomoDayCache.clear(); }   // today by default; a fresh cache each time
     renderPomoPanel();
     if (!d.open) { if (typeof d.showModal === 'function') d.showModal(); else d.setAttribute('open', ''); }
     pomoClip();
@@ -3924,18 +3939,121 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
       h('p', { class: 'pm-streams', text: tr('{k} streams today: {s} sessions + {t} teammates', { k: active.length + folded, s: active.length + folded - tm, t: tm }) }),
       fleetFocus >= 60000 ? h('p', { class: 'pm-human', text: tr('≈ {h} person-hours of focus', { h: (fleetFocus / 3600000).toFixed(1) }) }) : null);
     const who = (x) => h('span', { class: 'who', text: pomoName(x.k) });
-    const rank = streams.filter((x) => x.done > 0).sort((a, b) => b.done - a.done || b.focus - a.focus || a.k.localeCompare(b.k));
-    if (rank.length) {
-      const [c, r] = rank;
-      box.append(h('div', { class: 'pm-champ', dataset: { champ: c.k } },
-        h('p', null, h('span', { text: tr('🏆 Champion') + ' ' }), who(c), ' · ' + tr('{n} 🍅 · {focus} focus', { n: c.done, focus: pomoDur(c.focus) })),
-        r ? h('p', { class: 'ru', dataset: { runner: r.k } }, h('span', { text: tr('Runner-up') + ' ' }), who(r), ' · ' + tr('{n} 🍅 · {focus} focus', { n: r.done, focus: pomoDur(r.focus) })) : null));
-    } else {
+    const champ = pomoChamp(streams);
+    if (champ) box.append(champ);
+    else {
       const lead = streams.filter((x) => x.cur.clock && x.cur.ms > 0).sort((a, b) => b.cur.ms - a.cur.ms || a.k.localeCompare(b.k))[0];
       box.append(h('div', { class: 'pm-champ pm-none' },
         h('p', { text: tr(lead ? 'No pomodoro yet today: the first one is on its way.' : 'No pomodoros yet today.') }),
         lead ? h('p', { class: 'ru', dataset: { lead: lead.k } }, h('span', { text: tr('Closest') + ' ' }), who(lead), ' · ' + tr('{t} of {full}', { t: mmss(lead.cur.ms), full: mmss(lead.cur.full) })) : null));
     }
+    return box;
+  }
+  // The champion (most 🍅, then the most focus) and the runner-up of a day's streams
+  // ([{k, done, focus}], folded rows left out); null when none has a 🍅.
+  function pomoChamp(streams) {
+    const who = (x) => h('span', { class: 'who', text: pomoName(x.k) });
+    const rank = streams.filter((x) => x.done > 0).sort((a, b) => b.done - a.done || b.focus - a.focus || a.k.localeCompare(b.k));
+    if (!rank.length) return null;
+    const [c, r] = rank;
+    return h('div', { class: 'pm-champ', dataset: { champ: c.k } },
+      h('p', null, h('span', { text: tr('🏆 Champion') + ' ' }), who(c), ' · ' + tr('{n} 🍅 · {focus} focus', { n: c.done, focus: pomoDur(c.focus) })),
+      r ? h('p', { class: 'ru', dataset: { runner: r.k } }, h('span', { text: tr('Runner-up') + ' ' }), who(r), ' · ' + tr('{n} 🍅 · {focus} focus', { n: r.done, focus: pomoDur(r.focus) })) : null);
+  }
+  // A day picked in the chart (null: today, the default). Today comes from the live view on the
+  // page. A past day's per-stream breakdown: board-serve's GET /api/pomodoro/day, fetched only when
+  // that day is picked and cached while the panel is open; the demo makes one up from its totals;
+  // the Artifact mirror has daily totals only. Nothing polls.
+  let pomoSel = null;
+  const pomoDayCache = new Map();  // date -> { state: 'loading' | 'ok' | 'error', data }
+  const POMO_DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+  const POMO_DAY_WAIT_MS = 150;    // the fetch (not the pick) waits this long: holding an arrow key fetches the day it stops on
+  function pomoDayData(p, day) {
+    if (S.demo) return { state: 'ok', data: pomoDemoDay(p, day) };
+    if (!isLocal() || typeof adapter.pomodoroDay !== 'function') return { state: 'totals' };
+    let e = pomoDayCache.get(day);
+    if (e) return e;
+    e = { state: 'loading', data: null };
+    pomoDayCache.set(day, e);
+    setTimeout(() => {
+      if (pomoDayCache.get(day) !== e) return;
+      if (pomoSel !== day || !$('#pomo').open) { pomoDayCache.delete(day); return; }   // passed over: fetched if picked again
+      const req = POMO_DAY_RE.test(day) ? adapter.pomodoroDay(day) : Promise.reject(new Error('bad date'));
+      req.then((j) => {
+        if (!j || typeof j !== 'object' || !j.sessions || typeof j.sessions !== 'object' || !j.fleet) throw new Error('bad reply');
+        e.state = 'ok'; e.data = j;
+      }).catch(() => { e.state = 'error'; })
+        .then(() => { if (pomoDayCache.get(day) === e && $('#pomo').open) renderPomoPanel(); });
+    }, POMO_DAY_WAIT_MS);
+    return e;
+  }
+  // The demo's breakdown of a past day: its total split over the demo streams by weights hashed
+  // from the date (the same every time), with exact sums.
+  function pomoDemoDay(p, day) {
+    const d = p.days.find((x) => x && x.date === day) || { done: 0, focus_ms: 0 };
+    const codes = ['DOCS', 'OPS', 'API', 'QA', 'WEB', 'DATA', 'DOCS/writer', 'DOCS/checker'];
+    const hash = (t) => { let x = 2166136261; for (let i = 0; i < t.length; i++) x = Math.imul(x ^ t.charCodeAt(i), 16777619) >>> 0; return x; };
+    const w = codes.map((c) => hash(day + '|' + c) % 6);
+    if (!w.some(Boolean)) w[0] = 1;
+    const split = (total, ws) => {
+      const W = ws.reduce((a, b) => a + b, 0), out = ws.map((x) => Math.floor(total * x / W));
+      let left = total - out.reduce((a, b) => a + b, 0);
+      const order = ws.map((x, i) => [total * x / W - out[i], i]).filter(([, i]) => ws[i] > 0).sort((a, b) => b[0] - a[0] || a[1] - b[1]);
+      for (let k = 0; left > 0; k++, left--) out[order[k % order.length][1]]++;
+      return out;
+    };
+    const total = num(d.done) || 0, focus = num(d.focus_ms) || 0, full = pomoFull(p);
+    const done = split(total, w), slack = focus - total * full;
+    const extra = split(Math.max(0, slack), w), plain = split(focus, w);
+    const sessions = {};
+    codes.forEach((c, i) => {
+      const f = slack >= 0 ? done[i] * full + extra[i] : plain[i];
+      if (done[i] || f) sessions[c] = { done: done[i], focus_ms: f };
+    });
+    return { date: day, today: p.today, tz: p.tz, sessions,
+      fleet: { done: total, focus_ms: focus, teammates_done: codes.reduce((a, c, i) => a + (c.includes('/') ? done[i] : 0), 0) } };
+  }
+  function pomoPick(day) {
+    pomoSel = day;
+    renderPomoPanel();
+    const b = document.getElementById('pomo-day-' + day);
+    if (b) b.focus({ preventScroll: true });
+  }
+  // Arrow keys move between the days (and pick them), Home / End jump to the oldest / today.
+  function pomoDayKey(e) {
+    const tabs = [...document.querySelectorAll('#pomo .pm-hist .pm-day')], i = tabs.indexOf(e.currentTarget);
+    const j = { ArrowLeft: i - 1, ArrowRight: i + 1, Home: 0, End: tabs.length - 1 }[e.key];
+    if (j == null || i < 0) return;
+    e.preventDefault();
+    const t = tabs[Math.max(0, Math.min(tabs.length - 1, j))];
+    if (t) pomoPick(t.dataset.day);
+  }
+  // Below the chart: the picked day. Today: its sessions from the live view. A past day: its total,
+  // then its champion and sessions once they are here (loading / error states), or a note when this
+  // board has daily totals only.
+  function pomoDayPanel(p, day, isToday, all, now) {
+    const box = h('div', { class: 'pm-dayview', id: 'pomo-day-panel', role: 'tabpanel', 'aria-labelledby': 'pomo-day-' + day, dataset: { day } });
+    if (isToday) {
+      box.append(h('h3', { text: tr('Sessions today') }), pomoList(p, all, now, false));
+      return box;
+    }
+    const d = p.days.find((x) => x && str(x.date) === day) || {};
+    box.append(h('h3', { text: tr('On {day}', { day }) }),
+      h('p', { class: 'pm-total pm-dtot' }, h('strong', { text: tr('AI fleet: {n} 🍅', { n: num(d.done) || 0 }) }), ' · ', tr('{focus} focus', { focus: pomoDur(d.focus_ms) })));
+    const e = pomoDayData(p, day);
+    if (e.state === 'totals') { box.append(h('p', { class: 'note pm-only', text: tr('Daily totals only on this board.') })); return box; }
+    if (e.state === 'loading') { box.append(h('p', { class: 'note pm-load', role: 'status', text: tr('Loading {day}…', { day }) })); return box; }
+    if (e.state === 'error') {
+      box.append(h('p', { class: 'note pm-err', role: 'alert' }, tr('Could not load {day}.', { day }), ' ',
+        h('button', { class: 'pm-retry', type: 'button', text: tr('Try again'), onclick: () => { pomoDayCache.delete(day); pomoPick(day); } })));
+      return box;
+    }
+    const pp = { focus_ms: p.focus_ms, sessions: e.data.sessions, seen: null, day_start: 0 };
+    const rows = Object.entries(e.data.sessions).filter(([, r]) => r && typeof r === 'object');
+    if (!rows.length) { box.append(h('p', { class: 'note pm-none', text: tr('No pomodoros that day.') })); return box; }
+    const champ = pomoChamp(rows.filter(([, r]) => !pomoFolded(r)).map(([k, r]) => ({ k, done: num(r.done) || 0, focus: num(r.focus_ms) || 0 })));
+    if (champ) box.append(champ);
+    box.append(pomoList(pp, rows, now, true));
     return box;
   }
   // The panel stays usable with 100+ streams: the totals stay in view, the chart comes before the
@@ -3948,6 +4066,7 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
     const box = $('#pomo-body'), p = pomoView();
     const q0 = document.activeElement && document.activeElement.id === 'pomo-q' ? document.activeElement : null;
     const caret = q0 ? [q0.selectionStart, q0.selectionEnd] : null;
+    const tab0 = document.activeElement && document.activeElement.closest && document.activeElement.closest('#pomo .pm-hist .pm-day');
     box.textContent = '';
     if (!p) {
       box.append(h('p', { class: 'note', text: tr(isLocal() || S.demo ? 'No pomodoro data yet. The collector starts counting when a session works.' : 'The operator has not mirrored the pomodoro tally to this board yet (meta/pomodoro). Use board pomodoro in a terminal.') }));
@@ -3965,25 +4084,33 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
     box.append(h('p', { class: 'note', text: tr('Today is {day} ({tz}).', { day: str(p.today), tz: str(p.tz) || tr('system time') }) }));
     box.append(h('h3', { text: tr('Last 14 days') }));
     const top = Math.max(1, ...p.days.map((d) => (d && num(d.done)) || 0));
-    box.append(h('div', { class: 'pm-hist', role: 'list', 'aria-label': tr('Pomodoros per day, last 14 days') }, p.days.slice(-14).map((d, i, a) => {
-      const n = (d && num(d.done)) || 0, day = str(d && d.date);
+    const shown = p.days.slice(-14), last = str(shown.length && shown[shown.length - 1] && shown[shown.length - 1].date);
+    if (pomoSel === last || (pomoSel && !shown.some((d) => d && str(d.date) === pomoSel))) pomoSel = null;   // today, or rolled off
+    const sel = pomoSel || last;
+    box.append(h('div', { class: 'pm-hist', role: 'tablist', 'aria-label': tr('Pomodoros per day, last 14 days') }, shown.map((d, i, a) => {
+      const n = (d && num(d.done)) || 0, day = str(d && d.date), on = day === sel;
       const focus = pomoDur(i === a.length - 1 && day === str(p.today) ? pomoFleetFocus(p, now) : d && d.focus_ms);
-      return h('div', { class: 'pm-day' + (i === a.length - 1 ? ' today' : ''), role: 'listitem', 'aria-label': tr('{day}: {n} 🍅, {focus} focus', { day, n, focus }), title: tr('{day}: {n} 🍅, {focus} focus', { day, n, focus }) },
+      return h('button', { type: 'button', class: 'pm-day' + (i === a.length - 1 ? ' today' : ''), role: 'tab', id: 'pomo-day-' + day, dataset: { day },
+        'aria-selected': on ? 'true' : 'false', 'aria-controls': 'pomo-day-panel', tabindex: on ? '0' : '-1',
+        'aria-label': tr('{day}: {n} 🍅, {focus} focus', { day, n, focus }), title: tr('{day}: {n} 🍅, {focus} focus', { day, n, focus }),
+        onclick: () => pomoPick(day), onkeydown: pomoDayKey },
         h('span', { class: 'pm-n', 'aria-hidden': 'true', text: n ? String(n) : '' }),
         h('span', { class: 'pm-bar', 'aria-hidden': 'true' }, h('i', { style: 'height:' + (n ? Math.max(6, Math.round(n / top * 100)) : 0) + '%' })),
         h('span', { class: 'pm-d', 'aria-hidden': 'true', text: day.slice(8) }));
     })));
-    box.append(h('h3', { text: tr('Sessions today') }));
-    box.append(pomoList(p, all, now));
+    box.append(pomoDayPanel(p, sel, sel === last, all, now));
     box.append(h('p', { class: 'note pm-rules', text: p.mode === 'accumulate'
       ? tr('Every session and every teammate runs its own pomodoro. Each {m} minutes of focus adds up to one, and the rest carries over: a break never resets it, waiting for you pauses it, and going offline resets it.', { m: Math.round(pomoFull(p) / 60000) })
       : tr('A pomodoro is {m} minutes of a session working. A short pause (up to {g}) keeps it, a longer break or going offline resets it, and waiting for you pauses it.', { m: Math.round(pomoFull(p) / 60000), g: pomoDur(num(p.grace_ms) != null ? p.grace_ms : 120000) }) }));
     if (!isLocal() && !S.demo) box.append(h('p', { class: 'note', text: tr('Mirrored by the operator: daily totals only, no running clock.') }));
     const q = $('#pomo-q');
     if (q && caret) { q.focus({ preventScroll: true }); q.setSelectionRange(caret[0], caret[1]); }
+    const tab = tab0 && document.getElementById('pomo-day-' + tab0.dataset.day);
+    if (tab) tab.focus({ preventScroll: true });
     pomoClip();
   }
-  function pomoList(p, all, now) {
+  function pomoList(p, all, now, past) {
+    const none = past ? tr('No pomodoros that day.') : tr('No pomodoros yet today.');
     const wrap = h('div', { class: 'pm-sessions' });
     const groups = new Map();
     for (const [k, r] of all) {
@@ -3997,7 +4124,7 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
       const rows = [g.own].concat(g.team.map((x) => x[1])).filter(Boolean);
       return { code, g, done: rows.reduce((a, r) => a + (num(r.done) || 0), 0), focus: rows.reduce((a, r) => a + pomoFocus(p, r, now), 0), some: rows.some(some) };
     }).sort((a, b) => b.done - a.done || b.focus - a.focus || a.code.localeCompare(b.code));
-    if (!order.length) { wrap.append(h('p', { class: 'note', text: tr('No pomodoros yet today.') })); return wrap; }
+    if (!order.length) { wrap.append(h('p', { class: 'note', text: none })); return wrap; }
     if (order.length > POMO_TOP) {
       wrap.append(h('input', { class: 'pm-q', id: 'pomo-q', type: 'search', value: pomoQuery, autocomplete: 'off',
         placeholder: tr('Filter by session or teammate'), 'aria-label': tr('Filter by session or teammate'),
@@ -4013,8 +4140,8 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
       const done = tot ? tot.done : (r && num(r.done)) || 0, focus = tot ? tot.focus : r ? pomoFocus(p, r, now) : 0;
       const folded = pomoFolded(r);
       const name = folded ? tr('{n} more teammates', { n: num(r.streams) }) : label;
-      const aria = sub ? pomoLabel(folded ? name : tr('teammate {name}', { name: label }), done, cur)
-        : pomoLabel(label, done, cur) + (tot && tot.n ? ' · ' + tr('teammates included') : '');
+      const aria = sub ? pomoLabel(folded ? name : tr('teammate {name}', { name: label }), done, cur, null, past)
+        : pomoLabel(label, done, cur, null, past) + (tot && tot.n ? ' · ' + tr('teammates included') : '');
       return h('li', { class: sub ? 'pm-sub' : null, 'aria-label': aria },
         h('span', { class: 'pm-code', title: folded ? pomoParent(key) + ' · ' + name : pomoName(key), text: name }),
         h('span', { class: 'pm-tom', 'aria-hidden': 'true', text: done ? '🍅'.repeat(Math.min(done, 8)) + (done > 8 ? '+' : '') : '·' }),
@@ -4037,7 +4164,7 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
       if (open) for (const [k, r] of vis) list.append(line(k, r, k.slice(o.code.length + 1), true));
     }
     if (shown.length) wrap.append(list);
-    else wrap.append(h('p', { class: 'note', text: q ? tr('Nothing matches "{q}".', { q: pomoQuery.trim() }) : tr('No pomodoros yet today.') }));
+    else wrap.append(h('p', { class: 'note', text: q ? tr('Nothing matches "{q}".', { q: pomoQuery.trim() }) : none }));
     const quiet = order.filter((o) => !o.some).length;
     if (!q && (pomoAll || order.length > shown.length)) {
       wrap.append(h('button', { class: 'btn pm-all', type: 'button', 'aria-pressed': pomoAll ? 'true' : 'false',
@@ -4049,6 +4176,7 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
   }
   $('#pomo-close').addEventListener('click', () => { const d = $('#pomo'); if (typeof d.close === 'function') d.close(); else d.removeAttribute('open'); });
   $('#pomo').addEventListener('click', (e) => { if (e.target === e.currentTarget) e.currentTarget.close(); });
+  $('#pomo').addEventListener('close', () => { pomoDayCache.clear(); });
 
   /* navigation */
   function revealCard(card, focusEl) {
@@ -4726,6 +4854,8 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
       sessionAction(code, action) { return post('/api/sessions/' + encodeURIComponent(code) + '/action', { action }); },
       // Approvers only; board-serve runs `board lesson add|edit|activate|retire|delete --by board:<identity>`.
       addLesson(body) { return post('/api/lessons', body); },
+      // One kept day's per-stream pomodoro breakdown (the pushed view has daily totals only).
+      pomodoroDay(day) { return call('/api/pomodoro/day?d=' + encodeURIComponent(day)); },
       lessonAction(id, body) { return post('/api/lessons/' + encodeURIComponent(id), body); },
       presence(visible, interactionAt, leaving) {
         return call('/api/presence', { method: 'POST', keepalive: !!leaving, headers: { 'Content-Type': 'application/json', 'X-Board': '1' },
@@ -6009,6 +6139,7 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
       "AI fleet: {n} 🍅 · {focus} focus. Press for the pomodoro tally.": "AI 團隊：{n} 🍅 · 專注 {focus}。按下查看番茄鐘統計。",
       "Pomodoros: no data yet. Press for the pomodoro tally.": "番茄鐘：還沒有資料。按下查看番茄鐘統計。",
       "{n} 🍅 today": "今日 {n} 🍅",
+      "{n} 🍅": "{n} 🍅",
       "🍅×{n} today": "今日 🍅×{n}",
       "teammates +{n} 🍅 · {focus}": "teammate +{n} 🍅 · {focus}",
       "{k} teammates: {n} 🍅, {focus} focus": "{k} 個 teammate：{n} 🍅，專注 {focus}",
@@ -6025,6 +6156,12 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
       "Last 14 days": "最近 14 天",
       "Pomodoros per day, last 14 days": "最近 14 天每天的番茄鐘",
       "{day}: {n} 🍅, {focus} focus": "{day}：{n} 🍅，專注 {focus}",
+      "On {day}": "{day} 當天",
+      "No pomodoros that day.": "那天沒有番茄鐘。",
+      "Daily totals only on this board.": "這個看板只有每日總數。",
+      "Loading {day}…": "正在載入 {day}…",
+      "Could not load {day}.": "無法載入 {day}。",
+      "Try again": "再試一次",
       "A pomodoro is {m} minutes of a session working. A short pause (up to {g}) keeps it, a longer break or going offline resets it, and waiting for you pauses it.": "一個番茄鐘是 session 工作 {m} 分鐘。短暫停頓（{g} 以內）會接著算；休息更久或離線就重新計算；等你回覆時暫停計時。",
       "Mirrored by the operator: daily totals only, no running clock.": "由 operator 同步：只有每日總數，沒有即時計時。",
       "What counts as a pomodoro": "什麼算一個番茄鐘",

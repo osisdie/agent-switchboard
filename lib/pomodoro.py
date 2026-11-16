@@ -542,6 +542,45 @@ def board_view(doc, now):
     return v
 
 
+DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def day_view(doc, day, now):
+    """GET /api/pomodoro/day?d=YYYY-MM-DD (board-serve, read-only, on demand): one kept day's
+    breakdown, which the pushed view leaves out (its days carry totals only). Numbers, codes and
+    teammate names only, bounded like the board view: the streams with a 🍅 or focus that day, at
+    most VIEW_TEAM_CAP teammates per session, the rest folded into "CODE/+others" (`streams`,
+    `active`), so `fleet` and every sum stay exact. Raises ValueError for a malformed or impossible
+    date; returns None when there is no document or the day is not one of the HISTORY_DAYS kept."""
+    if not isinstance(day, str) or not DAY_RE.match(day):
+        raise ValueError("bad date")
+    try:
+        dt.date.fromisoformat(day)
+    except ValueError:
+        raise ValueError("bad date") from None
+    if not isinstance(doc, dict):
+        return None
+    s = doc.get("settings") if isinstance(doc.get("settings"), dict) else {}
+    tz = tzinfo(s.get("tz") if isinstance(s.get("tz"), str) else "")
+    tz_name = s["tz"] if tz is not None else ""     # only a name that resolves leaves here
+    today = day_of(now, tz)
+    if day not in days_back(today, HISTORY_DAYS):
+        return None
+    per = normalize(doc)["days"].get(day, {})
+    rows = {c: {"done": v["done"], "focus_ms": v["focus_ms"], "progress_ms": 0, "running": False}
+            for c, v in per.items()}
+    sessions = {}
+    for c, v in bound_streams(rows).items():
+        sessions[c] = {"done": v["done"], "focus_ms": v["focus_ms"]}
+        if "streams" in v:
+            sessions[c].update(streams=v["streams"], active=v["active"])
+    tm = [v for c, v in per.items() if is_teammate(c)]
+    return {"date": day, "today": today, "tz": tz_name,
+            "fleet": {"done": sum(v["done"] for v in per.values()), "focus_ms": sum(v["focus_ms"] for v in per.values()),
+                      "teammates_done": sum(v["done"] for v in tm)},
+            "sessions": sessions}
+
+
 def mirror_view(view):
     """meta/pomodoro for the Artifact: the daily totals (from raw_view), no running clock. Bounded
     like the board view: the streams with a 🍅 or focus today, at most VIEW_TEAM_CAP teammates per

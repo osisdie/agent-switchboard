@@ -2,7 +2,9 @@
 """tests/test_page_pomodoro.py — optional headless check of the pomodoro surfaces in
 artifact/board.html: the tomato ring on a session card (mm:ss of 25:00, ticking while the session
 works, paused otherwise, "🍅×N today", the teammates' combined figure), the Deck key "🍅 Today" (fleet total, focus, 7-day
-sparkline) and its panel (sessions today, 14 days), the celebration when a pomodoro completes
+sparkline) and its panel (sessions today, 14 days; a day picked in the chart by click, tap or keys
+shows its own total, champion and sessions: fetched from board-serve, made up in the demo, totals
+only on the Artifact), the celebration when a pomodoro completes
 (none under reduced motion), zh-TW, phone width with no horizontal page scroll, the Artifact page
 (meta/pomodoro, read-only, no clock) and board-serve end to end (the real collector writes
 pomodoro.json, a completion reaches the page over SSE).
@@ -77,6 +79,19 @@ SUM_JS = """() => { const s = document.querySelector('#pomo .pm-sum'); if (!s) r
     lead: (s.querySelector('[data-lead]') || { dataset: {} }).dataset.lead, none: !!s.querySelector('.pm-none') }; }"""
 POP_JS = """(id) => { const p = document.getElementById(id); return { shown: !p.hidden && p.getBoundingClientRect().width > 0, text: p.innerText.replace(/\\s+/g, ' ').trim(),
   right: p.getBoundingClientRect().right, vw: document.documentElement.clientWidth }; }"""
+DAY_JS = """() => { const tabs = [...document.querySelectorAll('#pomo .pm-hist .pm-day')], v = document.getElementById('pomo-day-panel');
+  const a = document.activeElement;
+  return { sel: tabs.map((t) => t.getAttribute('aria-selected')), days: tabs.map((t) => t.dataset.day), tabidx: tabs.map((t) => t.getAttribute('tabindex')),
+    role: document.querySelector('#pomo .pm-hist').getAttribute('role'), roles: [...new Set(tabs.map((t) => t.tagName + ':' + t.getAttribute('role')))],
+    focus: a && a.classList && a.classList.contains('pm-day') ? a.dataset.day : null,
+    panel: v && { day: v.dataset.day, by: v.getAttribute('aria-labelledby'), role: v.getAttribute('role'), text: v.innerText.replace(/\\s+/g, ' ').trim(),
+      champ: (v.querySelector('.pm-champ') || { dataset: {} }).dataset.champ || null,
+      rows: [...v.querySelectorAll('.pm-list li:not(.pm-more)')].map((li) => (li.classList.contains('pm-sub') ? '+' : '') + li.querySelector('.pm-code').textContent + '×' + li.querySelector('.pm-cnt').textContent.slice(1)),
+      loading: !!v.querySelector('.pm-load'), error: !!v.querySelector('.pm-err'), only: !!v.querySelector('.pm-only'), none: !!v.querySelector('.pm-none') } }; }"""
+LABELS_JS = "() => [...document.querySelectorAll('#pomo-day-panel .pm-list li[aria-label]')].map((li) => li.getAttribute('aria-label'))"
+SEL_STYLE_JS = """() => { const t = [...document.querySelectorAll('#pomo .pm-hist .pm-day')], cs = (e) => getComputedStyle(e);
+  const on = t.find((e) => e.getAttribute('aria-selected') === 'true'), off = t.find((e) => e.getAttribute('aria-selected') === 'false');
+  return { on: cs(on).backgroundColor, off: cs(off).backgroundColor, shadow: cs(on).boxShadow, dOn: cs(on.querySelector('.pm-d')).color, dOff: cs(off.querySelector('.pm-d')).color }; }"""
 FAKE_TMUX = "#!/usr/bin/env bash\nexit 0\n"
 
 
@@ -232,6 +247,77 @@ def main():
             check("  the burst is gone afterwards", pg.evaluate("() => document.querySelectorAll('.pomo-burst, .pomo-pop').length") == 0)
             pg.close()
 
+            print("demo: pick a day in the chart")
+            pg = new_page()
+            check("demo: the cards render", open_paused(pg, PAGE + "?demo=1", CARDS_UP))
+            pg.click("#deck-grid .dkey.pomo")
+            pg.clock.run_for(300)
+            dv = pg.evaluate(DAY_JS)
+            check("the chart is a tablist of 14 day buttons", dv["role"] == "tablist" and dv["roles"] == ["BUTTON:tab"] and len(dv["days"]) == 14, dv)
+            check("  today is selected by default", dv["sel"] == ["false"] * 13 + ["true"] and dv["tabidx"] == ["-1"] * 13 + ["0"]
+                  and dv["panel"]["day"] == dv["days"][-1] and dv["panel"]["role"] == "tabpanel" and dv["panel"]["by"] == "pomo-day-" + dv["days"][-1], dv)
+            check("  today's sessions below the chart, from the live view", dv["panel"]["text"].lower().startswith("sessions today")
+                  and dv["panel"]["rows"] == ["DOCS×10", "API×3", "QA×3", "OPS×2", "WEB×1", "DATA×0"], dv["panel"])
+            day9 = dv["days"][9]
+            pg.click("#pomo-day-" + day9)
+            pg.clock.run_for(50)
+            dv = pg.evaluate(DAY_JS)
+            counts = [int(r.split("×")[1]) for r in dv["panel"]["rows"] if not r.startswith("+")]
+            check("a click picks a past day", dv["sel"][9] == "true" and dv["sel"].count("true") == 1 and dv["tabidx"][9] == "0" and dv["focus"] == day9, dv["sel"])
+            check("  its total and focus", ("on %s" % day9) in dv["panel"]["text"].lower() and "AI fleet: 16 🍅 · 7h 12m focus" in dv["panel"]["text"], dv["panel"]["text"][:160])
+            check("  its champion", dv["panel"]["champ"] and "🏆 Champion" in dv["panel"]["text"], dv["panel"])
+            check("  its sessions, teammates folded under them, adding up to the day", sum(counts) == 16 and len(counts) >= 2
+                  and all("/" not in r for r in dv["panel"]["rows"]), dv["panel"]["rows"])
+            first_rows = dv["panel"]["rows"]
+            pg.click("#pomo-day-panel .pm-tgl")
+            labels = pg.evaluate(LABELS_JS)
+            check("  its row labels never say today", len(labels) >= 3 and not [x for x in labels if "today" in x.lower()]
+                  and any(x.startswith("DOCS · ") and " 🍅" in x for x in labels), labels)
+            check("  today's row labels still do", pg.evaluate("(d) => { document.getElementById('pomo-day-' + d).click(); "
+                                                                "return [...document.querySelectorAll('#pomo-day-panel .pm-list li[aria-label]')].every((li) => li.getAttribute('aria-label').includes('today')); }",
+                                                                dv["days"][-1]))
+            pg.click("#pomo-day-" + day9)
+            pg.click("#pomo-day-panel .pm-tgl")   # folded again
+            pg.click("#pomo-day-" + day9)          # the focus back on the day
+            check("  the cards keep today's numbers", "🍅×5 today" in (pg.evaluate(ROWS_JS).get("DOCS") or {}).get("text", ""))
+            pg.keyboard.press("ArrowLeft")
+            dv = pg.evaluate(DAY_JS)
+            check("ArrowLeft picks the day before and focuses it", dv["sel"][8] == "true" and dv["focus"] == dv["days"][8] and "AI fleet: 8 🍅" in dv["panel"]["text"], (dv["sel"], dv["focus"]))
+            pg.keyboard.press("ArrowRight")
+            pg.keyboard.press("ArrowRight")
+            dv = pg.evaluate(DAY_JS)
+            check("ArrowRight moves on", dv["sel"][10] == "true" and dv["focus"] == dv["days"][10], dv["sel"])
+            pg.keyboard.press("Home")
+            dv = pg.evaluate(DAY_JS)
+            check("Home: the oldest day", dv["sel"][0] == "true" and dv["focus"] == dv["days"][0], dv["sel"])
+            pg.keyboard.press("ArrowLeft")
+            check("  ArrowLeft stops there", pg.evaluate(DAY_JS)["sel"][0] == "true")
+            pg.keyboard.press("End")
+            dv = pg.evaluate(DAY_JS)
+            check("End: back to today", dv["sel"][-1] == "true" and dv["panel"]["text"].lower().startswith("sessions today"), dv["sel"])
+            pg.evaluate("(d) => document.getElementById('pomo-day-' + d).focus()", day9)
+            pg.keyboard.press("Enter")
+            dv = pg.evaluate(DAY_JS)
+            check("Enter picks the focused day", dv["sel"][9] == "true" and dv["panel"]["rows"] == first_rows, dv["sel"])
+            pg.evaluate("(d) => document.getElementById('pomo-day-' + d).focus()", dv["days"][2])
+            pg.keyboard.press("Space")
+            dv = pg.evaluate(DAY_JS)
+            check("Space picks it too; a day with nothing says so", dv["sel"][2] == "true" and dv["panel"]["none"] and "No pomodoros that day." in dv["panel"]["text"]
+                  and not dv["panel"]["champ"], dv["panel"])
+            st = pg.evaluate(SEL_STYLE_JS)
+            check("the picked day is marked (tint, underline, label colour)", st["on"] != st["off"] and "inset" in st["shadow"] and st["dOn"] != st["dOff"], st)
+            pg.click("#pomo-close")
+            pg.click("#deck-grid .dkey.pomo")
+            pg.clock.run_for(300)
+            dv = pg.evaluate(DAY_JS)
+            check("reopened: today again", dv["sel"][-1] == "true" and dv["sel"].count("true") == 1, dv["sel"])
+            pg.click("#pomo-day-" + day9)
+            check("  the demo's breakdown is the same each time", pg.evaluate(DAY_JS)["panel"]["rows"] == first_rows)
+            pg.emulate_media(color_scheme="dark")
+            st = pg.evaluate(SEL_STYLE_JS)
+            check("dark: the picked day is marked", st["on"] != st["off"] and st["dOn"] != st["dOff"], st)
+            pg.close()
+
             print("reduced motion")
             pg = new_page(reduced_motion="reduce")
             check("reduced motion: the demo renders", open_paused(pg, PAGE + "?demo=1", CARDS_UP))
@@ -255,6 +341,17 @@ def main():
             check("  the panel fits the screen", pn["open"] and pn["width"] <= pn["vw"] and pn["scrollW"] <= pn["vw"], pn)
             hist = pg.evaluate("() => { const h = document.querySelector('.pm-hist'); return [h.scrollWidth, h.clientWidth]; }")
             check("  all 14 bars fit", hist[0] <= hist[1] + 1, hist)
+            days = pg.evaluate(DAY_JS)["days"]
+            pg.locator("#pomo-day-" + days[5]).tap()
+            pg.clock.run_for(50)
+            dv = pg.evaluate(DAY_JS)
+            check("  a tap picks a past day", dv["sel"][5] == "true" and "AI fleet: 11 🍅" in dv["panel"]["text"] and dv["panel"]["rows"], dv["panel"])
+            pn = pg.evaluate(PANEL_JS)
+            check("  no horizontal scroll with a past day shown", pn["scrollW"] <= pn["vw"]
+                  and pg.evaluate("() => { const d = document.getElementById('pomo'); return d.scrollWidth <= d.clientWidth; }"), pn)
+            box = pg.evaluate("""() => { const t = [...document.querySelectorAll('#pomo .pm-day')].map((e) => e.getBoundingClientRect());
+              return { w: Math.min(...t.map((b) => b.width)), h: Math.min(...t.map((b) => b.height)), pitch: Math.min(...t.slice(1).map((b, i) => b.left - t[i].left)) }; }""")
+            check("  a day is big enough to tap (a 24 px pitch or more)", box["pitch"] >= 24 and box["w"] >= 21 and box["h"] >= 80, box)
             pg.close()
 
             print("zh-TW")
@@ -271,6 +368,17 @@ def main():
                   and "AI 團隊：19 🍅" in pn["text"] and "teammate 5 🍅" in pn["text"] and "每個 session 和每個 teammate 都有自己的番茄鐘" in pn["text"], pn["text"][:300])
             left = [w for w in ("sessions today", "last 14 days", "focus", "today is", "a pomodoro", "close") if w in pn["text"].lower()]
             check("  no English left in the panel", not left, left)
+            days = pg.evaluate(DAY_JS)["days"]
+            pg.click("#pomo-day-" + days[9])
+            dv = pg.evaluate(DAY_JS)
+            check("  a past day in Chinese", ("%s 當天" % days[9]) in dv["panel"]["text"] and "AI 團隊：16 🍅 · 專注 7 小時 12 分" in dv["panel"]["text"]
+                  and "🏆 冠軍" in dv["panel"]["text"], dv["panel"]["text"][:200])
+            zl = pg.evaluate(LABELS_JS)
+            check("  its row labels never say 今日", zl and not [x for x in zl if "今日" in x or "today" in x.lower()], zl)
+            pg.click("#pomo-day-" + days[2])
+            check("  a day with nothing", "那天沒有番茄鐘。" in pg.evaluate(DAY_JS)["panel"]["text"])
+            left = [w for w in ("on ", "focus", "no pomodoros", "champion") if w in pg.evaluate(DAY_JS)["panel"]["text"].lower()]
+            check("  no English left in the day", not left, left)
             pg.close()
 
             print("claude adapter (Artifact): meta/pomodoro")
@@ -289,6 +397,13 @@ def main():
             pg.clock.run_for(300)
             pn = pg.evaluate(PANEL_JS)
             check("  the panel says it is a mirror", "Mirrored by the operator" in pn["text"] and pn["rows"] == ["API×3", "WEB×1"], (pn["rows"], pn["text"][-120:]))
+            pg.click("#pomo-day-2026-11-12")
+            dv = pg.evaluate(DAY_JS)
+            check("  a past day: selectable, its totals, and daily totals only", dv["sel"][10] == "true" and dv["panel"]["only"]
+                  and "AI fleet: 10 🍅 · 4h 10m focus" in dv["panel"]["text"] and "Daily totals only on this board." in dv["panel"]["text"]
+                  and not dv["panel"]["rows"] and not dv["panel"]["loading"], dv["panel"])
+            pg.keyboard.press("End")
+            check("  End: today's sessions again", pg.evaluate(DAY_JS)["panel"]["rows"] == ["API×3", "WEB×1"])
             pg.close()
             print("panel: teammate names, the summary, the explainer")
             # Two teammates tie on 🍅 (3 each): the one with more focus is the champion, though it sorts
@@ -461,11 +576,15 @@ def main():
                                                              "name": "CP", "status": "busy", "startedAt": 1})
             write(os.path.join(home, "state", sid + ".json"), {"session_id": sid, "state": "working", "tmux_pane": "%42", "updated_at": now})
             today = time.strftime("%Y-%m-%d", time.gmtime(now / 1000))
+            past3, past5 = (time.strftime("%Y-%m-%d", time.gmtime(now / 1000 - n * 86400)) for n in (3, 5))
             # CP is 10 min from the end of its third pomodoro (as the collector would have left it):
             # no slow start-up can cross 25:00 before the first checks. The crossing is set up below.
             write(os.path.join(home, "pomodoro.json"), {"version": 1, "at": now, "settings": {"focus_ms": 1500000, "grace_ms": 120000, "tz": "UTC"},
                                                         "sessions": {"CP": {"state": "working", "acc": 900000, "away_since": None, "done_at": now - 900000}},
-                                                        "days": {today: {"CP": {"done": 2, "focus_ms": 2 * 1500000 + 900000}}}, "notified": {}})
+                                                        "days": {today: {"CP": {"done": 2, "focus_ms": 2 * 1500000 + 900000}},
+                                                                 past3: {"CP": {"done": 4, "focus_ms": 4 * 1500000 + 60000}, "CP/helper": {"done": 2, "focus_ms": 3000000},
+                                                                         "WEB": {"done": 1, "focus_ms": 1600000}},
+                                                                 past5: {"CP": {"done": 1, "focus_ms": 1500000}}}, "notified": {}})
             write(os.path.join(fbin, "tmux"), FAKE_TMUX)
             os.chmod(os.path.join(fbin, "tmux"), 0o755)
             proc = os.path.join(tmp, "proc")
@@ -511,6 +630,61 @@ def main():
             check("  the completion reaches the page over SSE", ok, pg.evaluate(ROWS_JS))
             check("  with a celebration", pg.evaluate("() => window.__bursts") >= 1, pg.evaluate("() => window.__bursts"))
             check("  the next pomodoro started", re.search(r"\b0:[0-5]\d / 25:00", (pg.evaluate(ROWS_JS).get("CP") or {}).get("text", "")), pg.evaluate(ROWS_JS).get("CP"))
+
+            print("board-serve: pick a past day")
+            calls = []
+            pg.on("request", lambda r: calls.append(r.url) if "/api/pomodoro/day" in r.url else None)
+            pg.click("#deck-grid .dkey.pomo")
+            has(pg, "() => document.getElementById('pomo').open")
+            dv = pg.evaluate(DAY_JS)
+            check("today by default, nothing fetched", dv["sel"][-1] == "true" and dv["panel"]["text"].lower().startswith("sessions today") and not calls, (dv["sel"], calls))
+            pg.click("#pomo-day-" + past3)
+            ok = has(pg, "() => (document.getElementById('pomo-day-panel') || {}).querySelector?.('.pm-list')")
+            dv = pg.evaluate(DAY_JS)
+            check("a past day is fetched from board-serve and rendered", ok and dv["panel"]["rows"] == ["CP×6", "WEB×1"] and dv["panel"]["champ"] == "CP"
+                  and "AI fleet: 7 🍅" in dv["panel"]["text"], dv["panel"])
+            check("  one request, for that day", len(calls) == 1 and calls[0].endswith("/api/pomodoro/day?d=" + past3), calls)
+            pg.click("#pomo-day-panel .pm-tgl")
+            check("  its teammates unfold", "+helper×2" in pg.evaluate(DAY_JS)["panel"]["rows"], pg.evaluate(DAY_JS)["panel"]["rows"])
+            pg.keyboard.press("End")
+            pg.click("#pomo-day-" + past3)
+            has(pg, "() => (document.getElementById('pomo-day-panel') || {}).querySelector?.('.pm-list')")
+            check("  cached while the panel is open", len(calls) == 1, calls)
+            pg.route("**/api/pomodoro/day?d=" + past5, lambda r: r.fulfill(status=500, content_type="application/json", body='{"error":"boom"}'))
+            pg.click("#pomo-day-" + past5)
+            ok = has(pg, "() => !!document.querySelector('#pomo-day-panel .pm-err')")
+            dv = pg.evaluate(DAY_JS)
+            check("an error: said so, with Try again", ok and ("Could not load %s." % past5) in dv["panel"]["text"] and pg.locator("#pomo-day-panel .pm-retry").count() == 1, dv["panel"])
+            pg.unroute("**/api/pomodoro/day?d=" + past5)
+            pg.click("#pomo-day-panel .pm-retry")
+            ok = has(pg, "() => (document.getElementById('pomo-day-panel') || {}).querySelector?.('.pm-list')")
+            check("  Try again loads it", ok and pg.evaluate(DAY_JS)["panel"]["rows"] == ["CP×1"], pg.evaluate(DAY_JS)["panel"])
+            # holding an arrow key: every day is picked on the way, only the one it stops on is fetched
+            pg.keyboard.press("Home")
+            n0 = len(calls)
+            for _ in range(6):
+                pg.keyboard.press("ArrowRight")
+            stop = pg.evaluate(DAY_JS)["focus"]
+            has(pg, "() => (document.getElementById('pomo-day-panel') || {}).querySelector?.('.pm-list, .pm-none')")
+            pg.wait_for_timeout(400)
+            fetched = calls[n0:]
+            check("a held arrow key fetches the day it stops on, not every day", stop and len(fetched) <= 2 and fetched and fetched[-1].endswith("d=" + stop), (stop, fetched))
+            pg.click("#pomo-close")
+            pg.click("#deck-grid .dkey.pomo")
+            has(pg, "() => document.getElementById('pomo').open")
+            n0 = len(calls)
+            pg.click("#pomo-day-" + past3)
+            has(pg, "() => (document.getElementById('pomo-day-panel') || {}).querySelector?.('.pm-list')")
+            check("  reopened: the cache starts fresh", len(calls) == n0 + 1, calls)
+            slow = []   # a slow reply: held until the check has seen the loading state
+            pg.route("**/api/pomodoro/day?d=" + past5, lambda r: slow.append(r))
+            pg.click("#pomo-day-" + past5)
+            ok = has(pg, "() => !!document.querySelector('#pomo-day-panel .pm-load')")
+            check("a slow reply: a loading state", ok and ("Loading %s…" % past5) in pg.evaluate(DAY_JS)["panel"]["text"], pg.evaluate(DAY_JS)["panel"])
+            for r in slow:
+                r.continue_()
+            pg.unroute("**/api/pomodoro/day?d=" + past5)
+            check("  then the day", has(pg, "() => (document.getElementById('pomo-day-panel') || {}).querySelector?.('.pm-list')"))
             pg.close()
 
             check("no page errors", not errors, errors)
