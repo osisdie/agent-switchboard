@@ -870,6 +870,8 @@ dialog.pomo { width: min(560px, calc(100vw - 24px)); }
 .pm-sum { display: grid; gap: 4px; margin: 0 0 4px; }
 .pm-sum p { margin: 0; }
 .pm-champ { display: grid; gap: 2px; margin-top: 6px; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--rule); background: color-mix(in srgb, var(--pomo) 7%, var(--panel)); }
+/* its lines are spaced by the grid gap alone, in today's summary and in a picked day's panel */
+.pm-champ p { margin: 0; }
 .pm-champ .who { font-family: var(--f-mono); font-weight: 650; overflow-wrap: anywhere; }
 .pm-champ .ru { color: var(--muted); font-size: 13px; }
 .pm-streams, .pm-human { color: var(--muted); font-size: 13px; }
