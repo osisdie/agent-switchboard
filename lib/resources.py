@@ -77,6 +77,12 @@ CLASS_RE = {
 COMM_ONLY = ("browser",)
 ARGV_COMM_RE = re.compile(r"^(claude|node|bun|python)", re.I)   # whose argv we read outside session trees
 SHELLS = ("bash", "sh", "zsh", "dash", "fish")                     # a shell running `pytest` is not the test
+# Wrappers and launchers (`timeout 600 npx vitest`, `npm test`, `uv run pytest`) name the job in
+# their argv but only start it: the real work is a child, which is classed on its own. Matched on
+# the first word of `comm` (npm sets its title, e.g. "npm exec vitest"), or node running one.
+WRAPPERS = ("timeout", "env", "nice", "ionice", "nohup", "stdbuf", "xargs", "time", "setsid", "chrt",
+            "taskset", "flock", "npx", "npm", "pnpm", "yarn", "bunx", "uv", "uvx")
+LAUNCHER_SCRIPTS = ("npx-cli.js", "npm-cli.js", "pnpm.cjs", "pnpm.js", "pnpm", "yarn.js", "yarn.cjs", "npx", "npm")
 NAME_RE = re.compile(r"[^A-Za-z0-9._@ -]")
 MIB = 1024 * 1024
 try:
@@ -416,14 +422,22 @@ def classify(p, classes):
         return "teammate"
     if is_claude(p):
         return "claude"
-    if p["comm"] in SHELLS:
-        return "other"
     argv = p.get("argv") or []
+    if p["comm"] in SHELLS or is_wrapper(p["comm"], argv):
+        return "other"
     target = " ".join([p["comm"]] + [os.path.basename(a) for a in argv[:4]])
     for name, rx in classes:
         if rx.search(p["comm"] if name in COMM_ONLY else target):
             return name
     return "other"
+
+
+def is_wrapper(comm, argv=()):
+    """A process that only starts the real job (timeout, env, npx, npm, ...), by comm or as node."""
+    first = os.path.basename((comm or "").split(" ", 1)[0]) if isinstance(comm, str) else ""
+    if first in WRAPPERS:
+        return True
+    return first == "node" and len(argv) > 1 and isinstance(argv[1], str) and os.path.basename(argv[1]) in LAUNCHER_SCRIPTS
 
 
 def is_watch(p):

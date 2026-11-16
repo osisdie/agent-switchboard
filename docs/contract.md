@@ -1386,7 +1386,11 @@ ever stops a process**.
   also appear in the session's `children` with `via`. `idle_s` is the time since its subtree last
   used ≥ 1% CPU or started a process (`null` on first sight); `idle` means `idle_s` ≥
   `teammate_idle_minutes` × 60.
-- **Classes** match `comm` plus the base names of the first argv words (a shell is never a test):
+- **Classes** match `comm` plus the base names of the first argv words (a shell is never a test,
+  nor is a wrapper or launcher that only starts the job: `timeout`, `env`, `nice`, `ionice`,
+  `nohup`, `stdbuf`, `xargs`, `time`, `setsid`, `chrt`, `taskset`, `flock`, `npx`, `npm`, `pnpm`,
+  `yarn`, `bunx`, `uv`, `uvx` by the first word of `comm`, or node running `npx-cli.js`,
+  `npm-cli.js`, `pnpm.cjs`, ...; they are `other` and their child is classed on its own):
   test `pytest|jest|vitest|go test|cargo test|mvn|gradle`, build `tsc|webpack|vite build|cargo
   build|docker build`, container `docker|containerd`, and browser `chrome|chromium|firefox|headless_shell`
   matched on `comm` alone (an idle Playwright MCP server mentions them in its argv but is not a
@@ -1552,6 +1556,12 @@ leaves the file alone; a usage error exits 2.
 - **Advisories.** Ids hash `(kind, to, task, ref)`, so the same condition keeps its id. Texts name
   only task ids, validated branch names and process names; a text that would contain "approv",
   "deploy", "decision" or `[BOARD` falls back to a generic one that names nothing.
+  A resource level is named by its cause, from `resources.json` `levels` (else `worst`), memory
+  first: "Memory is critical (about 4% available, PSI about 30%)", "Memory is critical after an OOM
+  kill", "Swap is critical (about 85% used)", "Disk space is critical (about 2% free)", "CPU load
+  is critical (about 4.5 per CPU)", or "Resources are critical" when the cause is unknown. Only
+  fixed words and validated numbers, floored to steps (memory and disk 1%, PSI and swap 5%, load
+  0.5 per CPU) so a small change keeps the text and the digest; a metric that is fine is not named.
   - `defer` (warn): the heavy task a session would start next has no slot.
   - `resume` (info): a session has been `done`/`rest` for `idle_with_work_minutes` (30) with a ready task.
   - `finish-first` (warn, `one_pr_per_repo`): another task in the same `repo` has the open PR (the
@@ -1560,10 +1570,16 @@ leaves the file alone; a usage error exits 2.
     `git rebase --onto origin/<base> <head_sha> <branch>` line (`<base>` stays a placeholder when
     the merged task has none), force-push only with
     `--force-with-lease` on its own branch, and the PR base to retarget.
-  - `stop-own-heavy` (high, `stop_own_heavy`): at `critical`, the `stop_max` (2) sessions holding
-    the largest heavy process (`resources.json` children) are asked to stop it if they or their
-    teammate started it, and never one they did not start. The board never stops a process.
-    `rss_mb` is floored to 256 MB, so a growing process does not change the decision.
+  - `stop-own-heavy` (high, `stop_own_heavy`): at `critical` driven by memory (`mem`, which
+    includes PSI, `swap`, or an OOM kill), the `stop_max` (2) sessions holding the largest heavy
+    process by RSS (`resources.json` children) are asked to stop it if they or their teammate
+    started it, and never one they did not start. The board never stops a process. `rss_mb` is
+    floored to 256 MB, so a growing process does not change the decision. It never names a wrapper
+    (above) or a process under 64 MB. Its id hashes the session, `via` and the class, not the pid.
+    At `critical` from CPU
+    load or disk alone (or an unknown cause) nobody is asked to stop anything: stopping short
+    CPU-bound runs such as tests relieves nothing durable. New heavy starts stay deferred (`defer`
+    names the cause) and J5 names it on the board.
   - `wait-for-reset` (warn): in wait-reset mode, a free session whose next task is held until the
     reset.
 - **Delivery** (`delivery.state`). Only `pause`, `defer`, `finish-first`, `rebase-needed`,
@@ -1574,8 +1590,12 @@ leaves the file alone; a usage error exits 2.
   `readvise_minutes` (60) ago with no reply (at most 3 sends; after that it stays `board`);
   `held` while its session is offline, when the session already got
   `max_messages_per_session_hour` (4) batches in the last hour, or in `alerting.quiet_hours`
-  unless it is `high`; `sent` otherwise. `due` lists the due ids per session. An advisory that
-  disappears forgets its delivery, so a recurrence is sent again (still within the cap).
+  unless it is `high`; `sent` otherwise. `due` lists the due ids per session. A sent advisory
+  that disappears keeps its delivery record for 30 minutes (`gone_at` in `schedule-state.json`
+  `sent`), so the session's reply is still accepted and a recurrence in that time is judged as
+  above (not sent again before `readvise_minutes`); after that it is forgotten, and a recurrence
+  is sent again (still within the cap). The `stop-own-heavy` id hashes the session, the teammate
+  (`via`) and the process class, never the pid, so a re-spawned run of the same job keeps its id.
 - **Untrusted names.** Task `repo`/`branch`/`base` must match the ref pattern of `board task set`,
   `owner` and session codes `[A-Za-z0-9][A-Za-z0-9._/@+-]{0,79}`, a gate's `decision_id`
   `d-<n>-<id>`; anything else is unset. A name in a jam or advisory text that is not a plain token
@@ -1586,9 +1606,12 @@ leaves the file alone; a usage error exits 2.
   It is never a decision: the text cannot hold `[BOARD` or "decision", and the worker protocol says
   it never approves, answers or unlocks anything.
 - **CLI** (the operator, prompts/board-operator.md section 12): `board schedule outbox [CODE]
-  [--json]` prints the due batches (through the guard; `{}` while the scheduler is off); `board
-  schedule sent ID...` records them (one batch per session); it fails closed: every id must be due
-  now for its session, else exit 1 and nothing is recorded (also while off). `board schedule reply
+  [--json]` prints the due batches (through the guard; `{}` while the scheduler is off, and then
+  nothing is recorded) and remembers what it printed (`schedule-state.json` `printed`: `{id: {to,
+  kind, printed_at}}`, under the state lock); `board schedule sent ID...` records them (one batch
+  per session, counted toward the cap); it fails closed: every id must be due now for its session,
+  or printed by `outbox` in the last 10 minutes and not recorded since (its short-lived process
+  may have exited in between), else exit 1 and nothing is recorded (also while off). `board schedule reply
   ID --from CODE ack|done|cannot [--note-file F]` records the session's reply (`--from` must be the
   advisory's `to`, else exit 4; unknown id exit 1; the note file, at most 64 KB, is read whole,
   control characters dropped, scrubbed, then cut to one line of ≤ 200 chars). Exit 8: the state
@@ -1605,7 +1628,7 @@ leaves the file alone; a usage error exits 2.
   | J3a | two live sessions on the same repo + branch (the collector's `repo`/`branch`, from each session's start cwd), not a default branch (`main master trunk develop`), detached or without commits | high | no: board-only until worktree facts land |
   | J3b | two open PRs in one repo (`one_pr_per_repo`) | warn | yes |
   | J4 | a stuck task (warn/high), or a session idle with a ready task (info) | warn/high, info | stuck only |
-  | J5 | resources critical (2 samples), or an OOM kill (at once) | high | no (`res:*`) |
+  | J5 | resources critical (2 samples), or an OOM kill (at once); the text names the cause | high | no (`res:*`) |
   | J6 | `operator:stale` is open | high | no (`operator:stale`) |
   | J7 | conserve or wait-reset with ≥ 2 sessions working; scope = the reset time | warn | yes |
   | J8 | a `rebase-needed` advisory sent over an hour ago, not `done` | info | no |

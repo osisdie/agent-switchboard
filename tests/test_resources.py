@@ -212,6 +212,24 @@ class Processes(Base):
         self.assertEqual(doc["heavy_running"], 3)
         self.assertEqual(cp["heavy_n"], 3)
 
+    def test_wrappers_are_not_the_job(self):
+        self.tree()
+        fp = self.fp
+        fp.proc(110, 100, "timeout", ["timeout", "600", "npx", "vitest", "run"], rss_mb=2)
+        fp.proc(111, 110, "npm exec vitest", ["npm", "exec", "vitest", "run"], rss_mb=70)
+        fp.proc(112, 111, "node", ["node", "/x/node_modules/.bin/vitest", "run"], rss_mb=600)
+        fp.proc(113, 100, "node", ["node", "/usr/lib/node_modules/npm/bin/npx-cli.js", "jest"], rss_mb=60)
+        fp.proc(114, 100, "env", ["env", "CI=1", "pytest"], rss_mb=3)
+        doc = self.run_sample(T0)
+        cp = next(s for s in doc["sessions"] if s["code"] == "CP")
+        classes = {c["pid"]: (c["class"], c["heavy"]) for c in cp["children"]}
+        self.assertEqual(classes[112], ("test", True))
+        for pid in (110, 111, 113, 114):
+            self.assertEqual(classes.get(pid, ("other", False)), ("other", False), pid)
+        self.assertEqual(doc["heavy_running"], 4)       # the vitest run counts once, as before
+        self.assertTrue(R.is_wrapper("timeout") and R.is_wrapper("npm exec vitest") and R.is_wrapper("/usr/bin/env"))
+        self.assertFalse(R.is_wrapper("node", ["node", "/x/vitest.mjs"]) or R.is_wrapper(None) or R.is_wrapper("pytest"))
+
     def test_teammates(self):
         self.tree()
         doc = self.run_sample(T0)
