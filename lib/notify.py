@@ -489,6 +489,10 @@ def enabled(channel, env):
     if channel == "slack":
         return bool(env.get("SLACK_WEBHOOK_URL"))
     if channel == "desktop":
+        # The process's own ALERT_DESKTOP=0 always wins, even over an explicit env dict, so a
+        # caller (tests, probes) that turned the desktop off can never pop a real toast.
+        if os.environ.get("ALERT_DESKTOP") == "0":
+            return False
         return env.get("ALERT_DESKTOP", "1") != "0" and any(
             shutil.which(x) for x in ("powershell.exe", "notify-send", "osascript"))
     if channel == "email":
