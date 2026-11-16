@@ -1239,9 +1239,9 @@ never values.
 
 ### API keys
 
-API keys are for scripts and services that will call the board's coming `/api/v1` (and its MCP
-server). `board apikey` manages them now; the routes and the key page come in later changes. The
-rules (details in `docs/contract.md`, "API keys"):
+API keys are for scripts and services that call the board's `/api/v1` (below; an MCP server comes
+later). `board apikey` manages them; the key page comes in a later change. The rules (details in
+`docs/contract.md`, "API keys"):
 
 - **A key belongs to a person** (`--owner`, an email or `local`). That is attribution, never
   authority: no key answers a decision, presses a prompt, sets owner-away, votes, passes a
@@ -1266,6 +1266,30 @@ board apikey approve <id> --by owner@example.com
 board apikey ls --by dev@example.com            # id, name, scopes, created, expires, last used, status
 board apikey rotate <id> --grace 24h --by owner@example.com
 board apikey revoke <id> --by dev@example.com
+```
+
+### Public API (`/api/v1`)
+
+`board-serve` also serves a read-only JSON API for scripts and services: the state, sessions,
+decisions, tasks, the schedule, pomodoro and messages, plus Server-Sent Events. The routes are one
+table (`lib/api_spec.py`), published as `GET /api/v1/openapi.json`.
+
+- **Every call needs a key**: `Authorization: Bearer asb_live_…`, with the route's scope
+  (`read:state`, `read:decisions`, `read:tasks`, `read:messages`). Being on this machine (`local`)
+  or signed in to Access is not enough. A key sees what a viewer sees, and the API never writes.
+- **Remote use goes through Cloudflare Access too.** On the tunnel, a call also needs a verified
+  Access **service token** listed in `serve.tunnel.api_service_tokens` (or an allowed email): two
+  independent secrets, and nothing reaches board-serve unauthenticated. `serve.api.remote: false`
+  keeps the API on the local listener only.
+- **Limits:** each key has a rate (`rate_per_min`, burst 20), failed key checks are limited per
+  key id or source (requests with no key at all cost nothing), a revoked key ends its event
+  stream, cross-site browser requests are refused, and there are no CORS headers. Calls are
+  audited with the key's owner and name.
+
+```bash
+curl -s -H "Authorization: Bearer $BOARD_API_KEY" "http://127.0.0.1:39410/api/v1/decisions?status=pending"
+curl -s -H "CF-Access-Client-Id: $CF_ID" -H "CF-Access-Client-Secret: $CF_SECRET" \
+     -H "Authorization: Bearer $BOARD_API_KEY" https://board.example.com/api/v1/whoami
 ```
 
 ## Secrets & sanitization
@@ -1325,6 +1349,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `.github/workflows/pages.yml` | Builds and deploys the static demo site to GitHub Pages (on push to main) |
 | `docs/assets/screenshots/` | Screenshots for the README and the Pages site (`scripts/screenshots.py`) |
 | `.gitleaks.toml` | gitleaks default rules, a rule for board API keys, and a narrow allowlist for test fixtures |
+| `lib/serve_api.py`, `lib/api_spec.py` | The public read-only API `/api/v1`: key, scope and rate checks, the tunnel's service-token rule, and the route table that `openapi.json` is generated from |
 | `lib/apikeys.py` | API keys: the store (peppered hashes, 0600), who may issue, approve, rotate and revoke them, and the check `/api/v1` will use (`board apikey`) |
 | `lib/away.py` | Reads owner-away mode and consensus items for the snapshot and `board-serve` |
 | `lib/guard.py`, `lib/messages.py` | Secret guardrails: the outbound scrubber and the inbound secret-request screen; board messages and replies through them (held, release, reply) |
@@ -1332,7 +1357,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `lib/pomodoro.py` | Pomodoro timer and daily tallies (`pomodoro.json`) for the board and `board pomodoro` |
 | `lib/resources.py` | Resources sampler (memory, disks, OOM, per-session processes and teammates) for `resources.json`, the snapshot digest and `board resources` |
 | `docs/design/` | Design notes, e.g. `resources-and-scheduling.md` (resources, scheduler, lessons) |
-| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), the resources sampler (`test_resources.py`, fixture `/proc`), the secret guardrails (`test_guard.py`), API keys (`test_apikeys.py`), the card extras (`test_cards.py`), Remote Control (`test_rc.py`, scripted tmux in `fake_tmux.py`), the pomodoro timer (`test_pomodoro.py`), and the optional headless checks of the page's alert links, notifications control, profile menu and theme, home-screen app, session cards, usage popover, header popovers, language toggle, Deck panel and pomodoro (`test_page_links.py`, `test_page_notify.py`, `test_page_profile.py`, `test_page_pwa.py`, `test_page_cards.py`, `test_page_guard.py` (held-message cards), `test_page_usage.py`, `test_page_header_tips.py`, `test_page_i18n.py`, `test_page_deck.py`, `test_page_rc.py` (Remote Control chip and switches), `test_page_pomodoro.py`, plus `test_site.py` for the screenshots and the Pages site: need python playwright, skip without it; not run in CI) |
+| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), the resources sampler (`test_resources.py`, fixture `/proc`), the secret guardrails (`test_guard.py`), API keys (`test_apikeys.py`), the public API and its tunnel exposure (`test_api_v1.py`), the card extras (`test_cards.py`), Remote Control (`test_rc.py`, scripted tmux in `fake_tmux.py`), the pomodoro timer (`test_pomodoro.py`), and the optional headless checks of the page's alert links, notifications control, profile menu and theme, home-screen app, session cards, usage popover, header popovers, language toggle, Deck panel and pomodoro (`test_page_links.py`, `test_page_notify.py`, `test_page_profile.py`, `test_page_pwa.py`, `test_page_cards.py`, `test_page_guard.py` (held-message cards), `test_page_usage.py`, `test_page_header_tips.py`, `test_page_i18n.py`, `test_page_deck.py`, `test_page_rc.py` (Remote Control chip and switches), `test_page_pomodoro.py`, plus `test_site.py` for the screenshots and the Pages site: need python playwright, skip without it; not run in CI) |
 | `CONTRIBUTING.md` | Dev setup, tests, and the rule for keeping `README.zh-TW.md` in sync |
 | `fleet.example.yaml`, `.env.example` | Example config |
 

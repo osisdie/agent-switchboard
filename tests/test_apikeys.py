@@ -42,6 +42,11 @@ NOW = 1_800_000_000_000
 DAY = 86400 * 1000
 
 
+def secret_of(key):
+    """The secret part of a key, by position: base64url secrets can contain "_" themselves."""
+    return key[len("asb_live_") + apikeys.KID_LEN + 1:]
+
+
 def home():
     return os.environ["BOARD_HOME"]
 
@@ -97,7 +102,7 @@ class ShownOnce(Base):
         self.assertTrue(apikeys.KEY_RE.fullmatch(key))
         self.assertIn("never shown again", r.stderr)
         self.assertNotIn(key, r.stderr)
-        secret = key.rsplit("_", 1)[1]
+        secret = secret_of(key)
         stored = tree_bytes()
         self.assertNotIn(secret.encode(), stored)          # not in any file: records, pepper, events
         kid = key.split("_")[2]
@@ -388,8 +393,8 @@ class Authorization(Base):
         self.assertEqual(acts, ["create", "rotate", "expire", "request", "approve", "revoke"])
         with open(os.path.join(home(), "events.jsonl"), encoding="utf-8") as fh:
             raw = fh.read()
-        self.assertNotIn(key.rsplit("_", 1)[1], raw)
-        self.assertNotIn(req["key"].rsplit("_", 1)[1], raw)
+        self.assertNotIn(secret_of(key), raw)
+        self.assertNotIn(secret_of(req["key"]), raw)
         self.assertNotIn(record(kid)["hash"], raw)
 
 
@@ -486,6 +491,33 @@ class Review(Base):
             self.assertEqual(r.returncode, 2, repr(who))
             self.assertEqual(board("request", "--name", "x", "--by", who).returncode, 2)
 
+    def test_more_refusals_audited(self):
+        req = self.request(VIEWER, NOW, "--scopes", "read:state")
+        self.assertEqual(board("approve", req["id"], "--by", OWNER, "--scopes", "read:state,read:tasks").returncode, 2)
+        self.assertEqual(board("expire", req["id"], "--expires", "5d", "--by", OWNER, now=NOW + 15 * DAY).returncode, 1)
+        ev = [(e["action"], e["result"], e["reason"]) for e in events() if e["result"] == "refused"]
+        self.assertEqual(ev, [("approve", "refused", "wider_scopes"), ("expire", "refused", "lapsed")])
+
+    def test_pepper_without_hard_links(self):
+        import errno
+        real = os.link
+
+        def no_link(*_a, **_k):
+            raise OSError(errno.EPERM, "hard links not supported")
+        os.link = no_link
+        try:
+            pep = apikeys.pepper(home(), create=True)
+        finally:
+            os.link = real
+        self.assertEqual(len(pep), 32)
+        self.assertEqual(os.listdir(os.path.join(home(), "secrets")), ["apikey.pepper"])
+        self.assertEqual(apikeys.pepper(home()), pep)
+
+    def test_verify_takes_the_ttl(self):
+        req = self.request()
+        self.assertEqual(apikeys.verify(req["key"], now=NOW + DAY, ttl_ms=DAY), (None, "expired"))
+        self.assertEqual(apikeys.verify(req["key"], now=NOW + DAY, ttl_ms=2 * DAY), (None, "pending"))
+
     def test_refused_show_is_audited(self):
         theirs, _ = create(RM)
         self.assertEqual(board("show", theirs, "--by", VIEWER).returncode, 1)
@@ -549,11 +581,11 @@ class Redaction(unittest.TestCase):
             for text in (key, "use %s please" % key, "Authorization: Bearer " + key, '{"k": "%s"}' % key,
                          "curl -H 'X-Key: %s' http://127.0.0.1/api/v1/whoami" % key):
                 out = guard.scrub(text)
-                self.assertNotIn(key.rsplit("_", 1)[1], out, text)
+                self.assertNotIn(secret_of(key), out, text)
                 self.assertIn("[REDACTED]", out)
             r = subprocess.run([sys.executable, os.path.join(REPO, "lib", "guard.py"), "scrub-out"],
                                input=json.dumps({"note": "key " + key}), capture_output=True, text=True)
-            self.assertNotIn(key.rsplit("_", 1)[1], r.stdout)
+            self.assertNotIn(secret_of(key), r.stdout)
 
     def test_hook_redacts_keys(self):
         if not shutil.which("jq"):
@@ -564,7 +596,7 @@ class Redaction(unittest.TestCase):
         key = apikeys.new_key(tempfile.mkdtemp(dir=TMP), "live")[1]
         r = subprocess.run(["jq", "-r", jq_def + " .[] | redact"], input=json.dumps(["export K=x; echo " + key]),
                            capture_output=True, text=True, check=True)
-        self.assertNotIn(key.rsplit("_", 1)[1], r.stdout)
+        self.assertNotIn(secret_of(key), r.stdout)
         self.assertIn("[REDACTED]", r.stdout)
 
 

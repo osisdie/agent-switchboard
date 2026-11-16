@@ -702,6 +702,14 @@ class EndToEnd(unittest.TestCase):
             "/api/decisions/([^/]+)/answer", "/api/decisions/([^/]+)/resolve", "/api/messages/([^/]+)/release",
             "/api/sessions/([^/]+)/action", "/api/lessons", "/api/lessons/([^/]+)", "/api/pomodoro/day"})
         self.assertIn("if path in STATIC:", get_src)
+        # /api/v1 goes to lib/serve_api.py, whose routes are the fixed table in lib/api_spec.py
+        # (tests/test_api_v1.py: the spec equals the router; every route is read-only).
+        for src_ in (get_src, post_src):
+            self.assertIn("if serve_api.is_v1(self.path):\n            return serve_api.handle(self, _SELF)", src_)
+        import api_spec
+        self.assertFalse([r for r in api_spec.ROUTES if not r["path"].startswith("/api/v1/") or r["method"] != "GET"])
+        api_src = slurp(os.path.join(REPO, "lib", "serve_api.py"))
+        self.assertNotIn("os.environ", api_src)
         self.assertNotIn("os.environ", get_src + post_src)
         self.assertNotIn("open(", get_src + post_src)
 

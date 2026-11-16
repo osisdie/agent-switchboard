@@ -50,6 +50,10 @@ listeners (docs/contract.md, "Local adapter API"):
                                        "confirm": "delete" and appends a tombstone; audited)
   GET  /api/pomodoro/day?d=YYYY-MM-DD one kept day's per-stream pomodoro breakdown (read-only,
                                        on demand; the pushed view has daily totals only)
+  GET  /api/v1/...                     the public read-only API (lib/serve_api.py, routes in
+                                       lib/api_spec.py, spec at /api/v1/openapi.json): a board API
+                                       key (Authorization: Bearer asb_live_…) on either listener;
+                                       on the tunnel also an allowed Access service token or email
 
 --check prints the resolved settings and exits. --watch serves nothing: it prints one line per
 item the local-mode operator must relay (see prompts/board-operator.md, "Local mode").
@@ -84,6 +88,9 @@ import actions  # noqa: E402
 import prefs  # noqa: E402
 import rc  # noqa: E402
 import resources  # noqa: E402
+import serve_api  # noqa: E402
+
+_SELF = sys.modules[__name__]   # handed to serve_api for its helpers (no second import of this file)
 
 REPO = fleet.REPO
 BOARD = os.path.join(REPO, "bin", "board")
@@ -373,8 +380,10 @@ class Jwks:
         return key
 
 
-def verify_jwt(token, jwks, aud, team_domain, now=None):
-    """Verify a Cloudflare Access JWT (RS256). Returns the claims, raises JwtError."""
+def verify_jwt(token, jwks, aud, team_domain, now=None, require_email=True):
+    """Verify a Cloudflare Access JWT (RS256). Returns the claims, raises JwtError. The board
+    routes need a person (an email claim); /api/v1 also takes a service token (require_email=False:
+    an email or a common_name claim)."""
     from cryptography.exceptions import InvalidSignature
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.asymmetric import padding
@@ -404,8 +413,8 @@ def verify_jwt(token, jwks, aud, team_domain, now=None):
         raise JwtError("expired")
     if isinstance(claims.get("nbf"), (int, float)) and claims["nbf"] > now + leeway:
         raise JwtError("not yet valid")
-    if not claims.get("email"):
-        raise JwtError("no email claim")
+    if not claims.get("email") and (require_email or not claims.get("common_name")):
+        raise JwtError("no email claim" if require_email else "no email or common_name claim")
     return claims
 
 
@@ -964,6 +973,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if not self.framed():
             return
+        if serve_api.is_v1(self.path):
+            return serve_api.handle(self, _SELF)
         try:
             self.check_host()
             ident, via = self.identity()
@@ -1104,6 +1115,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.framed():       # also resets body_read: one handler serves a kept-alive connection
             return
+        if serve_api.is_v1(self.path):
+            return serve_api.handle(self, _SELF)   # read-only: 405, the body drained
         try:
             origins = self.check_host()
             ident, via = self.identity()
@@ -1881,6 +1894,12 @@ def main(argv):
     approvers = fleet.id_list(fcfg, "approvers")
     if cfg["tunnel"]:
         info.append("emails   %s" % (", ".join(sorted(tunnel_allowed(fcfg))) or "(none: every tunnel request refused)"))
+    api = serve_api.api_settings(fcfg)
+    info.append("api      %s" % ("off (serve.api.enabled)" if not api["enabled"] else
+                                 "/api/v1 with a board API key; tunnel: %s" % (
+                                     "off" if not cfg["tunnel"] else "off (serve.api.remote: false)"
+                                     if not api["remote"] else "Access service tokens %s or an allowed email" % (
+                                         ", ".join(sorted(api["service_tokens"])) or "(none listed)"))))
     info.append("answers  %s" % ("approvers: " + ", ".join(approvers) if approvers
                                  else "REFUSED: fleet.yaml approvers is empty"))
     if args.check:
