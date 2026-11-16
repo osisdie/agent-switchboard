@@ -971,6 +971,29 @@ Deck 顯示 `⚠ 1 小時 29 分 後到 5h 上限`；不會時顯示 `速度 OK`
 - 用一個間隔短的 cron（約 3 分鐘，避開 `:00`／`:30`），只用來 `read_db` 讀取回答和訊息。
 - 讓 context 保持精簡：不要傾印檔案內容，變大時就 `/compact`。operator 負責轉發，不負責做事。
 
+### 額度恢復後讓 session 繼續
+
+額度用完時，每個 session 都會停在 Claude 的某個上限畫面：「What do you want to do?」對話框、等待自動繼續
+（「Continuing automatically at 3pm · Esc to cancel」），或是「Usage limit reached」下方空著的輸入框。
+換了帳號（或額度重置）之後，可以一次讓它們全部繼續，不必逐一進每個 pane：
+
+```bash
+board resume --all --dry-run     # 哪些 session 停在上限，以及各自第一步會送的按鍵
+board resume --all               # 讓它們繼續；其他 session 會略過，不送任何按鍵
+board resume API WEB             # 只處理這幾個 session
+```
+
+它會先讀取 pane，再送出最少的按鍵：用 Escape 關掉對話框（等同對話框自己的「Stop」；絕不選列，因為有些選項會花錢或換帳號），
+或取消等待；接著輸入繼續用的提示（`fleet.yaml` 的 `limit_resume.prompt`，預設為「Quota is available again.
+Continue where you left off.」），確認輸入框裡的文字無誤後才按 Enter。每按一個鍵都會重新讀取 pane，
+遇到任何預期外的畫面就停下。它只認 Claude 自己的上限通知，助理回覆裡單純提到上限的文字不算；畫面不是已知的
+上限狀態時，什麼都不送（exit 3）。每次嘗試都會記錄在 `events.jsonl`。
+
+在看板上，停在上限的 session 會顯示 **用量上限** 標籤（collector 每 30 秒看一次 pane），擁有者則可以在
+卡片詳情裡按 **繼續**，或在橫幅上按 **全部繼續**，兩者都有確認步驟；全部繼續只處理橫幅上列出的 session。畫面的比對樣式放在 `fleet.yaml` 的
+`limit_resume`；Claude Code 改版換了畫面時再調整。詳見 [docs/contract.md](docs/contract.md) 的
+「Resume after a usage limit」。
+
 <a id="two-channels-self-hosted-and-artifact-recommended-both"></a>
 
 ## 兩種通道：自架與 Artifact（建議兩者並用）
@@ -1352,6 +1375,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `lib/prefs.py` | 通知控制：靜音、最低等級、在場（`board mute`、`notify-level`、`notify-presence`），以及 `lib/notify.py` 套用的送出規則 |
 | `lib/rc.py` | Remote Control 開關：主人對單一或所有 session 的設定（`board rc`）、fleet-up 啟動時要不要加旗標，以及套用到閒置中的執行中 session（輸入 `/remote-control` 並在畫面上確認） |
 | `lib/actions.py` | Session 動作：在閒置的 session 輸入白名單內的斜線指令（`/compact`、`/remote-control`），附 press 式檢查、壓縮佇列與收集器的接手（`board session`） |
+| `lib/resume.py` | 用量上限後繼續：在 pane 中辨認 Claude 的上限畫面（比對樣式在 `fleet.yaml limit_resume`），送出最少的按鍵與繼續提示，每按一鍵都重新確認畫面（`board resume`）；也供收集器定期查看，給卡片的「用量上限」標籤用 |
 | `hooks/board-statusline-tap.sh` | statusline 包裝器，把 5h／每週用量記錄到 `usage.json`，不改變你的 statusline |
 | `bin/fleet-up` | 依 `fleet.yaml` 啟動整組 session 的冪等啟動器（設定 `serve.enabled` 時也會啟動 `board-serve`） |
 | `bin/board-serve`、`lib/serve.py` | 自架看板：local 模式的頁面 + 建立在 `$BOARD_HOME` 上的 JSON／SSE API，只限 127.0.0.1；`--watch` 供 local 模式的 operator 使用 |
@@ -1378,7 +1402,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `lib/pomodoro.py` | 番茄鐘計時與每日統計（`pomodoro.json`），供看板和 `board pomodoro` 使用 |
 | `lib/resources.py` | 資源取樣器（記憶體、磁碟、OOM、每個 session 的程序與 teammate），產生 `resources.json`、snapshot 摘要和 `board resources` |
 | `docs/design/` | 設計文件，例如 `resources-and-scheduling.md`（資源、排程器、經驗） |
-| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`）、資源取樣器（`test_resources.py`，fixture `/proc`）、機密防護（`test_guard.py`）、API 金鑰（`test_apikeys.py`）、公開 API 與 tunnel 曝露（`test_api_v1.py`）、MCP server（`test_mcp.py`）、提問者（`test_askers.py`）、各角色能做什麼（`test_roles.py`）、誰看得到誰的 email（`test_pii.py`）、卡片補充資訊（`test_cards.py`）、Remote Control（`test_rc.py`，用 `fake_tmux.py` 模擬 tmux 畫面）、番茄鐘計時（`test_pomodoro.py`），以及選用的頁面告警連結、通知控制、個人選單與主題、主畫面 app、session 卡片、用量提示框、頁首提示框、語言切換、按鍵面板與番茄鐘 headless 檢查（`test_page_links.py`、`test_page_notify.py`、`test_page_profile.py`、`test_page_pwa.py`、`test_page_cards.py`、`test_page_guard.py`（被攔下的訊息卡片）、`test_page_askers.py`（提問者的訊息輸入框）、`test_page_messages.py`（最近的對話與歷史）、`test_page_roles.py`（各角色看到的控制項）、`test_page_usage.py`、`test_page_header_tips.py`、`test_page_i18n.py`、`test_page_deck.py`、`test_page_rc.py`（Remote Control 標籤與開關）、`test_page_pomodoro.py`，以及截圖和 Pages 網站的 `test_site.py`：需要 python playwright，沒有就略過；CI 不執行） |
+| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`）、資源取樣器（`test_resources.py`，fixture `/proc`）、機密防護（`test_guard.py`）、API 金鑰（`test_apikeys.py`）、公開 API 與 tunnel 曝露（`test_api_v1.py`）、MCP server（`test_mcp.py`）、提問者（`test_askers.py`）、各角色能做什麼（`test_roles.py`）、誰看得到誰的 email（`test_pii.py`）、卡片補充資訊（`test_cards.py`）、Remote Control（`test_rc.py`，用 `fake_tmux.py` 模擬 tmux 畫面）、用量上限後繼續（`test_resume.py`：模擬的 tmux，加上在私有 tmux server 上跑 `fake_claude_tui.py` 假 Claude 畫面）、番茄鐘計時（`test_pomodoro.py`），以及選用的頁面告警連結、通知控制、個人選單與主題、主畫面 app、session 卡片、用量提示框、頁首提示框、語言切換、按鍵面板與番茄鐘 headless 檢查（`test_page_links.py`、`test_page_notify.py`、`test_page_profile.py`、`test_page_pwa.py`、`test_page_cards.py`、`test_page_guard.py`（被攔下的訊息卡片）、`test_page_askers.py`（提問者的訊息輸入框）、`test_page_messages.py`（最近的對話與歷史）、`test_page_roles.py`（各角色看到的控制項）、`test_page_usage.py`、`test_page_header_tips.py`、`test_page_i18n.py`、`test_page_deck.py`、`test_page_rc.py`（Remote Control 標籤與開關）、`test_page_resume.py`（用量上限標籤、繼續與全部繼續）、`test_page_pomodoro.py`，以及截圖和 Pages 網站的 `test_site.py`：需要 python playwright，沒有就略過；CI 不執行） |
 | `CONTRIBUTING.md` | 開發環境設定、測試，以及讓 `README.zh-TW.md` 保持同步的規則 |
 | `fleet.example.yaml`、`.env.example` | 設定範例 |
 

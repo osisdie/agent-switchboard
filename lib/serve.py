@@ -42,6 +42,11 @@ listeners (docs/contract.md, "Local adapter API"):
                                        apply` types the fixed command in the background)
   POST /api/rc                         {"code": "CODE"|"all", "state": "on"|"off"}  (the same for
                                        Remote Control, also for all sessions)
+  POST /api/resume                     {"code": "CODE"} | {"codes": ["CODE", ...]}  (owners only;
+                                       `board resume CODE...` in the background, exactly the codes
+                                       the owner confirmed: a session stuck on a usage limit gets
+                                       the fewest keys that resume it, nothing when its screen is
+                                       no known limit state; lib/resume.py)
   GET  /api/lessons[?q=TEXT]           the scheduler's lessons (also in /api/state), searchable
   POST /api/lessons                    {"title", "rule"?, "cause"?, "resolution"?}  (owners only;
                                        via `board lesson add --by board:<identity> --file <0600 tmp>`)
@@ -179,8 +184,9 @@ CODE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 FORWARD_HEADERS = ("Cf-Connecting-Ip", "Cf-Ray", "X-Forwarded-For", "Forwarded", "X-Forwarded-Host",
                    "X-Forwarded-Proto", "X-Real-Ip", "Cf-Visitor", "Cdn-Loop",
                    "Cf-Access-Authenticated-User-Email", "Cf-Access-Jwt-Assertion")
+MAX_RESUME = 64          # POST /api/resume: at most this many codes at once
 SESSION_KEYS = ("code", "aliases", "state", "status", "tmux", "remote_url", "pending", "updated_at",
-                "title", "repo", "branch", "last_event", "notification_type", "recent", "rc", "compact")
+                "title", "repo", "branch", "last_event", "notification_type", "recent", "rc", "compact", "limit")
 # Card extras from cards.json (lib/cards.py). CARD_PRIVATE ones reach approvers only (state_for).
 CARD_KEYS = ("teammates", "meter", "done", "doing", "prompt", "branch", "state_since")
 CARD_PRIVATE = ("doing", "prompt")
@@ -1578,6 +1584,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if path == "/api/rc":
                 body = self.read_body()
                 return self.set_rc(body, ident, via)
+            if path == "/api/resume":
+                body = self.read_body()
+                return self.resume(body, ident, via)
             if path == "/api/lessons":
                 return self.lesson(None, self.read_body(), ident, via)
             m = re.fullmatch(r"/api/lessons/([^/]+)", path)
@@ -2179,6 +2188,34 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if code != "all" and not self.known_code(code):
             raise Refused(400, "bad_code", "code must be a session on this board or \"all\"")
         return self.session_action(code, "rc_" + state, ident, via, route="rc", by=by)
+
+    def resume(self, body, ident, via):
+        """POST /api/resume {code: CODE} | {codes: [CODE, ...]}: resume sessions stuck on a usage
+        limit, exactly the ones named (the page sends the codes it showed the owner; "all" is not
+        accepted). Owners only, checked before the input (keys go into sessions on the owner's
+        machine). `board resume` runs in the background: it reads each pane and sends nothing
+        unless the screen is one of Claude's limit screens; each attempt is in events.jsonl."""
+        code, codes = body.get("code"), body.get("codes")
+        by = self.owner(ident, via, "resume", what="resume sessions", code=self._audit_str(code),
+                        codes=[self._audit_str(c) for c in codes[:MAX_RESUME]] if isinstance(codes, list) else self._audit_str(codes))
+        if (code is None) == (codes is None):
+            raise Refused(400, "bad_code", "give code or codes")
+        codes = [code] if codes is None else codes
+        if (not isinstance(codes, list) or not codes or len(codes) > MAX_RESUME or len(set(map(str, codes))) != len(codes)
+                or not all(self.known_code(c) for c in codes)):
+            raise Refused(400, "bad_code", "codes must be 1-%d distinct sessions on this board" % MAX_RESUME)
+        argv = [BOARD, "resume"] + list(codes) + ["--by", "board:%s" % by]
+        try:
+            subprocess.Popen(argv, env=dict(os.environ, BOARD_HOME=self.server.home),  # noqa: S603
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+        except OSError as exc:
+            log("board resume could not start: %r" % exc)
+            self.audit(ident, via, "resume", codes=codes, result="error")
+            raise Refused(500, "resume_failed", "board resume could not start") from exc
+        self.audit(ident, via, "resume", codes=codes, result="ok")
+        self.hub_kick()
+        return self.send_json(200, {"status": "started", "codes": codes})
 
     def action(self, code, body, ident, via):
         """POST /api/sessions/<code>/action {action}: an allowlisted session action. Approvers

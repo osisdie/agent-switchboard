@@ -10,7 +10,9 @@
 #   --verbose      print what changed
 #                  (looping, not --once: also runs what is pending for a session that went
 #                  idle: a Remote Control choice, a queued compact (lib/actions.py); off with
-#                  BOARD_ACTIONS_AUTO=0 or fleet.yaml session_actions.auto_apply: false)
+#                  BOARD_ACTIONS_AUTO=0 or fleet.yaml session_actions.auto_apply: false;
+#                  and reads the running panes every limit_resume.scan_seconds for the board's
+#                  "usage limit" chip, lib/resume.py)
 #   --interval N   poll interval in seconds (default: poll_interval in fleet.yaml, else 3)
 #
 # Uses inotifywait as a fast path when installed, otherwise plain polling.
@@ -47,7 +49,7 @@ if [ "$once" = 1 ]; then
   collect
   exit $?
 fi
-pyargs+=(--apply-rc)
+pyargs+=(--apply-rc --scan-limits)
 
 exec 9>>"$BOARD_HOME/collect.lock"
 if ! flock -n 9; then

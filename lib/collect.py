@@ -2,7 +2,7 @@
 """Build $BOARD_HOME/snapshot.json from the Claude Code session registry, the hook state
 files and the decision files (see docs/contract.md).
 
-Usage: collect.py [--no-notify] [--baseline] [--verbose] [--apply-rc]
+Usage: collect.py [--no-notify] [--baseline] [--verbose] [--apply-rc] [--scan-limits]
 
 - Writes snapshot.json atomically, and only when its content (excluding generated_at) changed.
 - Marks pending decisions `timeout` after decision_timeout_hours, and permission decisions and
@@ -39,6 +39,10 @@ Usage: collect.py [--no-notify] [--baseline] [--verbose] [--apply-rc]
   (the looping board-collect passes it) what is pending for an idle session (a `board rc`
   choice it does not follow yet, a queued compact) runs then: `actions.py apply --pending
   --auto` in the background, under its own lock and retry rules.
+- Sessions stuck on a usage limit (lib/resume.py): `limit` ({state: dialog|wait|ready|idle,
+  since}) on the rows whose pane showed one of Claude's limit screens at the last look
+  ($BOARD_HOME/resume-scan.json). With --scan-limits (the looping board-collect passes it) the
+  running panes are read again (tmux capture-pane, read-only) every limit_resume.scan_seconds.
 - Scheduling decision: every run feeds the tasks, the session states and resources.json to
   lib/scheduler.py (a pure function) and writes $BOARD_HOME/scheduler.json only when the decision
   changed; jam episodes and advisory delivery live in schedule-state.json (lib/advisories.py).
@@ -68,6 +72,7 @@ import fleet  # noqa: E402
 import limit  # noqa: E402
 import actions  # noqa: E402
 import notify  # noqa: E402
+import resume  # noqa: E402
 import rc  # noqa: E402
 import pomodoro  # noqa: E402
 import reminders  # noqa: E402
@@ -735,6 +740,11 @@ def main(argv):
     except (OSError, ValueError) as exc:  # never breaks the collector
         if verbose:
             print("rc: %s" % exc)
+    try:  # sessions stuck on a usage limit (lib/resume.py): `limit` on their rows
+        resume.annotate(sessions, cfg, home, now, do_scan="--scan-limits" in argv)
+    except Exception as exc:  # noqa: BLE001 - never breaks the collector
+        if verbose:
+            print("limit scan: %s: %s" % (type(exc).__name__, exc))
     # Resources and the scheduler share one clock: resources.now_ms() (BOARD_NOW_MS in tests), so
     # resources.json `at` is never later than the `now` the scheduler judges its freshness by.
     res_now = resources.now_ms()
