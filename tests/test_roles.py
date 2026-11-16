@@ -2,8 +2,9 @@
 """tests/test_roles.py — who may do what on the self-hosted board: a route-by-role matrix for
 owner, approver (not owner), release manager, asker and viewer, plus the fallback when fleet.yaml
 `owners` is empty (approvers count as owners). Owner-only: notification settings, presence, alert
-acks, owner-away, Remote Control, session actions, lessons, releasing a held message, and
-answering permission prompts and pane questions (keys pressed on the owner's machine). Still
+acks, owner-away, Remote Control, session actions, resuming sessions at a usage limit, lessons,
+releasing a held message, and answering permission prompts and pane questions (keys pressed on
+the owner's machine). Still
 approvers: answering ask decisions, resolve, ticket reads. Askers: messages only.
 
 Identities come from verified Cloudflare Access JWTs (a throwaway RSA key) on the tunnel listener.
@@ -209,6 +210,7 @@ OWNER_ONLY = [
     ("away", "/api/away", {"state": "on", "said": "back at five"}),
     ("rc", "/api/rc", {"code": "API", "state": "on"}),
     ("session action", "/api/sessions/API/action", {"action": "compact"}),
+    ("resume", "/api/resume", {"code": "API"}),
     ("lesson add", "/api/lessons", {"title": "hold heavy runs while memory is low"}),
     ("release", None, {"confirm": "release"}),
     ("permission answer", "/api/decisions/d-1-perm/answer", {"answer": "deny"}),

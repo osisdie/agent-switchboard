@@ -303,7 +303,8 @@ class Local(unittest.TestCase):
                   ("/api/rc", {"code": "API", "state": "on"}),
                   ("/api/lessons", {"title": "be careful"}),
                   ("/api/lessons/l-1-abcdef12", {"action": "retire"}),
-                  ("/api/sessions/API/action", {"action": "compact"})]
+                  ("/api/sessions/API/action", {"action": "compact"}),
+                  ("/api/resume", {"code": "API"})]
         before = len(events())
         for path, body in routes:
             with self.subTest(path=path):

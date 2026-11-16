@@ -98,6 +98,35 @@ DEFAULTS = {
         # the request ("will apply when free").
         "lock_wait_seconds": 20,
     },
+    # Resume after a usage limit (lib/resume.py, `board resume`): what Claude Code's limit screens
+    # look like (2.1.x; adjust when they change) and the prompt typed into an idle limited session.
+    "limit_resume": {
+        "prompt": "Quota is available again. Continue where you left off.",
+        "lines": 40,
+        # The looping collector reads the running sessions' panes this often (0: never), for the
+        # board's "usage limit" chip and Resume button.
+        "scan_seconds": 30,
+        "confirm_seconds": 10,
+        # Two Escapes at least this far apart: a quick double Escape opens Claude's rewind menu.
+        "esc_gap_seconds": 1.5,
+        "max_steps": 4,
+        # The usage-limit options dialog: its title, one of its own rows (one is enough), and the
+        # footer. It is closed with Escape (its own cancel = "Stop"), never by a row.
+        "dialog_title_regex": r"What do you want to do\?",
+        "dialog_row_regex": r"^(\d+\.\s*)?(Stop and wait for limit to reset|Stop|Wait here, then continue automatically\b.*"
+                            r"|Don.t continue automatically|Upgrade your plan|Switch to (usage|extra)\b.*"
+                            r"|Add funds to continue\b.*|Ask your admin for more usage)\s*$",
+        "dialog_footer_regex": r"Esc to cancel",
+        # Claude's automatic continue, armed: a line below the input box.
+        "wait_regex": r"continuing (automatically|shortly)\b.*esc to cancel",
+        # The limit has reset and the box holds Claude's prefilled text: a line below the box.
+        "ready_regex": r"press enter to continue",
+        "prefill": "continue",
+        # The last reply above an idle input box says the session stopped on a usage limit.
+        "limit_regex": r"usage limit reached|hit your (usage )?limit|out of (extra )?usage|5-hour limit|weekly limit"
+                       r"|limit (will )?resets?\b|automatic continue (was )?(cancelled|turned off|stopped|did not run)"
+                       r"|/rate-limit-options",
+    },
     # Remote Control at start (bin/fleet-up): unset_do_not_track starts claude with
     # `env -u DO_NOT_TRACK` (Claude Code ignores Remote Control while DO_NOT_TRACK is set).
     "rc": {

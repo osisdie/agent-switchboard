@@ -86,6 +86,13 @@
 #                                              idle session's empty prompt (/compact,
 #                                              /remote-control); queued until idle when busy
 #   board session apply [CODE...|--pending] | status [--json]
+#   board resume CODE|--all [--dry-run] [--by NAME] [--json]
+#                                              resume sessions stuck on a usage limit once quota is
+#                                              back: the pane is read, the limit dialog or the
+#                                              automatic-continue wait closed with Escape, the resume
+#                                              prompt typed (fleet.yaml limit_resume); nothing sent
+#                                              when the screen is no known limit state
+#   board resume scan [--json]                 the limit state of every running pane (read-only)
 #   board message send --to CODE|all [--by WHO] "text"|-
 #                                              create a board message (screened by the secret
 #                                              guard: a secret request is held, not relayed)
@@ -138,7 +145,10 @@
 #             6 refused by the secret guard (`answer`, `away --said`: asks for a secret value),
 #             7 press refused: the prompt still waits but is not on screen (e.g. the pane is
 #             scrolled up); no keys sent but the scroll key, the decision is pending again;
-#             `rc`: 3 refused (nothing sent), 5 stopped part-way, 6 sent but not confirmed.
+#             `rc`: 3 refused (nothing sent), 5 stopped part-way, 6 sent but not confirmed;
+#             `resume`: 3 refused, nothing sent (not at a usage limit on screen, offline, pane
+#             mismatch, another action running), 5 keys sent but the prompt not submitted, 6
+#             submitted but not confirmed, or Claude is still at the limit.
 set -u
 
 REPO="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
@@ -405,6 +415,19 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
         echo "  second look, then the result confirmed. compact: /compact (queued while the session is"
         echo "  busy, runs once it is idle; cancel drops it). rc on|off: the same as board rc on|off CODE."
         echo "  Exit 3: refused (nothing sent); 5: typed, Enter not pressed; 6: not confirmed." ;;
+    resume) echo "usage: board resume CODE [--dry-run] [--by NAME] [--json]"
+        echo "       board resume --all [--dry-run] [--by NAME] [--json]"
+        echo "       board resume scan [--json]"
+        echo "  resume a session stuck on a usage limit once quota is back (another account, or the reset)."
+        echo "  The pane is read and must show one of Claude's limit screens (fleet.yaml limit_resume):"
+        echo "  the limit dialog (closed with Escape, its own \"Stop\"; never a row: some spend money),"
+        echo "  the automatic-continue wait below the input box (Escape cancels it), Claude's prefilled"
+        echo "  \"continue\" (Enter), or an idle prompt under a limit message (limit_resume.prompt typed,"
+        echo "  read back, Enter). The pane is read again between keys; anything unexpected stops it."
+        echo "  --all: only the sessions whose screen shows a limit; the rest are reported as skipped."
+        echo "  --dry-run: the screen's state and the first keys, nothing sent. Every attempt is in events.jsonl."
+        echo "  Exit 3: refused, nothing sent (not at a usage limit, offline, pane mismatch, busy);"
+        echo "  5: keys sent, prompt not submitted; 6: submitted but not confirmed, or still at the limit." ;;
     doctor) echo "usage: board doctor"
         echo "  check dependencies, config, hook installation and the collector" ;;
     away) echo "usage: board away on --by WHO --said \"owner's words\"|--said-file PATH [--replace]"
@@ -2484,7 +2507,7 @@ case "$sub" in
   # leading -h/--help asks for help.
   answer)
     case "${1:-}" in -h|--help) sub_usage answer; exit 0 ;; esac ;;
-  ls|snapshot|ask|decisions|mark|resolve|press|limit|notify|doctor|ack|unmute|notify-level|notify-presence|resources|rc|session|pomodoro|schedule|lesson|ticket)
+  ls|snapshot|ask|decisions|mark|resolve|press|limit|notify|doctor|ack|unmute|notify-level|notify-presence|resources|rc|session|resume|pomodoro|schedule|lesson|ticket)
     if wants_help "$@"; then sub_usage "$sub"; exit 0; fi ;;
   # proposals, notes and the owner's words are free text: only -h/--help right after the
   # subcommand (or instead of it) asks for help.
@@ -2533,6 +2556,12 @@ case "$sub" in
   consensus) guarded cmd_consensus "$@" ;;
   rc) cmd_rc "$@" ;;
   session) cmd_session "$@" ;;
+  resume)
+    case "${1:-}" in
+      scan) shift; exec python3 "$REPO/lib/resume.py" scan "$@" ;;
+      "") sub_usage resume >&2; exit 2 ;;
+      *) exec python3 "$REPO/lib/resume.py" run "$@" ;;
+    esac ;;
   message) exec python3 "$REPO/lib/messages.py" "$@" ;;
   # create/request/rotate/scopes print a new key once: never through `guarded` (it would redact it).
   apikey)

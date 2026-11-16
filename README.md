@@ -1079,6 +1079,32 @@ the self-hosted board only (the operator does not mirror it).
 - Keep the context small: no file dumps, `/compact` when it grows. The operator relays; it doesn't
   do the work.
 
+### Resume the sessions once quota is back
+
+When the quota runs out, every session stops on one of Claude's limit screens: the "What do you
+want to do?" dialog, an automatic-continue wait ("Continuing automatically at 3pm · Esc to
+cancel"), or an idle prompt under "Usage limit reached". After you switch accounts (or the limit
+resets), resume them all at once instead of visiting each pane:
+
+```bash
+board resume --all --dry-run     # which sessions are at a limit, and the first keys for each
+board resume --all               # resume them; the others are skipped, nothing sent to them
+board resume API                 # one session
+```
+
+It reads the pane and sends the fewest keys: Escape closes the dialog (its own "Stop"; never a
+row, since some rows spend money or change the account) or cancels the wait, then it types the
+resume prompt (`limit_resume.prompt` in `fleet.yaml`, default "Quota is available again. Continue
+where you left off."), checks it in the box and presses Enter. It reads the pane again after every
+key and stops at anything unexpected. A screen that is not a known limit state gets nothing (exit
+3). Every attempt is audited in `events.jsonl`.
+
+On the board, a session at a limit shows a **usage limit** chip (the collector looks at the panes
+every 30 s), and the owner gets **Resume** in the card's details and **Resume all** in a banner,
+both with a confirm step. The screen patterns are in `fleet.yaml limit_resume`; adjust them when
+Claude Code changes its screens. Details: [docs/contract.md](docs/contract.md), "Resume after a
+usage limit".
+
 ## Two channels: self-hosted and Artifact (recommended: both)
 
 The board page (`artifact/board.html`) has two data adapters, and it picks one when it loads:
@@ -1502,6 +1528,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `lib/prefs.py` | Notification controls: mutes, min levels, presence (`board mute`, `notify-level`, `notify-presence`) and the delivery rule `lib/notify.py` applies |
 | `lib/rc.py` | Remote Control on/off: the owner's choice per session or for all (`board rc`), what fleet-up passes at start, and applying it to idle running sessions (typed `/remote-control`, checked on screen) |
 | `lib/actions.py` | Session actions: the allowlisted slash commands (`/compact`, `/remote-control`) typed into idle sessions with press-style checks, the compact queue and the collector's hand-off (`board session`) |
+| `lib/resume.py` | Resume after a usage limit: recognizes Claude's limit screens in a pane (patterns in `fleet.yaml limit_resume`), sends the fewest keys and the resume prompt, re-checking the screen between keys (`board resume`); the collector's throttled look for the card's "usage limit" chip |
 | `hooks/board-statusline-tap.sh` | Statusline wrapper that records 5h/weekly usage to `usage.json` without changing your statusline |
 | `bin/fleet-up` | Idempotent fleet launcher from `fleet.yaml` (also starts `board-serve` with `serve.enabled`) |
 | `bin/board-serve`, `lib/serve.py` | Self-hosted board: the page in local mode + JSON/SSE API over `$BOARD_HOME`, 127.0.0.1 only; `--watch` feeds the local-mode operator |
@@ -1528,7 +1555,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `lib/pomodoro.py` | Pomodoro timer and daily tallies (`pomodoro.json`) for the board and `board pomodoro` |
 | `lib/resources.py` | Resources sampler (memory, disks, OOM, per-session processes and teammates) for `resources.json`, the snapshot digest and `board resources` |
 | `docs/design/` | Design notes, e.g. `resources-and-scheduling.md` (resources, scheduler, lessons) |
-| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), the resources sampler (`test_resources.py`, fixture `/proc`), the secret guardrails (`test_guard.py`), API keys (`test_apikeys.py`), the public API and its tunnel exposure (`test_api_v1.py`), the MCP server (`test_mcp.py`), askers (`test_askers.py`), who may do what per role (`test_roles.py`), who sees whose email (`test_pii.py`), the card extras (`test_cards.py`), Remote Control (`test_rc.py`, scripted tmux in `fake_tmux.py`), the pomodoro timer (`test_pomodoro.py`), and the optional headless checks of the page's alert links, notifications control, profile menu and theme, home-screen app, session cards, usage popover, header popovers, language toggle, Deck panel and pomodoro (`test_page_links.py`, `test_page_notify.py`, `test_page_profile.py`, `test_page_pwa.py`, `test_page_cards.py`, `test_page_guard.py` (held-message cards), `test_page_askers.py` (the asker's composer), `test_page_messages.py` (recent threads and history), `test_page_roles.py` (controls per role), `test_page_usage.py`, `test_page_header_tips.py`, `test_page_i18n.py`, `test_page_deck.py`, `test_page_rc.py` (Remote Control chip and switches), `test_page_pomodoro.py`, plus `test_site.py` for the screenshots and the Pages site: need python playwright, skip without it; not run in CI) |
+| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), the resources sampler (`test_resources.py`, fixture `/proc`), the secret guardrails (`test_guard.py`), API keys (`test_apikeys.py`), the public API and its tunnel exposure (`test_api_v1.py`), the MCP server (`test_mcp.py`), askers (`test_askers.py`), who may do what per role (`test_roles.py`), who sees whose email (`test_pii.py`), the card extras (`test_cards.py`), Remote Control (`test_rc.py`, scripted tmux in `fake_tmux.py`), resuming after a usage limit (`test_resume.py`: scripted tmux, plus a fake Claude screen in `fake_claude_tui.py` on a private tmux server), the pomodoro timer (`test_pomodoro.py`), and the optional headless checks of the page's alert links, notifications control, profile menu and theme, home-screen app, session cards, usage popover, header popovers, language toggle, Deck panel and pomodoro (`test_page_links.py`, `test_page_notify.py`, `test_page_profile.py`, `test_page_pwa.py`, `test_page_cards.py`, `test_page_guard.py` (held-message cards), `test_page_askers.py` (the asker's composer), `test_page_messages.py` (recent threads and history), `test_page_roles.py` (controls per role), `test_page_usage.py`, `test_page_header_tips.py`, `test_page_i18n.py`, `test_page_deck.py`, `test_page_rc.py` (Remote Control chip and switches), `test_page_resume.py` (the usage-limit chip, Resume and Resume all), `test_page_pomodoro.py`, plus `test_site.py` for the screenshots and the Pages site: need python playwright, skip without it; not run in CI) |
 | `CONTRIBUTING.md` | Dev setup, tests, and the rule for keeping `README.zh-TW.md` in sync |
 | `fleet.example.yaml`, `.env.example` | Example config |
 

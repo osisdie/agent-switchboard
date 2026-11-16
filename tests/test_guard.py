@@ -706,7 +706,7 @@ class EndToEnd(unittest.TestCase):
                 routes.add(pat)
         self.assertEqual(routes, {
             "/", "/index.html", "/api/state", "/api/events", "/api/me",
-            "/api/messages", "/api/away", "/api/notify-prefs", "/api/presence", "/api/alerts/ack", "/api/rc",
+            "/api/messages", "/api/away", "/api/notify-prefs", "/api/presence", "/api/alerts/ack", "/api/rc", "/api/resume",
             "/api/decisions/([^/]+)/answer", "/api/decisions/([^/]+)/resolve", "/api/messages/([^/]+)/release",
             "/api/sessions/([^/]+)/action", "/api/lessons", "/api/lessons/([^/]+)", "/api/pomodoro/day",
             "/api/tickets/([^/]+)", "/api/tickets/take", "/api/tickets/([^/]+)/(comment|transition|assign|release)", "/api/reminders", "/api/reminders/([^/]+)"})

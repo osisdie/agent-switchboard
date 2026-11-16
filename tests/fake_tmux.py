@@ -14,7 +14,10 @@ FAKE_TMUX_CFG names a JSON file:
                                           the same, at capture-pane call N (from 1)
    "seq": {"2": ["...", "..."]},          after send-keys call N, one screen per capture-pane
                                           call, in order (the last one repeats)
-   "fail_send": 2}                        send-keys call N fails (exit 1)
+   "fail_send": 2,                        send-keys call N fails (exit 1)
+   "panes": {"%43": {"session": "QA", "screen": "..."}}}
+                                          a pane (-t) with its own tmux session and one fixed
+                                          screen; it never advances the counters above
 Every call is appended to FAKE_TMUX_LOG, one line of arguments joined by "|".
 """
 import json
@@ -56,6 +59,18 @@ def main(argv):
             cfg = json.load(fh)
     state = (cfg_path or "/nonexistent") + ".state"
     cmd = argv[0] if argv else ""
+    target = argv[argv.index("-t") + 1] if "-t" in argv[:-1] else None
+    other = (cfg.get("panes") or {}).get(target)
+    if other is not None:
+        if cmd == "display-message":
+            print("%s\t%s" % (other.get("session", "CP"), cfg.get("pane_pid", 1)) if any("#{pane_pid}" in a for a in argv)
+                  else other.get("session", "CP"))
+            return 0
+        if cmd == "capture-pane":
+            sys.stdout.write(other.get("screen", "") + "\n")
+            return 0
+        if cmd == "send-keys":
+            return 0
     if cmd == "display-message":
         if any("#{pane_pid}" in a for a in argv):
             print("%s\t%s" % (cfg.get("session", "CP"), cfg.get("pane_pid", 1)))

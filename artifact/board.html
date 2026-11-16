@@ -246,6 +246,9 @@ dialog.notif { width: min(720px, calc(100vw - 24px)); }
 .banner.away strong { color: var(--cord); }
 .banner.away p { color: var(--ink); }
 .banner.away .said { flex-basis: 100%; color: var(--muted); font-style: italic; overflow-wrap: anywhere; }
+.banner.limited { background: var(--deny-soft); border-color: color-mix(in srgb, var(--deny) 40%, var(--rule)); }
+.banner.limited strong { color: var(--deny); }
+.banner.limited p { color: var(--ink); flex-basis: 100%; margin: 0; }
 .away-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .away-form label { color: var(--muted); font-size: 14px; }
 .away-form input { flex: 1 1 220px; min-width: 0; min-height: 36px; font: inherit; font-size: 14px; padding: 6px 10px; border: 1px solid var(--rule); border-radius: 5px; background: var(--panel); color: var(--ink); }
@@ -368,6 +371,7 @@ dialog.notif { width: min(720px, calc(100vw - 24px)); }
 .rcchip { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 11px; font-weight: 600; padding: 0 6px; border: 1px solid var(--rule); border-radius: 9px; color: var(--muted); white-space: nowrap; }
 .rcchip.on { border-color: var(--cord); color: var(--cord); }
 .rcchip.pending { border-style: dashed; border-color: var(--lamp); color: var(--lamp-ink); }
+.lchip { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 11px; font-weight: 600; padding: 0 6px; border: 1px solid var(--deny); border-radius: 9px; color: var(--deny); white-space: nowrap; }
 .rc-ctl, .act-ctl { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
 .rc-ctl .note, .act-ctl .note { flex-basis: 100%; }
 .stitle, .snow { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
@@ -1992,6 +1996,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
         awayEditor() ? h('button', { class: 'btn primary', type: 'button', disabled: S.busy.has('away'), onclick: () => setAway('off'), text: tr('I\'m back') }) : null,
         a.said ? h('span', { class: 'said', text: '“' + str(a.said) + '”' + (a.legacy ? tr(' (free-text record)') : '') }) : null));
     }
+    limitBanner(box);
     const muted = activeMutes();
     if (muted.length) {
       const urgentToo = muted.some((m) => m.include_urgent);
@@ -2511,7 +2516,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     return 'sd-' + str(code).replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 40) + '-' + hsh.toString(36);
   }
   function cardSig(s) {
-    return JSON.stringify(s) + '|' + JSON.stringify(rcView(s)) + '|' + S.busy.has('rc:' + s.code) + S.busy.has('compact:' + s.code) + (S.drafts.compactAsk === s.code) + rcEditor() + '|' + openCards.has(s.code) + '|' + sessionDecisions(s).map((d) => d.id + (d.question || '')).join(',') + '|' + pomoSig(s.code) + '|' + ticketSig(s.code);
+    return JSON.stringify(s) + '|' + JSON.stringify(rcView(s)) + '|' + S.busy.has('rc:' + s.code) + S.busy.has('compact:' + s.code) + (S.drafts.compactAsk === s.code) + S.busy.has('resume:' + s.code) + S.busy.has('resume:all') + (S.drafts.resumeAsk === s.code) + rcEditor() + '|' + openCards.has(s.code) + '|' + sessionDecisions(s).map((d) => d.id + (d.question || '')).join(',') + '|' + pomoSig(s.code) + '|' + ticketSig(s.code);
   }
   // Card extras from board-serve (cards.json, lib/cards.py): teammates, meter, recent tool calls,
   // what it says (approvers only), branch, time in state. Absent in Artifact mode.
@@ -2571,6 +2576,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
         h('span', { class: 'schip ' + col, text: tr(STATE_LABEL[col]) }),
         npend ? h('span', { class: 'sbadge', title: tr('Waiting for you: {n}', { n: npend }), 'aria-label': tr('Waiting for you: {n}', { n: npend }), text: String(npend) }) : null,
         rcChip(s),
+        limitChip(s),
         timeEl(s.updated_at)),
       h('span', { class: 'stitle' + (title || task || says ? '' : ' none'), text: title || task || says || tr('No title yet') }),
       where ? h('span', { class: 'swhere', text: where }) : null,
@@ -2679,6 +2685,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       const rv = rcView(s);
       if (rv.running || rv.want) wh.row('Remote Control', rcControl(s, rv));
       if (rv.running || compactView(s).doneAt) wh.row('Compact', compactControl(s));
+      if (limitOf(s)) wh.row('Usage limit', resumeControl(s));
       const aliases = (Array.isArray(s.aliases) ? s.aliases : []).map(str).filter((a) => a && lc(a) !== lc(s.code));
       if (aliases.length) wh.row('Also', aliases.join(', '));
       const t = ts(s.updated_at);
@@ -2820,6 +2827,72 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     S.busy.add(key); renderBoard();
     adapter.sessionAction(code, 'compact').then(() => toast(tr('Compact for {code}: now if it is idle, else when it is.', { code })))
       .catch((e) => handleWriteError(e)).finally(() => { S.busy.delete(key); renderAll(); });
+  }
+  // Resume after a usage limit (docs/contract.md, "Resume after a usage limit"). The collector reads
+  // the running panes and marks a session stuck on one of Claude's limit screens (s.limit). Owners
+  // resume it once quota is back: board-serve runs `board resume`, which reads the pane again and
+  // sends nothing unless it still shows a limit screen. Only shown when a limit was seen, so a
+  // healthy session never offers it; the CLI is the same guard either way.
+  const LIMIT_STATE = {
+    dialog: 'Claude\'s usage-limit dialog is open.',
+    wait: 'Claude waits to continue automatically at the reset.',
+    ready: 'The limit has reset; Claude\'s "continue" waits for Enter.',
+    idle: 'Stopped at the usage limit; the prompt is empty.',
+  };
+  function limitOf(s) {
+    const l = s && s.limit && typeof s.limit === 'object' ? s.limit : null;
+    return l && LIMIT_STATE[str(l.state)] && str(s.state) !== 'offline' ? l : null;
+  }
+  function limitChip(s) {
+    const l = limitOf(s);
+    if (!l) return null;
+    const label = tr(LIMIT_STATE[str(l.state)]);
+    return h('span', { class: 'lchip', title: label, 'aria-label': label, text: tr('usage limit') });
+  }
+  function resumeControl(s) {
+    const l = limitOf(s), busy = S.busy.has('resume:' + s.code) || S.busy.has('resume:all'), ask = S.drafts.resumeAsk === s.code;
+    const box = h('span', { class: 'act-ctl resume-ctl' }, h('span', { class: 'resume-state', text: tr(LIMIT_STATE[str(l.state)]) }));
+    if (!awayEditor()) return box;
+    if (ask) {
+      box.append(h('span', { class: 'note', text: tr('Resume {code}? Use it once quota is available again. Its screen is read first; nothing is sent unless it still shows the usage limit.', { code: s.code }) }),
+        h('button', { class: 'btn primary', type: 'button', disabled: busy || null, dataset: { resume: 'confirm' }, onclick: () => { delete S.drafts.resumeAsk; resumeSessions(s.code); }, text: tr('Yes, resume') }),
+        h('button', { class: 'btn', type: 'button', dataset: { resume: 'cancel' }, onclick: () => { delete S.drafts.resumeAsk; renderBoard(); }, text: tr('Cancel') }));
+    } else {
+      box.append(h('button', { class: 'btn', type: 'button', disabled: busy || null, dataset: { resume: 'ask' },
+        'aria-label': tr('Resume {code}', { code: s.code }), onclick: () => { S.drafts.resumeAsk = s.code; renderBoard(); }, text: tr('Resume') }));
+    }
+    return box;
+  }
+  function resumeSessions(code) {
+    const key = 'resume:' + code;
+    if (S.demo) {
+      S.sessions = S.sessions.map((x) => (code === 'all' || x.code === code ? Object.assign({}, x, { limit: null }) : x));
+      renderAll(); toast(tr('Demo: shown on this page only. Nothing was saved or sent.'));
+      return;
+    }
+    if (!isLocal() || !adapter.resume || S.busy.has(key)) return;
+    S.busy.add(key); renderAll();
+    adapter.resume(code).then(() => toast(code === 'all' ? tr('Resuming the sessions at a usage limit. Each card updates when its session is working again.')
+      : tr('Resuming {code}. The card updates when the session is working again.', { code })))
+      .catch((e) => handleWriteError(e)).finally(() => { S.busy.delete(key); renderAll(); });
+  }
+  function limitBanner(box) {
+    const stuck = S.sessions.filter((x) => limitOf(x));
+    if (!stuck.length) return;
+    const busy = S.busy.has('resume:all'), ask = S.drafts.resumeAll;
+    const codes = stuck.map((x) => x.code).join(', ');
+    const b = h('div', { class: 'banner limited', role: 'status', id: 'limit-banner' }, h('span', { class: 'lamp', 'aria-hidden': 'true' }),
+      h('strong', { text: stuck.length === 1 ? tr('1 session stopped at a usage limit: {codes}', { codes }) : tr('{n} sessions stopped at a usage limit: {codes}', { n: stuck.length, codes }) }));
+    if (awayEditor()) {
+      if (ask) {
+        b.append(h('p', { text: tr('Resume them all? Use it once quota is available again (another account, or the reset). Each screen is read first; a session that no longer shows the limit gets nothing.') }),
+          h('button', { class: 'btn primary', type: 'button', disabled: busy || null, dataset: { resume: 'all-confirm' }, onclick: () => { S.drafts.resumeAll = false; resumeSessions('all'); }, text: tr('Yes, resume all') }),
+          h('button', { class: 'btn', type: 'button', dataset: { resume: 'all-cancel' }, onclick: () => { S.drafts.resumeAll = false; renderBanners(); }, text: tr('Cancel') }));
+      } else {
+        b.append(h('button', { class: 'btn', type: 'button', disabled: busy || null, dataset: { resume: 'all' }, onclick: () => { S.drafts.resumeAll = true; renderBanners(); }, text: tr('Resume all') }));
+      }
+    }
+    box.append(b);
   }
   // The "all sessions" switch in the Notifications dialog, with a confirm step.
   function renderRcAll(box) {
@@ -5769,6 +5842,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       setRc(code, state) { return post('/api/rc', { code, state }); },
       // Approvers only: an allowlisted session action (compact | rc_on | rc_off), never free text.
       sessionAction(code, action) { return post('/api/sessions/' + encodeURIComponent(code) + '/action', { action }); },
+      // Owners only; board-serve runs `board resume CODE|--all --by board:<identity>` in the background.
+      resume(code) { return post('/api/resume', { code }); },
       // Approvers only; board-serve runs `board lesson add|edit|activate|retire|delete --by board:<identity>`.
       addLesson(body) { return post('/api/lessons', body); },
       // One kept day's per-stream pomodoro breakdown (the pushed view has daily totals only).
@@ -6023,7 +6098,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       { code: 'DOCS', aliases: ['DOCS'], state: 'working', status: 'busy', task: 'Writing the upgrade guide for v2', title: 'Upgrade guide for v2', repo: 'docs-site', branch: 'main', last_event: 'PreToolUse', notification_type: null, recent: [{ tool: 'Read', summary: '…/upgrade-v2.md' }, { tool: 'Edit', summary: '…/configuration.md' }], tmux: 'DOCS:@1.%8', remote_url: null, rc: { on: false, want: 'on', source: 'session', pending: true, last: null }, pending: null, card: { state_since: now - 22 * min, doing: 'Two teammates are drafting the configuration and migration chapters; I am merging their notes.', prompt: 'Write the v2 upgrade guide', meter: { ctx_pct: 34, cost_usd: 2.1, model: 'Demo Model', at: now - min }, teammates: [{ name: 'writer', title: 'Draft the configuration chapter', busy: true, idle: false, idle_s: 20, rss_mb: 310 }, { name: 'checker', title: 'Check every code sample builds', busy: false, idle: true, idle_s: 2400, rss_mb: 280 }], done: [{ tool: 'Bash', summary: 'npm run build:docs', ms: 52000, ok: false, at: now - 9 * min }, { tool: 'Read', summary: '…/upgrade-v2.md', ms: 40, ok: true, at: now - 2 * min }], branch: { base: 'origin/main', ahead: 1, behind: 4, subject: 'docs: upgrade guide outline' } }, updated_at: now - 1 * min },
       { code: 'OPS', aliases: ['OPS', 'infra'], state: 'working', status: 'busy', task: 'Rotating staging certificates', title: 'Rotate staging certificates', repo: 'infra', branch: 'cert-rotation', last_event: 'PreToolUse', notification_type: null, recent: [{ tool: 'Bash', summary: 'kubectl -n staging get certificates' }], tmux: 'OPS:@4.%11', remote_url: '#demo-session-ops', pending: null, card: { state_since: now - 3 * min, doing: 'Listing the certificates that expire this month.', meter: { ctx_pct: 18, cost_usd: 0.42, model: 'Demo Model', at: now - min }, teammates: [], done: [], branch: { base: 'origin/main', ahead: 0, behind: 0, subject: 'chore: bump cert-manager' } }, updated_at: now - 3 * min },
       { code: 'QA', aliases: ['QA'], state: 'done', status: 'idle', task: 'Flaky test triage finished: 3 fixed, 1 quarantined', title: 'Flaky test triage', repo: 'web-app', branch: 'fix/flaky-upload', last_event: 'Stop', notification_type: 'idle_prompt', recent: [], tmux: 'QA:@1.%2', remote_url: null, compact: { queued: null, last: { result: 'confirmed', at: now - 50 * min }, done_at: now - 50 * min }, pending: null, updated_at: now - 26 * min },
-      { code: 'DATA', aliases: ['DATA'], state: 'rest', status: 'idle', task: '', title: null, repo: 'warehouse', branch: 'main', last_event: 'SessionStart', notification_type: null, recent: [], tmux: 'DATA:@1.%14', remote_url: null, rc: { on: false, want: 'on', source: 'default', blocked: 'do_not_track', pending: false, last: null }, pending: null, updated_at: now - 70 * min },
+      { code: 'DATA', aliases: ['DATA'], limit: { state: 'idle', since: now - 12 * min }, state: 'rest', status: 'idle', task: '', title: null, repo: 'warehouse', branch: 'main', last_event: 'SessionStart', notification_type: null, recent: [], tmux: 'DATA:@1.%14', remote_url: null, rc: { on: false, want: 'on', source: 'default', blocked: 'do_not_track', pending: false, last: null }, pending: null, updated_at: now - 70 * min },
       { code: 'MOBILE', aliases: ['MOBILE', 'app'], state: 'offline', status: 'idle', task: 'Release notes draft', title: null, repo: null, branch: null, last_event: null, notification_type: null, recent: [], tmux: null, remote_url: null, pending: null, updated_at: now - 5 * 60 * min },
     ];
     S.decisions = [
@@ -6455,6 +6530,23 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "Not compacted from the board yet.": "尚未從看板壓縮過。",
       "Compact {code}'s conversation? Claude summarizes it to free context. It runs now if the session is idle, else when it is.": "要壓縮 {code} 的對話嗎？Claude 會把它摘要以釋放 context。session 閒置就立即執行，否則等它閒置。",
       "Yes, compact": "是，壓縮",
+      "Claude's usage-limit dialog is open.": "Claude 的用量上限對話框開著。",
+      "Claude waits to continue automatically at the reset.": "Claude 正在等額度重置後自動繼續。",
+      "The limit has reset; Claude's \"continue\" waits for Enter.": "額度已重置；Claude 預填的「continue」在等 Enter。",
+      "Stopped at the usage limit; the prompt is empty.": "停在用量上限；輸入框是空的。",
+      "usage limit": "用量上限",
+      "Usage limit": "用量上限",
+      "Resume {code}? Use it once quota is available again. Its screen is read first; nothing is sent unless it still shows the usage limit.": "要讓 {code} 繼續嗎？請在額度恢復後再用。會先讀取它的畫面；畫面不再顯示用量上限時，什麼都不會送出。",
+      "Yes, resume": "是，繼續",
+      "Resume {code}": "讓 {code} 繼續",
+      "Resume": "繼續",
+      "Resuming the sessions at a usage limit. Each card updates when its session is working again.": "正在讓停在用量上限的 session 繼續。各 session 恢復工作後，卡片會跟著更新。",
+      "Resuming {code}. The card updates when the session is working again.": "正在讓 {code} 繼續。session 恢復工作後，卡片會跟著更新。",
+      "1 session stopped at a usage limit: {codes}": "1 個 session 停在用量上限：{codes}",
+      "{n} sessions stopped at a usage limit: {codes}": "{n} 個 session 停在用量上限：{codes}",
+      "Resume them all? Use it once quota is available again (another account, or the reset). Each screen is read first; a session that no longer shows the limit gets nothing.": "要全部繼續嗎？請在額度恢復後再用（換了帳號，或額度已重置）。會先讀取每個畫面；不再顯示用量上限的 session 不會收到任何按鍵。",
+      "Yes, resume all": "是，全部繼續",
+      "Resume all": "全部繼續",
       "Compact {code}": "壓縮 {code}",
       "Compact": "壓縮",
       "Compact for {code}: now if it is idle, else when it is.": "{code} 的壓縮：閒置就立即執行，否則等它閒置。",
