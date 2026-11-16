@@ -1371,6 +1371,7 @@ table (`lib/api_spec.py`), published as `GET /api/v1/openapi.json`.
 - **Bind each service token to its person.** Map every token to the people whose keys may come
   with it; a leaked token plus someone else's valid key is then refused (403
   `token_key_mismatch`). Give each person their own token, so revoking one affects nobody else.
+  A person's own Access login works only with that person's keys (403 `identity_key_mismatch`).
   The plain list form still works but is unbound, and `board doctor` warns about it:
 
   ```yaml

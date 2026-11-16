@@ -156,7 +156,8 @@ def make_jwts():
     base = {"aud": ["AUD123"], "iss": "https://team.example.com", "exp": now + 3600, "iat": now}
     return {"svc": tok(dict(base, common_name=SVC, sub="", type="app")),
             "svc_other": tok(dict(base, common_name="ffffeeee0000.access", sub="", type="app")),
-            "svc_bound": tok(dict(base, common_name=SVC_BOUND, sub="", type="app"))}
+            "svc_bound": tok(dict(base, common_name=SVC_BOUND, sub="", type="app")),
+            "email": tok(dict(base, email=OWNER.upper()))}
 
 
 def events_text():
@@ -739,6 +740,15 @@ class HttpMcpTest(FreshKeys):
         self.assertNotIn(other, events_text())
         st, _, js, _ = post_mcp(rpc(2, "tools/list"), BAD_KEY, port=TPORT, host=host, headers=bound)
         self.assertEqual((st, js["error"]), (401, "invalid_key"))          # a bad key: 401 first
+        # a person's own Access login carries only that person's keys, on /mcp as on /api/v1
+        login = {"Cf-Access-Jwt-Assertion": JWT["email"]}                 # OWNER, in upper case
+        st, _, js, _ = post_mcp(rpc(2, "tools/list"), other, port=TPORT, host=host, headers=login)
+        self.assertEqual(st, 200, js)                                      # OWNER's own key
+        st, _, js, raw = post_mcp(rpc(2, "tools/list"), key, port=TPORT, host=host, headers=login)
+        self.assertEqual((st, js["error"]), (403, "identity_key_mismatch"))   # DEV's key
+        self.assertNotIn(key.encode(), raw)
+        rows = [e for e in events() if e.get("reason") == "identity_key_mismatch"]
+        self.assertEqual([(e["route"], e["client"]) for e in rows], [("/mcp", "email:" + OWNER)])
 
 
 if __name__ == "__main__":
