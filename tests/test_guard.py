@@ -705,7 +705,7 @@ class EndToEnd(unittest.TestCase):
             "/api/messages", "/api/away", "/api/notify-prefs", "/api/presence", "/api/alerts/ack", "/api/rc",
             "/api/decisions/([^/]+)/answer", "/api/decisions/([^/]+)/resolve", "/api/messages/([^/]+)/release",
             "/api/sessions/([^/]+)/action", "/api/lessons", "/api/lessons/([^/]+)", "/api/pomodoro/day",
-            "/api/tickets/([^/]+)", "/api/tickets/take", "/api/tickets/([^/]+)/(comment|transition|assign|release)"})
+            "/api/tickets/([^/]+)", "/api/tickets/take", "/api/tickets/([^/]+)/(comment|transition|assign|release)", "/api/reminders", "/api/reminders/([^/]+)"})
         self.assertIn("if path in STATIC:", get_src)
         # /api/v1 goes to lib/serve_api.py, whose routes are the fixed table in lib/api_spec.py
         # (tests/test_api_v1.py: the spec equals the router; every route is read-only).

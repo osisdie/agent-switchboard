@@ -505,6 +505,21 @@ Workers reply with `[re <msgId>] …`, and replies thread under the message. **M
 information, never approvals.** A message that asks a session for a secret value is held, not
 relayed (see [Secret guardrails](#secret-guardrails)).
 
+### Reminders
+
+Your own alarms: `board remind add "Meeting" --at 3pm` (or `15:00`) sends a notice 5 minutes
+before and another at 3 PM. They go to your notification channels at the reminder's level (`high`
+by default). The board has a ⏰ Reminders panel, and a sticky countdown banner with Ack and Snooze
+inside the lead window.
+
+- **Options.** `--lead`, `--level`, `--repeat once|daily|weekdays` and `--date`. A time that has
+  already passed today means tomorrow, and the command says so.
+- **Mutes.** A reminder breaks through mutes the way urgent alerts do, unless you add
+  `--no-breakthrough`.
+- **Downtime.** If the collector was down, a reminder still fires up to 15 minutes late, marked
+  "(late)". After that it is marked missed: there is never a backlog.
+- **Privacy.** Only the board's owners (else approvers) see reminders; nobody else sees even a count.
+
 ### Tickets
 
 `board ticket get WEB-12` reads a ticket from the issue trackers listed under `tickets.trackers` in

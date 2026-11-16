@@ -46,6 +46,8 @@ Usage: collect.py [--no-notify] [--baseline] [--verbose] [--apply-rc]
 - Pomodoro tallies: every run's session states advance each session's pomodoro timer
   (lib/pomodoro.py) in $BOARD_HOME/pomodoro.json, never in the snapshot. --no-notify / --baseline
   also hold its milestone notification (off unless fleet.yaml pomodoro.notify).
+- Reminders: every run (not with --no-notify or --baseline) fires the owner's due reminders
+  (lib/reminders.py, reminders.json): T - lead, T, snoozes; each once, persisted.
 """
 import getpass
 import glob
@@ -68,6 +70,7 @@ import actions  # noqa: E402
 import notify  # noqa: E402
 import rc  # noqa: E402
 import pomodoro  # noqa: E402
+import reminders  # noqa: E402
 import resources  # noqa: E402
 import scheduler  # noqa: E402
 
@@ -751,6 +754,14 @@ def main(argv):
     except Exception as exc:  # noqa: BLE001 - never breaks the collector
         if verbose:
             print("pomodoro: %s: %s" % (type(exc).__name__, exc))
+    if "--no-notify" not in argv and "--baseline" not in argv:
+        try:  # the owner's reminders (lib/reminders.py): each occurrence fires once, persisted
+            for r in reminders.tick(home):
+                if verbose:
+                    print("reminder: %s %s %s" % (r.get("id"), r.get("phase"), r.get("status")))
+        except Exception as exc:  # noqa: BLE001 - never breaks the collector
+            if verbose:
+                print("reminders: %s: %s" % (type(exc).__name__, exc))
     snap["schedule"] = None
     try:  # the scheduling decision (lib/scheduler.py): scheduler.json, written only when it changes
         sdoc, wrote = scheduler.step(cfg, home, sessions, tasks, res_now)

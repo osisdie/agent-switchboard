@@ -24,6 +24,8 @@ Delivery rule (lib/notify.py calls suppression() for every channel of every send
      page, a heartbeat within window_seconds and an interaction within idle_seconds), push
      channels only get what is at or above presence.min_level ("owner_present").
 Urgent is the top level, so it always passes 2 and 3: only "mute ... --include-urgent" stops it.
+A breakthrough send (an owner's reminder, lib/reminders.py) passes rule 1 the same way at any
+level; rules 2 and 3 apply to it as to any alert of its level.
 """
 import argparse
 import datetime as dt
@@ -238,13 +240,14 @@ def present(cfg, presence, now, approvers=None):
     return out
 
 
-def suppression(channel, level, cfg, prefs, watching, now):
+def suppression(channel, level, cfg, prefs, watching, now, breakthrough=False):
     """None when CHANNEL may deliver an alert at LEVEL, else the reason: "muted:<target>",
-    "below_min_level" or "owner_present". `watching` = present() is not empty."""
+    "below_min_level" or "owner_present". `watching` = present() is not empty. breakthrough=True
+    (an owner's reminder) passes mutes like urgent does: only include_urgent holds it."""
     mutes = active_mutes(prefs, now)
     for t in ("all", channel):
         m = mutes.get(t)
-        if m and (level != BREAKTHROUGH or m["include_urgent"]):
+        if m and ((level != BREAKTHROUGH and not breakthrough) or m["include_urgent"]):
             return "muted:%s" % t
     if rank(level) < rank(min_level_for(channel, cfg, prefs)):
         return "below_min_level"
@@ -254,7 +257,7 @@ def suppression(channel, level, cfg, prefs, watching, now):
     return None
 
 
-def filter_channels(channels, level, cfg, now, home=None, approvers=None):
+def filter_channels(channels, level, cfg, now, home=None, approvers=None, breakthrough=False):
     """(allowed, {channel: reason}) for a delivery. Never raises: on any error it fails open
     (everything allowed), so a broken prefs file can't silence alerting."""
     try:
@@ -264,7 +267,7 @@ def filter_channels(channels, level, cfg, now, home=None, approvers=None):
         watching = bool(present(cfg, load_presence(home), now, approvers))
         held = {}
         for c in channels:
-            why = suppression(c, level, cfg, prefs, watching, now)
+            why = suppression(c, level, cfg, prefs, watching, now, breakthrough)
             if why:
                 held[c] = why
         return [c for c in channels if c not in held], held

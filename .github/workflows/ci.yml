@@ -103,3 +103,5 @@ jobs:
         env:
           PII_REQUIRE_CRYPTO: "1"
         run: python3 tests/test_pii.py -v
+      - name: reminders tests
+        run: python3 tests/test_reminders.py -v

@@ -102,6 +102,11 @@
 #                                              API keys (lib/apikeys.py): shown once, only a
 #                                              peppered hash kept; owners administer every key,
 #                                              approvers issue to listed people, anyone requests
+#   board remind add "title" --at 15:00|3pm [--date YYYY-MM-DD] [--lead 5] [--level info|warn|high|urgent]
+#                [--repeat once|daily|weekdays] [--no-breakthrough]
+#   board remind ls [--json] | rm ID | snooze ID [5m] | ack ID
+#                                              the owner's reminders (lib/reminders.py): a notice at
+#                                              T - lead and at T, through mutes unless --no-breakthrough
 #   board ticket get REF [--refresh] [--json] | doctor [--json] | show REF [--json]
 #   board ticket take REF --session CODE --by WHO [--comment-file F|--no-comment] [--no-transition] [--no-assign]
 #   board ticket release REF --by WHO
@@ -2486,6 +2491,7 @@ case "$sub" in
       *) exec python3 "$REPO/lib/apikeys.py" "$@" ;;
     esac ;;
   ticket) guarded python3 "$REPO/lib/tickets/cli.py" "$@" ;;
+  remind) [ $# -gt 0 ] || { python3 "$REPO/lib/reminders.py" --help; exit 2; }; exec python3 "$REPO/lib/reminders.py" "$@" ;;
   guard) [ $# -gt 0 ] || { python3 "$GUARD" --help; exit 2; }; exec python3 "$GUARD" "$@" ;;
   # JSON on stdin -> the same with other people's emails replaced by role labels (lib/pii.py), for
   # anything the operator mirrors to the Artifact db

@@ -675,6 +675,68 @@ The operator relays questions and gates (then `board mark <id> relayed`) and mes
 replies, and keeps `operator.json.heartbeat_at` fresh. Permission decisions are already pressed by
 `board-serve`.
 
+## Reminders
+
+The owner's own alarms (`lib/reminders.py`, `board remind`, the board's ⏰ Reminders panel).
+
+`$BOARD_HOME/reminders.json` (0600, atomic writes, `flock` on `reminders.lock`; the collector, the
+CLI and board-serve all write it):
+
+```json
+{ "version": 1, "reminders": [ {
+  "id": "r-<ms>-<hex>", "title": "Meeting", "at": "15:00", "date": "2026-11-16", "tz": "",
+  "lead_min": 5, "level": "high", "breakthrough": true, "repeat": "once|daily|weekdays",
+  "created_by": "cli|board:<identity>", "created_at": 0, "state": "active|done|missed",
+  "occ": { "at": 0, "lead_at": 0, "lead_sent": 0|null, "due_sent": 0|null, "late": false,
+           "snooze_at": 0|null, "snoozes": 0, "last_sent": 0|null, "acked_at": 0|null,
+           "acked_by": null, "missed": false },
+  "history": [ {"at": 0, "result": "done|acked|missed", "closed_at": 0} ] } ] }
+```
+
+- **Title**: control characters become spaces, the secret guard scrubs it, 1–200 characters.
+- **Time**: `--at` takes `15:00`, `9:30`, `1530`, `3pm`, `3:30 pm`, `12am`; wall time in
+  `reminders.timezone` (an IANA name), else this machine's local time (`tz: ""`). Without `--date`, a
+  time already past today means the next day it occurs (the CLI says so; the route returns it as
+  `note`); with `--date`, a past date and time is refused. `weekdays` skips Saturday and Sunday.
+  `lead_min` 0–1440 (default `reminders.default_lead_min`, 5), `level` info|warn|high|urgent
+  (default `reminders.default_level`, high). At most 100 active reminders.
+- **Firing** (`reminders.tick`, from the collector on every run; not with `--no-notify` or
+  `--baseline`): at T − lead `⏰ in N min: <title> (HH:MM)`; at T `⏰ now: <title> (HH:MM)`; at a
+  snooze time `⏰ snoozed: <title> (HH:MM)`; each at the reminder's level, key
+  `reminder:<id>:<T>:lead|due|snoozeN`, `kind: "reminder"`, no escalation or repeat, and none once
+  the occurrence is acked. Fired times are written **before** the send, so an occurrence fires once,
+  across restarts too. If the collector was down: T is still sent up to 15 minutes late, with
+  `(late)` (more than 2 minutes after T); later, the occurrence is `missed` and nothing is sent. An
+  occurrence stays open (Ack, Snooze) until 15 minutes after its last notice, then closes: a
+  repeating reminder moves to its next occurrence, skipping (never sending) any that are already
+  over; a once reminder becomes `done` or `missed`. Every fire is audited `{type: "reminder", action:
+  "fire", id, phase, result}`; add/ack/snooze/delete as `{action, id, by}`. Never the title.
+- **Breakthrough** (default on): `notify.send(..., breakthrough=True)` gives the alert urgent's rule
+  for mutes (see "Notification controls"): a mute holds it only with `include_urgent`. Min levels
+  and presence apply as to any alert of its level. `--no-breakthrough` obeys mutes. Desktop toasts
+  follow `ALERT_DESKTOP` like every alert.
+- **CLI**: `board remind add TITLE --at T [--date D] [--lead N] [--level L] [--repeat R]
+  [--no-breakthrough] [--json]`, `ls [--json]`, `rm ID`, `snooze ID [5m|1h]` (only once the lead
+  window has started), `ack ID`. Exit 0 ok, 2 a bad value, 3 no such reminder.
+- **Routes** (owner only: `owners` in fleet.yaml, else `approvers`; empty → 403 `no_owners`, anyone
+  else → 403 `not_owner`, audited, nothing written; reminders are never in `/api/state`, SSE or
+  `/api/v1`, so other viewers see nothing, not even a count):
+  - `GET /api/reminders` (needs `X-Board: 1` and no cross-site `Sec-Fetch-Site`, else 403 `csrf`)
+    → `{reminders: [{id, title, at, date, tz, lead_min, level, breakthrough, repeat, created_by,
+    created_at, state, next_at, lead_at, snooze_at, phase: upcoming|soon|due|acked|done|missed,
+    late}], now}`;
+  - `POST /api/reminders` `{title, at, date?, lead_min?, level?, repeat?, breakthrough?}` → 201
+    `{reminder, note}`; a bad value → 400 `bad_reminder`, a wrong type → 400 `bad_body`;
+  - `POST /api/reminders/<id>` `{action: "ack"|"snooze"|"delete", minutes?}` (`minutes` 1–720,
+    default 5) → 200; unknown id → 404; not active, or nothing to snooze yet → 409 `bad_state`.
+  POSTs have the usual `X-Board` and `Origin` checks. Audited as `type: "serve"`, `action:
+  "reminder-add|ack|snooze|delete"`.
+- **Page**: the panel (add: time, title, minutes early, level, repeat; the list with a live
+  countdown; Ack and Snooze 5 min inside the window; Delete with a confirm step) and a sticky banner
+  in the section nav while a reminder is in its lead window or due (until acked or closed). It
+  reloads every 30 s while visible. A two-note chime plays once at T − lead, only after a click or
+  key on the page (no AudioContext before that). Demo mode has three sample reminders.
+
 ## Tickets
 
 Issue trackers on the board (`lib/tickets/`, design: `docs/design/tickets-and-api.md`): read a
