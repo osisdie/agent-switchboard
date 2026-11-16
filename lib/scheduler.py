@@ -6,7 +6,7 @@ decide() is a pure function of the tasks, the sessions' states, resources.json, 
 the time: no I/O, the same inputs give the same output (and digest). The collector calls step()
 on every run; it writes scheduler.json (0600) only when the decision changed, so the file has no
 heartbeat. Nothing here sends anything, and nothing ever stops a process: `stop-own-heavy` only
-asks a session to stop a heavy process it started itself.
+asks a session to stop a heavy process it started itself, and only under memory pressure.
 
 Usage:
   scheduler.py show [--json]        the last decision (--json: scheduler.json as written)
@@ -20,6 +20,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import lessons as lessonstore  # noqa: E402
+import resources as resstore  # noqa: E402
 import tasks as taskstore  # noqa: E402
 
 FILE = "scheduler.json"
@@ -27,7 +28,7 @@ SCHEMA_VERSION = 1
 LEVELS = ("ok", "warn", "high", "critical")
 DEFAULTS = {
     "enabled": True,
-    "stop_own_heavy": True,          # at critical: ask a session to stop its own largest heavy process
+    "stop_own_heavy": True,          # at critical memory/OOM: ask a session to stop its own largest heavy process
     "stop_max": 2,                   # ... at most this many sessions at a time (largest first)
     "max_heavy_concurrent": "auto",  # auto: 1 if the machine has < 16 GiB, else 2
     "one_pr_per_repo": True,
@@ -48,6 +49,7 @@ SEVERITY_ORDER = ("high", "warn", "info")
 RES_STALE_MS = 5 * 60 * 1000         # resources.json older than this: no resource gates
 RES_SKEW_MS = 30 * 1000              # ... or ahead of the caller's clock by more than this
 RSS_BUCKET_MB = 256                  # process sizes in advisories, so small growth is not a change
+STOP_MIN_RSS_MB = 64                 # stop-own-heavy never names a process smaller than this
 HOUR_MS = 3600 * 1000
 WEEK_MS = 7 * 24 * HOUR_MS
 USAGE_STALE_MS = 15 * 60 * 1000      # usage.json older than this: no usage mode (a limit episode still counts)
@@ -58,6 +60,8 @@ SAFE_NAME_RE = re.compile(r"[A-Za-z0-9._-]{1,40}")
 CODE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,39}")          # a session code that may receive advice
 OWNER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/@+-]{0,79}")      # session codes and aliases as stored
 DEC_RE = re.compile(r"d-[0-9]+-[a-z0-9]+")
+CAUSE_KINDS = ("oom", "mem", "swap", "disk", "load")   # resources.json `worst` families, in its order
+MEMORY_KINDS = ("oom", "mem", "swap")                 # PSI is part of `mem`
 CTL_RE = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 LIMIT_GRACE_MS = 10 * 60 * 1000      # a limit episode past resets_at by this much no longer holds starts
 DEFAULT_BRANCHES = ("main", "master", "trunk", "develop", "detached", "HEAD")
@@ -145,15 +149,31 @@ def clean_res(res):
     swap = res.get("swap") if isinstance(res.get("swap"), dict) else {}
     cpu = res.get("cpu") if isinstance(res.get("cpu"), dict) else {}
     disks = [_num(d.get("free_pct"), None) for d in _dicts(res.get("disks"))]
+    disks_mb = [_num(d.get("free_mb"), None) for d in _dicts(res.get("disks"))]
+    raw_thr = res.get("thresholds") if isinstance(res.get("thresholds"), dict) else {}
+    thr = {}                            # [warn, high] per key as resources.json used them, else the defaults
+    for key, default in resstore.DEFAULTS["thresholds"].items():
+        v = raw_thr.get(key)
+        ok = isinstance(v, list) and len(v) == 2 and all(_num(x, None) is not None and 0 < x <= 10 ** 7 for x in v)
+        thr[key] = list(v) if ok else list(default)
+    levels = {}                         # per family (disk:<id> folds into disk), the worst level
+    for k, v in (res.get("levels") or {}).items() if isinstance(res.get("levels"), dict) else ():
+        fam = k.split(":")[0] if isinstance(k, str) else None
+        if fam in CAUSE_KINDS and _s(v) in LEVELS and LEVELS.index(v) > LEVELS.index(levels.get(fam, "ok")):
+            levels[fam] = v
+    worst = _s(res.get("worst"))
+    worst = worst.split(":")[0] if worst and worst.split(":")[0] in CAUSE_KINDS else None
     return {
         "metrics": {"mem_available_mb": _num(mem.get("available_mb"), None),
                     "mem_available_pct": _num(mem.get("available_pct"), None),
                     "psi_mem": _num(mem.get("psi_some_avg60"), None), "swap_used_pct": _num(swap.get("used_pct"), None),
                     "load_per_cpu": _num(cpu.get("load_per_cpu"), None),
                     "disk_free_pct": min((d for d in disks if d is not None), default=None),
+                    "disk_free_mb": min((d for d in disks_mb if d is not None), default=None),
                     "heavy_running": _num(res.get("heavy_running"), None)},
         "enabled": res.get("enabled") is not False, "at": _num(res.get("at"), None),
         "level": res.get("level") if _s(res.get("level")) in LEVELS else None,
+        "levels": levels, "worst": worst, "thresholds": thr,
         "total_mb": _num(mem.get("total_mb")), "heavy_running": int(_num(res.get("heavy_running"))),
         "oom": res.get("oom_recent") is True or _num(res.get("oom_kills_delta")) > 0,
         "sessions": [{"code": r["code"], "heavy_n": int(_num(r.get("heavy_n"))), "children": [
@@ -227,6 +247,50 @@ def usage_mode(ctx, st, now):
     return None, None, None
 
 
+# (metric, threshold key, lower is worse, words) per cause; the first is the default to name.
+CAUSE_SUBS = {
+    "mem": (("mem_available_pct", "mem_available_pct", True, "available below %s%%"),
+            ("mem_available_mb", "mem_available_mb", True, "available below %s MB"),
+            ("psi_mem", "psi_mem_some_avg60", False, "PSI above %s%%")),
+    "swap": (("swap_used_pct", "swap_used_pct", False, "above %s%% used"),),
+    "disk": (("disk_free_pct", "disk_free_pct", True, "free below %s%%"),
+             ("disk_free_mb", "disk_free_mb", True, "free below %s MB")),
+    "load": (("load_per_cpu", "load_per_cpu", False, "above %.1f per CPU"),),
+}
+CAUSE_WORDS = {"mem": "memory", "swap": "swap", "disk": "disk space", "load": "CPU load"}
+
+
+def cause(res, level):
+    """(kind, text) for what drives `level`: kind is oom, mem, swap, disk, load or None; text names
+    it with the configured threshold it crossed, never a live number ("memory is critical
+    (available below 8%)", "CPU load is critical (above 3.0 per CPU)"), so a value that hovers
+    does not change the text, the digest or the jams. The family at `level` is taken in resources'
+    order (memory first), else `worst`; within a family, the first measure in a fixed order
+    (available %, available MB, PSI) that is past its threshold, counting the hysteresis band
+    (resources' leave factors), so the named measure changes only when it leaves its level."""
+    if not res or level not in LEVELS:
+        return None, "resources are %s" % (level if level in LEVELS else "strained")
+    fams = [f for f in CAUSE_KINDS if res["levels"].get(f) == level]
+    kind = "oom" if res["oom"] and level == "critical" else (fams[0] if fams else res["worst"])
+    if kind == "oom":
+        return kind, "memory is %s after an OOM kill" % level
+    if kind not in CAUSE_SUBS:
+        return None, "resources are %s" % level
+    step = 0 if level == "warn" else 1          # [warn, high]; critical is high that held
+    subs = [(words, res["thresholds"][key][step], res["metrics"].get(metric), low)
+            for metric, key, low, words in CAUSE_SUBS[kind]]
+    past = [x for x in subs if x[2] is not None and
+            (x[2] <= x[1] * resstore.LEAVE_LOW if x[3] else x[2] >= x[1] * resstore.LEAVE_HIGH)]
+    known = [x for x in subs if x[2] is not None]
+    words, t = (past or known or subs)[0][:2]   # none past (or no values): the first one there is
+    shown = ("%.1f" % t) if "%.1f" in words else (str(int(t)) if t == int(t) else str(round(t, 2)))
+    return kind, "%s is %s (%s)" % (CAUSE_WORDS[kind], level, words.replace("%.1f", "%s") % shown)
+
+
+def _cap(text):
+    return text[:1].upper() + text[1:]
+
+
 def _when(ms):
     import datetime as dt
     try:
@@ -267,6 +331,7 @@ def decide(tasks, sessions, res, st, now, ctx=None):
     ctx = ctx if isinstance(ctx, dict) else {}
     level, res_state = _resources(res, now)
     lvl = LEVELS.index(level) if level else 0
+    cause_kind, cause_text = cause(res if res_state == "ok" else None, level)
     umode, resets_at, uwhy = usage_mode(ctx, st, now)
     conserve = umode == "conserve"
     code_of, sstate, since = {}, {}, {}
@@ -401,7 +466,7 @@ def decide(tasks, sessions, res, st, now, ctx=None):
             if r["heavy"] and r["task"] not in granted:
                 r["state"] = "deferred"
                 reason = ("a lesson %s holds heavy starts back now" % r["lesson"]) if r.get("lesson") else (
-                    ("resources are at %s" % level) if lvl >= 2 else
+                    cause_text if lvl >= 2 else
                     ("%d heavy job(s) already run (max %d)" % (used, max_heavy)))
                 r["blocked_by"] = [{"kind": "lesson", "ref": r.pop("lesson")} if r.get("lesson") else
                                    {"kind": "resource", "ref": level if lvl >= 2 else "max_heavy"}]
@@ -476,13 +541,17 @@ def decide(tasks, sessions, res, st, now, ctx=None):
                 "A task your branch is stacked on was squash-merged: rebase with git rebase --onto, force-push only "
                 "your own branch with --force-with-lease, and point the PR base at the merged branch's base."))
 
-    # Critical: ask the sessions holding the largest heavy processes to stop their own.
-    if lvl == 3 and st["stop_own_heavy"]:
+    # Critical memory (mem, PSI, swap) or an OOM kill: ask the sessions holding the largest heavy
+    # processes to stop their own. Critical CPU load or disk alone asks nobody to stop anything:
+    # stopping short CPU-bound runs relieves nothing durable; new heavy starts stay deferred above.
+    if lvl == 3 and st["stop_own_heavy"] and cause_kind in MEMORY_KINDS:
         biggest = []
         def size(c):                     # bucketed, so a growing process does not change the decision
             return c["rss_mb"] // RSS_BUCKET_MB * RSS_BUCKET_MB
         for code, r in sorted(rsess.items()):
-            hv = [c for c in r["children"] if c["heavy"]]
+            # never a wrapper (timeout, env, npx, ...) or a tiny process: the heaviest real job
+            hv = [c for c in r["children"] if c["heavy"] and c["rss_mb"] >= STOP_MIN_RSS_MB
+                  and not resstore.is_wrapper(c["comm"])]
             if hv:
                 biggest.append((code, max(hv, key=lambda c: (size(c), -c["pid"]))))
         biggest.sort(key=lambda b: (-size(b[1]), b[0]))
@@ -490,12 +559,15 @@ def decide(tasks, sessions, res, st, now, ctx=None):
             cls = _safe(c["class"], "heavy")
             via = _safe(c["via"], "")
             who = "you or your teammate %s" % via if via else "you"
+            via_key = via or ("h-" + _hash(c["via"]) if c["via"] else "")   # an unsafe name: hashed, not merged
             mb = ("about %d MB" % size(c)) if size(c) else ("under %d MB" % RSS_BUCKET_MB)
+            # the id is the session, the teammate and the class, never the pid: a re-spawned run (new
+            # pids, same job) keeps one advisory, which is not sent again
             advisories.append(_adv(
-                "stop-own-heavy", code, None, c["pid"], "high",
-                "Memory is critical: if %s started the %s process %s (pid %d, %s), stop it now and re-run it later. "
-                "Never stop a process you did not start." % (who, cls, _safe(c["comm"], cls), c["pid"], mb),
-                "Memory is critical: stop the largest heavy process you started yourself, and re-run it later.",
+                "stop-own-heavy", code, None, "%s|%s" % (via_key, cls), "high",
+                "%s: if %s started the %s process %s (pid %d, %s), stop it now and re-run it later. "
+                "Never stop a process you did not start." % (_cap(cause_text), who, cls, _safe(c["comm"], cls), c["pid"], mb),
+                "%s: stop the largest heavy process you started yourself, and re-run it later." % _cap(cause_text),
                 pid=c["pid"], comm=_safe(c["comm"], cls), rss_mb=size(c), **{"class": cls}))
 
     if acting("raise_severity"):
@@ -633,7 +705,7 @@ def conditions(rows, live, sessions, sstate, cur_of, stuck, picks, free_owners, 
     # J5: resources critical or an OOM kill (alerted as res:*), J6: operator silent (operator:stale)
     if lvl == 3 or (res and res["oom"]):
         out.append(_cond("J5", "fleet", "high", [r["session"] for r in rows.values() if r["state"] == "run" and r["session"]],
-                         "Resources are critical%s." % (" after an OOM kill" if res and res["oom"] else ""),
+                         "%s." % _cap(cause(res, "critical")[1]),
                          alert=False, evals=1 if res and res["oom"] else 2,   # critical: 2 samples; an OOM at once
                          signals={"oom": bool(res and res["oom"])}))
     if ctx.get("operator_stale"):

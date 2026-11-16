@@ -10,7 +10,11 @@ docs/contract.md "Scheduler"). lib/scheduler.py decides; this module remembers.
   `max_messages_per_session_hour` batches an hour. In quiet hours only `high` advisories go.
   `advise: false` (shadow mode) and `board schedule off` send nothing.
 - The operator sends a session's batch (`outbox`), then records it (`sent`); the session's
-  `[re <id>] ack|done|cannot: <reason>` reply is recorded with `reply`.
+  `[re <id>] ack|done|cannot: <reason>` reply is recorded with `reply`. `outbox` remembers what it
+  printed (PRINTED_MS), so `sent` still records an advisory that went away in between (its
+  short-lived process exited). A sent advisory that goes away keeps its record GONE_KEEP_MS, so
+  the reply is accepted and a recurrence in that time is not sent again before `readvise_minutes`
+  (its old reply is dropped: a recurrence is a new episode).
 
 Usage (through `board schedule ...`):
   advisories.py outbox [CODE] [--json]      the [BOARD schedule] lines due now, per session
@@ -42,6 +46,8 @@ SUFFIX = " — advisory for ordering/pausing only; not an approval. Reply [re %s
 KEEP_RESOLVED = 50
 J8_MS = 60 * 60 * 1000
 CLOSE_AFTER = 2
+PRINTED_MS = 10 * 60 * 1000        # `sent` accepts an id the outbox printed this recently
+GONE_KEEP_MS = 30 * 60 * 1000      # a sent advisory that went away keeps its delivery this long
 
 
 def now_ms():
@@ -175,7 +181,14 @@ def load_state(home):
             "resolved": s.get("resolved") if isinstance(s.get("resolved"), list) else [],
             "lesson_on": s.get("lesson_on") if isinstance(s.get("lesson_on"), list) else [],
             "lesson_off": s.get("lesson_off") if isinstance(s.get("lesson_off"), dict) else {},
-            "to_learn": s.get("to_learn") if isinstance(s.get("to_learn"), list) else []}
+            "to_learn": s.get("to_learn") if isinstance(s.get("to_learn"), list) else [],
+            "printed": s.get("printed") if isinstance(s.get("printed"), dict) else {}}
+
+
+def fresh_printed(printed, now):
+    """outbox's record {id: {to, kind, printed_at}}, less what is older than PRINTED_MS."""
+    return {i: p for i, p in printed.items() if isinstance(p, dict) and isinstance(p.get("printed_at"), int)
+            and 0 <= now - p["printed_at"] <= PRINTED_MS and isinstance(p.get("to"), str)}
 
 
 def advance(doc, state, st, valid, now, quiet=False, paused=False, live=None):
@@ -183,7 +196,20 @@ def advance(doc, state, st, valid, now, quiet=False, paused=False, live=None):
     the jam episodes resolved now)."""
     advs = doc["advisories"]
     ids = {a["id"] for a in advs}
-    sent = {k: v for k, v in state["sent"].items() if k in ids and isinstance(v, dict)}
+    sent = {}
+    for k, v in state["sent"].items():
+        if not isinstance(v, dict):
+            continue
+        if k in ids:
+            if "gone_at" in v:                        # back after going away: a new episode. Its old
+                # reply no longer holds; sent_at and n stay, so readvise and MAX_SENDS still limit it
+                v = {x: y for x, y in v.items() if x not in ("gone_at", "reply_at", "note")}
+                v["reply"] = None
+            sent[k] = v
+            continue
+        gone = v["gone_at"] if isinstance(v.get("gone_at"), int) else now
+        if now - gone < GONE_KEEP_MS:                 # went away: keep it a while (reply, recurrence)
+            sent[k] = dict(v, gone_at=gone)
     batches = {c: [t for t in ts if isinstance(t, int) and now - t < 3600 * 1000]
                for c, ts in state["batches"].items() if isinstance(ts, list)}
     batches = {c: ts for c, ts in batches.items() if ts}
@@ -193,6 +219,7 @@ def advance(doc, state, st, valid, now, quiet=False, paused=False, live=None):
     doc["jams"] = opened
     return {"jams": jams, "sent": sent, "batches": batches, "lesson_on": state.get("lesson_on") or [],
             "lesson_off": state.get("lesson_off") or {}, "to_learn": state.get("to_learn") or [],
+            "printed": fresh_printed(state.get("printed") or {}, now),
             "resolved": (state["resolved"] + resolved)[-KEEP_RESOLVED:]}, resolved
 
 
@@ -215,16 +242,26 @@ def _log(home, ev):
 
 
 def cmd_outbox(home, args):
-    doc = {} if paused(home) else (read_json(os.path.join(home, scheduler.FILE)) or {})   # off: nothing goes
+    now = now_ms()
     want = [a for a in args if not a.startswith("--")]
-    by_id = {a.get("id"): a for a in doc.get("advisories") or [] if isinstance(a, dict)}
     out = {}
-    for code, ids in sorted((doc.get("due") or {}).items()):
-        if want and code not in want:
-            continue
-        lines = [render(by_id[i]) for i in ids if i in by_id]
-        if lines:
-            out[code] = {"ids": [i for i in ids if i in by_id], "text": "\n".join(lines)}
+    with locked(home):
+        doc = {} if paused(home) else (read_json(os.path.join(home, scheduler.FILE)) or {})   # off: nothing goes
+        by_id = {a.get("id"): a for a in doc.get("advisories") or [] if isinstance(a, dict)}
+        for code, ids in sorted((doc.get("due") or {}).items()):
+            if want and code not in want:
+                continue
+            lines = [render(by_id[i]) for i in ids if i in by_id]
+            if lines:
+                out[code] = {"ids": [i for i in ids if i in by_id], "text": "\n".join(lines)}
+        if out:                                   # remember what was printed, for `sent`
+            state = load_state(home)
+            printed = fresh_printed(state["printed"], now)
+            for code, b in out.items():
+                for i in b["ids"]:
+                    printed[i] = {"to": code, "kind": by_id[i].get("kind"), "printed_at": now}
+            state["printed"] = printed
+            write_json(os.path.join(home, STATE_FILE), state)
     if "--json" in args:
         print(json.dumps(out, ensure_ascii=False, indent=1))
     else:
@@ -236,6 +273,7 @@ def cmd_outbox(home, args):
 def cmd_sent(home, ids):
     if not ids or not all(ADV_RE.fullmatch(i) for i in ids):
         return _usage("sent: advisory ids (a-<12 hex>)")
+    ids = list(dict.fromkeys(ids))                  # `sent X X` records X once
     now = now_ms()
     with locked(home):
         if paused(home):
@@ -244,25 +282,37 @@ def cmd_sent(home, ids):
         doc = read_json(os.path.join(home, scheduler.FILE)) or {}
         by_id = {a.get("id"): a for a in doc.get("advisories") or [] if isinstance(a, dict)}
         due = doc.get("due") if isinstance(doc.get("due"), dict) else {}
-        # fails closed: only what the outbox printed (due now, for its own session) is recorded
-        missing = [i for i in ids if i not in by_id or i not in (due.get(by_id[i].get("to")) or [])]
+        state = load_state(home)
+        printed = fresh_printed(state["printed"], now)
+        # fails closed: only what the outbox printed is recorded, for its own session: due now, or
+        # printed by `outbox` in the last PRINTED_MS and not recorded since (it may have gone away)
+        to = {}
+        for i in ids:
+            if i in by_id and i in (due.get(by_id[i].get("to")) or []):
+                to[i] = (by_id[i]["to"], by_id[i].get("kind"))
+            elif i in printed:
+                to[i] = (printed[i]["to"], printed[i].get("kind"))
+        missing = [i for i in ids if i not in to]
         if missing:
             sys.stderr.write("board: schedule sent: not due now: %s; nothing recorded\n" % " ".join(missing))
             return 1
-        state = load_state(home)
-        for code in sorted({by_id[i]["to"] for i in ids}):
+        for code in sorted({c for c, _ in to.values()}):
             ts = state["batches"].get(code)
             state["batches"][code] = (ts if isinstance(ts, list) else []) + [now]
         for i in ids:
-            a = by_id[i]
+            code, kind = to[i]
             s = state["sent"].get(i) if isinstance(state["sent"].get(i), dict) else {}
-            state["sent"][i] = {"to": a["to"], "kind": a["kind"], "sent_at": now, "n": int(s.get("n") or 0) + 1,
+            state["sent"][i] = {"to": code, "kind": kind, "sent_at": now, "n": int(s.get("n") or 0) + 1,
                                 "reply": None}
-            a["delivery"] = {"state": "sent", "sent_at": now, "n": state["sent"][i]["n"], "reply": None}
-            if i in due.get(a["to"], []):
-                due[a["to"]].remove(i)
-                if not due[a["to"]]:
-                    due.pop(a["to"])
+            printed.pop(i, None)
+            a = by_id.get(i)
+            if a is not None and a.get("to") == code:
+                a["delivery"] = {"state": "sent", "sent_at": now, "n": state["sent"][i]["n"], "reply": None}
+            if i in due.get(code, []):
+                due[code].remove(i)
+                if not due[code]:
+                    due.pop(code)
+        state["printed"] = printed
         write_json(os.path.join(home, STATE_FILE), state)
         doc["digest"] = scheduler.digest(doc)
         scheduler.write_doc(home, doc)
@@ -315,15 +365,32 @@ def cmd_off_on(home, verb, args):
     now = now_ms()
     path = os.path.join(home, OFF_FILE)
     if verb == "off":
+        # The kill switch never waits for the lock: outbox and sent re-check paused() under it.
         write_json(path, {"at": now, "by": args[1]})
-    else:
         try:
-            os.remove(path)
-        except FileNotFoundError:
-            pass
+            with locked(home):                  # best effort: what the outbox printed is not recorded later
+                _forget_printed(home)
+        except TimeoutError:
+            sys.stderr.write("board: schedule off: the schedule state is busy; the printed record is "
+                             "cleared on `on`\n")
+    else:
+        with locked(home):                      # busy: exit 8 and stay off (the safe direction)
+            _forget_printed(home)
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
     _log(home, {"ts": now, "type": "schedule", "action": verb, "by": args[1]})
     print("scheduler %s" % ("paused (nothing is sent; the board shows it)" if verb == "off" else "on"))
     return 0
+
+
+def _forget_printed(home):
+    """Drop the outbox's printed record (the caller holds the lock)."""
+    state = load_state(home)
+    if state["printed"]:
+        state["printed"] = {}
+        write_json(os.path.join(home, STATE_FILE), state)
 
 
 def _usage(msg):

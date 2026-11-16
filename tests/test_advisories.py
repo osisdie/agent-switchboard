@@ -144,6 +144,9 @@ class Jams(unittest.TestCase):
                          [("j-J4-API", "high", "high"), ("j-J4-WEB-idle", "info", None)])
         self.assertEqual([(c["alert"], c["evals"]) for c in conds(decide([], [], res("critical")), "J5")], [(None, 2)])
         self.assertEqual([c["evals"] for c in conds(decide([], [], res("ok", oom_recent=True)), "J5")], [1])
+        self.assertEqual([c["text"] for c in conds(decide([], [], res("ok", oom_recent=True)), "J5")],
+                         ["Memory is critical after an OOM kill."])
+        self.assertEqual([c["text"] for c in conds(decide([], [], res("critical")), "J5")], ["Resources are critical."])
         self.assertEqual(len(conds(decide([], [], ctx={"operator_stale": True}), "J6")), 1)
         ss = [sess("API", "working"), sess("WEB", "working")]
         [j] = conds(decide([], ss, ctx={"usage": usage(p5=90, r5=NOW + HOUR)}), "J7")
@@ -292,7 +295,7 @@ class Step(unittest.TestCase):
     def setUp(self):
         self.home = tempfile.mkdtemp(dir=TMP)
         with open(os.path.join(self.home, "resources.json"), "w") as fh:
-            json.dump(res("critical", sessions=[{"code": "API", "heavy_n": 1, "children": [
+            json.dump(res("critical", worst="mem", levels={"mem": "critical"}, sessions=[{"code": "API", "heavy_n": 1, "children": [
                 {"class": "test", "comm": "pytest", "pid": 7, "rss_mb": 900, "heavy": True}]}]), fh)
         self.cfg = {"sessions": [{"code": "API"}], "schedule": {}}
         self.ss = [sess("API", "working")]
@@ -335,6 +338,159 @@ class Step(unittest.TestCase):
         self.assertEqual(scheduler.snapshot_digest(doc), {"mode": "off", "due": [], "jams": 0})
         run("on", "--by", "owner")
         self.assertEqual(self.step(NOW + 11000)[0]["mode"], "degraded")
+
+    def write_res(self, **kw):
+        kw.setdefault("sessions", [{"code": "API", "heavy_n": 1, "children": [
+            {"class": "test", "comm": "vitest", "pid": 7, "rss_mb": 900, "heavy": True}]}])
+        with open(os.path.join(self.home, "resources.json"), "w") as fh:
+            json.dump(res("critical", **kw), fh)
+
+    def test_load_critical_sends_no_stop(self):
+        def load(x):
+            return {"worst": "load", "levels": {"mem": "ok", "load": "critical"}, "cpu": {"ncpu": 4, "load_per_cpu": x},
+                    "mem": {"total_mb": 32768, "available_pct": 53.0, "psi_some_avg60": 1.0}, "swap": {"used_pct": 49}}
+        self.write_res(**load(4.86))
+        doc, _ = self.step()
+        self.assertEqual(doc["mode"], "degraded")
+        self.assertEqual([a["kind"] for a in doc["advisories"]], [])          # memory is fine: nobody is asked to stop
+        self.assertEqual(doc["due"], {})
+        doc, _ = self.step(NOW + 3000)
+        [j5] = doc["jams"]
+        self.assertEqual(j5["text"], "CPU load is critical (above 3.0 per CPU).")
+        for n, x in enumerate((4.98, 5.01, 4.48, 4.52, 5.03, 4.49)):          # jitter at any edge: no write
+            self.write_res(**load(x))
+            self.assertFalse(self.step(NOW + 4000 + n * 1000)[1], x)
+        self.write_res(worst="mem", levels={"mem": "critical", "load": "critical"}, cpu={"load_per_cpu": 4.62},
+                       mem={"total_mb": 32768, "available_pct": 4.2, "psi_some_avg60": 30})
+        doc, _ = self.step(NOW + 9000)
+        [a] = doc["advisories"]
+        self.assertEqual((a["kind"], a["to"], a["pid"]), ("stop-own-heavy", "API", 7))
+        self.assertTrue(a["text"].startswith("Memory is critical (available below 8%): if you started"))
+        self.assertEqual(doc["due"], {"API": [a["id"]]})
+
+    def cli(self, now, *a):
+        import subprocess
+        env = dict(os.environ, BOARD_HOME=self.home, BOARD_NOW_MS=str(now))
+        return subprocess.run([sys.executable, os.path.join(REPO, "lib", "advisories.py")] + list(a),
+                              env=env, capture_output=True, text=True)
+
+    def write_mem(self, pid=None, at=NOW):
+        self.write_res(at=at, worst="mem", levels={"mem": "critical"}, mem={"total_mb": 32768, "available_pct": 4},
+                       sessions=[{"code": "API", "heavy_n": 1, "children": [
+                           {"class": "test", "comm": "vitest", "pid": pid, "rss_mb": 900, "heavy": True, "via": "qa"}]}]
+                       if pid else [])
+
+    def test_sent_after_the_process_exited(self):
+        self.write_mem(pid=7)
+        doc, _ = self.step()
+        [aid] = doc["due"]["API"]
+        out = json.loads(self.cli(NOW + 1000, "outbox", "API", "--json").stdout)
+        self.assertEqual(out["API"]["ids"], [aid])
+        self.write_mem(pid=None)                                              # the test run ended
+        doc, _ = self.step(NOW + 2000)
+        self.assertEqual((doc["advisories"], doc["due"]), ([], {}))
+        r = self.cli(NOW + 3000, "sent", aid)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        st = advisories.load_state(self.home)
+        self.assertEqual((st["sent"][aid]["to"], st["sent"][aid]["kind"], st["batches"]["API"]),
+                         ("API", "stop-own-heavy", [NOW + 3000]))             # counts toward the cap
+        self.assertEqual(st["printed"], {})
+        self.assertEqual(self.cli(NOW + 3500, "sent", aid).returncode, 1)     # once
+        self.step(NOW + 4000)
+        self.assertEqual(self.cli(NOW + 5000, "reply", aid, "--from", "API", "cannot").returncode, 0)
+        self.assertEqual(advisories.load_state(self.home)["sent"][aid]["reply"], "cannot")
+        self.assertEqual(self.cli(NOW + 5000, "sent", "a-ffffffffffff").returncode, 1)   # never printed
+
+    def test_off_never_waits_for_the_lock(self):
+        import subprocess
+        self.write_mem(pid=7)
+        doc, _ = self.step()
+        [aid] = doc["due"]["API"]
+        self.cli(NOW + 1000, "outbox", "--json")
+        env = dict(os.environ, BOARD_HOME=self.home, BOARD_NOW_MS=str(NOW + 2000), BOARD_SCHEDULE_LOCK_WAIT="0.3")
+        run = lambda *a: subprocess.run([sys.executable, os.path.join(REPO, "lib", "advisories.py")] + list(a),  # noqa: E731
+                                        env=env, capture_output=True, text=True)
+        with advisories.locked(self.home, wait_s=1):                         # a stuck collector step
+            r = run("off", "--by", "owner")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertTrue(advisories.paused(self.home))
+            self.assertIn("busy", r.stderr)
+            r = run("on", "--by", "owner")
+            self.assertEqual(r.returncode, 8)                                 # on waits: stays off
+            self.assertTrue(advisories.paused(self.home))
+        self.assertIn(aid, advisories.load_state(self.home)["printed"])      # off could not clear it
+        self.assertEqual(run("sent", aid).returncode, 1)                     # ... but off refuses sent
+        self.assertEqual(run("on", "--by", "owner").returncode, 0)
+        self.assertFalse(advisories.paused(self.home))
+        self.assertEqual(advisories.load_state(self.home)["printed"], {})    # on clears it
+
+    def test_sent_twice_in_one_call_counts_once(self):
+        self.write_mem(pid=7)
+        doc, _ = self.step()
+        [aid] = doc["due"]["API"]
+        self.cli(NOW + 1000, "outbox", "--json")
+        self.assertEqual(self.cli(NOW + 1500, "sent", aid, aid).returncode, 0)
+        st = advisories.load_state(self.home)
+        self.assertEqual((st["sent"][aid]["n"], st["batches"]["API"]), (1, [NOW + 1500]))
+
+    def test_done_then_a_new_episode_is_asked_again(self):
+        self.write_mem(pid=7)
+        doc, _ = self.step()
+        [aid] = doc["due"]["API"]
+        self.cli(NOW + 1000, "outbox", "--json")
+        self.assertEqual(self.cli(NOW + 1500, "sent", aid).returncode, 0)
+        self.assertEqual(self.cli(NOW + 2000, "reply", aid, "--from", "API", "done").returncode, 0)
+        self.write_mem(pid=None)                                              # stopped: the advisory goes
+        self.step(NOW + 3000)
+        self.write_mem(pid=8)                                                 # re-run soon: within readvise
+        doc, _ = self.step(NOW + 5 * MIN)
+        self.assertEqual((doc["due"], doc["advisories"][0]["delivery"]["state"]), ({}, "sent"))
+        rec = advisories.load_state(self.home)["sent"][aid]
+        self.assertEqual((rec["reply"], rec["n"], rec["sent_at"], "gone_at" in rec), (None, 1, NOW + 1500, False))
+        self.write_mem(pid=9, at=NOW + 1500 + HOUR)
+        doc, _ = self.step(NOW + 1500 + HOUR)                                 # after readvise: asked again
+        self.assertEqual(doc["due"], {"API": [aid]})
+
+    def test_printed_too_long_ago_or_off_is_refused(self):
+        self.write_mem(pid=7)
+        doc, _ = self.step()
+        [aid] = doc["due"]["API"]
+        self.cli(NOW + 1000, "outbox", "--json")
+        self.write_mem(pid=None)
+        self.step(NOW + 2000)
+        late = NOW + 1000 + advisories.PRINTED_MS + 1
+        self.assertEqual(self.cli(late, "sent", aid).returncode, 1)
+        self.assertEqual(self.cli(late, "reply", aid, "--from", "API", "ack").returncode, 1)
+        self.write_mem(pid=8)
+        doc, _ = self.step(NOW + 3000)
+        self.assertEqual(doc["due"], {"API": [aid]})                         # same job, new pid: same id
+        self.cli(NOW + 3100, "outbox", "--json")
+        self.assertIn(aid, advisories.load_state(self.home)["printed"])
+        self.cli(NOW + 3500, "off", "--by", "owner")
+        self.assertEqual(advisories.load_state(self.home)["printed"], {})    # off forgets what was printed
+        self.assertEqual(json.loads(self.cli(NOW + 4000, "outbox", "--json").stdout), {})
+        self.assertEqual(advisories.load_state(self.home)["printed"], {})    # ... and records nothing
+        self.assertEqual(self.cli(NOW + 4500, "sent", aid).returncode, 1)     # off: refused
+        self.cli(NOW + 4600, "on", "--by", "owner")
+        self.assertEqual(advisories.load_state(self.home)["printed"], {})
+
+    def test_respawned_run_is_not_sent_again(self):
+        self.write_mem(pid=7)
+        doc, _ = self.step()
+        [aid] = doc["due"]["API"]
+        self.cli(NOW + 1000, "outbox", "--json")
+        self.assertEqual(self.cli(NOW + 1500, "sent", aid).returncode, 0)
+        for n, pid in enumerate((None, 8, None, 9, 10)):                    # the run re-spawns; gaps between
+            self.write_mem(pid=pid)
+            doc, _ = self.step(NOW + 2000 + n * MIN)
+            self.assertEqual(doc["due"], {})
+            if pid:
+                self.assertEqual(([a["id"] for a in doc["advisories"]], doc["advisories"][0]["delivery"]["state"]),
+                                 ([aid], "sent"))
+        self.write_mem(pid=None)
+        self.step(NOW + 10 * MIN)
+        self.step(NOW + 10 * MIN + advisories.GONE_KEEP_MS)                  # gone long enough: forgotten
+        self.assertNotIn(aid, advisories.load_state(self.home)["sent"])
 
     def test_off_gates_outbox_and_sent_at_once(self):
         import subprocess

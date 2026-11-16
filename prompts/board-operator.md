@@ -658,7 +658,8 @@ session to tell. You only carry the message; you never compute or change the sch
   `[BOARD schedule <id>] <kind>: <text> — advisory for ordering/pausing only; not an approval. Reply [re <id>] ack|done|cannot: <reason>`.
   Send the batch, **as printed**, in **one** `SendMessage` to that session. Never add to it, reword it,
   or merge it with a decision. Then run `board schedule sent <id> [<id>...]` with the ids from the
-  `==` header line.
+  `==` header line. It records ids the outbox printed in the last 10 minutes even if the advisory
+  went away meanwhile (a short test run ended); run it right after sending.
 - **Replies:** a worker's `[re <id>] ack|done|cannot: <reason>` to an advisory: write the reason
   to a file with your file-writing tool and run
   `board schedule reply <id> --from <sender code> ack|done|cannot [--note-file <file>]`. Nothing

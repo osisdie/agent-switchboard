@@ -78,7 +78,7 @@ CLI:
 2. **Human.** A pending decision or gate from the owner, or a session in needs-you, gives `blocked{human}`. While the owner is away, the task becomes `deferred{owner-return}` and the session is advised to switch to work that needs no human.
 3. **Dependency.** If any `depends_on` is unmet, the task is `blocked{task}`. `deploy` means the dep task reached `maintain` or is done (owner decision 2026-11-15: an approved production gate alone does not count); `merge` means `pr.state=merged`.
 4. **Repo.** Another active task in the same `git-common-dir` has an open PR, and `one_pr_per_repo` is on. The lower-ranked task gets `ready` plus a `finish-first` advisory: keep committing locally, don't push or open a PR.
-5. **Resource.** If the task is heavy and the level is ≥ high, or `heavy_running ≥ max_heavy_concurrent`, it is `deferred{resource}`. At critical or after an OOM kill, `free-resources` names the largest heavy children, and `stop-own-heavy` asks their owning session to stop its own heavy process.
+5. **Resource.** If the task is heavy and the level is ≥ high, or `heavy_running ≥ max_heavy_concurrent`, it is `deferred{resource}`. At critical or after an OOM kill, `free-resources` names the largest heavy children, and `stop-own-heavy` asks their owning session to stop its own heavy process (memory pressure only; see "Implementation notes (critical cause)").
 6. **Reset.** In wait-reset mode, new starts become `deferred{reset}` with the `resets_at` time.
 7. **Active lesson rules** (section 4) add gates of the same kinds. They can only tighten, never loosen.
 
@@ -214,7 +214,7 @@ resources:
 schedule:
   enabled: true
   advise: true                # sent from day one; false = shadow mode (board only)
-  stop_own_heavy: true        # at critical/OOM, may advise a session to stop its own heavy process
+  stop_own_heavy: true        # at critical memory/OOM, may advise a session to stop its own heavy process
   interval: 60
   max_heavy_concurrent: auto  # 1 if MemTotal < 16 GiB, else 2
   one_pr_per_repo: true
@@ -373,3 +373,36 @@ The scheduler ships in three steps instead of section 7's PRs 2–4: (1) task mo
   in scheduler.json follows the metric each pass; reuse the 30-minute hit debounce so a flapping
   rule does not rewrite scheduler.json.
 
+## Implementation notes (critical cause)
+- **Seen live.** CPU load alone (4.9 per CPU on 4 CPUs, from test runs) reached `critical` while
+  memory was fine (53% available, PSI 1, swap 49% and not counted), and `stop-own-heavy` told two
+  sessions "Memory is critical … stop it now". One replied `cannot`: its test run would end within
+  a minute.
+- **Refines owner decision 4.** `stop-own-heavy` is a pressure-relief request for memory: it is
+  issued only when `critical` comes from `mem` (available %, MB or PSI), `swap` or an OOM kill, and
+  still picks the largest heavy process by RSS. At `critical` from CPU load or disk alone, or an
+  unknown cause, nobody is asked to stop anything: stopping a short CPU-bound run relieves nothing
+  durable and only costs a re-run. New heavy starts stay deferred (no heavy slots at high or
+  worse), the `defer` advisory and the J5 text name the cause, and the mode is still `degraded`.
+- **Cause.** The family at the current level in resources' order (oom, mem, swap, disk, load),
+  else `worst`; `disk:<id>` folds into `disk`. Texts name the configured threshold that was crossed
+  ("available below 8%", "above 3.0 per CPU"), with a fixed precedence among the measures past
+  their threshold (available %, MB, PSI), never a live number: floored numbers still flipped
+  at bucket edges, which is normal while a metric hovers at critical, and every flip rewrote
+  scheduler.json, the jams and the board push. Numbers stay in the Resources view.
+- **Live follow-up: one advisory per job, never a wrapper.** One vitest round of a teammate got
+  four `stop-own-heavy` advisories in 10 minutes (one per new pid), one of them for a 1.7 MB
+  `timeout` wrapper. The id now hashes session, teammate (`via`) and class, without the pid. A
+  sent advisory that disappears between runs keeps its record 30 minutes, so a re-spawn is not
+  sent again before `readvise_minutes`. A record that comes back drops its old reply: an earlier
+  `done` must not silence a new episode. resources.py classes wrappers and launchers (`timeout`, `env`, `nice`, `xargs`,
+  `npx`, `npm`, `pnpm`, `uv`, node running `npx-cli.js`, ...) as `other` like shells, so their
+  child is the job. The scheduler also skips them, and anything under 64 MB, when it picks a
+  process (an older resources.json may still class them `test`).
+- **Outbox → sent race.** The operator relays what `outbox` printed, but a short-lived process
+  could exit before `sent`, so the advisory was no longer due: `sent` refused, the cap missed the
+  batch and the reply was rejected. `outbox` now records what it printed (10 minutes, under the
+  lock). `sent` accepts those ids for their session once, even after they disappeared, and
+  everything else still fails closed. While off, `outbox` prints `{}` and records nothing, and
+  `sent` refuses. `off` never waits for the lock (it is the kill switch) and drops the printed
+  record only if the lock is free; `on` drops it under the lock, or exits 8 and stays off.
