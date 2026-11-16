@@ -31,8 +31,10 @@ EMAIL_RE = re.compile(r"[^@\s:/]{1,64}@[^@\s:/]{1,189}\.[^@\s.:/]{1,63}")
 # an email inside free text (a note, a message body): every one is masked, known or not
 # (\w is Unicode: internationalised local parts and domains, e.g. jöhn@exämple.de, 用戶@例子.廣告)
 # Not inside an SSH remote or URL userinfo either: never right after "/" (ssh://git@host/...), never
-# followed by ":" or "/" (git@github.com:org/repo.git), and never a piece of a longer token.
-TEXT_EMAIL_RE = re.compile(r"(?<![/\w.%+-])[\w.%+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63})*\.[^\W\d_]{2,63}(?![\w@:/-])")
+# followed by "/" or by ":" and a non-space (git@github.com:org/repo.git; prose such as
+# "ask boss@example.com: …" is still masked), and never a piece of a longer token.
+TEXT_EMAIL_RE = re.compile(r"(?<![/\w.%+-])[\w.%+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63})*\.[^\W\d_]{2,63}"
+                           r"(?![\w@/-]|:[^\s])")
 PREFIX_RE = re.compile(r"^(board:|cli:)", re.I)
 # Fields that hold who did something. `owner` is not here: a task's owner is a session code.
 IDENT_KEYS = frozenset(("by", "answered_by", "resolved_by", "released_by", "updated_by", "created_by",
@@ -94,7 +96,9 @@ class Masker:
         if isinstance(obj, list):
             return [self.walk(v, key) for v in obj]
         if isinstance(obj, str):
-            if key in IDENT_KEYS or EMAIL_RE.fullmatch(PREFIX_RE.sub("", obj.strip())):
+            # an identity field is one value ("board:x@y" included); anything else is text, so the
+            # punctuation around an email is kept ("(boss@example.com)" -> "(approver)")
+            if key in IDENT_KEYS:
                 lab = self.label(obj)
                 if lab is not obj:
                     return lab

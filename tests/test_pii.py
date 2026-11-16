@@ -236,6 +236,12 @@ class Unit(unittest.TestCase):
                                                              "ssh://git@git.example.com/x; ask owner."))
         self.assertEqual(m.label("git@github.com:org/repo.git"), "git@github.com:org/repo.git")
         self.assertEqual(m.walk({"by": "x@example.com/"}), {"by": "x@example.com/"})
+        # prose: an email followed by ":" and a space (or the end) is still masked
+        prose = {"note": "ask %s: can you approve?" % BOSS, "to": "To: %s:" % BOSS,
+                 "cc": "cc %s,x@y.org" % BOSS, "paren": "(%s)" % OWN, "list": [BOSS, "(%s)" % ANN]}
+        self.assertEqual(m.walk(prose), {"note": "ask approver: can you approve?", "to": "To: approver:",
+                                         "cc": "cc approver,someone", "paren": "(owner)",
+                                         "list": ["approver", "(you)"]})
 
     def test_mirror_state(self):
         r = subprocess.run([os.path.join(REPO, "bin", "board"), "mirror", "state"], capture_output=True, text=True)
