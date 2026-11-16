@@ -1357,13 +1357,22 @@ board apikey revoke <id> --by dev@example.com
 
 ### Public API (`/api/v1`)
 
-`board-serve` also serves a read-only JSON API for scripts and services: the state, sessions,
-decisions, tasks, the schedule, pomodoro and messages, plus Server-Sent Events. The routes are one
-table (`lib/api_spec.py`), published as `GET /api/v1/openapi.json`.
+`board-serve` also serves a JSON API for scripts and services. It reads the state, sessions,
+decisions, tasks, the schedule, pomodoro and messages, plus Server-Sent Events. It writes task
+bookkeeping and messages, and can ask for a ticket to be taken. The routes are one table
+(`lib/api_spec.py`), published as `GET /api/v1/openapi.json`.
 
 - **Every call needs a key**: `Authorization: Bearer asb_live_…`, with the route's scope
-  (`read:state`, `read:decisions`, `read:tasks`, `read:messages`). Being on this machine (`local`)
-  or signed in to Access is not enough. A key sees what a viewer sees, and the API never writes.
+  (`read:state`, `read:decisions`, `read:tasks`, `read:messages`, `tasks:write`,
+  `write:messages`, `tickets:take`). Being on this machine (`local`) or signed in to Access is not
+  enough. A key sees what a viewer sees.
+- **A key never decides.** It can create a task and move it up to `test`, set its fields and
+  report its PR as open or closed, but `deploy`, `production` and "merged" need a person or the
+  session. A message from a key reaches the session as
+  `[BOARD api <id>] via API key "<name>" (<owner>): …`, information only. A ticket take only creates
+  a pending take request ("Start KEY in CODE?") that an approver answers on the board; it is never
+  relayed to the session, and on approve the operator runs the take itself. There is no route or
+  scope to answer a decision.
 - **Remote use goes through Cloudflare Access too.** On the tunnel, a call also needs a verified
   Access **service token** listed in `serve.tunnel.api_service_tokens` (or an allowed email): two
   independent secrets, and nothing reaches board-serve unauthenticated. `serve.api.remote: false`
@@ -1382,14 +1391,16 @@ table (`lib/api_spec.py`), published as `GET /api/v1/openapi.json`.
         <bob's client id>.access: bob@example.com
   ```
 - **Limits:** each key has a rate (`rate_per_min`, burst 20), failed key checks are limited per
-  key id or source (requests with no key at all cost nothing), a revoked key ends its event
-  stream, cross-site browser requests are refused, and there are no CORS headers. Calls are
-  audited with the key's owner and name.
+  key id or source (requests with no key at all cost nothing), bodies are JSON up to 16 KiB, a
+  revoked key ends its event stream, cross-site browser requests are refused, and there are no
+  CORS headers. Every write, and reads once a minute, are audited with the key's owner and name.
 
 ```bash
 curl -s -H "Authorization: Bearer $BOARD_API_KEY" "http://127.0.0.1:39410/api/v1/decisions?status=pending"
 curl -s -H "CF-Access-Client-Id: $CF_ID" -H "CF-Access-Client-Secret: $CF_SECRET" \
      -H "Authorization: Bearer $BOARD_API_KEY" https://board.example.com/api/v1/whoami
+curl -s -H "Authorization: Bearer $BOARD_API_KEY" -H 'Content-Type: application/json' \
+     -d '{"to": "API", "body": "nightly build 41 is green"}' http://127.0.0.1:39410/api/v1/messages
 ```
 
 ### Connect an MCP client
@@ -1507,8 +1518,8 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `.github/workflows/pages.yml` | Builds and deploys the static demo site to GitHub Pages (on push to main) |
 | `docs/assets/screenshots/` | Screenshots for the README and the Pages site (`scripts/screenshots.py`) |
 | `.gitleaks.toml` | gitleaks default rules, a rule for board API keys, and a narrow allowlist for test fixtures |
-| `lib/serve_api.py`, `lib/api_spec.py` | The public read-only API `/api/v1`: key, scope and rate checks, the tunnel's service-token rule, and the route table that `openapi.json` is generated from |
-| `bin/board-mcp`, `lib/mcp_tools.py` | The MCP server: one read-only tool table over stdio (`board-mcp`, a client of `/api/v1`) and `POST /mcp` on board-serve |
+| `lib/serve_api.py`, `lib/api_spec.py` | The public API `/api/v1`: key, scope and rate checks, the tunnel's service-token rule, the writes (tasks, messages, take requests) and the route table that `openapi.json` is generated from |
+| `bin/board-mcp`, `lib/mcp_tools.py` | The MCP server: one tool table (reads, and the writes `send_message` and `ticket_take_request`) over stdio (`board-mcp`, a client of `/api/v1`) and `POST /mcp` on board-serve |
 | `lib/apikeys.py` | API keys: the store (peppered hashes, 0600), who may issue, approve, rotate and revoke them, and the check `/api/v1` will use (`board apikey`) |
 | `lib/away.py` | Reads owner-away mode and consensus items for the snapshot and `board-serve` |
 | `lib/tickets/` | Tickets: tracker providers (`http-json`, `fake`), routing by key, cache, rate limits, the SSRF-safe HTTP client; `board ticket get\|doctor` |

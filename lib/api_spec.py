@@ -7,8 +7,10 @@ generated from it (`openapi()`), so the router and the published spec cannot dri
 
 Each route: method, path template ({name} segments, each checked against PARAMS), the scope the
 key needs (None: any valid key; "public": no key, only the listener's own checks), the handler
-name on serve_api.Api, the query parameters it accepts (anything else is a 400), a summary and
-the JSON Schema of its 200 response.
+name on serve_api.Api, the query parameters it accepts (anything else is a 400), a summary, the
+JSON Schema of its response (status `ok`, default 200) and, for a POST, of its JSON body (`body`;
+unknown fields are refused). Writes never carry authority: anything that needs an approver (a
+ticket take) only creates a pending board decision.
 
 CLI: api_spec.py openapi    print the OpenAPI document
 """
@@ -25,7 +27,16 @@ PARAMS = {
     "decision_id": (r"d-[0-9]+-[a-z0-9]+", "A decision id."),
     "task_id": (r"[A-Za-z0-9._-]{1,80}", "A task id."),
     "message_id": (r"m-[0-9]+-[a-z0-9]+", "A board message id."),
+    "ref": (r"(?:[a-z][a-z0-9-]{0,31}:)?[A-Za-z0-9][A-Za-z0-9._-]{0,63}",
+            "A ticket reference: KEY, or provider:KEY."),
 }
+# Stages a key may move a task to (or create it in). deploy, production and maintain need a person.
+API_STAGES = ("plan", "design", "build", "test")
+STAGES = API_STAGES + ("deploy", "production", "maintain")
+ARTIFACT_KEYS = ("intent", "spec", "plan", "evals", "review")
+_CODE = {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"}
+_REF = {"type": "string", "minLength": 1, "maxLength": 200}
+_GITREF = {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,199}$"}   # tasks.REF_RE
 QUERY = {
     "status": (r"pending|answered|relayed|stale|timeout|unauthorized|answered_in_pane",
                "Only decisions with this status."),
@@ -86,6 +97,61 @@ ROUTES = [
     {"method": "GET", "path": "/api/v1/messages/{message_id}", "scope": "read:messages", "handler": "message",
      "tag": "messages", "summary": "One board message and its replies (scrubbed; a held message stays held).",
      "schema": _OBJ},
+    # ---- writes (POST, JSON body <= 16 KiB, audited with the key's owner and name)
+    {"method": "POST", "path": "/api/v1/tasks", "scope": "tasks:write", "handler": "task_new", "tag": "tasks",
+     "summary": "Create a task (board task new) in %s (default plan); a later stage needs a person: 403 "
+                "needs_approver." % ", ".join(API_STAGES), "ok": 201,
+     "body": {"type": "object", "required": ["title", "owner"], "additionalProperties": False,
+              "properties": {"title": {"type": "string", "minLength": 1, "maxLength": 200}, "owner": _CODE,
+                             "stage": {"enum": list(STAGES)}}},
+     "schema": {"type": "object", "properties": {"id": {"type": "string"}}}},
+    {"method": "POST", "path": "/api/v1/tasks/{task_id}/stage", "scope": "tasks:write", "handler": "task_stage",
+     "tag": "tasks", "summary": "Move a task to a stage (board task stage). deploy, production and maintain "
+                                "need a person: 403 needs_approver.",
+     "body": {"type": "object", "required": ["stage"], "additionalProperties": False,
+              "properties": {"stage": {"enum": list(STAGES)},
+                             "artifacts": {"type": "object", "additionalProperties": _REF,
+                                           "propertyNames": {"enum": list(ARTIFACT_KEYS)}}}},
+     "schema": _OBJ},
+    {"method": "POST", "path": "/api/v1/tasks/{task_id}/set", "scope": "tasks:write", "handler": "task_set",
+     "tag": "tasks", "summary": "Set a task's scheduling fields (board task set).",
+     "body": {"type": "object", "minProperties": 1, "additionalProperties": False,
+              "properties": {"repo": _GITREF, "branch": _GITREF, "base": _GITREF, "size": {"enum": ["S", "M", "L"]},
+                             "heavy": {"type": "boolean"}, "priority": {"type": "integer", "minimum": 0,
+                                                                        "maximum": 3}}},
+     "schema": _OBJ},
+    {"method": "POST", "path": "/api/v1/tasks/{task_id}/progress", "scope": "tasks:write",
+     "handler": "task_progress", "tag": "tasks", "summary": "Say the task is still moving (board task progress).",
+     "body": {"type": "object", "maxProperties": 0}, "schema": _OBJ},
+    {"method": "POST", "path": "/api/v1/tasks/{task_id}/pr", "scope": "tasks:write", "handler": "task_pr",
+     "tag": "tasks", "summary": "Record the task's pull request (board task pr): open or closed. A key never "
+                                "records merged: that unblocks dependent tasks and tells stacked sessions to "
+                                "rebase, so it comes from the session or the harness.",
+     "body": {"type": "object", "required": ["url", "state"], "additionalProperties": False,
+              "properties": {"url": {"type": "string", "pattern": "^https?://", "maxLength": 500},
+                             "state": {"enum": ["open", "closed"]},
+                             "head": {"type": "string", "pattern": "^[0-9a-f]{7,64}$"},
+                             "method": {"enum": ["squash", "merge", "rebase"]}}},
+     "schema": _OBJ},
+    {"method": "POST", "path": "/api/v1/messages", "scope": "write:messages", "handler": "message_new",
+     "tag": "messages", "ok": 201,
+     "summary": "Post a message to a session (or all). Screened by the secret guard (a secret request is held, "
+                "never relayed); relayed as `[BOARD api <id>] via API key \"<name>\" (<owner>): …`, "
+                "information only, never a [BOARD ask] or a decision.",
+     "body": {"type": "object", "required": ["to", "body"], "additionalProperties": False,
+              "properties": {"to": {"anyOf": [_CODE, {"const": "all"}]},
+                             "body": {"type": "string", "minLength": 1, "maxLength": 4000}}},
+     "schema": {"type": "object", "properties": {"id": {"type": "string"}, "status": {"enum": ["new", "held"]}}}},
+    {"method": "POST", "path": "/api/v1/tickets/{ref}/take", "scope": "tickets:take", "handler": "ticket_take",
+     "tag": "tickets", "ok": 202,
+     "summary": "Ask an approver to start a ticket in a session: creates a PENDING board decision of kind "
+                "ticket_take_request from \"api\" (\"Start KEY in CODE?\", approve/decline), never relayed to the "
+                "session. On approve the operator runs the take; a key can never answer it. At most 3 pending "
+                "per key (429).",
+     "body": {"type": "object", "required": ["session"], "additionalProperties": False,
+              "properties": {"session": _CODE, "note": {"type": "string", "maxLength": 500}}},
+     "schema": {"type": "object", "properties": {"decision_id": {"type": "string"},
+                                                 "status": {"const": "pending"}}}},
 ]
 
 
@@ -102,8 +168,14 @@ def openapi():
     paths = {}
     for r in ROUTES:
         op = {"operationId": r["handler"], "summary": r["summary"], "tags": [r["tag"]],
-              "responses": {"200": {"description": "OK", "content": {r.get("content_type", "application/json"): {
-                  "schema": r["schema"] if r.get("schema") is not None else {"type": "string"}}}}}}
+              "responses": {str(r.get("ok", 200)): {"description": "OK", "content": {
+                  r.get("content_type", "application/json"): {
+                      "schema": r["schema"] if r.get("schema") is not None else {"type": "string"}}}}}}
+        if r.get("body") is not None:
+            op["requestBody"] = {"required": True, "content": {"application/json": {"schema": r["body"]}}}
+            for code, what in (("400", "A bad body"), ("409", "Busy or already requested; try again"),
+                               ("413", "Body over 16 KiB"), ("415", "Content-Type must be application/json")):
+                op["responses"][code] = {"description": what, "content": {"application/json": {"schema": ERROR}}}
         params = [{"name": n, "in": "path", "required": True, "description": PARAMS[n][1],
                    "schema": {"type": "string", "pattern": "^(?:%s)$" % PARAMS[n][0]}}
                   for n in re.findall(r"\{([a-z_]+)\}", r["path"])]
@@ -131,9 +203,10 @@ def openapi():
     return {
         "openapi": "3.1.0",
         "info": {"title": "agent-switchboard API", "version": VERSION,
-                 "description": "Read-only board API. Authenticate with `Authorization: Bearer asb_live_…` "
+                 "description": "The board API. Authenticate with `Authorization: Bearer asb_live_…` "
                                 "(a board API key, `board apikey`). A key never answers decisions, presses "
-                                "prompts or manages keys. No CORS: call it from a server or script."},
+                                "prompts or manages keys: what needs a person becomes a pending board "
+                                "decision. No CORS: call it from a server or script."},
         "servers": [{"url": "/"}],
         "components": {"securitySchemes": {"boardKey": {"type": "http", "scheme": "bearer",
                                                         "bearerFormat": "asb_live_<kid>_<secret>"}},

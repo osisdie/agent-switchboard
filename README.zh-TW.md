@@ -1218,13 +1218,18 @@ board apikey revoke <id> --by dev@example.com
 
 ### 公開 API（`/api/v1`）
 
-`board-serve` 另外提供一組唯讀的 JSON API 給腳本與服務：看板狀態、session、決策、任務、排程、番茄鐘和
-訊息，以及 Server-Sent Events。路由集中在一張表（`lib/api_spec.py`），並以 `GET /api/v1/openapi.json`
-公開。
+`board-serve` 另外提供一組 JSON API 給腳本與服務。它可以讀取看板狀態、session、決策、任務、排程、
+番茄鐘和訊息，以及 Server-Sent Events；也可以寫入任務的追蹤資料和訊息，並申請接手一張 ticket。路由
+集中在一張表（`lib/api_spec.py`），並以 `GET /api/v1/openapi.json` 公開。
 
 - **每次呼叫都要金鑰**：`Authorization: Bearer asb_live_…`，而且要有該路由的 scope（`read:state`、
-  `read:decisions`、`read:tasks`、`read:messages`）。人在這台機器上（`local`）或登入了 Access 都不夠。
-  金鑰看到的內容和一般檢視者相同，API 也從不寫入。
+  `read:decisions`、`read:tasks`、`read:messages`、`tasks:write`、`write:messages`、`tickets:take`）。
+  人在這台機器上（`local`）或登入了 Access 都不夠。金鑰看到的內容和一般檢視者相同。
+- **金鑰從不做決定**。它可以建立任務、把任務推進到 `test` 為止、設定欄位，並回報 PR 為 open 或 closed，
+  但 `deploy`、`production` 和「merged」需要真人或 session 本身。金鑰送出的訊息到了 session 是
+  `[BOARD api <id>] via API key "<name>" (<owner>): …`，只是資訊。申請接手 ticket 只會建立一個待決的接手申請
+  （「Start KEY in CODE?」），由 approver 在看板上回答；它不會轉給 session，核准後由 operator 自己執行接手。
+  沒有任何路由或 scope 可以回答決策。
 - **從遠端呼叫一樣要經過 Cloudflare Access**。走 tunnel 時，呼叫還需要一個已驗證、列在
   `serve.tunnel.api_service_tokens` 的 Access **service token**（或允許的 email）：兩把互相獨立的
   機密，沒有驗證過的請求碰不到 board-serve。設定 `serve.api.remote: false` 就只在本機 listener 提供 API。
@@ -1240,13 +1245,15 @@ board apikey revoke <id> --by dev@example.com
         <bob's client id>.access: bob@example.com
   ```
 - **限制**：每把金鑰有速率上限（`rate_per_min`，burst 20），驗證失敗的次數依金鑰 id 或來源限制（完全
-  沒帶金鑰的請求不計入），撤銷的金鑰會結束它的事件串流，跨站的瀏覽器請求一律拒絕，也沒有 CORS
-  header。每次呼叫都記入稽核，附上金鑰的擁有者和名稱。
+  沒帶金鑰的請求不計入），body 是 JSON 且最多 16 KiB，撤銷的金鑰會結束它的事件串流，跨站的瀏覽器請求
+  一律拒絕，也沒有 CORS header。每次寫入（讀取則每分鐘一次）都記入稽核，附上金鑰的擁有者和名稱。
 
 ```bash
 curl -s -H "Authorization: Bearer $BOARD_API_KEY" "http://127.0.0.1:39410/api/v1/decisions?status=pending"
 curl -s -H "CF-Access-Client-Id: $CF_ID" -H "CF-Access-Client-Secret: $CF_SECRET" \
      -H "Authorization: Bearer $BOARD_API_KEY" https://board.example.com/api/v1/whoami
+curl -s -H "Authorization: Bearer $BOARD_API_KEY" -H 'Content-Type: application/json' \
+     -d '{"to": "API", "body": "nightly build 41 is green"}' http://127.0.0.1:39410/api/v1/messages
 ```
 
 <a id="connect-an-mcp-client"></a>
@@ -1361,8 +1368,8 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `.github/workflows/pages.yml` | 建置靜態 demo 網站並部署到 GitHub Pages（push 到 main 時） |
 | `docs/assets/screenshots/` | README 和 Pages 網站用的截圖（`scripts/screenshots.py`） |
 | `.gitleaks.toml` | gitleaks 預設規則、一條針對看板 API 金鑰的規則，加上針對測試 fixture 的小範圍允許清單 |
-| `lib/serve_api.py`、`lib/api_spec.py` | 唯讀公開 API `/api/v1`：金鑰、scope 與速率檢查，tunnel 的 service token 規則，以及產生 `openapi.json` 的路由表 |
-| `bin/board-mcp`、`lib/mcp_tools.py` | MCP server：一張唯讀工具表，透過 stdio（`board-mcp`，`/api/v1` 的 client）和 board-serve 上的 `POST /mcp` 提供 |
+| `lib/serve_api.py`、`lib/api_spec.py` | 公開 API `/api/v1`：金鑰、scope 與速率檢查，tunnel 的 service token 規則，寫入（任務、訊息、接手申請），以及產生 `openapi.json` 的路由表 |
+| `bin/board-mcp`、`lib/mcp_tools.py` | MCP server：一張工具表（讀取，以及寫入 `send_message` 和 `ticket_take_request`），透過 stdio（`board-mcp`，`/api/v1` 的 client）和 board-serve 上的 `POST /mcp` 提供 |
 | `lib/apikeys.py` | API 金鑰：金鑰儲存（加 pepper 的雜湊，0600）、誰能發放／核准／輪替／撤銷，以及 `/api/v1` 之後會用的驗證（`board apikey`） |
 | `lib/away.py` | 為 snapshot 和 `board-serve` 讀取 owner-away 模式與共識項目 |
 | `lib/tickets/` | 工單：追蹤系統 provider（`http-json`、`fake`）、依 key 路由、快取、速率限制、防 SSRF 的 HTTP 用戶端；`board ticket get\|doctor` |

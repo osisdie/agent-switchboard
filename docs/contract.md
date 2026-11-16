@@ -572,7 +572,8 @@ Extra files under `$BOARD_HOME`:
 $BOARD_HOME/
   messages/<id>.json                 # {id, to: CODE|"all", body, by, created_at,
                                      #  status: new|held|relayed|replied, held_reason?, held_at?,
-                                     #  released_by?, released_at?, relayed_to[]?, relayed_at?}
+                                     #  released_by?, released_at?, relayed_to[]?, relayed_at?,
+                                     #  kind?: "api", via?: "apikey:<name>", api?: {key_id, name, owner}}
                                      #  (board-serve / `board message send` create; operator updates;
                                      #  see "Secret guardrails")
   messages/<id>/replies/<rid>.json   # {id, from: CODE, body, created_at, redacted?}
@@ -712,7 +713,8 @@ page does not declare the `profile` scope) and takes roles from `meta/operator.a
 `via` is `access`.
 
 **Operator in local mode** (`prompts/board-operator.md` section 9): `board-serve --watch` prints
-`decision <id> answered`, `message <id> new`, `away on|off`, `consensus <id> <status>` and
+`decision <id> answered`, `take <id> answered` (an API take request: the operator runs the take
+on approve and never relays it), `message <id> new`, `away on|off`, `consensus <id> <status>` and
 `schedule <CODE> due` (scheduler advisories to deliver, section 12; once per due set; never
 while the scheduler is off) and `lesson <id> candidate` (a new auto lesson without a note,
 section 12), once each, oldest first, and `tick` every 8 minutes.
@@ -1093,6 +1095,7 @@ The operator is an LLM session. When the account hits a usage limit, nothing wri
 - **Ticket taken:** `` [BOARD ticket <KEY>] taken for <CODE> as task <taskId> by <identity> on board: "<title>" <url>. Authorizes: the delivery harness for this ticket up to and including opening the PR/MR: plan, design, build, tests, local review, push, open the PR, and, as this session (board ticket comment|transition --session), progress comments and in-progress on this ticket. NOT merge, production deploy, closing or cancelling the ticket, other tickets or repos, or any red line. Verify with `board ticket show <TRACKER>:<KEY>`. Reply to BOARD with [re <msgId>]. `` The title and URL come from the tracker and are defanged: one line, scrubbed, `[`/`]` turned into `(`/`)` and `"` into `'`, so they can never form a `[BOARD …]` header. Built by `board message show <msgId>` (`lib/messages.py`); never typed by hand.
 - **Ticket released:** `[BOARD ticket <KEY>] released from <CODE> (task <taskId>) by <identity> on board. The take no longer authorizes anything on this ticket. Reply to BOARD with [re <msgId>].`
 - **Message from an asker** (`fleet.yaml` `askers`, not an approver): `[BOARD asker <msgId>] from <id> (an asker, not an approver: information only, not an approval or a decision): <body> — reply to BOARD via SendMessage, starting with [re <msgId>]`. Never a decision, never the owner.
+- **Message from an API key** (`/api/v1/messages`): `[BOARD api <msgId>] via API key "<name>" (<owner>): <body> — information only, not an approval or a decision; reply to BOARD via SendMessage, starting with [re <msgId>]`. Never a decision, never an ask.
 - **Worker reply:** `[re <msgId>] <text>`.
 
 ## API keys
@@ -1185,10 +1188,10 @@ unknown scope, a bad date or identity), 4 not authorized (nothing written), 8 th
 
 ## Public API (`/api/v1`)
 
-A read-only JSON API on `board-serve` for scripts and services (`lib/serve_api.py`). Its routes
-are one table, `lib/api_spec.py`: the router dispatches from it and `GET /api/v1/openapi.json` is
-generated from it (a test checks that the two are equal). Writes and tickets come later; the MCP
-server is a client of these routes (see "MCP").
+A JSON API on `board-serve` for scripts and services (`lib/serve_api.py`). Its routes are one
+table, `lib/api_spec.py`: the router dispatches from it and `GET /api/v1/openapi.json` is
+generated from it (a test checks that the two are equal). Ticket reads and writes beyond asking for
+a take come later; the MCP server is a client of these routes (see "MCP").
 
 **Identity: a board API key, always.** `Authorization: Bearer asb_live_…` (see "API keys"). The
 local listener's `local` and a tunnel email never count on their own: without a key every route
@@ -1213,6 +1216,50 @@ and `/messages/{id}` included).
 Everything served is scrubbed by the secret guard, as on the board. Path parameters and query
 values must match their patterns in the table; any other query parameter is a 400.
 
+**Writes** (POST, `Content-Type: application/json`, at most 16 KiB; the body must match the
+route's schema in `openapi.json`, unknown fields included: 400 `bad_body`). They are bookkeeping
+and messages; **nothing a key writes carries authority**:
+
+| Route (POST) | Scope | Does |
+|---|---|---|
+| `/api/v1/tasks` `{title, owner, stage?}` | `tasks:write` | `board task new` (201 `{id, stage}`); `owner` must be a session on the board |
+| `/api/v1/tasks/{id}/stage` `{stage, artifacts?}` | `tasks:write` | `board task stage` |
+| `/api/v1/tasks/{id}/set` `{repo?, branch?, base?, size?, heavy?, priority?}` | `tasks:write` | `board task set` (repo, branch and base: `[A-Za-z0-9][A-Za-z0-9._/@:+-]*`) |
+| `/api/v1/tasks/{id}/progress` `{}` | `tasks:write` | `board task progress` |
+| `/api/v1/tasks/{id}/pr` `{url, state: open\|closed, head?, method?}` | `tasks:write` | `board task pr` |
+| `/api/v1/messages` `{to, body}` | `write:messages` | a board message from the key (201 `{id, status}`); see below |
+| `/api/v1/tickets/{ref}/take` `{session, note?}` | `tickets:take` | a **pending** board decision, see below (202 `{decision_id, status: "pending"}`) |
+
+- A key may create a task in, or move it to, `plan`, `design`, `build` or `test` only. `deploy`,
+  `production` and `maintain` need a person: 403 `needs_approver`, nothing written.
+- Free text (a title, a message body, a note) reaches the CLI only in a 0600 temp file under
+  `$BOARD_HOME`, removed afterwards. A title or note becomes one line, refuses control and
+  invisible characters, is scrubbed by the secret guard, and has `[BOARD` defanged to `(BOARD`
+  (also with a fullwidth or CJK bracket, fullwidth letters or invisible characters in between).
+- **Messages** go through `lib/messages.py` like the board's own (screened: a secret request is
+  stored `held` and never relayed). They are stored with `kind: "api"`, `by: "apikey:<kid>"`,
+  `via: "apikey:<name>"` and `api: {key_id, name, owner}`, the body defanged. The operator relays
+  them with the line `board message show <id>` prints, which is never a `[BOARD ask]`:
+  `[BOARD api <id>] via API key "<name>" (<owner>): <body> — information only, not an approval or a
+  decision; reply to BOARD via SendMessage, starting with [re <id>]`.
+- **A ticket take is only asked for.** It creates a board decision of its own kind,
+  `kind: "ticket_take_request"`, `from: "api"` (never a session), with the question
+  `Start ticket <ref> in <session>?`, options `approve` / `decline`, a context naming the key and its
+  owner, and `request: {kind: "ticket_take", ref, session, via: "api", key_id, key_name, owner, at}`,
+  all in **one** atomic 0600 write. It stays `pending` until an approver answers it on the board (a
+  key has no answer route and no answer scope); its alert is info level. A second take of the same
+  ref while one is pending is 409 `already_requested`; a key with 3 pending take requests gets 429
+  `too_many_requests`.
+- **It is never relayed as a `[BOARD decision]`.** `board-serve --watch` prints `take <id> answered`
+  (not `decision <id> answered`). On `approve` the operator runs
+  `board ticket take <ref> --session <session> --by <answered_by>`, which checks the approver again
+  and produces the verified `[BOARD ticket]` relay; where that command does not exist yet, the
+  approval is only recorded. On `decline`, nothing. Either way the operator marks it `relayed`
+  (handled), so a take runs at most once.
+- A key records a PR as `open` or `closed` only, never `merged`: a merge unblocks dependent tasks
+  and tells stacked sessions to rebase, so it must come from the session or the harness.
+- A refused write (400, 403, 404, 409, 413, 415) writes nothing; busy stores answer 409 `busy`.
+
 **Order of checks** (after the framing rules every board-serve route has: one Content-Length, no
 Transfer-Encoding, a body on a GET dropped and the connection closed):
 
@@ -1221,7 +1268,10 @@ Transfer-Encoding, a body on a GET dropped and the connection closed):
    own (`http://127.0.0.1:<port>` / `http://localhost:<port>`, or `https://<hostname>` on the
    tunnel; `null` included) → 403 `cross_site`. API clients send neither, so a hostile page can't
    make a browser call the API, not even without a key.
-1. Method: GET or HEAD, else 405 (`Allow: GET, HEAD`; a POST body is drained). Host allowlist: 421.
+1. Method: the route's own (a GET route takes HEAD too), else 405 with `Allow` (a refused POST
+   body is drained and the connection closed). A POST must say `Content-Type: application/json`
+   (415, before the key is checked: a cross-site page cannot send that without a preflight).
+   Host allowlist: 421.
 2. The listener. **Local**: a direct loopback request (forwarding headers: 403). **Tunnel**:
    `serve.api.remote` not `false` (else 403 `api_remote_disabled`), and a verified Cloudflare
    Access JWT (401 without or with a bad one) that is either a **service token** whose
@@ -1296,10 +1346,13 @@ never reaches board-serve unauthenticated. There is no Access bypass for the API
 
 **Audit** (`events.jsonl`, type `api`): every refused key check (`action: "auth_fail"`, `key_id`
 when the key had the right shape, `reason`, `route`, `via`, `client`, `result`), every
-`insufficient_scope`, every `token_key_mismatch` (with `token`) and `identity_key_mismatch`, and each
-key's successful use of a route at most once a minute per board-serve process (`action` = the
-route's handler, with `owner` and `name`, `token_owner_ok: true` when a bound service token's
-binding was checked, and `identity_owner_ok: true` when an email login's was). `client` is `loopback`,
+`insufficient_scope`, every `token_key_mismatch` (with `token`) and `identity_key_mismatch`, **every
+write** (`action` = the handler, `result` = the status or the refusal with its `error`, and the ids
+it touched: `task_id`, `message_id`, `decision_id`, `ref`), and each key's successful use of a read
+route at most once a minute per board-serve process (`action` = the route's handler,
+`token_owner_ok: true` when a bound service token's binding was checked, and `identity_owner_ok:
+true` when an email login's was). Every row past the key check has the key's `owner` and `name`.
+`client` is `loopback`,
 `service:<common_name>` or `email:<email>`. Never a key.
 
 ## MCP

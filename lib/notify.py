@@ -760,6 +760,12 @@ def decision_alert(d):
         return {"level": "urgent", "key": "decision:%s" % d.get("id"), "kind": "gate", "escalate": True,
                 "title": "%s requests PRODUCTION approval" % who,
                 "body": (d.get("question") or "")[:300], "url": d.get("artifact_ref") or d.get("url")}
+    if d.get("kind") == "ticket_take_request":
+        req = d.get("request") if isinstance(d.get("request"), dict) else {}
+        return {"level": "info", "key": "decision:%s" % d.get("id"), "kind": "decision", "escalate": False,
+                "title": "API key %s asks to start %s in %s" % (req.get("key_name") or "?", req.get("ref") or "?",
+                                                                 req.get("session") or "?"),
+                "body": "approve or decline on the board", "url": None}
     if d.get("kind") == "permission":
         title = "%s asks permission" % who
         body = "%s: %s" % (d.get("tool_name") or "tool", (d.get("summary") or "")[:200])
