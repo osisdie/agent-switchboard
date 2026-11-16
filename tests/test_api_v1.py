@@ -1094,6 +1094,27 @@ class Tunnel(Fresh):
         finally:
             write_fleet()
 
+    def test_email_login_on_writes(self):
+        """The email binding (#64) applies to the A3 writes too: an Access email login with someone
+        else's key can't post a message or ask for a take (nothing written); with its own key it can."""
+        boss_kid, boss = mkkey("write:messages,tickets:take", BOSS, "--rate", "600")
+        dev_kid, dev = mkkey("write:messages,tickets:take", DEV, "--rate", "600")
+        body = json.dumps({"to": "API", "body": "from a script"}).encode()
+        hdr = {"Content-Type": "application/json"}
+        before = (sorted(os.listdir(os.path.join(HOME, "messages"))), sorted(os.listdir(os.path.join(HOME, "decisions"))))
+        st, _, js = self.t("/api/v1/messages", "email", dev, method="POST", body=body, headers=hdr)
+        self.assertEqual((st, js["error"]), (403, "identity_key_mismatch"))
+        st, _, js = self.t("/api/v1/tickets/DEMO-3/take", "email", dev, method="POST",
+                           body=json.dumps({"session": "API"}).encode(), headers=hdr)
+        self.assertEqual((st, js["error"]), (403, "identity_key_mismatch"))
+        self.assertEqual((sorted(os.listdir(os.path.join(HOME, "messages"))), sorted(os.listdir(os.path.join(HOME, "decisions")))),
+                         before, "nothing written")
+        rows = [e for e in events() if e.get("reason") == "identity_key_mismatch" and e.get("key_id") == dev_kid]
+        self.assertEqual(sorted(e["route"] for e in rows), ["/api/v1/messages", "/api/v1/tickets/{ref}/take"])
+        st, _, js = self.t("/api/v1/messages", "email", boss, method="POST", body=body, headers=hdr)
+        self.assertEqual(st, 201, js)
+        os.remove(os.path.join(HOME, "messages", js["id"] + ".json"))
+
     def test_bound_token_on_writes(self):
         """Token binding applies to the A3 writes too: a bound token with someone else's key can't
         post a message or ask for a take (nothing written); with the bound owner's key it can."""
