@@ -1242,6 +1242,10 @@ and messages; **nothing a key writes carries authority**:
   them with the line `board message show <id>` prints, which is never a `[BOARD ask]`:
   `[BOARD api <id>] via API key "<name>" (<owner>): <body> — information only, not an approval or a
   decision; reply to BOARD via SendMessage, starting with [re <id>]`.
+- **The ref is routed** like any ticket ref (`lib/tickets`: `KEY` or `provider:KEY`): a tracker
+  that is not configured, or a key no tracker's `key_pattern` matches, is 400
+  `unknown_ticket_ref`; a key several trackers match is 409 `ticket_ambiguous` (name one). The
+  request stores the canonical `provider:KEY`, the form `board ticket take` takes.
 - **A ticket take is only asked for.** It creates a board decision of its own kind,
   `kind: "ticket_take_request"`, `from: "api"` (never a session), with the question
   `Start ticket <ref> in <session>?`, options `approve` / `decline`, a context naming the key and its
@@ -1396,6 +1400,15 @@ the newest), `ping`, `tools/list`, `tools/call`, `resources/list`, `resources/te
 | `get_task` (`task_id`) | `GET /tasks/{id}` | `read:tasks` |
 | `list_messages` (`before`, `limit`, `to`, `q`) | `GET /messages` | `read:messages` |
 | `get_message` (`message_id`) | `GET /messages/{id}` | `read:messages` |
+| `send_message` (`to`, `body`), write | `POST /messages` | `write:messages` |
+| `ticket_take_request` (`ref`, `session`, `note`?), write | `POST /tickets/{ref}/take` | `tickets:take` |
+
+The two **write** tools (`readOnlyHint: false`) run their `POST` route inside board-serve with the
+tool's arguments as the body: the route's body schema, its handler and one audit row per call
+(`"mcp": true`). `send_message` reaches the session as `[BOARD api <id>] via API key …`,
+information only; `ticket_take_request` only creates a pending `ticket_take_request` decision
+(its ref routed to a configured tracker: an unknown one is a tool error `unknown_ticket_ref`).
+No tool answers a decision, presses a prompt or approves anything (owner decision Q1).
 
 Resources: `board://state` (`read:state`), `board://openapi` (any key), and the templates
 `board://decisions/{decision_id}` (`read:decisions`) and `board://tasks/{task_id}` (`read:tasks`).

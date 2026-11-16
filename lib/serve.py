@@ -674,7 +674,7 @@ HISTORY_MAX = 50
 # operator put in a file stays on disk). The page's own fields, plus the kind / asker / ticket
 # relay ones the contract documents (docs/contract.md "Messages"; ticket text is viewer-scoped).
 MESSAGE_KEYS = ("id", "to", "body", "by", "created_at", "status", "relayed_to", "relayed_at", "held_reason",
-                "held_at", "released_by", "released_at", "kind", "asker", "event", "ticket", "task_id")
+                "held_at", "released_by", "released_at", "kind", "asker", "event", "ticket", "task_id", "api", "via")
 REPLY_KEYS = ("id", "from", "body", "created_at", "redacted")
 CURSOR_RE = re.compile(r"([0-9]{1,16})\.(m-[0-9]+-[a-z0-9]+)")
 

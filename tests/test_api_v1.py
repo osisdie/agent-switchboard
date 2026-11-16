@@ -85,6 +85,11 @@ serve:
     certs_url: file://%s/certs.json
     allowed_emails: [%s]
     api_service_tokens: %s
+tickets:
+  trackers:
+    - name: demo
+      type: fake
+      key_pattern: '^(PROJ|CAP|DEMO)-[0-9]+$'
 """ % (OWNER, BOSS, PORT, "true" if remote else "false", fail_per_min, TPORT, HOSTNAME, TMP, BOSS,
        tokens or TOKENS_UNBOUND))
 
@@ -806,9 +811,9 @@ class Writes(Fresh):
         with open(os.path.join(HOME, "decisions", did + ".json"), encoding="utf-8") as fh:
             d = json.load(fh)
         self.assertEqual((d["status"], d["kind"], d["from"], d["options"], d["question"]),
-                         ("pending", "ticket_take_request", "api", ["approve", "decline"], "Start ticket PROJ-7 in API?"))
+                         ("pending", "ticket_take_request", "api", ["approve", "decline"], "Start ticket demo:PROJ-7 in API?"))
         self.assertEqual((d["request"]["kind"], d["request"]["ref"], d["request"]["session"], d["request"]["key_id"],
-                          d["request"]["owner"]), ("ticket_take", "PROJ-7", "API", kid, BOSS))
+                          d["request"]["owner"]), ("ticket_take", "demo:PROJ-7", "API", kid, BOSS))
         self.assertIn("an API key cannot answer this", d["context"])
         self.assertEqual(os.stat(os.path.join(HOME, "decisions", did + ".json")).st_mode & 0o777, 0o600)
         self.assertEqual([n for n in os.listdir(os.path.join(HOME, "decisions")) if ".tmp." in n], [])
@@ -819,8 +824,9 @@ class Writes(Fresh):
         self.assertIsNone(d["answered_by"])
         # nothing ran: no task, no ticket link, and a second request is refused
         self.assertEqual(sorted(os.listdir(os.path.join(HOME, "tasks"))), tasks_before)
-        self.assertFalse(os.path.exists(os.path.join(HOME, "tickets")))
-        st, _, js = post("/api/v1/tickets/PROJ-7/take", {"session": "WEB"}, key)
+        links = os.path.join(HOME, "tickets", "links")
+        self.assertFalse([n for n in (os.listdir(links) if os.path.isdir(links) else []) if "PROJ-7" in n])
+        st, _, js = post("/api/v1/tickets/demo:PROJ-7/take", {"session": "WEB"}, key)   # the same ticket
         self.assertEqual((st, js["error"]), (409, "already_requested"))
         # a key has no way to answer it
         self.assertEqual(post("/api/v1/decisions/%s/answer" % did, {"answer": "approve"}, self.all)[0], 404)
@@ -837,7 +843,7 @@ class Writes(Fresh):
         self.assertEqual(post("/api/v1/tickets/PROJ-8/take", {"session": "API"}, KEYS["tickets"][1])[0], 403)
         self.assertEqual(post("/api/v1/tickets/bad%20ref/take", {"session": "API"}, key)[0], 404)
         row = api_rows(key_id=kid, result=202)[-1]
-        self.assertEqual((row["decision_id"], row["ref"], row["owner"]), (did, "PROJ-7", BOSS))
+        self.assertEqual((row["decision_id"], row["ref"], row["owner"]), (did, "demo:PROJ-7", BOSS))
         # an approver answers on the board: the operator gets a take line, never a decision to relay
         watch = lambda: subprocess.run([sys.executable, os.path.join(REPO, "lib", "serve.py"), "--watch", "--once"],  # noqa: E731
                                        capture_output=True, text=True, timeout=30).stdout
@@ -850,6 +856,43 @@ class Writes(Fresh):
         self.assertEqual(sorted(os.listdir(os.path.join(HOME, "tasks"))), tasks_before)   # recorded only (no T3)
         board("mark", did, "relayed")
         self.assertNotIn(did, watch())                                   # handled once
+
+    def test_take_ref_is_routed(self):
+        """The ref must name a configured tracker's ticket (T1 routing), stored as provider:KEY."""
+        kid, key = mkkey("tickets:take")
+        for ref, err in (("nope:PROJ-1", "unknown_ticket_ref"), ("ZZZ-1", "unknown_ticket_ref"),
+                         ("demo:ZZZ-1", "unknown_ticket_ref")):
+            st, _, js = post("/api/v1/tickets/%s/take" % ref, {"session": "API"}, key)
+            self.assertEqual((st, js["error"]), (400, err), ref)
+        self.assertEqual([r for r in api_rows(key_id=kid) if r.get("result") == 202], [])
+
+    def test_approve_leads_to_exactly_one_take(self):
+        """The operator's step on `take <id> answered` (prompts/board-operator.md): approve -> one
+        `board ticket take <request.ref> --session <request.session> --by <answered_by>`; a second
+        run is refused (already taken), and once marked handled the request never shows again."""
+        kid, key = mkkey("tickets:take", BOSS)
+        tasks_before = set(os.listdir(os.path.join(HOME, "tasks")))
+        st, _, js = post("/api/v1/tickets/DEMO-1/take", {"session": "API"}, key)
+        self.assertEqual(st, 202, js)
+        did = js["decision_id"]
+        watch = lambda: subprocess.run([sys.executable, os.path.join(REPO, "lib", "serve.py"), "--watch", "--once"],  # noqa: E731
+                                       capture_output=True, text=True, timeout=30).stdout
+        self.assertEqual(board("answer", did, "approve", "--by", BOSS).returncode, 0)
+        self.assertIn("take %s answered" % did, watch())
+        with open(os.path.join(HOME, "decisions", did + ".json"), encoding="utf-8") as fh:
+            d = json.load(fh)
+        req = d["request"]
+        self.assertEqual((d["answer"], req["ref"], req["session"]), ("approve", "demo:DEMO-1", "API"))
+        take = lambda: board("ticket", "take", req["ref"], "--session", req["session"], "--by", d["answered_by"])  # noqa: E731
+        r = take()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r2 = take()
+        self.assertNotEqual(r2.returncode, 0)                       # already taken: refused
+        new = set(os.listdir(os.path.join(HOME, "tasks"))) - tasks_before
+        linked = [n for n in new if (task_file(n[:-5]).get("ticket") or {}).get("key") == "DEMO-1"]
+        self.assertEqual(len(linked), 1, new)                       # exactly one take
+        board("mark", did, "relayed")
+        self.assertNotIn(did, watch())
 
     def test_take_requests_capped_per_key(self):
         kid, key = mkkey("tickets:take")

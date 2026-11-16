@@ -467,6 +467,34 @@ class _McpBackend:
             return exc.status, {"error": exc.error, "detail": detail}
 
 
+def _mcp_post(self, path, body):
+    """A write tool: the /api/v1 POST route itself (match, scope, rate, the route's body schema and
+    handler, one audit row with "mcp": true), its body being the tool's arguments."""
+    split = urllib.parse.urlsplit(path)
+    try:
+        route, params = match("POST", split.path)
+        if split.query:
+            raise ApiError(400, "bad_request", "query: none accepted")
+        grant(self.h, self.rec, route, self.via, self.client, time.monotonic(), mcp=True)
+        cap = _Capture(self.h)
+        api = Api(cap, self.S, self.rec, params, {}, self.via, route)
+        api.given_body = body if isinstance(body, dict) else {}
+        try:
+            getattr(api, route["handler"])()
+        except ApiError as exc:
+            api.audit_write(exc.status, error=exc.error)
+            raise
+        return cap.out or (500, {"error": "internal"})
+    except ApiError as exc:
+        detail = exc.detail
+        if exc.headers.get("Retry-After"):
+            detail = "%s (retry after %s s)" % (detail, exc.headers["Retry-After"])
+        return exc.status, {"error": exc.error, "detail": detail}
+
+
+_McpBackend.post = _mcp_post
+
+
 def _read_mcp_body(h, S):
     try:
         n = int(h.headers.get("Content-Length") or "-1")
@@ -537,6 +565,7 @@ class Api:
     def __init__(self, h, S, rec, params, query, via, route=None):
         self.h, self.S, self.rec, self.params, self.query, self.via = h, S, rec, params, query, via
         self.route = route or {}
+        self.given_body = None
 
     def ok(self, obj):
         """Every read is masked: a key is never an owner, so other people's emails become role
@@ -699,6 +728,8 @@ class Api:
         _audit(self.h, dict(self.rec["_audit"], action=self.route["handler"], result=result, **kw))
 
     def body(self):
+        if self.given_body is not None:          # an MCP tool call: the JSON-RPC arguments, parsed
+            return check_body(self.route["body"], self.given_body)
         try:
             b = self.h.read_body()
         except self.S.Refused as exc:
@@ -832,9 +863,17 @@ class Api:
         [BOARD decision]), written with its `request` in one atomic write. Only an approver answers
         it on the board; on approve the operator runs the take itself (`board ticket take ... --by
         <answered_by>`), which produces the verified [BOARD ticket] relay. A key can never answer it."""
-        S, ref, b = self.S, self.params["ref"], self.body()
+        S, raw_ref, b = self.S, self.params["ref"], self.body()
         code = b["session"]
         self.known_session(code)
+        # the ref must name a configured tracker's ticket (T1 routing): unknown -> 400, ambiguous -> 409;
+        # stored as provider:KEY, the form `board ticket take` takes
+        try:
+            prov, key = S.tickets.load().route(raw_ref)
+        except S.tickets.TicketError as exc:
+            raise ApiError(exc.status, exc.code, exc.detail + (
+                " (one of %s)" % ", ".join(exc.candidates) if exc.candidates else "")) from None
+        ref = "%s:%s" % (prov.name, key)
         note = self.text(b["note"], "note") if b.get("note", "").strip() else ""
         home, kid = self.h.server.home, self.rec["id"]
         mine = 0

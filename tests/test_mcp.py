@@ -93,6 +93,10 @@ serve:
     certs_url: file://%s/certs.json
     allowed_emails: [%s]
     api_service_tokens: [%s, {%s: %s}]
+tickets:
+  trackers:
+    - name: demo
+      type: fake
 """ % (OWNER, OWNER, PORT, "true" if HAVE_CRYPTO else "false", TPORT, HOSTNAME, TMP, OWNER, SVC, SVC_BOUND, DEV))
 
 
@@ -264,7 +268,8 @@ def tearDownModule():
 
 
 SCOPE_SETS = {"all": ",".join(apikeys.SCOPES), "state": "read:state", "decisions": "read:decisions",
-              "tasks": "read:tasks", "messages": "read:messages", "tickets": "tickets:read"}
+              "tasks": "read:tasks", "messages": "read:messages", "tickets": "tickets:read",
+              "send": "write:messages", "take": "tickets:take"}
 
 
 class FreshKeys(unittest.TestCase):
@@ -281,9 +286,12 @@ class FreshKeys(unittest.TestCase):
 
 
 SCOPED = {"state": {"board_state", "list_sessions"}, "decisions": {"list_decisions", "get_decision"},
-          "tasks": {"list_tasks", "get_task"}, "messages": {"list_messages", "get_message"}, "tickets": set()}
-ALL_TOOLS = {"board_state", "list_sessions", "list_decisions", "get_decision", "list_tasks", "get_task",
-             "list_messages", "get_message"}
+          "tasks": {"list_tasks", "get_task"}, "messages": {"list_messages", "get_message"}, "tickets": set(),
+          "send": {"send_message"}, "take": {"ticket_take_request"}}
+READ_TOOLS = {"board_state", "list_sessions", "list_decisions", "get_decision", "list_tasks", "get_task",
+              "list_messages", "get_message"}
+WRITE_TOOLS = {"send_message", "ticket_take_request"}
+ALL_TOOLS = READ_TOOLS | WRITE_TOOLS
 CALLS = {"board_state": {}, "list_sessions": {}, "list_decisions": {"status": "pending"},
          "get_decision": {"decision_id": "d-1-a"}, "list_tasks": {}, "get_task": {"task_id": "t-1"},
          "list_messages": {"limit": "5"}, "get_message": {"message_id": "m-1-a"}}
@@ -292,16 +300,20 @@ CALLS = {"board_state": {}, "list_sessions": {}, "list_decisions": {"status": "p
 # ------------------------------------------------------------------ the table
 class TableTest(unittest.TestCase):
     def test_tools_are_v1_routes(self):
-        routes = {r["path"]: r for r in api_spec.ROUTES}
+        routes = {r["path"]: r for r in api_spec.ROUTES if r["method"] == "GET"}
         self.assertEqual({t["name"] for t in mcp_tools.TOOLS}, ALL_TOOLS)
+        posts = {r["path"]: r for r in api_spec.ROUTES if r["method"] == "POST"}
         for t in mcp_tools.TOOLS:
-            self.assertIn(t["path"], routes)
-            self.assertEqual(t["scope"], routes[t["path"]]["scope"])
-            self.assertTrue(t["annotations"]["readOnlyHint"])
+            table = posts if t["name"] in WRITE_TOOLS else routes
+            self.assertIn(t["path"], table)
+            self.assertEqual(t["scope"], table[t["path"]]["scope"])
+            self.assertEqual(t["annotations"]["readOnlyHint"], t["name"] in READ_TOOLS)
             self.assertFalse(t["inputSchema"]["additionalProperties"])
-        self.assertEqual(mcp_tools.WRITE_TOOLS, [])   # A3: no write tool until its route exists
+        self.assertEqual({t["name"] for t in mcp_tools.WRITE_TOOLS}, WRITE_TOOLS)
+        self.assertEqual({t["scope"] for t in mcp_tools.WRITE_TOOLS}, {"write:messages", "tickets:take"})
         names = {t["name"] for t in mcp_tools.TOOLS}
-        self.assertFalse(names & {"answer_decision", "press", "send_message", "ticket_get"})
+        # never a decision answer, a press or an approval (owner decision Q1)
+        self.assertFalse([n for n in names if any(w in n for w in ("answer", "press", "approve", "resolve"))])
 
     def test_build_path_validates(self):
         t = mcp_tools.TOOL_BY_NAME["get_task"]
@@ -368,8 +380,21 @@ class StdioTest(FreshKeys):
         tools = rs[0]["result"]["tools"]
         self.assertEqual({t["name"] for t in tools}, ALL_TOOLS)
         for t in tools:
-            self.assertTrue(t["annotations"]["readOnlyHint"])
+            self.assertEqual(t["annotations"]["readOnlyHint"], t["name"] in READ_TOOLS)
             self.assertNotIn("path", t)
+
+    def test_write_over_stdio(self):
+        """board-mcp posts a write tool's arguments to its /api/v1 route as JSON (HttpBackend.post)."""
+        kid, key = self.k("send")
+        rc, rs, _, err = stdio([INIT, rpc(2, "tools/call", {"name": "send_message",
+                                                            "arguments": {"to": "WEB", "body": "nightly done"}})], key=key)
+        self.assertEqual(rc, 0, err)
+        res = by_id(rs)[2]["result"]
+        self.assertFalse(res["isError"], res)
+        mpath = os.path.join(HOME, "messages", res["structuredContent"]["id"] + ".json")
+        with open(mpath, encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["api"]["key_id"], kid)
+        os.remove(mpath)
 
     def test_resources_filtered_by_scope(self):
         rc, rs, _, _ = stdio([rpc(2, "resources/list"), rpc(3, "resources/templates/list")], key=self.k("tickets")[1])
@@ -644,6 +669,52 @@ class HttpMcpTest(FreshKeys):
         self.assertNotIn(b"secret roadmap", raw)
         st, _, js, _ = post_mcp(rpc(5, "resources/read", {"uri": "board://tasks/t-1"}), self.k("tasks")[1])
         self.assertEqual(json.loads(js["result"]["contents"][0]["text"])["id"], "t-1")
+
+    def test_write_tools(self):
+        """send_message and ticket_take_request run their /api/v1 POST routes: the same scope,
+        body schema, handler and audit (with "mcp": true); the take only asks."""
+        kid, key = self.k("send")
+        st, _, js, _ = post_mcp(rpc(2, "tools/call", {"name": "send_message",
+                                                      "arguments": {"to": "API", "body": "build 41 is green"}}), key)
+        self.assertEqual(st, 200)
+        self.assertFalse(js["result"]["isError"], js)
+        mid = js["result"]["structuredContent"]["id"]
+        with open(os.path.join(HOME, "messages", mid + ".json"), encoding="utf-8") as fh:
+            rec = json.load(fh)
+        self.assertEqual((rec["kind"], rec["api"]["key_id"]), ("api", kid))
+        ev = [e for e in events() if e.get("key_id") == kid and e.get("action") == "message_new"]
+        self.assertEqual((ev[-1]["result"], ev[-1].get("mcp")), (201, True))
+        # bad arguments: the route's own body schema, or the tool's argument list
+        st, _, js, _ = post_mcp(rpc(3, "tools/call", {"name": "send_message", "arguments": {"to": "API"}}), key)
+        self.assertEqual(js["error"]["code"], -32602)
+        st, _, js, _ = post_mcp(rpc(4, "tools/call", {"name": "send_message",
+                                                      "arguments": {"to": "API", "body": "x", "by": "owner"}}), key)
+        self.assertEqual(js["error"]["code"], -32602)
+        st, _, js, _ = post_mcp(rpc(5, "tools/call", {"name": "send_message",
+                                                      "arguments": {"to": "NOPE", "body": "x"}}), key)
+        self.assertTrue(js["result"]["isError"])
+        self.assertIn("unknown_session", js["result"]["content"][0]["text"])
+        # out of scope: refused by the route
+        st, _, js, _ = post_mcp(rpc(6, "tools/call", {"name": "ticket_take_request",
+                                                      "arguments": {"ref": "DEMO-1", "session": "API"}}), key)
+        self.assertIn("insufficient_scope", js["result"]["content"][0]["text"])
+        tkid, tkey = self.k("take")
+        st, _, js, _ = post_mcp(rpc(7, "tools/call", {"name": "ticket_take_request",
+                                                      "arguments": {"ref": "DEMO-1", "session": "WEB"}}), tkey)
+        self.assertFalse(js["result"]["isError"], js)
+        did = js["result"]["structuredContent"]["decision_id"]
+        with open(os.path.join(HOME, "decisions", did + ".json"), encoding="utf-8") as fh:
+            d = json.load(fh)
+        self.assertEqual((d["kind"], d["status"], d["from"], d["request"]["ref"]),
+                         ("ticket_take_request", "pending", "api", "demo:DEMO-1"))
+        st, _, js, _ = post_mcp(rpc(8, "tools/call", {"name": "ticket_take_request",
+                                                      "arguments": {"ref": "nope:X-1", "session": "WEB"}}), tkey)
+        self.assertIn("unknown_ticket_ref", js["result"]["content"][0]["text"])
+        self.assertNotIn(key, events_text())
+        self.assertNotIn(tkey, events_text())
+        # leave the fixtures as other tests expect them (one pending decision, one message)
+        os.remove(os.path.join(HOME, "decisions", did + ".json"))
+        os.remove(os.path.join(HOME, "messages", mid + ".json"))
 
     def test_notification_is_202(self):
         st, hd, js, raw = post_mcp({"jsonrpc": "2.0", "method": "notifications/initialized"}, self.k("state")[1])
