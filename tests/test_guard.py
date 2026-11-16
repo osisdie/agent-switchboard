@@ -695,12 +695,13 @@ class EndToEnd(unittest.TestCase):
         routes = set(re.findall(r'path == "([^"]+)"', get_src + post_src))
         for tup in re.findall(r"path in \(([^)]*)\)", get_src):
             routes |= set(re.findall(r'"([^"]+)"', tup))
-        routes |= set(re.findall(r'fullmatch\(r"([^"]+)", path\)', post_src))
+        routes |= set(re.findall(r'fullmatch\(r"([^"]+)", path\)', get_src + post_src))
         self.assertEqual(routes, {
             "/", "/index.html", "/api/state", "/api/events", "/api/me",
             "/api/messages", "/api/away", "/api/notify-prefs", "/api/presence", "/api/alerts/ack", "/api/rc",
             "/api/decisions/([^/]+)/answer", "/api/decisions/([^/]+)/resolve", "/api/messages/([^/]+)/release",
-            "/api/sessions/([^/]+)/action", "/api/lessons", "/api/lessons/([^/]+)", "/api/pomodoro/day"})
+            "/api/sessions/([^/]+)/action", "/api/lessons", "/api/lessons/([^/]+)", "/api/pomodoro/day",
+            "/api/tickets/([^/]+)"})
         self.assertIn("if path in STATIC:", get_src)
         # /api/v1 goes to lib/serve_api.py, whose routes are the fixed table in lib/api_spec.py
         # (tests/test_api_v1.py: the spec equals the router; every route is read-only).

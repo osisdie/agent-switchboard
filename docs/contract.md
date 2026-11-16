@@ -515,6 +515,7 @@ $BOARD_HOME/
 | `GET /api/me` | who is asking, from the verified identity and `fleet.yaml` only (never from request headers): see "Who am I" below. Same `Host` and identity checks as `/api/state` (no or bad JWT on the tunnel → 401, a forwarded request on the local listener → 403) |
 | `GET /icon.svg`, `/favicon.png`, `/favicon.ico` (the PNG), `/apple-touch-icon.png` (+ `-precomposed`), `/icons/icon-192.png`, `/icons/icon-512.png`, `/manifest.webmanifest` | a fixed map to files under `artifact/` (nothing else there is served; the request path is never joined onto a directory), with `image/svg+xml`, `image/png` or `application/manifest+json`, `Cache-Control: private, max-age=86400` and `Content-Security-Policy: default-src 'none'`. Same Host and identity checks as every route, so through the tunnel they need Access too. The page itself gets `manifest-src 'self'` in its CSP |
 | `GET /api/pomodoro/day?d=YYYY-MM-DD` | one kept day's per-stream pomodoro breakdown, read-only and on demand (the pushed `pomodoro` view has daily totals only, so SSE stays small): see "Pomodoro". Exactly one `d`, a real date, nothing else in the query (else 400 `bad_request`); a day outside the 14 kept, or no `pomodoro.json` → 404. Same `Host` and identity checks as `/api/state` (anyone who may view the board may read it) |
+| `GET /api/tickets/<ref>` | one tracker ticket, see "Tickets". Only `approvers` ∪ `release_managers` (both empty → 403 `no_approvers`; anyone else → 403 `not_approver`), checked **before** any tracker call; refusals are audited (`type: "ticket"`, `result: "refused"`). `<ref>` is percent-decoded once: `KEY` or `tracker:KEY`. → 200 the ticket, or the ticket errors below (`Retry-After` on 429). Same `Host` and identity checks as `/api/state` |
 | `GET /api/events` | `text/event-stream`: `event: state` with the full state at once and after every change (1 s mtime poll; only when the state differs), `: keepalive` every 25 s |
 | `POST /api/decisions/<id>/answer` `{answer}` | `<id>` must match `^d-[0-9]+-[a-z0-9]+$`. With empty `approvers` → 403 `no_approvers` (fails closed). The identity is then checked **before anything is written**, with the rule of `board answer` (`approvers`; for a production decision, gate or stage, `release_managers`, falling back to `approvers`): not allowed → 403 `not_approver`, audited, file untouched (so it can never cancel an approver's answer that waits for the relay). `board answer` exit 8 (the gate's task was busy) → 409 `task_busy`: try again. Otherwise `board answer <id> --answer-file <tmp> --by <identity>` (argv, no shell; the answer goes by a 0600 file under `$BOARD_HOME` that is removed afterwards, so `-`, `--help` or `--answer-file` typed as an answer are recorded literally) → 200 `{status: "answered"}`. For `kind: "permission"` (`answer` = `allow`\|`deny`; `allow` with `summary_truncated` → 409 `review_in_session`), it then runs `board press <from> <answer> --expect <tool_use_id>` → 200 `{status: "relayed"}`; exit 3 → 409 `stale`; exit 4 → 403 `press_refused`; exit 7 → 409 `screen_not_ready` (the decision is pending again). A pane question (`source: "pane"`) that is not `pressable` → 409 `answer_in_session`, untouched. A pressable form of several questions takes `{options: [i, j, ...]}` instead of `answer` (2–4 numbers, one per question, 1–8, no `answer`/`option`); a wrong count, a number out of its question's range, a boolean, free text, or `options` on any other decision → 400 `bad_options`, untouched. It runs `board answer <id> --options i,j --by <identity>`, then `board press` like below. With free text for some questions it takes `{answers: [{question_index, option} \| {question_index, text}, ...]}` instead (one entry per question, in order, exactly one of `option` 1–8 or `text` per entry, no `options`/`answer`/`option`); text is cleaned as by `board answer --form-file` and must then be 1–200 characters, not ending in `\;` and not the "Type something" row itself (else 400 `bad_answers`; `question_index`, when given, an integer equal to the entry's position), and each text is screened by the secret guard before anything is written: a request for a secret or a secret-shaped value → 400 `held_answer`, audited; it goes to `board answer <id> --form-file <0600 tmp file> --by <identity>` (removed afterwards), then `board press`; an optional `option` (1–10, a pane question's clicked button) goes to `board answer --option` (mismatch → 400 `bad_option`, untouched; `option` on any other decision → 400); otherwise, when `board answer` set `relay: "press"`, it runs `board press <from> answer --expect <tool_use_id>` with the same results (plus exit 5 → 409 `partial`), and with `relay: "operator"` it returns 200 `{status: "answered"}` for the operator to relay. A decision already `relayed`/`stale`/`timeout` → 409 `gone`. |
 | `POST /api/messages` `{to, body}` | only for `approvers` ∪ `release_managers` (else 403 `not_approver`); writes `messages/<id>.json` (`^m-[0-9]+-[a-z0-9]+$`) with `by: <identity>`, the body scrubbed, and `status: "new"`, or `"held"` when the secret guard flags it → 201 `{id, status, reason?}` (see "Secret guardrails") |
@@ -621,6 +622,100 @@ section 12), once each, oldest first, and `tick` every 8 minutes.
 The operator relays questions and gates (then `board mark <id> relayed`) and messages, writes
 replies, and keeps `operator.json.heartbeat_at` fresh. Permission decisions are already pressed by
 `board-serve`.
+
+## Tickets
+
+Read-only access to issue trackers (`lib/tickets/`, design: `docs/design/tickets-and-api.md`).
+Writes, taking a ticket into a task and the board panel come later.
+
+**Config** (`fleet.yaml`, documented in `fleet.example.yaml`):
+
+```yaml
+tickets:
+  cache_ttl_seconds: 60          # 0–3600
+  not_found_ttl_seconds: 30
+  trackers:
+    - name: tracker              # [a-z][a-z0-9_-]{0,31}, unique
+      type: http-json            # or fake
+      base_url: https://tracker.example.com
+      auth: {header: Authorization, scheme: Bearer, env: EXAMPLE_TRACKER_TOKEN}  # or {token_file: F} | none
+      key_pattern: '^(WEB|API)-[0-9]+$'
+      rate_per_min: 30
+      retry_wait_max_seconds: 2
+      resolve: {method: GET, path: ..., query: {...}, set: {var: "$.path"}}      # optional
+      get: {method: GET, path: ..., map: {title, status?, assignee?, description?, updated_at?, id?},
+            link: "https://...{key}", status_category: {todo: [...], doing: [...], done: [...]}}
+```
+
+- **Routing.** A ref is `KEY` or `tracker:KEY`; `KEY` matches `^[A-Za-z0-9][A-Za-z0-9._#-]{0,99}$`
+  (else 400 `bad_ticket_ref`). `tracker:KEY` picks that tracker (unknown name, or a KEY its
+  `key_pattern` does not match → 400 `unknown_ticket_ref`). A bare KEY is matched (`fullmatch`)
+  against every tracker's `key_pattern`: one → it; none → 400 `unknown_ticket_ref`; several → 409
+  `ticket_ambiguous` with `candidates: ["tracker:KEY", ...]`, and nothing is sent anywhere. List
+  project prefixes in `key_pattern`, not `[A-Z]+-[0-9]+`.
+- **Templates.** `{key}` is the KEY; `{id}` defaults to it; `resolve.set` adds variables from the
+  resolve answer. In a `path`, each value is one percent-encoded segment (`/ ? # % : @` encoded;
+  `""`, `.`, `..` refused). `query` values are URL-encoded. A `path` must start with one `/` and
+  have no scheme, `//`, query, fragment or `.`/`..` segment (else the tracker is unconfigured).
+  Paths into the JSON answer: `$`, `.name`, `[n]`, `[?field=={var}]`; no eval.
+- **HTTP.** https only (http only for `127.0.0.1`/`localhost`); `base_url` without user, query
+  or fragment; the request URL is checked again against the base (scheme, host, port) before it
+  is sent; redirects are never followed (→ `ticket_upstream`); no proxy for local hosts; 10 s
+  timeout; answers over 1 MiB refused; a header value with CR/LF refused. Reads are `GET` only.
+- **Tokens.** `auth.env` names a variable, read from the process environment, then
+  `<config dir>/.env`; `auth.token_file` names a file (relative to the config dir) that must be
+  a regular file not readable by group or others. Every token value loaded (and its URL-encoded and
+  base64 forms) is replaced by `[redacted:<env name>]` (`[redacted:<tracker>_token]` for a file)
+  in every string the tickets code returns, prints, logs, caches or audits, and the result then
+  goes through the secret guard (`guard.scrub`). `board ticket doctor` shows `set`/`unset` and
+  the source, never a value.
+- **Rate limits.** Per tracker: a token bucket of `rate_per_min` (in-process; board-serve keeps
+  it across requests); a 429 with `Retry-After` ≤ `retry_wait_max_seconds` is waited out once,
+  a longer one stores `blocked_until` in `$BOARD_HOME/tickets/state/<tracker>.json` and every
+  request until then fails at once with `ticket_rate_limited`; 5 upstream failures (5xx) in a row
+  open a breaker for 60 s (`ticket_upstream`, "paused").
+- **Cache.** `$BOARD_HOME/tickets/cache/<tracker>__<key>.json` (0600; characters outside
+  `[A-Za-z0-9._-]` are `%XX`). A ticket is served from it for `cache_ttl_seconds`, a 404 for
+  `not_found_ttl_seconds`; `board ticket get --refresh` skips it. Files older than 7 days are
+  removed on write unless `tickets/links/` has one of the same name.
+- **`BOARD_MOCK=1`**: only `fake` trackers load.
+
+Ticket (CLI `--json`, the route, the cache):
+
+```json
+{ "provider": "tracker", "key": "WEB-12", "id": "u-12", "title": "...", "status": "in_progress",
+  "status_category": "todo|doing|done|other", "assignee": {"id": "..."|null, "name": "..."|null}|null,
+  "excerpt": "plain text, at most 500 characters", "url": "https://..."|null,
+  "updated_at": "..."|0|null, "fetched_at": 0 }
+```
+
+`status_category` uses the tracker's `status_category` lists, then built-in names (`todo`,
+`backlog`, `open` …, `in progress`, `review` …, `done`, `closed`, `cancelled` …), else `other`.
+HTML in the description is reduced to text; whitespace is collapsed.
+
+Errors (`{error, detail, retry_after?, candidates?}`; CLI exit code in brackets):
+
+| error | HTTP | when |
+|---|---|---|
+| `bad_ticket_ref` | 400 [2] | not KEY or tracker:KEY |
+| `unknown_ticket_ref` | 400 [2] | no tracker takes it |
+| `ticket_ambiguous` | 409 [2] | several trackers take it (`candidates`) |
+| `ticket_not_found` | 404 [3] | the tracker said 404/410, or `resolve` found nothing |
+| `ticket_rate_limited` | 429 [5] | our bucket, or the tracker's 429 (`retry_after`, header `Retry-After`) |
+| `ticket_auth` | 502 [1] | the tracker answered 401/403 to our token |
+| `ticket_upstream` | 502 [1] | network error, redirect, 5xx, not JSON, over 1 MiB, unsafe path value, breaker open |
+| `ticket_unconfigured` | 503 [1] | the tracker's config has problems (`board ticket doctor`) |
+
+Upstream error bodies never reach a caller: the first 300 bytes, redacted, go to stderr.
+
+**Audit.** Every get appends `{ts, type: "ticket", action: "get", provider, key, by, via, result}`
+to `events.jsonl` (`result`: `ok`, `cache`, or the error code; `cached: true` for a remembered
+404; refusals on the route: `result: "refused"`, `reason`, `ref`). `by` is the matched
+configured identity on the route and `local` for the CLI; `via` is `loopback`/`cf-jwt` or `cli`.
+Never a body, a token or a header.
+
+**CLI.** `board ticket get REF [--refresh] [--json]`, `board ticket doctor [--json]` (exit 1
+when a tracker has problems). Output goes through `guarded` as well.
 
 ## Lifecycle stages & gates (agent-ready SDLC)
 

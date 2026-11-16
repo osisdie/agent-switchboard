@@ -194,3 +194,39 @@ sessions:
 #     window_seconds: 120       # a heartbeat at most this old
 #     idle_seconds: 900         # and an interaction at most this old (0 = no idle limit)
 # Urgent always breaks through mutes and presence, unless a mute has --include-urgent.
+
+# Tickets (lib/tickets; docs/contract.md "Tickets"): read issue-tracker tickets with
+# `board ticket get REF` and the board's GET /api/tickets/<ref> (approvers and release managers only).
+# REF is KEY or tracker:KEY. A KEY that several trackers' key_pattern match is refused as ambiguous,
+# so list your project prefixes rather than a catch-all like '[A-Z]+-[0-9]+'.
+# Tokens: never here. `env:` names a variable (process env, else <config dir>/.env), or
+# `token_file:` a 0600 file (relative to the config dir). `board ticket doctor` says set/unset only.
+# Requests: https only (http only for 127.0.0.1/localhost), never to another host than base_url,
+# redirects not followed, 10 s timeout, 1 MiB answers.
+# tickets:
+#   cache_ttl_seconds: 60       # a fetched ticket is served from $BOARD_HOME/tickets/cache this long
+#   not_found_ttl_seconds: 30   # a 404 is remembered this long
+#   trackers:
+#     - name: tracker           # [a-z][a-z0-9_-]{0,31}; the "tracker:" of tracker:KEY
+#       type: http-json         # a JSON API described here; `fake` reads fixtures (tests, demos)
+#       base_url: https://tracker.example.com
+#       auth: {header: Authorization, scheme: Bearer, env: EXAMPLE_TRACKER_TOKEN}   # or {token_file: tracker.token}, or: none
+#       key_pattern: '^(WEB|API)-[0-9]+$'
+#       rate_per_min: 30          # token bucket; a 429's Retry-After is honoured (waited out once when
+#       retry_wait_max_seconds: 2 # at most this long, else no requests until it passes); 5 failures
+#                                 # in a row pause the tracker for 60 s
+#       resolve:                  # optional: display key -> internal ids; `set` names variables
+#         method: GET
+#         path: /api/v1/issues/resolve
+#         query: {displayId: "{key}"}
+#         set: {id: "$.data.id", project: "$.data.project"}   # paths: $ .name [n] [?field=={var}]
+#       get:
+#         method: GET
+#         path: "/api/v1/projects/{project}/issues/{id}"       # each {var} is one encoded path segment
+#         map: {title: $.data.title, status: $.data.status, assignee: $.data.assigneeName,
+#               description: $.data.description, updated_at: $.data.updatedAt}
+#         link: "https://tracker.example.com/projects/{project}/issues/{key}"
+#         status_category: {todo: [backlog, todo], doing: [in_progress], done: [done, cancelled]}
+#     - name: demo
+#       type: fake                # fixtures: tests/fixtures/tickets/fake.json (or `fixtures: PATH`)
+#       key_pattern: '^DEMO-[0-9]+$'
