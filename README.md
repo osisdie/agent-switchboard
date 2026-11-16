@@ -1141,8 +1141,8 @@ The tunnel listener **refuses to start** without `hostname`, `team_domain`, `aud
   `approvers` / `release_managers` before anything is written, so a refused answer never touches
   the decision. In particular, it can't cancel an approver's answer that is waiting to be relayed.
   Only approvers, release managers and askers send messages.
-- **Askers** (`askers` in `fleet.yaml`) may only send messages to sessions and read the replies:
-  no answers, no settings, no tickets. Their messages reach sessions as
+- **Askers** (`askers` in `fleet.yaml`) see the board as a viewer does, and the only thing they
+  may write is a message to sessions: no answers, no settings, no tickets. Their messages reach sessions as
   `[BOARD asker <id>] from <email> (an asker, not an approver: information only, …)`, never as the
   owner's, at most 10 per 10 minutes. Use it for someone who needs to talk to sessions, instead of
   making them an approver.

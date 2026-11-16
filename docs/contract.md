@@ -488,8 +488,10 @@ answers 403 `not_allowed`. Listing a viewer there lets them read the board; only
 When `allowed_emails` is set it is authoritative: an asker missing from it cannot reach the board
 (`board doctor` warns).
 
-**Askers** (`fleet.yaml` `askers`, emails and `local`, matched like approvers) may send messages
-(`POST /api/messages`) and read the replies, nothing else. Every other write route refuses them
+**Askers** (`fleet.yaml` `askers`, emails and `local`, matched like approvers) see the board as a
+viewer does (every decision's question, session cards, tasks without ticket text, all messages and
+replies) and may write only messages (`POST /api/messages`), so list only people you would let view
+the board. Every other write route refuses them
 (403, audited) exactly as it refuses a viewer: answer, resolve, release, away, notify-prefs,
 presence, alerts ack, rc, lessons, session actions. They read no tickets (`/api/tickets/*` is
 approvers ∪ release managers only). An asker who is not also an approver or release manager:

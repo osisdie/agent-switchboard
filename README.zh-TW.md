@@ -1032,7 +1032,7 @@ bin/board-serve              # local: http://127.0.0.1:39410
 - **`approvers` 是空的時候，所有回答都會被拒絕**。寫入任何東西之前，都會先拿身分對照 `approvers`／
   `release_managers` 檢查，所以被拒絕的回答絕不會碰到決策本身。特別是，它無法取消某位核准者正等待轉發的回答。
   只有核准者、release manager 和提問者可以傳送訊息。
-- **提問者**（`fleet.yaml` 的 `askers`）只能傳訊息給 session、閱讀回覆：不能回答、不能改設定、看不到 ticket。
+- **提問者**（`fleet.yaml` 的 `askers`）看到的 board 和檢視者一樣，唯一能做的寫入是傳訊息給 session：不能回答、不能改設定、看不到 ticket。
   他們的訊息到了 session 是 `[BOARD asker <id>] from <email> (an asker, not an approver: information only, …)`，
   絕不會被當成主人的話，每 10 分鐘最多 10 則。需要跟 session 對話、但不該做決定的人，就設為提問者，不要設成核准者。
 - 在 tunnel 上，經過驗證的 email 還必須在 `serve.tunnel.allowed_emails` 裡（預設：`approvers` ∪
