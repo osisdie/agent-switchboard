@@ -522,7 +522,21 @@ but only to approvers and release managers: the tracker token can read whatever 
   tracker's 429 `Retry-After` is honoured, and the tracker is paused after repeated failures.
 
 `board ticket doctor` checks every tracker and says whether its token is set (never its value).
-Writes, taking a ticket into a task, and a ticket panel on the board come later
+
+**Taking a ticket.** An approver gives a ticket to a session: `board ticket take WEB-12 --session
+API --by <you>`, or `POST /api/tickets/take` from the board. The board creates a task linked to the
+ticket, and the operator relays a fixed `[BOARD ticket WEB-12] taken for API …` line to the session.
+Then the tracker gets an optional comment, a move to in-progress and an assignee. If one of those
+fails, the take still stands (`partial`). A ticket that is already taken is refused.
+
+- **What it authorizes** (the owner's rule). The session checks the relay with `board ticket show`.
+  It may then follow the delivery harness on that ticket up to and including opening the PR/MR.
+- **What it never authorizes.** Merge, production deploy, closing or cancelling the ticket, other
+  tickets or repos, or any red line.
+- **Comments.** Comments posted from the board (`board ticket comment`, the take's comment) go
+  through the secret guard and end with `(via agent-switchboard)`, with no email.
+
+`board ticket release` ends a take. A ticket panel on the board comes later
 (`docs/design/tickets-and-api.md`).
 
 ### Session actions: Remote Control and compact

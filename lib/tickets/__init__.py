@@ -54,16 +54,27 @@ STATUS = {
     "ticket_rate_limited": 429,
     "ticket_upstream": 502,
     "ticket_unconfigured": 503,
+    "ticket_unsupported": 400,
+    "bad_transition": 400,
+    "bad_comment": 400,
+    "bad_body": 400,
+    "unknown_session": 400,
+    "no_approvers": 403,
+    "not_approver": 403,
+    "already_taken": 409,
+    "not_taken": 409,
+    "take_failed": 500,
 }
 
 
 class TicketError(Exception):
-    def __init__(self, code, detail="", retry_after=None, candidates=None):
+    def __init__(self, code, detail="", retry_after=None, candidates=None, extra=None):
         super().__init__(code)
         self.code = code
         self.detail = redact(str(detail or ""))[:300]
         self.retry_after = retry_after
         self.candidates = candidates
+        self.extra = extra or {}
 
     @property
     def status(self):
@@ -75,6 +86,7 @@ class TicketError(Exception):
             out["retry_after"] = int(self.retry_after)
         if self.candidates:
             out["candidates"] = list(self.candidates)
+        out.update(self.extra)
         return out
 
 
@@ -108,6 +120,8 @@ def redact(text, structural=False):
 
 def redact_tree(obj, key=None):
     if isinstance(obj, str):
+        if (key or "").endswith("sha256"):   # a digest we computed (body_sha256): ids rules only
+            return guard.scrub(_literal(obj), structural=True)
         return guard.scrub_tree(_literal(obj), key)
     if isinstance(obj, dict):
         return {k: redact_tree(v, k) for k, v in obj.items()}

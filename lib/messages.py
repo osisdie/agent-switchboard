@@ -130,6 +130,37 @@ def create(home, to, body, by, background_alert=False):
     return rec
 
 
+def create_ticket(home, mid, to, by, event, ticket, task_id):
+    """A ticket relay (lib/tickets/writes.py): kind "ticket", status "new", event taken|released.
+    The text is built by relay_text from these fields, never from free text."""
+    if not MSG_ID_RE.fullmatch(str(mid or "")) or not CODE_RE.fullmatch(str(to or "")) or event not in ("taken", "released"):
+        raise MessageError("bad_ticket", "invalid ticket relay")
+    tk = guard.scrub_tree({k: ticket.get(k) for k in ("provider", "key", "title", "url")})
+    rec = {"id": mid, "kind": "ticket", "event": event, "to": to, "by": by, "created_at": now_ms(),
+           "status": "new", "ticket": tk, "task_id": task_id,
+           "body": "ticket %s %s %s %s (task %s)" % (tk.get("key"), event, "for" if event == "taken" else "from",
+                                                     to, task_id)}
+    _write(path_of(home, mid), rec)
+    return rec
+
+
+def ticket_relay_text(rec):
+    """[BOARD ticket <KEY>] ... — the fixed relay of a ticket take or release (docs/contract.md,
+    "Relay message formats"). Tracker text is defanged: one line, no brackets or double quotes."""
+    from tickets import writes  # noqa: WPS433 - lazy: tickets is only needed for ticket relays
+    tk = rec.get("ticket") or {}
+    key, prov = writes.defang(tk.get("key"), 100), writes.defang(tk.get("provider"), 40)
+    who, task, mid, to = rec.get("by"), rec.get("task_id"), rec["id"], rec.get("to")
+    if rec.get("event") == "released":
+        return ("[BOARD ticket %s] released from %s (task %s) by %s on board. The take no longer authorizes "
+                "anything on this ticket. Reply to BOARD with [re %s]." % (key, to, task, who, mid))
+    url = writes.defang(tk.get("url") or "", 500).replace(" ", "%20")
+    return ('[BOARD ticket %s] taken for %s as task %s by %s on board: "%s"%s. Authorizes: %s. Verify with '
+            "`board ticket show %s:%s`. Reply to BOARD with [re %s]."
+            % (key, to, task, who, writes.defang(tk.get("title")), (" " + url) if url else "",
+               writes.AUTHORIZES, prov, key, mid))
+
+
 def release(home, mid, by):
     """Release a held message (the caller checked that `by` is an approver). Returns the record."""
     rec = read(home, mid)
@@ -178,6 +209,8 @@ def reply(home, mid, frm, text):
 def relay_text(rec):
     """The text the operator sends for a message: `[BOARD ask <id>] <body> — reply ...`, with the
     release reminder when the guard had held it."""
+    if rec.get("kind") == "ticket":
+        return ticket_relay_text(rec)
     note = ""
     if rec.get("released_by"):
         note = "(%s) " % (RELEASED_NOTE % rec["released_by"])

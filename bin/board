@@ -22,7 +22,8 @@
 #                                              close a board ask that was answered in the pane
 #                                              (status answered_in_pane): the asking session
 #                                              itself, or an approver
-#   board task new --owner CODE "title" [--stage S]   create a task, print its id
+#   board task new --owner CODE "title" [--stage S] [--ticket TRACKER:KEY [--ticket-url URL]]
+#                                              create a task, print its id
 #   board task stage ID STAGE [--artifact key=ref]... move a task to a stage
 #   board task ls [--json] | board task show ID
 #                                              stages: plan design build test deploy production
@@ -101,9 +102,12 @@
 #                                              API keys (lib/apikeys.py): shown once, only a
 #                                              peppered hash kept; owners administer every key,
 #                                              approvers issue to listed people, anyone requests
-#   board ticket get REF [--refresh] [--json] | doctor [--json]
-#                                              read a tracker ticket (fleet.yaml tickets.trackers;
-#                                              REF is KEY or provider:KEY); doctor: token set/unset
+#   board ticket get REF [--refresh] [--json] | doctor [--json] | show REF [--json]
+#   board ticket take REF --session CODE --by WHO [--comment-file F|--no-comment] [--no-transition] [--no-assign]
+#   board ticket release REF --by WHO
+#   board ticket comment REF --by WHO --file F | transition REF STATE --by WHO | assign REF NAME --by WHO
+#                                              tracker tickets (fleet.yaml tickets.trackers; REF is
+#                                              KEY or tracker:KEY); writes and take: approvers only
 #   board guard scrub|scrub-json|screen|has-marker|secrets
 #                                              the secret guard (lib/guard.py) for scripts
 #   board doctor                               check dependencies and installation
@@ -307,7 +311,8 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
         echo "  board task pr ID --url URL --state open|merged|closed [--head SHA] [--method squash|merge|rebase]"
         echo "  board task done|pause|resume|drop|block|progress ID"
         echo "  stages: $STAGES; artifact keys: $ARTIFACT_KEYS" ;;
-    "task new") echo "usage: board task new --owner CODE \"title\" [--stage S]   (prints the task id)" ;;
+    "task new") echo "usage: board task new --owner CODE \"title\" [--stage S] [--ticket TRACKER:KEY [--ticket-url URL]]   (prints the task id)"
+        echo "  --ticket links the task to a tracker ticket (board ticket take sets it)" ;;
     "task stage") echo "usage: board task stage ID STAGE [--artifact key=ref]..."
         echo "  stages: $STAGES; artifact keys: $ARTIFACT_KEYS" ;;
     "task ls") echo "usage: board task ls [--json]" ;;
@@ -1062,11 +1067,13 @@ cmd_task() {
 }
 
 task_new() {
-  local owner="" title="" stage="plan"
+  local owner="" title="" stage="plan" ticket="" ticket_url=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --owner) shift; owner="${1:-}" ;;
       --stage) shift; stage="${1:-}" ;;
+      --ticket) shift; ticket="${1:-}" ;;
+      --ticket-url) shift; ticket_url="${1:-}" ;;
       -*) die "task new: unknown option $1" ;;
       *) [ -z "$title" ] || die "task new: only one title"; title="$1" ;;
     esac
@@ -1074,15 +1081,28 @@ task_new() {
   done
   [ -n "$owner" ] && [ -n "$title" ] || { sub_usage task new >&2; exit 2; }
   valid_stage "$stage" || die "task new: unknown stage '$stage' (one of: $STAGES)"
+  # --ticket TRACKER:KEY links the task to a tracker ticket (board ticket take sets it);
+  # title_at_take is the title after the "KEY: " prefix.
+  if [ -n "$ticket" ]; then
+    [[ $ticket =~ ^[a-z][a-z0-9_-]{0,31}:[A-Za-z0-9][A-Za-z0-9._#-]{0,99}$ ]] || die "task new: --ticket must be TRACKER:KEY"
+  fi
+  if [ -n "$ticket_url" ]; then
+    [ -n "$ticket" ] || die "task new: --ticket-url needs --ticket"
+    [[ $ticket_url =~ ^https?://[^[:space:][:cntrl:]]{1,490}$ ]] || die "task new: --ticket-url must be an http(s) URL"
+  fi
   local now id
   now="$(now_ms)"
   id="$(new_id t "$now")"
   mkdir -p "$BOARD_HOME/tasks"
   write_atomic "$(task_path "$id")" "$(jq -n --arg id "$id" --arg title "$title" --arg owner "$owner" \
-    --arg stage "$stage" --argjson now "$now" '
+    --arg stage "$stage" --argjson now "$now" --arg ticket "$ticket" --arg turl "$ticket_url" '
     { id: $id, title: $title, owner: $owner, stage: $stage,
       artifacts: { intent: null, spec: null, plan: null, evals: null, review: null },
-      gates: [], created_at: $now, updated_at: $now, schema_version: 1 }')"
+      gates: [], created_at: $now, updated_at: $now, schema_version: 1 }
+    + (if $ticket == "" then {} else
+        {ticket: {provider: ($ticket | split(":")[0]), key: ($ticket | split(":")[1:] | join(":")),
+                  url: (if $turl == "" then null else $turl end),
+                  title_at_take: ($title | ltrimstr(($ticket | split(":")[1:] | join(":")) + ": "))}} end)')"
   log_event "$(jq -cn --arg id "$id" --arg owner "$owner" --arg stage "$stage" --argjson now "$now" \
     '{ts: $now, type: "task", id: $id, owner: $owner, stage: $stage, action: "new"}')"
   echo "$id"

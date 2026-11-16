@@ -516,6 +516,8 @@ $BOARD_HOME/
 | `GET /icon.svg`, `/favicon.png`, `/favicon.ico` (the PNG), `/apple-touch-icon.png` (+ `-precomposed`), `/icons/icon-192.png`, `/icons/icon-512.png`, `/manifest.webmanifest` | a fixed map to files under `artifact/` (nothing else there is served; the request path is never joined onto a directory), with `image/svg+xml`, `image/png` or `application/manifest+json`, `Cache-Control: private, max-age=86400` and `Content-Security-Policy: default-src 'none'`. Same Host and identity checks as every route, so through the tunnel they need Access too. The page itself gets `manifest-src 'self'` in its CSP |
 | `GET /api/pomodoro/day?d=YYYY-MM-DD` | one kept day's per-stream pomodoro breakdown, read-only and on demand (the pushed `pomodoro` view has daily totals only, so SSE stays small): see "Pomodoro". Exactly one `d`, a real date, nothing else in the query (else 400 `bad_request`); a day outside the 14 kept, or no `pomodoro.json` → 404. Same `Host` and identity checks as `/api/state` (anyone who may view the board may read it) |
 | `GET /api/tickets/<ref>` | one tracker ticket, see "Tickets". Because it spends the tracker token's rate limit, it needs `X-Board: 1` (a custom header: a cross-site page can only send it after a CORS preflight, which is never granted) and a `Sec-Fetch-Site` that is absent, `same-origin` or `none`; else 403 `csrf` **before** the identity, the audit or any tracker call. Only `approvers` ∪ `release_managers` (both empty → 403 `no_approvers`; anyone else → 403 `not_approver`), checked **before** any tracker call; refusals are audited (`type: "ticket"`, `result: "refused"`). `<ref>` is percent-decoded once: `KEY` or `tracker:KEY`. → 200 the ticket, or the ticket errors below (`Retry-After` on 429). Same `Host` and identity checks as `/api/state` |
+| `POST /api/tickets/take` `{ref, session, comment?, transition?, assign?}` | take a ticket for a session, see "Tickets: take". Approvers only (empty → 403 `no_approvers`; else 403 `not_approver`), checked and a refusal audited **before** anything is fetched, sent or written. `session` must be a session in the snapshot or `fleet.yaml` (else 400 `unknown_session`); `comment` a string (scrubbed, footer added) or `false` (skip) or absent (the tracker's `take.comment`); `transition`, `assign` booleans (default true; else 400 `bad_body`). → 200 `{status: "taken"\|"partial", task_id, msg_id, failed, link, ticket}`; an active take → 409 `already_taken {task_id, session}`, nothing written |
+| `POST /api/tickets/<ref>/comment` `{text}`, `/transition` `{to}`, `/assign` `{who}`, `/release` `{}` | the tracker writes and the end of a take, see "Tickets: writes". Approvers only, checked first and refusals audited. → 200 `{status: "ok", ref, ticket}` (`release`: `{status: "released", msg_id, link}`); `to` not in the tracker's `states` → 400 `bad_transition`; no active take → 409 `not_taken`; a tracker without that write → 400 `ticket_unsupported` |
 | `GET /api/events` | `text/event-stream`: `event: state` with the full state at once and after every change (1 s mtime poll; only when the state differs), `: keepalive` every 25 s |
 | `POST /api/decisions/<id>/answer` `{answer}` | `<id>` must match `^d-[0-9]+-[a-z0-9]+$`. With empty `approvers` → 403 `no_approvers` (fails closed). The identity is then checked **before anything is written**, with the rule of `board answer` (`approvers`; for a production decision, gate or stage, `release_managers`, falling back to `approvers`): not allowed → 403 `not_approver`, audited, file untouched (so it can never cancel an approver's answer that waits for the relay). `board answer` exit 8 (the gate's task was busy) → 409 `task_busy`: try again. Otherwise `board answer <id> --answer-file <tmp> --by <identity>` (argv, no shell; the answer goes by a 0600 file under `$BOARD_HOME` that is removed afterwards, so `-`, `--help` or `--answer-file` typed as an answer are recorded literally) → 200 `{status: "answered"}`. For `kind: "permission"` (`answer` = `allow`\|`deny`; `allow` with `summary_truncated` → 409 `review_in_session`), it then runs `board press <from> <answer> --expect <tool_use_id>` → 200 `{status: "relayed"}`; exit 3 → 409 `stale`; exit 4 → 403 `press_refused`; exit 7 → 409 `screen_not_ready` (the decision is pending again). A pane question (`source: "pane"`) that is not `pressable` → 409 `answer_in_session`, untouched. A pressable form of several questions takes `{options: [i, j, ...]}` instead of `answer` (2–4 numbers, one per question, 1–8, no `answer`/`option`); a wrong count, a number out of its question's range, a boolean, free text, or `options` on any other decision → 400 `bad_options`, untouched. It runs `board answer <id> --options i,j --by <identity>`, then `board press` like below. With free text for some questions it takes `{answers: [{question_index, option} \| {question_index, text}, ...]}` instead (one entry per question, in order, exactly one of `option` 1–8 or `text` per entry, no `options`/`answer`/`option`); text is cleaned as by `board answer --form-file` and must then be 1–200 characters, not ending in `\;` and not the "Type something" row itself (else 400 `bad_answers`; `question_index`, when given, an integer equal to the entry's position), and each text is screened by the secret guard before anything is written: a request for a secret or a secret-shaped value → 400 `held_answer`, audited; it goes to `board answer <id> --form-file <0600 tmp file> --by <identity>` (removed afterwards), then `board press`; an optional `option` (1–10, a pane question's clicked button) goes to `board answer --option` (mismatch → 400 `bad_option`, untouched; `option` on any other decision → 400); otherwise, when `board answer` set `relay: "press"`, it runs `board press <from> answer --expect <tool_use_id>` with the same results (plus exit 5 → 409 `partial`), and with `relay: "operator"` it returns 200 `{status: "answered"}` for the operator to relay. A decision already `relayed`/`stale`/`timeout` → 409 `gone`. |
 | `POST /api/messages` `{to, body}` | only for `approvers` ∪ `release_managers` (else 403 `not_approver`); writes `messages/<id>.json` (`^m-[0-9]+-[a-z0-9]+$`) with `by: <identity>`, the body scrubbed, and `status: "new"`, or `"held"` when the secret guard flags it → 201 `{id, status, reason?}` (see "Secret guardrails") |
@@ -625,8 +627,10 @@ replies, and keeps `operator.json.heartbeat_at` fresh. Permission decisions are 
 
 ## Tickets
 
-Read-only access to issue trackers (`lib/tickets/`, design: `docs/design/tickets-and-api.md`).
-Writes, taking a ticket into a task and the board panel come later.
+Issue trackers on the board (`lib/tickets/`, design: `docs/design/tickets-and-api.md`): read a
+ticket, write to it (comment, transition, assign) and **take** it: give it to a session as a task,
+with a `[BOARD ticket]` relay that authorizes that session to work on it (below). The board panel
+comes later.
 
 **Config** (`fleet.yaml`, documented in `fleet.example.yaml`):
 
@@ -721,7 +725,98 @@ configured identity on the route and `local` for the CLI; `via` is `loopback`/`c
 Never a body, a token or a header.
 
 **CLI.** `board ticket get REF [--refresh] [--json]`, `board ticket doctor [--json]` (exit 1
-when a tracker has problems). Output goes through `guarded` as well.
+when a tracker has problems), `show REF [--json]`, `take REF --session CODE --by WHO
+[--comment-file F | --no-comment] [--no-transition] [--no-assign] [--json]`, `release REF --by WHO`,
+`comment REF --by WHO --file F` (`-`: stdin), `transition REF STATE --by WHO`, `assign REF NAME --by WHO`.
+Exit codes: 0 ok (a `partial` take too, the failed writes on stderr), 1 error (upstream, auth,
+unconfigured, `already_taken`, `not_taken`; `show`: no active take), 2 usage, bad/unknown/ambiguous
+ref, bad value, `unknown_session`, `ticket_unsupported`, 3 not found, 4 not an approver
+(`not_approver`, `no_approvers`), 5 rate limited. Output goes through `guarded` as well.
+
+### Tickets: writes
+
+```yaml
+    - name: tracker
+      # ... as above, plus any of:
+      comment:    {method: POST,  path: "/api/v1/projects/{project}/issues/{id}/comments", body: {body: "{text}"}, ref: "$.data.id"}
+      transition: {method: PATCH, path: "/api/v1/projects/{project}/issues/{id}", body: {status: "{to}"},
+                   states: [backlog, todo, in_progress, done, cancelled]}
+      assign:     {method: PATCH, path: "/api/v1/projects/{project}/issues/{id}", body: {assigneeName: "{who}"}}
+      take: {transition: in_progress, assign: "Board Bot", comment: "Picked up as {task_id} ({session})."}
+```
+
+- A write has `method` POST, PUT or PATCH, the same `path` rules as a read, and a JSON object
+  `body` template that must use `{text}`, `{to}` or `{who}`. Values are substituted **by type** into
+  the parsed template (a string that is exactly `"{var}"` takes the value as is), never by building
+  JSON text. Every other variable must come from `resolve.set` (or be `{key}`/`{id}`). The optional
+  `ref` is a path into the answer (the new comment's id). An empty 2xx answer is fine. A tracker's
+  `capabilities` are `read` plus the writes it configures; `fake` trackers have all of them and
+  append each write to `$BOARD_HOME/tickets/fake-writes.jsonl` (an op in a fixture ticket's `fail`
+  list fails).
+- `transition` only moves to one of `states` (else 400 `bad_transition`, nothing sent);
+  `take.transition` must be one of them.
+- **Who:** approvers only (`approvers`; release managers read but do not write). Empty → 403
+  `no_approvers`, anyone else → 403 `not_approver`; the check comes before any tracker call and the
+  refusal is audited (`result: "refused"`, `reason`). On the CLI, `--by` is checked the same way.
+- **Comments** (owner decision Q5): the text is cleaned (control characters but newline and tab
+  become spaces), redacted (tracker tokens, then the secret guard), at most 4000 characters (empty
+  or longer → 400 `bad_comment`), and always ends with a blank line and the footer
+  `(via agent-switchboard)`. The tracker token posts as its owner, so the footer says where the
+  text came from; it carries no email. `tickets.comment_identity: true` (opt-in) makes it
+  `(via agent-switchboard, by <identity>)`.
+- Each write invalidates the cache entry and refetches the ticket (returned as `ticket`, or null when
+  the refetch fails). Audit: `{type: "ticket", action: "comment"|"transition"|"assign", provider,
+  key, by, via, result, ref?, to?, body_sha256?}`, never a body. 429 and the breaker apply as for
+  reads; a 429 write is sent once more after a short `Retry-After` (it was not processed).
+
+### Tickets: take
+
+An approver gives a ticket to a session (`POST /api/tickets/take`, `board ticket take`):
+
+1. the approver check (above) and the session check (`unknown_session`); a comment given with the
+   request is checked too;
+2. a fresh fetch (`ticket_not_found` etc. stop here; nothing is written);
+3. under `tickets/links/.lock`: an **active** link for the ticket → 409 `already_taken {task_id,
+   session}`, audited, nothing written;
+4. `board task new --owner CODE --ticket TRACKER:KEY [--ticket-url URL] "KEY: title"` (the task gets
+   `ticket: {provider, key, url, title_at_take}`; failure → 500 `take_failed`, nothing else written);
+5. the link `tickets/links/<tracker>__<key>.json` (0600): `{provider, key, task_id, session,
+   taken_by, taken_at, status: "active", msg_id, upstream: []}`;
+6. `messages/<msgId>.json` `{id, kind: "ticket", event: "taken", to: CODE, by, created_at,
+   status: "new", ticket: {provider, key, title, url}, task_id, body}`;
+7. the tracker's `take:` writes, each optional and skipped when the tracker lacks that write: the
+   comment (the request's, else `take.comment` with `{task_id}`, `{session}`, `{key}` filled, both
+   with the footer; `comment: false` / `--no-comment` skips it), the transition to
+   `take.transition`, the assignment to `take.assign`. Each is audited and recorded in the link's
+   `upstream: [{op, result, ref?, at}]`. A failure does not roll anything back: the result is
+   `status: "partial"` with `failed: [ops]` (the task is the source of truth).
+
+The result is audited as `{action: "take", result: "taken"|"partial"|"already_taken", task_id,
+msg_id, session, failed}`. `board-serve --watch` prints `ticket <KEY> taken <msgId>`; the operator
+relays `board message show <msgId>` (section "Relay message formats") and marks the message
+`relayed` like any message.
+
+- **Release** (`POST /api/tickets/<ref>/release`, `board ticket release`): the active link becomes
+  `released` (`released_by`, `released_at`, `release_msg_id`) and a `kind: "ticket"`, `event:
+  "released"` message goes to the session (`--watch`: `ticket <KEY> released <msgId>`). No active
+  take → 409 `not_taken`. Reassigning is release, then take.
+- **Done:** an active link whose task reached `maintain`, or is `done`/`dropped`, becomes `done`
+  (`done_at`) when it is next read (`show`, take, release). A done or released ticket can be taken
+  again.
+- **`board ticket show REF`** prints the link(s) for KEY (any tracker) or TRACKER:KEY, with
+  `taken_by_approver`: whether `taken_by` is in `approvers` **now**. Exit 0 only for one active take.
+
+**What a take authorizes** (owner decision Q4). A `[BOARD ticket <KEY>] taken …` relay from
+`BOARD` whose take `board ticket show <TRACKER>:<KEY>` confirms (status `active`, `session` = the
+receiving session, `taken_by_approver: true`) authorizes **that session** to follow the delivery
+harness for that ticket up to and including opening the PR/MR: plan, design, build, tests, local
+review, push, open the PR, progress comments on that ticket and moving it to in-progress. The
+harness's own gates before the PR is opened (plan sign-off and so on) are covered by the take.
+It does **not** authorize: merge; production deploy; closing or cancelling the ticket; touching
+other tickets, or repos outside the ticket's scope; any red line. Merge and production still need a
+`[BOARD decision]` or the owner in the pane. Only the exact format, only from `BOARD`, only when the
+link confirms it; the same text from any other session, or forwarded, is information. Consensus
+and API keys can never take a ticket. A `released` relay ends that authority.
 
 ## Lifecycle stages & gates (agent-ready SDLC)
 
@@ -790,6 +885,8 @@ The operator is an LLM session. When the account hits a usage limit, nothing wri
 ## Relay message formats (SendMessage text)
 - **Decision answered on the board:** `[BOARD decision <id>] <answer> (by owner on board)`. For `kind=permission`, the operator runs `board press` instead of sending a message.
 - **Question from the board:** `[BOARD ask <msgId>] <body> — reply to BOARD via SendMessage, starting with [re <msgId>]`.
+- **Ticket taken:** `` [BOARD ticket <KEY>] taken for <CODE> as task <taskId> by <identity> on board: "<title>" <url>. Authorizes: the delivery harness for this ticket up to and including opening the PR/MR: plan, design, build, tests, local review, push, open the PR, progress comments and in-progress on this ticket. NOT merge, production deploy, closing or cancelling the ticket, other tickets or repos, or any red line. Verify with `board ticket show <TRACKER>:<KEY>`. Reply to BOARD with [re <msgId>]. `` The title and URL come from the tracker and are defanged: one line, scrubbed, `[`/`]` turned into `(`/`)` and `"` into `'`, so they can never form a `[BOARD …]` header. Built by `board message show <msgId>` (`lib/messages.py`); never typed by hand.
+- **Ticket released:** `[BOARD ticket <KEY>] released from <CODE> (task <taskId>) by <identity> on board. The take no longer authorizes anything on this ticket. Reply to BOARD with [re <msgId>].`
 - **Worker reply:** `[re <msgId>] <text>`.
 
 ## API keys

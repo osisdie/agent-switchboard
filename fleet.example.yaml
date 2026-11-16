@@ -206,6 +206,7 @@ sessions:
 # tickets:
 #   cache_ttl_seconds: 60       # a fetched ticket is served from $BOARD_HOME/tickets/cache this long
 #   not_found_ttl_seconds: 30   # a 404 is remembered this long
+#   comment_identity: false     # comments end with "(via agent-switchboard)"; true adds ", by <identity>"
 #   trackers:
 #     - name: tracker           # [a-z][a-z0-9_-]{0,31}; the "tracker:" of tracker:KEY
 #       type: http-json         # a JSON API described here; `fake` reads fixtures (tests, demos)
@@ -227,6 +228,13 @@ sessions:
 #               description: $.data.description, updated_at: $.data.updatedAt}
 #         link: "https://tracker.example.com/projects/{project}/issues/{key}"
 #         status_category: {todo: [backlog, todo], doing: [in_progress], done: [done, cancelled]}
+#       # Writes (optional; approvers only). Values are typed into the parsed body, never pasted into JSON text.
+#       comment:    {method: POST,  path: "/api/v1/projects/{project}/issues/{id}/comments", body: {body: "{text}"}, ref: "$.data.id"}
+#       transition: {method: PATCH, path: "/api/v1/projects/{project}/issues/{id}", body: {status: "{to}"},
+#                    states: [backlog, todo, in_progress, done, cancelled]}
+#       assign:     {method: PATCH, path: "/api/v1/projects/{project}/issues/{id}", body: {assigneeName: "{who}"}}
+#       # What `board ticket take` does on the tracker (each optional; a failure leaves the take "partial").
+#       take: {transition: in_progress, assign: "Board Bot", comment: "Picked up as {task_id} ({session})."}
 #     - name: demo
 #       type: fake                # fixtures: tests/fixtures/tickets/fake.json (or `fixtures: PATH`)
 #       key_pattern: '^DEMO-[0-9]+$'
