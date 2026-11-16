@@ -229,6 +229,13 @@ class Unit(unittest.TestCase):
                                "note": "ask owner or someone"})
         intl = m.walk({"note": "ping jöhn@exämple.de and 用戶@例子.廣告。 v1.2@3 stays"})
         self.assertEqual(intl, {"note": "ping someone and someone。 v1.2@3 stays"})
+        # SSH remotes and URL userinfo are not emails: kept as values and inside text
+        remotes = {"repo": "git@github.com:org/repo.git", "url": "ssh://git@git.example.com/org/repo.git",
+                   "note": "push to git@github.com:org/repo.git, not ssh://git@git.example.com/x; ask %s." % OWN}
+        self.assertEqual(m.walk(remotes), dict(remotes, note="push to git@github.com:org/repo.git, not "
+                                                             "ssh://git@git.example.com/x; ask owner."))
+        self.assertEqual(m.label("git@github.com:org/repo.git"), "git@github.com:org/repo.git")
+        self.assertEqual(m.walk({"by": "x@example.com/"}), {"by": "x@example.com/"})
 
     def test_mirror_state(self):
         r = subprocess.run([os.path.join(REPO, "bin", "board"), "mirror", "state"], capture_output=True, text=True)

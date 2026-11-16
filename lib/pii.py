@@ -26,10 +26,13 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import fleet  # noqa: E402
 
-EMAIL_RE = re.compile(r"[^@\s:]{1,64}@[^@\s]{1,189}\.[^@\s.]{1,63}")
+# An email, not an SSH remote: "git@github.com:org/repo.git" (a ":" or "/" after the host) stays.
+EMAIL_RE = re.compile(r"[^@\s:/]{1,64}@[^@\s:/]{1,189}\.[^@\s.:/]{1,63}")
 # an email inside free text (a note, a message body): every one is masked, known or not
 # (\w is Unicode: internationalised local parts and domains, e.g. jöhn@exämple.de, 用戶@例子.廣告)
-TEXT_EMAIL_RE = re.compile(r"[\w.%+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63})*\.[^\W\d_]{2,63}")
+# Not inside an SSH remote or URL userinfo either: never right after "/" (ssh://git@host/...), never
+# followed by ":" or "/" (git@github.com:org/repo.git), and never a piece of a longer token.
+TEXT_EMAIL_RE = re.compile(r"(?<![/\w.%+-])[\w.%+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63})*\.[^\W\d_]{2,63}(?![\w@:/-])")
 PREFIX_RE = re.compile(r"^(board:|cli:)", re.I)
 # Fields that hold who did something. `owner` is not here: a task's owner is a session code.
 IDENT_KEYS = frozenset(("by", "answered_by", "resolved_by", "released_by", "updated_by", "created_by",
