@@ -962,6 +962,17 @@ class EndToEnd(unittest.TestCase):
         dec = next(d for d in decs if d.get("tool_use_id") == tu and d.get("source") == "pane")
         return sid, dec
 
+    def _state_with(self, did, timeout_s=5.0):
+        """/api/state once it lists decision DID: board-serve's hub rebuilds the state on its own
+        poll, so a decision the hook just wrote can be a moment behind (a flake on a busy runner)."""
+        end = time.time() + timeout_s
+        while True:
+            st, body = self.get("/api/state")
+            self.assertEqual(st, 200, body)
+            if any(d.get("id") == did for d in json.loads(body).get("decisions") or []) or time.time() >= end:
+                return body
+            time.sleep(0.1)
+
     def test_13_pane_question_fields(self):
         """Questions, headers, option labels and descriptions are scrubbed when the hook stores them
         and when the board serves them; an option click still records and maps to its number."""
@@ -970,7 +981,7 @@ class EndToEnd(unittest.TestCase):
         self.assertClean(slurp(os.path.join(HOME, "state", sid + ".json")), "stored session state")
         self.assertIn("[redacted:DB_PASSWORD]", dec["options"][0])
         self.assertEqual(dec["questions"][0]["options"][0]["label"], dec["options"][0])
-        st, body = self.get("/api/state")
+        body = self._state_with(dec["id"])
         self.assertClean(body, "/api/state with a pane question")
         self.assertIn(dec["id"], body)
         self.assertClean(board("decisions", "--json").stdout, "board decisions --json")
@@ -982,7 +993,7 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual((rec["answer"], rec["answer_index"], rec["relay"]), (label, 1, "press"))
         # the board's own option button: the served label goes back unchanged and still matches
         _, dec2 = self._pane_question("tu_q10")
-        served = next(d for d in json.loads(self.get("/api/state")[1])["decisions"] if d["id"] == dec2["id"])
+        served = next(d for d in json.loads(self._state_with(dec2["id"]))["decisions"] if d["id"] == dec2["id"])
         st, out = self.post("/api/decisions/%s/answer" % dec2["id"], {"answer": served["options"][0], "option": 1})
         self.assertNotIn(out.get("error"), ("bad_option", "held_answer", "answer_failed"), out)
         rec = json.loads(slurp(os.path.join(HOME, "decisions", dec2["id"] + ".json")))
