@@ -260,7 +260,11 @@ db.
 ### Tasks, gates and the approvals log
 
 - Mirror `$BOARD_HOME/tasks/<id>.json` into `tasks/{id}` (`id, title, owner, stage, artifacts{},
-  gates[], updated_at`) in the same diff batch as sessions and decisions.
+  gates[], updated_at`) in the same diff batch as sessions and decisions. A task with a `ticket`
+  (taken from a tracker ticket) is mirrored with the ticket's **key** as its `title`, and never its
+  `ticket` field: the Artifact page's viewers may not be approvers or release managers, and only
+  they read ticket text (owner decision Q3). The same goes for a session's task title in the
+  mirrored session doc.
 - A decision with `task_id`, `stage` and `gate` is a **gate decision**. Relay it like any question,
   with the same approver check. The answer is the option text:
   - `approve`: the gate is approved. The worker moves to the next stage (it reports this with

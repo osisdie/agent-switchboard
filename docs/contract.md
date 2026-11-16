@@ -796,6 +796,13 @@ msg_id, session, failed}`. `board-serve --watch` prints `ticket <KEY> taken <msg
 relays `board message show <msgId>` (section "Relay message formats") and marks the message
 `relayed` like any message.
 
+- **What viewers see** (Q3). A take writes the tracker's title into the task, the session's
+  current task and the relay message. `/api/state` and every SSE frame carry that text only for
+  `approvers` ∪ `release_managers` (`serve.ticket_text_for`); for everyone else a task with a
+  `ticket` has the ticket's key as its `title` and `ticket: {provider, key}`, a session whose
+  current task is one shows the key as `task`, and a `kind: "ticket"` message keeps `ticket:
+  {provider, key}` (its `body` never had the title). The operator mirrors such a task to the
+  Artifact db with the key as its title and without `ticket` (`prompts/board-operator.md`).
 - **Release** (`POST /api/tickets/<ref>/release`, `board ticket release`): the active link becomes
   `released` (`released_by`, `released_at`, `release_msg_id`) and a `kind: "ticket"`, `event:
   "released"` message goes to the session (`--watch`: `ticket <KEY> released <msgId>`). No active

@@ -643,6 +643,41 @@ def cards_for(sessions, approver):
 
 
 # Why a recorded answer was not delivered (decision status_reason; the page words them).
+def tasks_for(tasks, reader):
+    """Ticket text reaches approvers and release managers only (owner decision Q3): for everyone
+    else a task taken from a ticket (`board ticket take`) shows the ticket's key as its title, and
+    its `ticket` keeps only provider and key (no tracker title or url)."""
+    if reader or not isinstance(tasks, list):
+        return tasks
+    out = []
+    for t in tasks:
+        tk = t.get("ticket") if isinstance(t, dict) else None
+        if isinstance(tk, dict):
+            t = dict(t, title=str(tk.get("key") or ""), ticket={"provider": tk.get("provider"), "key": tk.get("key")})
+        out.append(t)
+    return out
+
+
+def ticket_text_for(state, reader):
+    """The board state as a viewer may see it under Q3: tasks through tasks_for(), each session's
+    `task` (its current task's title) the same way, and a ticket relay message (kind "ticket")
+    without the tracker's title and url. Approvers and release managers get the state unchanged."""
+    if reader:
+        return state
+    tasks = state.get("tasks") if isinstance(state.get("tasks"), list) else []
+    hidden = {str(t.get("title")): str(t["ticket"].get("key") or "") for t in tasks
+              if isinstance(t, dict) and isinstance(t.get("ticket"), dict) and t.get("title")}
+    state = dict(state, tasks=tasks_for(tasks, False))
+    if isinstance(state.get("sessions"), list):
+        state["sessions"] = [dict(s, task=hidden[s["task"]]) if isinstance(s, dict) and s.get("task") in hidden else s
+                             for s in state["sessions"]]
+    if isinstance(state.get("messages"), list):
+        state["messages"] = [dict(m, ticket={k: m["ticket"].get(k) for k in ("provider", "key")})
+                             if isinstance(m, dict) and m.get("kind") == "ticket" and isinstance(m.get("ticket"), dict) else m
+                             for m in state["messages"]]
+    return state
+
+
 REASON_CODES = ("screen", "partial", "moved_on", "timeout", "not_approver", "unknown_session", "operator", "config")
 UNDELIVERED = ("stale", "timeout", "unauthorized")
 
@@ -1132,7 +1167,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                       "can_message": match_id(ident, sorted(deciders(cfg))) is not None,
                       "account": self.account_for(ident, cfg), "page_version": page_version()})
         state["sessions"] = cards_for(state.get("sessions"), match_id(ident, fleet.id_list(cfg, "approvers")) is not None)
-        return state
+        return ticket_text_for(state, match_id(ident, sorted(deciders(cfg))) is not None)
 
     def account_for(self, ident, cfg):
         """The Claude account the sessions run on: {email, org} for approvers, {hidden: true} for
