@@ -401,6 +401,29 @@ class Step(unittest.TestCase):
         self.assertEqual(advisories.load_state(self.home)["sent"][aid]["reply"], "cannot")
         self.assertEqual(self.cli(NOW + 5000, "sent", "a-ffffffffffff").returncode, 1)   # never printed
 
+    def test_off_never_waits_for_the_lock(self):
+        import subprocess
+        self.write_mem(pid=7)
+        doc, _ = self.step()
+        [aid] = doc["due"]["API"]
+        self.cli(NOW + 1000, "outbox", "--json")
+        env = dict(os.environ, BOARD_HOME=self.home, BOARD_NOW_MS=str(NOW + 2000), BOARD_SCHEDULE_LOCK_WAIT="0.3")
+        run = lambda *a: subprocess.run([sys.executable, os.path.join(REPO, "lib", "advisories.py")] + list(a),  # noqa: E731
+                                        env=env, capture_output=True, text=True)
+        with advisories.locked(self.home, wait_s=1):                         # a stuck collector step
+            r = run("off", "--by", "owner")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertTrue(advisories.paused(self.home))
+            self.assertIn("busy", r.stderr)
+            r = run("on", "--by", "owner")
+            self.assertEqual(r.returncode, 8)                                 # on waits: stays off
+            self.assertTrue(advisories.paused(self.home))
+        self.assertIn(aid, advisories.load_state(self.home)["printed"])      # off could not clear it
+        self.assertEqual(run("sent", aid).returncode, 1)                     # ... but off refuses sent
+        self.assertEqual(run("on", "--by", "owner").returncode, 0)
+        self.assertFalse(advisories.paused(self.home))
+        self.assertEqual(advisories.load_state(self.home)["printed"], {})    # on clears it
+
     def test_sent_twice_in_one_call_counts_once(self):
         self.write_mem(pid=7)
         doc, _ = self.step()

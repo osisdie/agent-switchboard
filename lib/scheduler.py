@@ -154,7 +154,7 @@ def clean_res(res):
     thr = {}                            # [warn, high] per key as resources.json used them, else the defaults
     for key, default in resstore.DEFAULTS["thresholds"].items():
         v = raw_thr.get(key)
-        ok = isinstance(v, list) and len(v) == 2 and all(_num(x, None) is not None for x in v)
+        ok = isinstance(v, list) and len(v) == 2 and all(_num(x, None) is not None and 0 < x <= 10 ** 7 for x in v)
         thr[key] = list(v) if ok else list(default)
     levels = {}                         # per family (disk:<id> folds into disk), the worst level
     for k, v in (res.get("levels") or {}).items() if isinstance(res.get("levels"), dict) else ():
@@ -249,12 +249,12 @@ def usage_mode(ctx, st, now):
 
 # (metric, threshold key, lower is worse, words) per cause; the first is the default to name.
 CAUSE_SUBS = {
-    "mem": (("mem_available_pct", "mem_available_pct", True, "available below %g%%"),
-            ("mem_available_mb", "mem_available_mb", True, "available below %g MB"),
-            ("psi_mem", "psi_mem_some_avg60", False, "PSI above %g%%")),
-    "swap": (("swap_used_pct", "swap_used_pct", False, "above %g%% used"),),
-    "disk": (("disk_free_pct", "disk_free_pct", True, "free below %g%%"),
-             ("disk_free_mb", "disk_free_mb", True, "free below %g MB")),
+    "mem": (("mem_available_pct", "mem_available_pct", True, "available below %s%%"),
+            ("mem_available_mb", "mem_available_mb", True, "available below %s MB"),
+            ("psi_mem", "psi_mem_some_avg60", False, "PSI above %s%%")),
+    "swap": (("swap_used_pct", "swap_used_pct", False, "above %s%% used"),),
+    "disk": (("disk_free_pct", "disk_free_pct", True, "free below %s%%"),
+             ("disk_free_mb", "disk_free_mb", True, "free below %s MB")),
     "load": (("load_per_cpu", "load_per_cpu", False, "above %.1f per CPU"),),
 }
 CAUSE_WORDS = {"mem": "memory", "swap": "swap", "disk": "disk space", "load": "CPU load"}
@@ -265,7 +265,9 @@ def cause(res, level):
     it with the configured threshold it crossed, never a live number ("memory is critical
     (available below 8%)", "CPU load is critical (above 3.0 per CPU)"), so a value that hovers
     does not change the text, the digest or the jams. The family at `level` is taken in resources'
-    order (memory first), else `worst`; within a family, the measure furthest past its threshold."""
+    order (memory first), else `worst`; within a family, the first measure in a fixed order
+    (available %, available MB, PSI) that is past its threshold, counting the hysteresis band
+    (resources' leave factors), so the named measure changes only when it leaves its level."""
     if not res or level not in LEVELS:
         return None, "resources are %s" % (level if level in LEVELS else "strained")
     fams = [f for f in CAUSE_KINDS if res["levels"].get(f) == level]
@@ -275,19 +277,14 @@ def cause(res, level):
     if kind not in CAUSE_SUBS:
         return None, "resources are %s" % level
     step = 0 if level == "warn" else 1          # [warn, high]; critical is high that held
-    best, best_r = None, None
-    for metric, key, low, words in CAUSE_SUBS[kind]:
-        t, v = res["thresholds"][key][step], res["metrics"].get(metric)
-        if v is None or t <= 0:
-            continue
-        r = (t / v if v > 0 else float("inf")) if low else v / t
-        if best_r is None or r > best_r:
-            best, best_r = (words, t), r
-    if best is None:                            # no measure to compare: name the first threshold
-        metric, key, low, words = CAUSE_SUBS[kind][0]
-        best = (words, res["thresholds"][key][step])
-    words, t = best
-    return kind, "%s is %s (%s)" % (CAUSE_WORDS[kind], level, words % min(max(t, 0), 10 ** 9))
+    subs = [(words, res["thresholds"][key][step], res["metrics"].get(metric), low)
+            for metric, key, low, words in CAUSE_SUBS[kind]]
+    past = [x for x in subs if x[2] is not None and
+            (x[2] <= x[1] * resstore.LEAVE_LOW if x[3] else x[2] >= x[1] * resstore.LEAVE_HIGH)]
+    known = [x for x in subs if x[2] is not None]
+    words, t = (past or known or subs)[0][:2]   # none past (or no values): the first one there is
+    shown = ("%.1f" % t) if "%.1f" in words else (str(int(t)) if t == int(t) else str(round(t, 2)))
+    return kind, "%s is %s (%s)" % (CAUSE_WORDS[kind], level, words.replace("%.1f", "%s") % shown)
 
 
 def _cap(text):

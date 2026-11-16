@@ -1558,7 +1558,9 @@ leaves the file alone; a usage error exits 2.
   "deploy", "decision" or `[BOARD` falls back to a generic one that names nothing.
   A resource level is named by its cause, from `resources.json` `levels` (else `worst`), memory
   first, and the configured threshold it crossed (`resources.json` `thresholds`, the warn value at
-  `warn`, else the high one; within a family the measure furthest past its threshold): "Memory is
+  `warn`, else the high one; within a family the first in a fixed order (available %, available
+  MB, PSI; disk: free %, free MB) that is past its threshold, counting the hysteresis band, so the
+  named measure changes only when it leaves its level): "Memory is
   critical (available below 8%)", "Memory is critical (PSI above 25%)", "Memory is critical after
   an OOM kill", "Swap is critical (above 80% used)", "Disk space is critical (free below 3%)", "CPU
   load is critical (above 3.0 per CPU)", or "Resources are critical" when the cause is unknown.
@@ -1616,8 +1618,11 @@ leaves the file alone; a usage error exits 2.
   per session, counted toward the cap); it fails closed: every id must be due now for its session,
   or printed by `outbox` in the last 10 minutes and not recorded since (its short-lived process
   may have exited in between), else exit 1 and nothing is recorded (also while off). An id given
-  twice counts once. `board schedule off` also drops what the outbox printed, so `sent` after
-  `on` records only what is due then. `board schedule reply
+  twice counts once. `board schedule off` writes `schedule-off` without waiting for the state lock
+  (it is the kill switch; `outbox` and `sent` re-check it under the lock), then drops what the
+  outbox printed if the lock is free (busy: exit 0 with a warning). `board schedule on` drops it
+  under the lock before it removes `schedule-off`; busy: exit 8 and the scheduler stays off. So
+  `sent` after `on` records only what is due then. `board schedule reply
   ID --from CODE ack|done|cannot [--note-file F]` records the session's reply (`--from` must be the
   advisory's `to`, else exit 4; unknown id exit 1; the note file, at most 64 KB, is read whole,
   control characters dropped, scrubbed, then cut to one line of ≤ 200 chars). Exit 8: the state

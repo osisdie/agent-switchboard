@@ -246,6 +246,19 @@ class Levels(unittest.TestCase):
         for text in self.texts(at(4.98)):
             self.assertNotRegex(text, r"4\.9|5\.0|4\.5")
 
+    def test_memory_measure_has_a_fixed_precedence(self):
+        def text(avail, psi, mb=None):
+            m = {"available_pct": avail, "psi_some_avg60": psi}
+            if mb is not None:
+                m["available_mb"] = mb
+            d = self.run_at("critical", sessions=self.PROCS, worst="mem", levels={"mem": "critical"}, mem=m)
+            return kinds(d, "stop-own-heavy")[0]["text"].split(":")[0], d["digest"]
+        both = {text(a, p) for a, p in ((7.9, 26), (8.1, 24.5), (6.0, 40), (10.5, 30), (4, 25.1))}
+        self.assertEqual({t for t, _ in both}, {"Memory is critical (available below 8%)"})
+        self.assertEqual(len({dg for _, dg in both}), 1)                     # both past by any ratio: one text
+        self.assertEqual(text(11, 30)[0], "Memory is critical (PSI above 25%)")   # available left its band
+        self.assertEqual(text(11, 30, mb=1200)[0], "Memory is critical (available below 1024 MB)")
+
     def test_cause_uses_the_configured_thresholds(self):
         d = self.run_at("critical", **dict(LOAD_CRIT, thresholds={"load_per_cpu": [2, 4.5]}))
         self.assertIn("CPU load is critical (above 4.5 per CPU)", kinds(d, "defer")[0]["text"])

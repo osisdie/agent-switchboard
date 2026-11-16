@@ -386,7 +386,8 @@ The scheduler ships in three steps instead of section 7's PRs 2–4: (1) task mo
   worse), the `defer` advisory and the J5 text name the cause, and the mode is still `degraded`.
 - **Cause.** The family at the current level in resources' order (oom, mem, swap, disk, load),
   else `worst`; `disk:<id>` folds into `disk`. Texts name the configured threshold that was crossed
-  ("available below 8%", "above 3.0 per CPU"), never a live number: floored numbers still flipped
+  ("available below 8%", "above 3.0 per CPU"), with a fixed precedence among the measures past
+  their threshold (available %, MB, PSI), never a live number: floored numbers still flipped
   at bucket edges, which is normal while a metric hovers at critical, and every flip rewrote
   scheduler.json, the jams and the board push. Numbers stay in the Resources view.
 - **Live follow-up: one advisory per job, never a wrapper.** One vitest round of a teammate got
@@ -403,4 +404,5 @@ The scheduler ships in three steps instead of section 7's PRs 2–4: (1) task mo
   batch and the reply was rejected. `outbox` now records what it printed (10 minutes, under the
   lock). `sent` accepts those ids for their session once, even after they disappeared, and
   everything else still fails closed. While off, `outbox` prints `{}` and records nothing, and
-  `sent` refuses; `off` also drops the printed record.
+  `sent` refuses. `off` never waits for the lock (it is the kill switch) and drops the printed
+  record only if the lock is free; `on` drops it under the lock, or exits 8 and stays off.

@@ -365,20 +365,32 @@ def cmd_off_on(home, verb, args):
     now = now_ms()
     path = os.path.join(home, OFF_FILE)
     if verb == "off":
-        with locked(home):
-            write_json(path, {"at": now, "by": args[1]})
-            state = load_state(home)
-            if state["printed"]:                    # off: what the outbox printed is not recorded later
-                state["printed"] = {}
-                write_json(os.path.join(home, STATE_FILE), state)
-    else:
+        # The kill switch never waits for the lock: outbox and sent re-check paused() under it.
+        write_json(path, {"at": now, "by": args[1]})
         try:
-            os.remove(path)
-        except FileNotFoundError:
-            pass
+            with locked(home):                  # best effort: what the outbox printed is not recorded later
+                _forget_printed(home)
+        except TimeoutError:
+            sys.stderr.write("board: schedule off: the schedule state is busy; the printed record is "
+                             "cleared on `on`\n")
+    else:
+        with locked(home):                      # busy: exit 8 and stay off (the safe direction)
+            _forget_printed(home)
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
     _log(home, {"ts": now, "type": "schedule", "action": verb, "by": args[1]})
     print("scheduler %s" % ("paused (nothing is sent; the board shows it)" if verb == "off" else "on"))
     return 0
+
+
+def _forget_printed(home):
+    """Drop the outbox's printed record (the caller holds the lock)."""
+    state = load_state(home)
+    if state["printed"]:
+        state["printed"] = {}
+        write_json(os.path.join(home, STATE_FILE), state)
 
 
 def _usage(msg):
