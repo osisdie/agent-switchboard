@@ -8,6 +8,8 @@ CLI (used by the bash scripts):
   fleet.py board-link [ID]         print the board link for a decision/message/consensus id (no
                                    ID: the board root); prints nothing when no board URL is set
   fleet.py board-url-check         print the board URL, or why it is rejected (exit 1)
+  fleet.py askers-check            for `board doctor`: askers missing from an explicit
+                                   serve.tunnel.allowed_emails (one per line; exit 1 when any)
 """
 import json
 import os
@@ -25,6 +27,7 @@ DEFAULTS = {
     "resume_fallback_seconds": 15,
     "approvers": [],
     "release_managers": [],
+    "askers": [],
     "owners": [],
     "serve": {
         "enabled": False,
@@ -381,6 +384,19 @@ def main(argv):
             print("%s rejected: %s" % (source, err))
             return 1
         print(base or "")
+    elif cmd == "askers-check":
+        cfg = load_fleet()
+        serve = cfg.get("serve") if isinstance(cfg.get("serve"), dict) else {}
+        tun = serve.get("tunnel") if isinstance(serve.get("tunnel"), dict) else {}
+        explicit = tun.get("allowed_emails")
+        explicit = [explicit] if isinstance(explicit, str) else explicit
+        if not isinstance(explicit, list):
+            return 0                       # unset: askers are in the tunnel's fallback set
+        allowed = {str(x).strip().lower() for x in explicit}
+        missing = [a for a in id_list(cfg, "askers") if "@" in a and a.strip().lower() not in allowed]
+        for a in missing:
+            print(a)
+        return 1 if missing else 0
     elif cmd == "sessions":
         for s in load_fleet()["sessions"]:
             if s.get("listed", True):

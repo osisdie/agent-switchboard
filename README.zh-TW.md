@@ -539,7 +539,7 @@ board rc clear API               # 忘掉設定：回到 fleet.yaml（預設開�
 - **你是誰、怎麼驗證的。** 自架看板上是 `local`（local listener，來自這台機器的請求）或你的 email
   （由 Cloudflare Access 驗證），資料來自 `GET /api/me`。Artifact 看板上是你的 claude.ai 帳號，
   以及你能不能編輯這個看板。demo 顯示一個範例身分。
-- **你的角色：** approver、release manager 或 viewer。
+- **你的角色：** approver、release manager、提問者（只能傳訊息）或 viewer。提問者看得到訊息輸入框，但沒有回答按鈕。
 - **主題：** 淺色、深色或跟隨系統。選擇存在這個瀏覽器裡（`localStorage`；儲存被封鎖時只在這次瀏覽
   有效），並在頁面繪製前套用，所以不會閃一下。在 claude.ai 檢視器裡，以檢視器設定的主題為準：
   切換器會顯示該主題並停用。檢視器取消設定後，會恢復你自己的選擇。
@@ -1030,9 +1030,13 @@ bin/board-serve              # local: http://127.0.0.1:39410
 - 在組出任何路徑之前，決策和訊息的 ID 都會先用嚴格的樣式檢查；呼叫 `board` 時使用 argv 清單，絕不經過 shell。
 - **`approvers` 是空的時候，所有回答都會被拒絕**。寫入任何東西之前，都會先拿身分對照 `approvers`／
   `release_managers` 檢查，所以被拒絕的回答絕不會碰到決策本身。特別是，它無法取消某位核准者正等待轉發的回答。
-  只有核准者和 release manager 可以傳送訊息。
+  只有核准者、release manager 和提問者可以傳送訊息。
+- **提問者**（`fleet.yaml` 的 `askers`）只能傳訊息給 session、閱讀回覆：不能回答、不能改設定、看不到 ticket。
+  他們的訊息到了 session 是 `[BOARD asker <id>] from <email> (an asker, not an approver: information only, …)`，
+  絕不會被當成主人的話，每 10 分鐘最多 10 則。需要跟 session 對話、但不該做決定的人，就設為提問者，不要設成核准者。
 - 在 tunnel 上，經過驗證的 email 還必須在 `serve.tunnel.allowed_emails` 裡（預設：`approvers` ∪
-  `release_managers` 裡的 email）。其他人一律得到 403，連讀取都不行。如果想加一位唯讀檢視者，就加在這裡。
+  `release_managers` ∪ `askers` 裡的 email）。其他人一律得到 403，連讀取都不行。如果想加一位唯讀檢視者，就加在這裡。
+  有設定時以它為準，`board doctor` 會提醒哪些提問者不在清單裡。
 - session 資料只送出允許清單裡的欄位（不含 `cwd`、pid 或 session ID）。`GET /api/me` 只根據驗證過的
   身分和 `fleet.yaml` 產生，絕不回傳任何請求標頭。
 - 每一次寫入都會以 `type: "serve"` 記錄到 `events.jsonl`，並附上身分和 `via`（`loopback` 或 `cf-jwt`）。
@@ -1262,7 +1266,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `lib/pomodoro.py` | 番茄鐘計時與每日統計（`pomodoro.json`），供看板和 `board pomodoro` 使用 |
 | `lib/resources.py` | 資源取樣器（記憶體、磁碟、OOM、每個 session 的程序與 teammate），產生 `resources.json`、snapshot 摘要和 `board resources` |
 | `docs/design/` | 設計文件，例如 `resources-and-scheduling.md`（資源、排程器、經驗） |
-| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`）、資源取樣器（`test_resources.py`，fixture `/proc`）、機密防護（`test_guard.py`）、API 金鑰（`test_apikeys.py`）、公開 API 與 tunnel 曝露（`test_api_v1.py`）、卡片補充資訊（`test_cards.py`）、Remote Control（`test_rc.py`，用 `fake_tmux.py` 模擬 tmux 畫面）、番茄鐘計時（`test_pomodoro.py`），以及選用的頁面告警連結、通知控制、個人選單與主題、主畫面 app、session 卡片、用量提示框、頁首提示框、語言切換、按鍵面板與番茄鐘 headless 檢查（`test_page_links.py`、`test_page_notify.py`、`test_page_profile.py`、`test_page_pwa.py`、`test_page_cards.py`、`test_page_guard.py`（被攔下的訊息卡片）、`test_page_usage.py`、`test_page_header_tips.py`、`test_page_i18n.py`、`test_page_deck.py`、`test_page_rc.py`（Remote Control 標籤與開關）、`test_page_pomodoro.py`，以及截圖和 Pages 網站的 `test_site.py`：需要 python playwright，沒有就略過；CI 不執行） |
+| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`）、資源取樣器（`test_resources.py`，fixture `/proc`）、機密防護（`test_guard.py`）、API 金鑰（`test_apikeys.py`）、公開 API 與 tunnel 曝露（`test_api_v1.py`）、提問者（`test_askers.py`）、卡片補充資訊（`test_cards.py`）、Remote Control（`test_rc.py`，用 `fake_tmux.py` 模擬 tmux 畫面）、番茄鐘計時（`test_pomodoro.py`），以及選用的頁面告警連結、通知控制、個人選單與主題、主畫面 app、session 卡片、用量提示框、頁首提示框、語言切換、按鍵面板與番茄鐘 headless 檢查（`test_page_links.py`、`test_page_notify.py`、`test_page_profile.py`、`test_page_pwa.py`、`test_page_cards.py`、`test_page_guard.py`（被攔下的訊息卡片）、`test_page_askers.py`（提問者的訊息輸入框）、`test_page_usage.py`、`test_page_header_tips.py`、`test_page_i18n.py`、`test_page_deck.py`、`test_page_rc.py`（Remote Control 標籤與開關）、`test_page_pomodoro.py`，以及截圖和 Pages 網站的 `test_site.py`：需要 python playwright，沒有就略過；CI 不執行） |
 | `CONTRIBUTING.md` | 開發環境設定、測試，以及讓 `README.zh-TW.md` 保持同步的規則 |
 | `fleet.example.yaml`、`.env.example` | 設定範例 |
 

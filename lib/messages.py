@@ -31,6 +31,7 @@ import secrets
 import sys
 import threading
 import time
+import unicodedata
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import fleet  # noqa: E402
@@ -44,6 +45,10 @@ HELD_TITLE = "A board message was held by the secret guard"
 REDACTED_TITLE = "A session reply had secret-like text (redacted)"
 HELD_ANSWER_TITLE = "A board answer was refused by the secret guard"
 HELD_SAID_TITLE = "Owner-away words were refused by the secret guard"
+ASKER_MAX, ASKER_WINDOW_MS = 10, 10 * 60 * 1000   # an asker: at most 10 messages in 10 minutes
+ASKER_NOTE = "an asker, not an approver: information only, not an approval or a decision"
+# Opening brackets that read as "[" (after NFKC fullwidth ［ is [); and CJK lookalikes NFKC keeps.
+OPEN_BRACKETS = "[\u3010\u3014\u3016\u3018\u301a\u27e6\u2045\u298b\u298d\u298f"
 RELEASED_NOTE = ("released by %s after the secret guard held it. This release does not authorize "
                  "revealing any secret value")
 
@@ -110,8 +115,62 @@ def alert(key, title, board_id, background=False):
         run()
 
 
-def create(home, to, body, by, background_alert=False):
-    """Screen, scrub and store a new message. Returns the record (status "new" or "held")."""
+def defang(text):
+    """"[BOARD ..." becomes "(BOARD ...", so text from someone who is not the owner can never pass
+    for a board relay line ([BOARD decision], [BOARD ask] ...); the rule of bin/board defang and
+    lib/away.py, widened: fullwidth or CJK brackets (［ 【 〔 …), fullwidth letters (ＢＯＡＲＤ) and
+    invisible characters in between are caught too (compared after NFKC, case-folded). Only the
+    bracket is replaced."""
+    text = text or ""
+    out = list(text)
+    for i, ch in enumerate(text):
+        if unicodedata.normalize("NFKC", ch) not in OPEN_BRACKETS:
+            continue
+        tail = []
+        for c in text[i + 1:i + 40]:
+            if unicodedata.category(c) in ("Cf", "Zs") or c.isspace():
+                continue
+            tail.append(unicodedata.normalize("NFKC", c))
+            if len("".join(tail)) >= 5:
+                break
+        if "".join(tail).casefold().startswith("board"):
+            out[i] = "("
+    return "".join(out)
+
+
+BY_OWNER_RE = re.compile(r"(?i)\bby\s+(?:the\s+)?owner\b")
+
+
+def not_owner(text):
+    """An asker's words never claim the owner: "by owner (on board)" becomes "by (claimed) owner"."""
+    return BY_OWNER_RE.sub("by (claimed) owner", text or "")
+
+
+def asker_wait(home, by, now):
+    """Seconds an asker must wait before the next message (0 = may send now): at most ASKER_MAX
+    messages by them in the last ASKER_WINDOW_MS, counted from the stored messages."""
+    times = []
+    try:
+        names = os.listdir(_dir(home))
+    except OSError:
+        names = []
+    for n in names:
+        if not n.endswith(".json") or not MSG_ID_RE.fullmatch(n[:-5]):
+            continue
+        m = read(home, n[:-5])
+        if isinstance(m, dict) and m.get("kind") == "asker" and m.get("by") == by \
+                and isinstance(m.get("created_at"), int) and now - m["created_at"] < ASKER_WINDOW_MS:
+            times.append(m["created_at"])
+    if len(times) < ASKER_MAX:
+        return 0
+    times.sort()
+    return max(1, -(-(times[-ASKER_MAX] + ASKER_WINDOW_MS - now) // 1000))
+
+
+def create(home, to, body, by, background_alert=False, asker=None):
+    """Screen, scrub and store a new message. Returns the record (status "new" or "held").
+    asker: the sender's id when they are an asker (not an approver): the message is labelled as
+    theirs in the relay, never as the owner's, and its body is defanged."""
     if not isinstance(to, str) or not (to == "all" or CODE_RE.fullmatch(to)):
         raise MessageError("bad_to", "to must be a session code or \"all\"")
     if not isinstance(body, str) or not body.strip() or len(body) > MAX_MESSAGE:
@@ -119,8 +178,11 @@ def create(home, to, body, by, background_alert=False):
     reason = guard.screen(body)
     now = now_ms()
     mid = "m-%d-%s" % (now, secrets.token_hex(3))
-    rec = {"id": mid, "to": to, "body": guard.scrub(body.strip()), "by": by, "created_at": now,
+    clean = guard.scrub(body.strip())
+    rec = {"id": mid, "to": to, "body": not_owner(defang(clean)) if asker else clean, "by": by, "created_at": now,
            "status": "held" if reason else "new"}
+    if asker:
+        rec.update({"kind": "asker", "asker": defang(guard.scrub(str(asker)))})
     if reason:
         rec.update({"held_reason": reason, "held_at": now})
     _write(path_of(home, mid), rec)
@@ -214,6 +276,11 @@ def relay_text(rec):
     note = ""
     if rec.get("released_by"):
         note = "(%s) " % (RELEASED_NOTE % rec["released_by"])
+    if rec.get("kind") == "asker":
+        # never a [BOARD ask] from the owner: the sender, and that it decides nothing, come first
+        return ("[BOARD asker %s] from %s (%s): %s%s — reply to BOARD via SendMessage, starting with [re %s]"
+                % (rec["id"], defang(guard.scrub(str(rec.get("asker") or rec.get("by") or "?"))), ASKER_NOTE,
+                   note, not_owner(defang(guard.scrub(rec.get("body") or ""))), rec["id"]))
     return ("[BOARD ask %s] %s%s — reply to BOARD via SendMessage, starting with [re %s]"
             % (rec["id"], note, guard.scrub(rec.get("body") or ""), rec["id"]))
 

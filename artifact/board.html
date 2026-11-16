@@ -1138,6 +1138,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
           <textarea id="msg-input" placeholder="@API please rebase on main and rerun the tests" data-i18n-attr="placeholder" aria-autocomplete="list" aria-controls="mention-list" aria-expanded="false"></textarea>
           <ul class="mention-list" id="mention-list" role="listbox" aria-label="Sessions" data-i18n-attr="aria-label" hidden></ul>
           <p class="err" id="msg-err" role="alert"></p>
+          <p class="readonly-note" id="msg-asker-note" hidden data-i18n>You are an asker: your messages reach the session as information from you, never as a decision. You cannot answer decisions.</p>
           <div class="row">
             <span class="help"><span data-i18n>Type</span> <span class="mono">@</span> <span data-i18n>to pick a session, or</span> <span class="mono">@all</span>. <span data-i18n>Ctrl+Enter sends.</span></span>
             <button class="btn primary" id="msg-send" type="submit" data-i18n>Send</button>
@@ -1254,7 +1255,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     got: { sessions: false, decisions: false, messages: false, tasks: false, approvals: false, operator: false, consensus: false },
     slow: false, feedError: null, offlineDetail: null,
     me: null, userReady: false, writable: null,   // writable: true | false | null (unknown → let writes decide)
-    canEditBoard: null, canMessageLocal: false,          // claude mode: Editor/Owner (writes shared docs, sends messages); Contributors only answer
+    canEditBoard: null, canMessageLocal: false, askerOnly: false,          // claude mode: Editor/Owner (writes shared docs, sends messages); Contributors only answer
     myAnswers: new Map(),        // claude mode: decisionId -> my answers/<me>/d/<id> doc
     canSend: 'off',
     confirm: null,               // { id, choice }
@@ -1353,9 +1354,13 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     const n = lc(name);
     return S.sessions.find((s) => lc(s.code) === n) || S.sessions.find((s) => (s.aliases || []).some((a) => lc(a) === n)) || null;
   }
-  function canAnswer() { return S.userReady && S.writable !== false && (S.mode === 'live' || S.mode === 'demo'); }
+  // An asker (fleet.yaml askers, local mode) only sends messages: no answer buttons, no approver controls.
+  function canAnswer() { return S.userReady && S.writable !== false && !S.askerOnly && (S.mode === 'live' || S.mode === 'demo'); }
   // Messages are shared documents: in claude mode only Editors write them (approvers are Contributors).
-  function canMessage() { return canAnswer() && (S.demo || (isLocal() ? S.canMessageLocal : S.canEditBoard !== false)); }
+  function canMessage() {
+    if (S.askerOnly) return S.userReady && S.mode === 'live' && isLocal() && S.canMessageLocal;
+    return canAnswer() && (S.demo || (isLocal() ? S.canMessageLocal : S.canEditBoard !== false));
+  }
   function hhmm(t) {
     const d = new Date(t), now = new Date();
     const time = d.toLocaleTimeString(locale(), { hour: '2-digit', minute: '2-digit', hour12: false });
@@ -3211,8 +3216,10 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     const ok = canMessage();
     $('#composer').hidden = !ok;
     $('#msg-readonly').hidden = ok || !(S.mode === 'live' && S.userReady);
-    $('#msg-readonly').textContent = tr(isLocal() ? 'You can read the threads. Only approvers and release managers can send messages.'
+    $('#msg-readonly').textContent = tr(isLocal() ? 'You can read the threads. Only approvers, release managers and askers can send messages.'
       : 'You can read the threads. Only editors of this board can send messages.');
+    const an = $('#msg-asker-note');
+    if (an) an.hidden = !(ok && S.askerOnly);
   }
 
   /* ----------------------------------------------------------- consensus */
@@ -4795,6 +4802,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       S.replies = new Map(Object.entries(st.replies && typeof st.replies === 'object' ? st.replies : {}).map(([k, v]) => [k, arr(v)]));
       S.me = str(st.me) || null; S.writable = st.writable !== false; S.userReady = true;
       S.canMessageLocal = st.can_message === true;
+      S.askerOnly = st.asker === true;
       // board-serve has a newer board.html than the one this tab was served: offer a reload.
       const mine = document.querySelector('meta[name="board-version"]');
       S.newVersion = !!(mine && st.page_version && st.page_version !== mine.getAttribute('content'));
@@ -4873,7 +4881,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
   // and their API keys. local: GET /api/me; claude: the user capability; demo: a sample identity.
   const THEME_KEY = 'switchboard.theme';
   const THEMES = ['light', 'dark', 'system'];
-  const ROLE_LABEL = { approver: 'Approver', release_manager: 'Release manager', viewer: 'Viewer' };
+  const ROLE_LABEL = { approver: 'Approver', release_manager: 'Release manager', asker: 'Asker (messages only)', viewer: 'Viewer' };
   const KEY_STATUS = ['active', 'revoked', 'expired'];
   const rootEl = document.documentElement;
   const themeBoot = window.switchboardTheme && typeof window.switchboardTheme === 'object' ? window.switchboardTheme : null;
@@ -5677,7 +5685,6 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "No messages yet.": "還沒有訊息。",
       "Type @ and a session code to send the first one.": "輸入 @ 和 session 代號，送出第一則訊息。",
       "Messages that editors send to sessions appear here.": "編輯者傳給 session 的訊息會出現在這裡。",
-      "You can read the threads. Only approvers and release managers can send messages.": "你可以閱讀對話串。只有 approver 和 release manager 能傳送訊息。",
       "You can read the threads. Only editors of this board can send messages.": "你可以閱讀對話串。只有這個看板的編輯者能傳送訊息。",
       "Mention a session to send it a note. Replies come back into the thread.": "提及一個 session 就能傳訊息給它。回覆會回到對話串裡。",
       "New message": "新訊息",
@@ -5907,6 +5914,9 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "Approver": "Approver",
       "Release manager": "Release manager",
       "Viewer": "檢視者",
+      "Asker (messages only)": "提問者（只能傳訊息）",
+      "You can read the threads. Only approvers, release managers and askers can send messages.": "你可以閱讀對話串。只有 approver、release manager 和提問者可以傳送訊息。",
+      "You are an asker: your messages reach the session as information from you, never as a decision. You cannot answer decisions.": "你是提問者：你的訊息會以你的名義、作為資訊送到 session，絕不會被當成決策。你不能回答決策。",
       "Theme": "主題",
       "Light": "淺色",
       "Dark": "深色",

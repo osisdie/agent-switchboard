@@ -95,3 +95,7 @@ jobs:
         run: python3 tests/test_tickets.py -v
       - name: ticket take tests
         run: python3 tests/test_tickets_take.py -v
+      - name: askers tests
+        env:
+          ASKERS_REQUIRE_CRYPTO: "1"
+        run: python3 tests/test_askers.py -v

@@ -2346,6 +2346,12 @@ cmd_doctor() {
   if bu="$(python3 "$FLEET" board-url-check 2>/dev/null)"; then
     if [ -n "$bu" ]; then ok "board URL $bu (alerts link to the board)"; else warn "no board URL (BOARD_PUBLIC_URL / board_url) — alerts carry no board link"; fi
   else fail "board URL $bu — alerts carry no board link"; fi
+  local miss
+  if miss="$(python3 "$FLEET" askers-check 2>/dev/null)"; then
+    [ -z "$(cfg_get askers 2>/dev/null | jq -r '.[]?' 2>/dev/null)" ] || ok "askers can reach the board"
+  else
+    warn "askers not in serve.tunnel.allowed_emails (it is set, so it wins; they cannot reach the board through the tunnel): $(printf '%s' "$miss" | paste -sd, - | sed 's/,/, /g')"
+  fi
 
   echo "install:"
   local settings="${CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"

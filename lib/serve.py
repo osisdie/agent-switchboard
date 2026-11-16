@@ -300,13 +300,32 @@ def deciders(cfg):
     return set(fleet.id_list(cfg, "approvers")) | set(fleet.id_list(cfg, "release_managers"))
 
 
+def askers(cfg):
+    """`askers`: board users who may only send messages (and read the replies). Never deciders:
+    they answer nothing, release nothing, read no tickets."""
+    return fleet.id_list(cfg, "askers")
+
+
+def messagers(cfg):
+    """Who may POST /api/messages: deciders ∪ askers."""
+    return deciders(cfg) | set(askers(cfg))
+
+
+def asker_only(cfg, ident):
+    """An asker who is not also an approver or release manager: their messages are labelled and
+    rate limited, and the page gives them a composer but no answer buttons."""
+    return match_id(ident, askers(cfg)) is not None and match_id(ident, sorted(deciders(cfg))) is None
+
+
 def roles_of(cfg, ident):
     """The board roles of a verified identity (GET /api/me). is_release_manager is effective: it
     is true for an approver too when release_managers is empty (the fallback of allowed_ids)."""
     is_approver = match_id(ident, fleet.id_list(cfg, "approvers")) is not None
     is_rm = match_id(ident, allowed_ids(cfg, {"gate": "production"})) is not None
-    roles = [r for r, on in (("approver", is_approver), ("release_manager", is_rm)) if on] or ["viewer"]
-    return {"roles": roles, "is_approver": is_approver, "is_release_manager": is_rm}
+    is_asker = match_id(ident, askers(cfg)) is not None
+    roles = [r for r, on in (("approver", is_approver), ("release_manager", is_rm), ("asker", is_asker)) if on] \
+        or ["viewer"]
+    return {"roles": roles, "is_approver": is_approver, "is_release_manager": is_rm, "is_asker": is_asker}
 
 
 def self_release_refused(rec, ident, approvers):
@@ -320,13 +339,14 @@ def self_release_refused(rec, ident, approvers):
 
 def tunnel_allowed(cfg):
     """Emails the tunnel listener serves: serve.tunnel.allowed_emails, else approvers ∪
-    release_managers (emails only; "local" never applies on the tunnel)."""
+    release_managers ∪ askers (emails only; "local" never applies on the tunnel). An explicit
+    allowed_emails stays authoritative: an asker missing from it cannot reach the board."""
     s = cfg.get("serve") if isinstance(cfg.get("serve"), dict) else {}
     t = s.get("tunnel") if isinstance(s.get("tunnel"), dict) else {}
     explicit = t.get("allowed_emails")
     if isinstance(explicit, str):
         explicit = [explicit]
-    ids = explicit if isinstance(explicit, list) else sorted(deciders(cfg))
+    ids = explicit if isinstance(explicit, list) else sorted(messagers(cfg))
     return {str(x).strip().lower() for x in ids if "@" in str(x or "")}
 
 
@@ -800,9 +820,9 @@ def csp(nonce):
 
 # ------------------------------------------------------------------------- HTTP
 class Refused(Exception):
-    def __init__(self, status, error, detail=""):
+    def __init__(self, status, error, detail="", headers=None):
         super().__init__(error)
-        self.status, self.error, self.detail = status, error, detail
+        self.status, self.error, self.detail, self.headers = status, error, detail, headers or {}
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -839,7 +859,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def refuse(self, exc):
         if self.command == "POST" and not getattr(self, "body_read", False):
             self.drain_body()
-        self.send_json(exc.status, {"error": exc.error, "detail": exc.detail})
+        self.send_json(exc.status, {"error": exc.error, "detail": exc.detail}, getattr(exc, "headers", None) or None)
 
     def drain_body(self):
         """A POST refused before its body was read (too large, wrong type, CSRF ...): drop up to
@@ -1134,7 +1154,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             state = dict(self.server.hub.state)
         cfg = fleet.load_fleet()
         state.update({"mode": "local", "me": ident, "writable": True,
-                      "can_message": match_id(ident, sorted(deciders(cfg))) is not None,
+                      "can_message": match_id(ident, sorted(messagers(cfg))) is not None,
+                      "asker": asker_only(cfg, ident),
                       "account": self.account_for(ident, cfg), "page_version": page_version()})
         state["sessions"] = cards_for(state.get("sessions"), match_id(ident, fleet.id_list(cfg, "approvers")) is not None)
         return ticket_text_for(state, match_id(ident, sorted(deciders(cfg))) is not None)
@@ -1526,14 +1547,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
             raise Refused(400, "bad_to", "to must be a session code or \"all\"")
         if not isinstance(text, str) or not text.strip() or len(text) > MAX_MESSAGE:
             raise Refused(400, "bad_body", "body must be a non-empty string (max %d chars)" % MAX_MESSAGE)
-        if match_id(ident, sorted(deciders(fleet.load_fleet()))) is None:
-            self.audit(ident, via, "message", result="refused", reason="not an approver")
-            raise Refused(403, "not_approver", "only approvers and release managers send messages")
+        cfg = fleet.load_fleet()
+        if match_id(ident, sorted(messagers(cfg))) is None:
+            self.audit(ident, via, "message", result="refused", reason="not an approver or asker")
+            raise Refused(403, "not_approver", "only approvers, release managers and askers send messages")
+        asker = match_id(ident, askers(cfg)) if asker_only(cfg, ident) else None
         # lib/messages.py: scrubbed before it is stored; a secret request is stored "held" (never
         # relayed), audited and alerted without echoing the text.
         with self.server.write_lock:
-            rec = messages.create(self.server.home, to, text, ident, background_alert=True)
-            self.audit(ident, via, "message", id=rec["id"], to=to, result=rec["status"])
+            if asker is not None:
+                wait = messages.asker_wait(self.server.home, ident, now_ms())
+                if wait:
+                    self.audit(ident, via, "message", to=to, result="refused", reason="rate_limited", asker=True)
+                    raise Refused(429, "rate_limited", "at most %d messages in %d minutes; try again in %d s"
+                                  % (messages.ASKER_MAX, messages.ASKER_WINDOW_MS // 60000, wait),
+                                  headers={"Retry-After": str(wait)})
+            rec = messages.create(self.server.home, to, text, ident, background_alert=True, asker=asker)
+            self.audit(ident, via, "message", id=rec["id"], to=to, result=rec["status"],
+                       **({"asker": True} if asker is not None else {}))
         self.hub_kick()
         out = {"id": rec["id"], "status": rec["status"]}
         if rec["status"] == "held":
@@ -2022,6 +2053,8 @@ def main(argv):
                                      "off" if not cfg["tunnel"] else "off (serve.api.remote: false)"
                                      if not api["remote"] else "Access service tokens %s or an allowed email" % (
                                          ", ".join(sorted(api["service_tokens"])) or "(none listed)"))))
+    if fleet.id_list(fcfg, "askers"):
+        info.append("askers   %s (message only)" % ", ".join(fleet.id_list(fcfg, "askers")))
     info.append("answers  %s" % ("approvers: " + ", ".join(approvers) if approvers
                                  else "REFUSED: fleet.yaml approvers is empty"))
     if args.check:
