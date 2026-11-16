@@ -371,3 +371,17 @@ Where T1 differs from the text above (`docs/contract.md`, "Tickets", is binding)
   5-minute refresh and the drift badge come with the board panel (T4).
 - `board ticket show` is the worker's check: exit 0 only for one active take, and it reports
   whether `taken_by` is an approver now.
+
+## Implementation notes (A6)
+
+- **Scope discovery:** `bin/board-mcp` asks `GET /api/v1/whoami` (any valid key, no board data)
+  and caches the scopes for 60 s; `POST /mcp` has the key record. Listing is a convenience only:
+  `tools/call` goes to the route, which checks the scope itself. No probing of data routes.
+- **One enforcement path:** `/mcp` authenticates the key once per request (route `/mcp`), then runs
+  each tool call through `serve_api.grant` (scope, rate, audit with `"mcp": true`) and the route's
+  own `Api` handler in process, so the viewer filter (Q3) and the secret guard apply unchanged.
+- **Read-only for now:** `ticket_get` and the write tools wait for their `/api/v1` routes (no v1
+  ticket route exists yet; writes are A3). `lib/mcp_tools.py` marks the hook (`WRITE_TOOLS`).
+- **Transport:** Streamable HTTP with JSON responses only (no SSE stream, no session id); stdio is
+  newline-delimited JSON-RPC. The stdio client refuses redirects and plain http to a non-loopback
+  host, so the key never leaves for another host or in clear text.
