@@ -1076,6 +1076,29 @@ class Tunnel(Fresh):
         finally:
             write_fleet()
 
+    def test_bound_token_on_writes(self):
+        """Token binding applies to the A3 writes too: a bound token with someone else's key can't
+        post a message or ask for a take (nothing written); with the bound owner's key it can."""
+        write_fleet(tokens=TOKENS_BOUND)
+        try:
+            boss_kid, boss = mkkey("write:messages,tickets:take", BOSS, "--rate", "600")
+            dev_kid, dev = mkkey("write:messages,tickets:take", DEV, "--rate", "600")
+            body = json.dumps({"to": "API", "body": "from a script"}).encode()
+            before = sorted(os.listdir(os.path.join(HOME, "messages")))
+            st, _, js = self.t("/api/v1/messages", "svc_bound", boss, method="POST", body=body,
+                               headers={"Content-Type": "application/json"})
+            self.assertEqual((st, js["error"]), (403, "token_key_mismatch"))
+            st, _, js = self.t("/api/v1/tickets/DEMO-2/take", "svc_bound", boss, method="POST",
+                               body=json.dumps({"session": "API"}).encode(), headers={"Content-Type": "application/json"})
+            self.assertEqual((st, js["error"]), (403, "token_key_mismatch"))
+            self.assertEqual(sorted(os.listdir(os.path.join(HOME, "messages"))), before)
+            st, _, js = self.t("/api/v1/messages", "svc_bound", dev, method="POST", body=body,
+                               headers={"Content-Type": "application/json"})
+            self.assertEqual(st, 201, js)
+            self.assertNotIn("@", json.dumps(js))                       # a write reply carries no identity
+        finally:
+            write_fleet()
+
     def test_bound_service_tokens(self):
         """A token bound to people ({cn: owner(s)}) carries only their keys: a leaked token plus
         someone else's valid key is 403 token_key_mismatch, audited by cn and kid, never the key."""
