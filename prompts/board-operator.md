@@ -218,7 +218,12 @@ db.
   answer for it. A `hint: "maybe_answered_in_session"` is only shown; never close a card on it.
 - **`kind: "permission"`**: never send a message. `board answer <id> <allow|deny> --by <userId>`
   (above) is required here too: `board press` refuses with **exit 4** unless the local decision is
-  `answered`, its answer is the same action, and `answered_by` passes the approver check. Then run:
+  `answered`, its answer is the same action, and `answered_by` passes the approver check **and is an
+  owner** (fleet.yaml `owners`, else approvers). Permission prompts and pane questions are owners
+  only: `board answer` also refuses (exit 4, nothing recorded) a `--by` that is not an owner. Owners
+  are the self-hosted board's identities (emails); an Artifact user id is not added to `owners`, so
+  when `owners` is set, a permission or pane card answered on the Artifact board is not pressed:
+  leave it, and tell the owner to answer it on the self-hosted board or in the session. Then run:
   ```bash
   board press <CODE> <allow|deny> --expect <tool_use_id>
   ```

@@ -527,7 +527,12 @@ for non-owners too, and so is every `/api/v1/events` frame.
 | the Claude account email (`state.account`) | yes | no | no | no | no |
 
 "If approver": owner-only controls run through the board CLI, which checks `approvers` too, so an
-owner who uses them must also be listed in `approvers`. A refusal is 403 `not_owner` (or
+owner who uses them must also be listed in `approvers`. The CLI enforces the owner rule for prompts
+itself: `board answer` refuses a permission prompt or a pane question from a `--by` that is not an
+owner (exit 4, audited, nothing recorded), and `board press` refuses an answer whose `answered_by`
+is not an owner (exit 4, no keys). Owners are the self-hosted board's identities (emails, `local`);
+Artifact user ids are not added to `owners`, so with `owners` set, permission prompts and pane
+questions are answered only on the self-hosted board (or in the session). A refusal is 403 `not_owner` (or
 `not_approver`), audited, and the page never shows a control that would get one: it reads
 `state.owner` (and `state.asker`) and shows a short read-only note instead. A presence heartbeat
 from anyone but an owner is answered 204 and not stored, counted or audited, so it can never hold

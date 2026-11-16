@@ -45,7 +45,7 @@ listeners (docs/contract.md, "Local adapter API"):
   GET  /api/lessons[?q=TEXT]           the scheduler's lessons (also in /api/state), searchable
   POST /api/lessons                    {"title", "rule"?, "cause"?, "resolution"?}  (owners only;
                                        via `board lesson add --by board:<identity> --file <0600 tmp>`)
-  POST /api/lessons/<id>               {"action": "edit"|"activate"|"retire"|"delete", ...}  (approvers
+  POST /api/lessons/<id>               {"action": "edit"|"activate"|"retire"|"delete", ...}  (owners
                                        only; edit takes title/rule/cause/resolution; delete needs
                                        "confirm": "delete" and appends a tombstone; audited)
   GET  /api/pomodoro/day?d=YYYY-MM-DD one kept day's per-stream pomodoro breakdown (read-only,

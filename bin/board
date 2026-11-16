@@ -657,6 +657,25 @@ allowed_ids() {
   jq -r '.[]? | tostring' <<<"${list:-[]}"
 }
 
+# The board's owners (fleet.yaml owners, else approvers), one per line; exit 1 when there are none.
+# Only an owner answers a permission prompt or a pane question: those press keys in a session on
+# the owner's machine. (API key administration never falls back like this: lib/apikeys.py.)
+owner_ids() {
+  local list
+  list="$(cfg_get owners)"
+  [ "$(jq 'length' <<<"${list:-[]}")" -gt 0 ] || list="$(cfg_get approvers)"
+  [ "$(jq 'length' <<<"${list:-[]}")" -gt 0 ] || return 1
+  jq -r '.[]? | tostring' <<<"${list:-[]}"
+}
+# is_owner WHO → 0 when WHO is an owner (case-insensitive, like board-serve).
+is_owner() {
+  local owners
+  owners="$(owner_ids)" || return 1
+  grep -qixF -- "$1" <<<"$owners"
+}
+# is_prompt DECISION_FILE → 0 for a permission prompt or a pane question (answered by key presses).
+is_prompt() { [ "$(jq -r '(.kind == "permission") or ((.source // "") == "pane")' "$1")" = true ]; }
+
 # allowed_by DECISION_FILE WHO → 0 when WHO may answer it.
 allowed_by() {
   local allowed
@@ -806,6 +825,14 @@ cmd_answer() {
       --arg a "$answer" --arg by "$by" --argjson now "$now"
     log_event "$(jq -cn --arg id "$id" --arg by "$by" --argjson now "$now" '{ts: $now, type: "unauthorized", id: $id, by: $by}')"
     echo "board answer: refused — $by may not answer $id (not in $(if is_production "$f"; then echo release_managers/approvers; else echo approvers; fi)); marked unauthorized" >&2
+    exit 4
+  fi
+  # A permission prompt or a pane question is answered by pressing keys in a session on the owner's
+  # machine: owners only. Refused before anything is written (the decision is left as it is).
+  if is_prompt "$f" && ! is_owner "$by"; then
+    log_event "$(jq -cn --arg id "$id" --arg by "$by" --argjson now "$now" \
+      '{ts: $now, type: "unauthorized", id: $id, by: $by, reason: "not an owner"}')"
+    echo "board answer: refused — $by is not an owner; a permission prompt or a pane question is answered by an owner (fleet.yaml owners, else approvers); left as is" >&2
     exit 4
   fi
 
@@ -1303,6 +1330,10 @@ cmd_press() {
   fi
   if [ -z "$d_by" ] || ! allowed_by "$df" "$d_by"; then
     refuse_auth "answered_by '$d_by' is not an approver (or no approvers configured)"
+  fi
+  # Pressing keys in a session runs on the owner's machine: the answer must come from an owner.
+  if ! is_owner "$d_by"; then
+    refuse_auth "answered_by '$d_by' is not an owner (fleet.yaml owners, else approvers): only an owner's answer is pressed"
   fi
   # 2. A truncated summary means the human did not see the whole input. (A pane question is only
   #    pressable when no option label was clipped: `pressable` below. A clipped question text is
