@@ -1389,7 +1389,7 @@ ever stops a process**.
 - **Classes** match `comm` plus the base names of the first argv words (a shell is never a test,
   nor is a wrapper or launcher that only starts the job: `timeout`, `env`, `nice`, `ionice`,
   `nohup`, `stdbuf`, `xargs`, `time`, `setsid`, `chrt`, `taskset`, `flock`, `npx`, `npm`, `pnpm`,
-  `yarn`, `bunx`, `uv`, `uvx` by the first word of `comm`, or node running `npx-cli.js`,
+  `yarn`, `uv`, `uvx` by the first word of `comm`, or node running `npx-cli.js`,
   `npm-cli.js`, `pnpm.cjs`, ...; they are `other` and their child is classed on its own):
   test `pytest|jest|vitest|go test|cargo test|mvn|gradle`, build `tsc|webpack|vite build|cargo
   build|docker build`, container `docker|containerd`, and browser `chrome|chromium|firefox|headless_shell`
@@ -1557,11 +1557,13 @@ leaves the file alone; a usage error exits 2.
   only task ids, validated branch names and process names; a text that would contain "approv",
   "deploy", "decision" or `[BOARD` falls back to a generic one that names nothing.
   A resource level is named by its cause, from `resources.json` `levels` (else `worst`), memory
-  first: "Memory is critical (about 4% available, PSI about 30%)", "Memory is critical after an OOM
-  kill", "Swap is critical (about 85% used)", "Disk space is critical (about 2% free)", "CPU load
-  is critical (about 4.5 per CPU)", or "Resources are critical" when the cause is unknown. Only
-  fixed words and validated numbers, floored to steps (memory and disk 1%, PSI and swap 5%, load
-  0.5 per CPU) so a small change keeps the text and the digest; a metric that is fine is not named.
+  first, and the configured threshold it crossed (`resources.json` `thresholds`, the warn value at
+  `warn`, else the high one; within a family the measure furthest past its threshold): "Memory is
+  critical (available below 8%)", "Memory is critical (PSI above 25%)", "Memory is critical after
+  an OOM kill", "Swap is critical (above 80% used)", "Disk space is critical (free below 3%)", "CPU
+  load is critical (above 3.0 per CPU)", or "Resources are critical" when the cause is unknown.
+  Never a live number: a value that hovers at critical does not change the text, the digest, the
+  jams or the board push (the Resources view shows the numbers).
   - `defer` (warn): the heavy task a session would start next has no slot.
   - `resume` (info): a session has been `done`/`rest` for `idle_with_work_minutes` (30) with a ready task.
   - `finish-first` (warn, `one_pr_per_repo`): another task in the same `repo` has the open PR (the
@@ -1575,7 +1577,8 @@ leaves the file alone; a usage error exits 2.
     process by RSS (`resources.json` children) are asked to stop it if they or their teammate
     started it, and never one they did not start. The board never stops a process. `rss_mb` is
     floored to 256 MB, so a growing process does not change the decision. It never names a wrapper
-    (above) or a process under 64 MB. Its id hashes the session, `via` and the class, not the pid.
+    (above) or a process under 64 MB. Its id hashes the session, `via` (a `via` that is not a plain
+    name is hashed, so two such teammates keep apart) and the class, not the pid.
     At `critical` from CPU
     load or disk alone (or an unknown cause) nobody is asked to stop anything: stopping short
     CPU-bound runs such as tests relieves nothing durable. New heavy starts stay deferred (`defer`
@@ -1592,9 +1595,10 @@ leaves the file alone; a usage error exits 2.
   `max_messages_per_session_hour` (4) batches in the last hour, or in `alerting.quiet_hours`
   unless it is `high`; `sent` otherwise. `due` lists the due ids per session. A sent advisory
   that disappears keeps its delivery record for 30 minutes (`gone_at` in `schedule-state.json`
-  `sent`), so the session's reply is still accepted and a recurrence in that time is judged as
-  above (not sent again before `readvise_minutes`); after that it is forgotten, and a recurrence
-  is sent again (still within the cap). The `stop-own-heavy` id hashes the session, the teammate
+  `sent`), so the session's reply is still accepted. If it comes back in that time it is a new
+  episode: its old reply (`reply`, `reply_at`, `note`) is dropped, while `sent_at` and `n` stay, so
+  it is sent again once `readvise_minutes` passed since the last send (at most 3 sends in all).
+  After 30 minutes the record is forgotten, and a recurrence is sent again (still within the cap). The `stop-own-heavy` id hashes the session, the teammate
   (`via`) and the process class, never the pid, so a re-spawned run of the same job keeps its id.
 - **Untrusted names.** Task `repo`/`branch`/`base` must match the ref pattern of `board task set`,
   `owner` and session codes `[A-Za-z0-9][A-Za-z0-9._/@+-]{0,79}`, a gate's `decision_id`
@@ -1611,7 +1615,9 @@ leaves the file alone; a usage error exits 2.
   kind, printed_at}}`, under the state lock); `board schedule sent ID...` records them (one batch
   per session, counted toward the cap); it fails closed: every id must be due now for its session,
   or printed by `outbox` in the last 10 minutes and not recorded since (its short-lived process
-  may have exited in between), else exit 1 and nothing is recorded (also while off). `board schedule reply
+  may have exited in between), else exit 1 and nothing is recorded (also while off). An id given
+  twice counts once. `board schedule off` also drops what the outbox printed, so `sent` after
+  `on` records only what is due then. `board schedule reply
   ID --from CODE ack|done|cannot [--note-file F]` records the session's reply (`--from` must be the
   advisory's `to`, else exit 4; unknown id exit 1; the note file, at most 64 KB, is read whole,
   control characters dropped, scrubbed, then cut to one line of ≤ 200 chars). Exit 8: the state

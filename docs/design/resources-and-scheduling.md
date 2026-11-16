@@ -385,13 +385,16 @@ The scheduler ships in three steps instead of section 7's PRs 2–4: (1) task mo
   durable and only costs a re-run. New heavy starts stay deferred (no heavy slots at high or
   worse), the `defer` advisory and the J5 text name the cause, and the mode is still `degraded`.
 - **Cause.** The family at the current level in resources' order (oom, mem, swap, disk, load),
-  else `worst`; `disk:<id>` folds into `disk`. Texts use fixed words and floored numbers (memory and
-  disk 1%, PSI and swap 5%, load 0.5 per CPU), so `scheduler.json` does not change with every sample.
+  else `worst`; `disk:<id>` folds into `disk`. Texts name the configured threshold that was crossed
+  ("available below 8%", "above 3.0 per CPU"), never a live number: floored numbers still flipped
+  at bucket edges, which is normal while a metric hovers at critical, and every flip rewrote
+  scheduler.json, the jams and the board push. Numbers stay in the Resources view.
 - **Live follow-up: one advisory per job, never a wrapper.** One vitest round of a teammate got
   four `stop-own-heavy` advisories in 10 minutes (one per new pid), one of them for a 1.7 MB
   `timeout` wrapper. The id now hashes session, teammate (`via`) and class, without the pid. A
   sent advisory that disappears between runs keeps its record 30 minutes, so a re-spawn is not
-  sent again. resources.py classes wrappers and launchers (`timeout`, `env`, `nice`, `xargs`,
+  sent again before `readvise_minutes`. A record that comes back drops its old reply: an earlier
+  `done` must not silence a new episode. resources.py classes wrappers and launchers (`timeout`, `env`, `nice`, `xargs`,
   `npx`, `npm`, `pnpm`, `uv`, node running `npx-cli.js`, ...) as `other` like shells, so their
   child is the job. The scheduler also skips them, and anything under 64 MB, when it picks a
   process (an older resources.json may still class them `test`).
@@ -400,4 +403,4 @@ The scheduler ships in three steps instead of section 7's PRs 2–4: (1) task mo
   batch and the reply was rejected. `outbox` now records what it printed (10 minutes, under the
   lock). `sent` accepts those ids for their session once, even after they disappeared, and
   everything else still fails closed. While off, `outbox` prints `{}` and records nothing, and
-  `sent` refuses.
+  `sent` refuses; `off` also drops the printed record.

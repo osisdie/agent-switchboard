@@ -149,6 +149,13 @@ def clean_res(res):
     swap = res.get("swap") if isinstance(res.get("swap"), dict) else {}
     cpu = res.get("cpu") if isinstance(res.get("cpu"), dict) else {}
     disks = [_num(d.get("free_pct"), None) for d in _dicts(res.get("disks"))]
+    disks_mb = [_num(d.get("free_mb"), None) for d in _dicts(res.get("disks"))]
+    raw_thr = res.get("thresholds") if isinstance(res.get("thresholds"), dict) else {}
+    thr = {}                            # [warn, high] per key as resources.json used them, else the defaults
+    for key, default in resstore.DEFAULTS["thresholds"].items():
+        v = raw_thr.get(key)
+        ok = isinstance(v, list) and len(v) == 2 and all(_num(x, None) is not None for x in v)
+        thr[key] = list(v) if ok else list(default)
     levels = {}                         # per family (disk:<id> folds into disk), the worst level
     for k, v in (res.get("levels") or {}).items() if isinstance(res.get("levels"), dict) else ():
         fam = k.split(":")[0] if isinstance(k, str) else None
@@ -162,10 +169,11 @@ def clean_res(res):
                     "psi_mem": _num(mem.get("psi_some_avg60"), None), "swap_used_pct": _num(swap.get("used_pct"), None),
                     "load_per_cpu": _num(cpu.get("load_per_cpu"), None),
                     "disk_free_pct": min((d for d in disks if d is not None), default=None),
+                    "disk_free_mb": min((d for d in disks_mb if d is not None), default=None),
                     "heavy_running": _num(res.get("heavy_running"), None)},
         "enabled": res.get("enabled") is not False, "at": _num(res.get("at"), None),
         "level": res.get("level") if _s(res.get("level")) in LEVELS else None,
-        "levels": levels, "worst": worst,
+        "levels": levels, "worst": worst, "thresholds": thr,
         "total_mb": _num(mem.get("total_mb")), "heavy_running": int(_num(res.get("heavy_running"))),
         "oom": res.get("oom_recent") is True or _num(res.get("oom_kills_delta")) > 0,
         "sessions": [{"code": r["code"], "heavy_n": int(_num(r.get("heavy_n"))), "children": [
@@ -239,39 +247,47 @@ def usage_mode(ctx, st, now):
     return None, None, None
 
 
-def _floor(v, step, lo, hi):
-    return min(hi, max(lo, math.floor(v / step) * step))
+# (metric, threshold key, lower is worse, words) per cause; the first is the default to name.
+CAUSE_SUBS = {
+    "mem": (("mem_available_pct", "mem_available_pct", True, "available below %g%%"),
+            ("mem_available_mb", "mem_available_mb", True, "available below %g MB"),
+            ("psi_mem", "psi_mem_some_avg60", False, "PSI above %g%%")),
+    "swap": (("swap_used_pct", "swap_used_pct", False, "above %g%% used"),),
+    "disk": (("disk_free_pct", "disk_free_pct", True, "free below %g%%"),
+             ("disk_free_mb", "disk_free_mb", True, "free below %g MB")),
+    "load": (("load_per_cpu", "load_per_cpu", False, "above %.1f per CPU"),),
+}
+CAUSE_WORDS = {"mem": "memory", "swap": "swap", "disk": "disk space", "load": "CPU load"}
 
 
 def cause(res, level):
     """(kind, text) for what drives `level`: kind is oom, mem, swap, disk, load or None; text names
-    it in fixed words with validated, bucketed numbers ("memory is critical (about 4% available)",
-    "CPU load is critical (about 4.5 per CPU)"), so a small change keeps the text and the digest.
-    The family at `level` is taken in resources' order (memory first), else `worst`."""
+    it with the configured threshold it crossed, never a live number ("memory is critical
+    (available below 8%)", "CPU load is critical (above 3.0 per CPU)"), so a value that hovers
+    does not change the text, the digest or the jams. The family at `level` is taken in resources'
+    order (memory first), else `worst`; within a family, the measure furthest past its threshold."""
     if not res or level not in LEVELS:
         return None, "resources are %s" % (level if level in LEVELS else "strained")
     fams = [f for f in CAUSE_KINDS if res["levels"].get(f) == level]
     kind = "oom" if res["oom"] and level == "critical" else (fams[0] if fams else res["worst"])
-    m = res["metrics"]
     if kind == "oom":
         return kind, "memory is %s after an OOM kill" % level
-    if kind == "mem":
-        pct, mb, psi = m["mem_available_pct"], m["mem_available_mb"], m["psi_mem"]
-        bits = (["about %d%% available" % _floor(pct, 1, 0, 100)] if pct is not None else
-                ["about %d MB available" % _floor(mb, RSS_BUCKET_MB, 0, 10 ** 7)] if mb is not None else [])
-        if psi is not None and psi >= 5:
-            bits.append("PSI about %d%%" % _floor(psi, 5, 0, 100))
-        return kind, "memory is %s%s" % (level, " (%s)" % ", ".join(bits) if bits else "")
-    if kind == "swap":
-        sw = m["swap_used_pct"]
-        return kind, "swap is %s%s" % (level, " (about %d%% used)" % _floor(sw, 5, 0, 100) if sw is not None else "")
-    if kind == "disk":
-        df = m["disk_free_pct"]
-        return kind, "disk space is %s%s" % (level, " (about %d%% free)" % _floor(df, 1, 0, 100) if df is not None else "")
-    if kind == "load":
-        ld = m["load_per_cpu"]
-        return kind, "CPU load is %s%s" % (level, " (about %.1f per CPU)" % _floor(ld, .5, 0, 999) if ld is not None else "")
-    return None, "resources are %s" % level
+    if kind not in CAUSE_SUBS:
+        return None, "resources are %s" % level
+    step = 0 if level == "warn" else 1          # [warn, high]; critical is high that held
+    best, best_r = None, None
+    for metric, key, low, words in CAUSE_SUBS[kind]:
+        t, v = res["thresholds"][key][step], res["metrics"].get(metric)
+        if v is None or t <= 0:
+            continue
+        r = (t / v if v > 0 else float("inf")) if low else v / t
+        if best_r is None or r > best_r:
+            best, best_r = (words, t), r
+    if best is None:                            # no measure to compare: name the first threshold
+        metric, key, low, words = CAUSE_SUBS[kind][0]
+        best = (words, res["thresholds"][key][step])
+    words, t = best
+    return kind, "%s is %s (%s)" % (CAUSE_WORDS[kind], level, words % min(max(t, 0), 10 ** 9))
 
 
 def _cap(text):
@@ -546,11 +562,12 @@ def decide(tasks, sessions, res, st, now, ctx=None):
             cls = _safe(c["class"], "heavy")
             via = _safe(c["via"], "")
             who = "you or your teammate %s" % via if via else "you"
+            via_key = via or ("h-" + _hash(c["via"]) if c["via"] else "")   # an unsafe name: hashed, not merged
             mb = ("about %d MB" % size(c)) if size(c) else ("under %d MB" % RSS_BUCKET_MB)
             # the id is the session, the teammate and the class, never the pid: a re-spawned run (new
             # pids, same job) keeps one advisory, which is not sent again
             advisories.append(_adv(
-                "stop-own-heavy", code, None, "%s|%s" % (via, cls), "high",
+                "stop-own-heavy", code, None, "%s|%s" % (via_key, cls), "high",
                 "%s: if %s started the %s process %s (pid %d, %s), stop it now and re-run it later. "
                 "Never stop a process you did not start." % (_cap(cause_text), who, cls, _safe(c["comm"], cls), c["pid"], mb),
                 "%s: stop the largest heavy process you started yourself, and re-run it later." % _cap(cause_text),

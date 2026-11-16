@@ -356,15 +356,16 @@ class Step(unittest.TestCase):
         self.assertEqual(doc["due"], {})
         doc, _ = self.step(NOW + 3000)
         [j5] = doc["jams"]
-        self.assertEqual(j5["text"], "CPU load is critical (about 4.5 per CPU).")
-        self.write_res(**load(4.62))                                          # same bucket: nothing to write
-        self.assertFalse(self.step(NOW + 6000)[1])
+        self.assertEqual(j5["text"], "CPU load is critical (above 3.0 per CPU).")
+        for n, x in enumerate((4.98, 5.01, 4.48, 4.52, 5.03, 4.49)):          # jitter at any edge: no write
+            self.write_res(**load(x))
+            self.assertFalse(self.step(NOW + 4000 + n * 1000)[1], x)
         self.write_res(worst="mem", levels={"mem": "critical", "load": "critical"}, cpu={"load_per_cpu": 4.62},
                        mem={"total_mb": 32768, "available_pct": 4.2, "psi_some_avg60": 30})
         doc, _ = self.step(NOW + 9000)
         [a] = doc["advisories"]
         self.assertEqual((a["kind"], a["to"], a["pid"]), ("stop-own-heavy", "API", 7))
-        self.assertTrue(a["text"].startswith("Memory is critical (about 4% available, PSI about 30%): if you started"))
+        self.assertTrue(a["text"].startswith("Memory is critical (available below 8%): if you started"))
         self.assertEqual(doc["due"], {"API": [a["id"]]})
 
     def cli(self, now, *a):
@@ -373,8 +374,8 @@ class Step(unittest.TestCase):
         return subprocess.run([sys.executable, os.path.join(REPO, "lib", "advisories.py")] + list(a),
                               env=env, capture_output=True, text=True)
 
-    def write_mem(self, pid=None):
-        self.write_res(worst="mem", levels={"mem": "critical"}, mem={"total_mb": 32768, "available_pct": 4},
+    def write_mem(self, pid=None, at=NOW):
+        self.write_res(at=at, worst="mem", levels={"mem": "critical"}, mem={"total_mb": 32768, "available_pct": 4},
                        sessions=[{"code": "API", "heavy_n": 1, "children": [
                            {"class": "test", "comm": "vitest", "pid": pid, "rss_mb": 900, "heavy": True, "via": "qa"}]}]
                        if pid else [])
@@ -400,6 +401,33 @@ class Step(unittest.TestCase):
         self.assertEqual(advisories.load_state(self.home)["sent"][aid]["reply"], "cannot")
         self.assertEqual(self.cli(NOW + 5000, "sent", "a-ffffffffffff").returncode, 1)   # never printed
 
+    def test_sent_twice_in_one_call_counts_once(self):
+        self.write_mem(pid=7)
+        doc, _ = self.step()
+        [aid] = doc["due"]["API"]
+        self.cli(NOW + 1000, "outbox", "--json")
+        self.assertEqual(self.cli(NOW + 1500, "sent", aid, aid).returncode, 0)
+        st = advisories.load_state(self.home)
+        self.assertEqual((st["sent"][aid]["n"], st["batches"]["API"]), (1, [NOW + 1500]))
+
+    def test_done_then_a_new_episode_is_asked_again(self):
+        self.write_mem(pid=7)
+        doc, _ = self.step()
+        [aid] = doc["due"]["API"]
+        self.cli(NOW + 1000, "outbox", "--json")
+        self.assertEqual(self.cli(NOW + 1500, "sent", aid).returncode, 0)
+        self.assertEqual(self.cli(NOW + 2000, "reply", aid, "--from", "API", "done").returncode, 0)
+        self.write_mem(pid=None)                                              # stopped: the advisory goes
+        self.step(NOW + 3000)
+        self.write_mem(pid=8)                                                 # re-run soon: within readvise
+        doc, _ = self.step(NOW + 5 * MIN)
+        self.assertEqual((doc["due"], doc["advisories"][0]["delivery"]["state"]), ({}, "sent"))
+        rec = advisories.load_state(self.home)["sent"][aid]
+        self.assertEqual((rec["reply"], rec["n"], rec["sent_at"], "gone_at" in rec), (None, 1, NOW + 1500, False))
+        self.write_mem(pid=9, at=NOW + 1500 + HOUR)
+        doc, _ = self.step(NOW + 1500 + HOUR)                                 # after readvise: asked again
+        self.assertEqual(doc["due"], {"API": [aid]})
+
     def test_printed_too_long_ago_or_off_is_refused(self):
         self.write_mem(pid=7)
         doc, _ = self.step()
@@ -413,11 +441,15 @@ class Step(unittest.TestCase):
         self.write_mem(pid=8)
         doc, _ = self.step(NOW + 3000)
         self.assertEqual(doc["due"], {"API": [aid]})                         # same job, new pid: same id
+        self.cli(NOW + 3100, "outbox", "--json")
+        self.assertIn(aid, advisories.load_state(self.home)["printed"])
         self.cli(NOW + 3500, "off", "--by", "owner")
+        self.assertEqual(advisories.load_state(self.home)["printed"], {})    # off forgets what was printed
         self.assertEqual(json.loads(self.cli(NOW + 4000, "outbox", "--json").stdout), {})
-        self.assertEqual(advisories.load_state(self.home)["printed"], {aid: {"to": "API", "kind": "stop-own-heavy",
-                                                                            "printed_at": NOW + 1000}})
-        self.assertEqual(self.cli(NOW + 4500, "sent", aid).returncode, 1)     # off: printed earlier, still refused
+        self.assertEqual(advisories.load_state(self.home)["printed"], {})    # ... and records nothing
+        self.assertEqual(self.cli(NOW + 4500, "sent", aid).returncode, 1)     # off: refused
+        self.cli(NOW + 4600, "on", "--by", "owner")
+        self.assertEqual(advisories.load_state(self.home)["printed"], {})
 
     def test_respawned_run_is_not_sent_again(self):
         self.write_mem(pid=7)

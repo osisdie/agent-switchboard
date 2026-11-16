@@ -81,7 +81,7 @@ SHELLS = ("bash", "sh", "zsh", "dash", "fish")                     # a shell run
 # their argv but only start it: the real work is a child, which is classed on its own. Matched on
 # the first word of `comm` (npm sets its title, e.g. "npm exec vitest"), or node running one.
 WRAPPERS = ("timeout", "env", "nice", "ionice", "nohup", "stdbuf", "xargs", "time", "setsid", "chrt",
-            "taskset", "flock", "npx", "npm", "pnpm", "yarn", "bunx", "uv", "uvx")
+            "taskset", "flock", "npx", "npm", "pnpm", "yarn", "uv", "uvx")
 LAUNCHER_SCRIPTS = ("npx-cli.js", "npm-cli.js", "pnpm.cjs", "pnpm.js", "pnpm", "yarn.js", "yarn.cjs", "npx", "npm")
 NAME_RE = re.compile(r"[^A-Za-z0-9._@ -]")
 MIB = 1024 * 1024

@@ -113,7 +113,7 @@ class Levels(unittest.TestCase):
         self.assertIn("teammate qa", stops[0]["text"])
         self.assertIn("Never stop a process you did not start", stops[0]["text"])
         self.assertEqual(stops[0]["severity"], "high")
-        self.assertTrue(stops[0]["text"].startswith("Memory is critical (about 4% available): if you or your teammate qa"))
+        self.assertTrue(stops[0]["text"].startswith("Memory is critical (available below 8%): if you or your teammate qa"))
         off = scheduler.decide(self.tasks, self.sessions, res("critical", sessions=procs, **MEM_CRIT),
                                scheduler.settings({"schedule": {"stop_own_heavy": False}}), NOW)
         self.assertEqual(kinds(off, "stop-own-heavy"), [])
@@ -154,9 +154,9 @@ class Levels(unittest.TestCase):
         self.assertEqual(kinds(d, "stop-own-heavy"), [])
         self.assertEqual(row(d, "t-h")["state"], "deferred")                # new heavy starts still wait
         [defer] = kinds(d, "defer")
-        self.assertIn("CPU load is critical (about 4.5 per CPU)", defer["text"])
+        self.assertIn("CPU load is critical (above 3.0 per CPU)", defer["text"])
         [j5] = [c for c in d["conditions"] if c["rule"] == "J5"]
-        self.assertEqual(j5["text"], "CPU load is critical (about 4.5 per CPU).")
+        self.assertEqual(j5["text"], "CPU load is critical (above 3.0 per CPU).")
         for text in self.texts(d):
             self.assertNotIn("Memory is critical", text)
             self.assertNotIn("emory is", text)
@@ -165,19 +165,21 @@ class Levels(unittest.TestCase):
         d = self.run_at("critical", sessions=self.PROCS, worst="disk:disk1", levels={"disk:disk1": "critical"},
                         disks=[{"id": "disk1", "free_pct": 2.4}, {"id": "disk2", "free_pct": 40}])
         self.assertEqual(kinds(d, "stop-own-heavy"), [])
-        self.assertIn("heavy and disk space is critical (about 2% free): hold", kinds(d, "defer")[0]["text"])
+        self.assertIn("heavy and disk space is critical (free below 3%): hold", kinds(d, "defer")[0]["text"])
 
     def test_memory_kinds_ask_to_stop_the_largest_by_rss(self):
         for extra, words in (
-                (MEM_CRIT, "Memory is critical (about 4% available)"),
+                (MEM_CRIT, "Memory is critical (available below 8%)"),
                 ({"worst": "mem", "levels": {"mem": "critical"},
-                  "mem": {"available_pct": 30, "psi_some_avg60": 41.7}}, "Memory is critical (about 30% available, PSI about 40%)"),
+                  "mem": {"available_pct": 30, "psi_some_avg60": 41.7}}, "Memory is critical (PSI above 25%)"),
+                ({"worst": "mem", "levels": {"mem": "critical"}, "thresholds": {"mem_available_mb": [4096, 2048]},
+                  "mem": {"available_pct": 12, "available_mb": 900}}, "Memory is critical (available below 2048 MB)"),
                 ({"worst": "swap", "levels": {"mem": "high", "swap": "critical"},
-                  "mem": {"available_pct": 9.0}, "swap": {"used_pct": 88.2}}, "Swap is critical (about 85% used)"),
+                  "mem": {"available_pct": 9.0}, "swap": {"used_pct": 88.2}}, "Swap is critical (above 80% used)"),
                 ({"worst": "oom", "levels": {"oom": "critical", "mem": "ok"}, "oom_recent": True},
                  "Memory is critical after an OOM kill"),
                 ({"worst": "load", "levels": {"mem": "critical", "load": "critical"},        # memory wins over load
-                  "mem": {"available_pct": 3}, "cpu": {"load_per_cpu": 5.2}}, "Memory is critical (about 3% available)")):
+                  "mem": {"available_pct": 3}, "cpu": {"load_per_cpu": 5.2}}, "Memory is critical (available below 8%)")):
             one = scheduler.settings({"schedule": {"stop_max": 1}})
             d = scheduler.decide(self.tasks, self.sessions, res("critical", sessions=self.PROCS, **extra), one, NOW)
             stops = kinds(d, "stop-own-heavy")
@@ -226,24 +228,49 @@ class Levels(unittest.TestCase):
 
     def test_high_names_the_cause(self):
         d = self.run_at("high", worst="load", levels={"load": "high"}, cpu={"load_per_cpu": 3.3})
-        self.assertIn("Task t-h is heavy and CPU load is high (about 3.0 per CPU): hold", kinds(d, "defer")[0]["text"])
+        self.assertIn("Task t-h is heavy and CPU load is high (above 3.0 per CPU): hold", kinds(d, "defer")[0]["text"])
 
-    def test_cause_numbers_are_bucketed_so_the_digest_stays(self):
-        def at(load, avail, psi=1.0, swap=49):
+    def test_cause_names_the_threshold_so_jitter_keeps_the_digest(self):
+        def at(load, avail=53.0, psi=1.0, swap=49):
             r = dict(LOAD_CRIT, cpu={"ncpu": 4, "load_per_cpu": load}, swap={"used_pct": swap},
                      mem={"available_pct": avail, "psi_some_avg60": psi})
-            return self.run_at("critical", sessions=self.PROCS, **r)["digest"]
-        self.assertEqual(at(4.86, 53.0), at(4.51, 61.2, psi=3.9, swap=12))   # memory is ok: its numbers are not named
-        self.assertNotEqual(at(4.86, 53.0), at(5.02, 53.0))
-        def mem(avail, psi):
-            return self.run_at("critical", sessions=self.PROCS, worst="mem", levels={"mem": "critical"},
-                               mem={"available_pct": avail, "psi_some_avg60": psi})["digest"]
-        self.assertEqual(mem(4.1, 31), mem(4.9, 34.9))
-        self.assertNotEqual(mem(4.1, 31), mem(3.9, 31))
+            return self.run_at("critical", sessions=self.PROCS, **r)
+        digests = {at(x)["digest"] for x in (4.98, 5.01, 4.48, 4.52, 3.2, 9.9)}
+        self.assertEqual(len(digests), 1)
+        self.assertEqual(at(4.98)["digest"], at(5.01, avail=61.2, psi=3.9, swap=12)["digest"])
+        def mem(avail, psi=1.0):
+            return self.run_at("critical", sessions=self.PROCS, **MEM_CRIT)["digest"] if avail is None else \
+                self.run_at("critical", sessions=self.PROCS, worst="mem", levels={"mem": "critical"},
+                            mem={"available_pct": avail, "psi_some_avg60": psi})["digest"]
+        self.assertEqual(len({mem(x) for x in (4.98, 5.01, 4.48, 4.52, 7.9, 9.5)}), 1)   # 9.5: hysteresis band
+        for text in self.texts(at(4.98)):
+            self.assertNotRegex(text, r"4\.9|5\.0|4\.5")
+
+    def test_cause_uses_the_configured_thresholds(self):
+        d = self.run_at("critical", **dict(LOAD_CRIT, thresholds={"load_per_cpu": [2, 4.5]}))
+        self.assertIn("CPU load is critical (above 4.5 per CPU)", kinds(d, "defer")[0]["text"])
+        d = self.run_at("warn", worst="load", levels={"load": "warn"}, cpu={"load_per_cpu": 2},
+                        thresholds={"load_per_cpu": [1.5, 3]})
+        self.assertEqual(d["advisories"], [])          # warn: no gate, no text
+        for bad in ([float("nan"), 3], [1], "x", [1, float("inf")], None, [True, 2]):
+            d = self.run_at("critical", **dict(LOAD_CRIT, thresholds={"load_per_cpu": bad}))
+            self.assertIn("CPU load is critical (above 3.0 per CPU)", kinds(d, "defer")[0]["text"], bad)
+
+    def test_unsafe_teammate_names_do_not_merge_ids(self):
+        def aid(via):
+            procs = [{"code": "AI", "heavy_n": 1, "children": [
+                {"class": "test", "comm": "node", "pid": 5, "rss_mb": 600, "heavy": True, "via": via}]}]
+            [a] = kinds(self.run_at("critical", sessions=procs, **MEM_CRIT), "stop-own-heavy")
+            self.assertNotIn("teammate", a["text"]) if via and " " in via else None
+            return a["id"]
+        ids = [aid(None), aid("bad name!"), aid("other bad!"), aid("qa")]
+        self.assertEqual(len(set(ids)), 4)
+        self.assertEqual(aid("bad name!"), ids[1])
 
     def test_cause_text_is_fixed_words(self):
         for bad in (float("nan"), float("inf"), -5, 10 ** 12, "4.9", None, True):
-            r = dict(LOAD_CRIT, cpu={"load_per_cpu": bad}, mem={"available_pct": bad, "psi_some_avg60": bad})
+            r = dict(LOAD_CRIT, cpu={"load_per_cpu": bad}, mem={"available_pct": bad, "psi_some_avg60": bad},
+                     thresholds={"load_per_cpu": [bad, bad], "mem_available_pct": [bad, bad]})
             for lv in (LOAD_CRIT["levels"], {"mem": "critical"}):
                 d = self.run_at("critical", sessions=self.PROCS, **dict(r, levels=lv))
                 for text in self.texts(d):

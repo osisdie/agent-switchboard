@@ -13,7 +13,8 @@ docs/contract.md "Scheduler"). lib/scheduler.py decides; this module remembers.
   `[re <id>] ack|done|cannot: <reason>` reply is recorded with `reply`. `outbox` remembers what it
   printed (PRINTED_MS), so `sent` still records an advisory that went away in between (its
   short-lived process exited). A sent advisory that goes away keeps its record GONE_KEEP_MS, so
-  the reply is accepted and a recurrence in that time is not sent again before `readvise_minutes`.
+  the reply is accepted and a recurrence in that time is not sent again before `readvise_minutes`
+  (its old reply is dropped: a recurrence is a new episode).
 
 Usage (through `board schedule ...`):
   advisories.py outbox [CODE] [--json]      the [BOARD schedule] lines due now, per session
@@ -199,8 +200,12 @@ def advance(doc, state, st, valid, now, quiet=False, paused=False, live=None):
     for k, v in state["sent"].items():
         if not isinstance(v, dict):
             continue
-        if k in ids:                                  # (back): it is current again
-            sent[k] = {x: y for x, y in v.items() if x != "gone_at"}
+        if k in ids:
+            if "gone_at" in v:                        # back after going away: a new episode. Its old
+                # reply no longer holds; sent_at and n stay, so readvise and MAX_SENDS still limit it
+                v = {x: y for x, y in v.items() if x not in ("gone_at", "reply_at", "note")}
+                v["reply"] = None
+            sent[k] = v
             continue
         gone = v["gone_at"] if isinstance(v.get("gone_at"), int) else now
         if now - gone < GONE_KEEP_MS:                 # went away: keep it a while (reply, recurrence)
@@ -268,6 +273,7 @@ def cmd_outbox(home, args):
 def cmd_sent(home, ids):
     if not ids or not all(ADV_RE.fullmatch(i) for i in ids):
         return _usage("sent: advisory ids (a-<12 hex>)")
+    ids = list(dict.fromkeys(ids))                  # `sent X X` records X once
     now = now_ms()
     with locked(home):
         if paused(home):
@@ -359,7 +365,12 @@ def cmd_off_on(home, verb, args):
     now = now_ms()
     path = os.path.join(home, OFF_FILE)
     if verb == "off":
-        write_json(path, {"at": now, "by": args[1]})
+        with locked(home):
+            write_json(path, {"at": now, "by": args[1]})
+            state = load_state(home)
+            if state["printed"]:                    # off: what the outbox printed is not recorded later
+                state["printed"] = {}
+                write_json(os.path.join(home, STATE_FILE), state)
     else:
         try:
             os.remove(path)
