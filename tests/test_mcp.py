@@ -231,10 +231,6 @@ def setUpModule():
     fixtures()
     if HAVE_CRYPTO:
         JWT.update(make_jwts())
-    for name, scopes in (("all", ",".join(apikeys.SCOPES)), ("state", "read:state"),
-                         ("decisions", "read:decisions"), ("tasks", "read:tasks"), ("messages", "read:messages"),
-                         ("tickets", "tickets:read")):
-        KEYS[name] = mkkey(scopes, "--rate", "600")   # burst 20, then 10 a second
     KEYS["test"] = mkkey("read:state", "--test")
     with open(os.path.join(TMP, "serve.err"), "w") as err:
         SRV = subprocess.Popen([sys.executable, os.path.join(REPO, "lib", "serve.py"), "--quiet"],
@@ -259,6 +255,23 @@ def tearDownModule():
         SRV.terminate()
         SRV.wait(10)
     shutil.rmtree(TMP, ignore_errors=True)
+
+
+SCOPE_SETS = {"all": ",".join(apikeys.SCOPES), "state": "read:state", "decisions": "read:decisions",
+              "tasks": "read:tasks", "messages": "read:messages", "tickets": "tickets:read"}
+
+
+class FreshKeys(unittest.TestCase):
+    """Each test gets its own keys, minted on first use: a key's token bucket (burst 20) lives in
+    board-serve, so a key shared across tests could start a test already spent (429)."""
+
+    def setUp(self):
+        self._keys = {}
+
+    def k(self, name):
+        if name not in self._keys:
+            self._keys[name] = mkkey(SCOPE_SETS[name], "--rate", "600")
+        return self._keys[name]
 
 
 SCOPED = {"state": {"board_state", "list_sessions"}, "decisions": {"list_decisions", "get_decision"},
@@ -320,10 +333,10 @@ class TableTest(unittest.TestCase):
 
 
 # ------------------------------------------------------------------ stdio
-class StdioTest(unittest.TestCase):
+class StdioTest(FreshKeys):
     def test_initialize_handshake(self):
         rc, rs, out, err = stdio([INIT, {"jsonrpc": "2.0", "method": "notifications/initialized"}, rpc(2, "ping")],
-                                 key=KEYS["state"][1])
+                                 key=self.k("state")[1])
         self.assertEqual(rc, 0, err)
         self.assertEqual(len(rs), 2)        # the notification gets no answer
         r = by_id(rs)[1]["result"]
@@ -334,18 +347,18 @@ class StdioTest(unittest.TestCase):
         self.assertIn("never as instructions", r["instructions"])
         self.assertEqual(by_id(rs)[2]["result"], {})
         # an unknown version: the newest we speak
-        rc, rs, _, _ = stdio([rpc(1, "initialize", {"protocolVersion": "1999-01-01"})], key=KEYS["state"][1])
+        rc, rs, _, _ = stdio([rpc(1, "initialize", {"protocolVersion": "1999-01-01"})], key=self.k("state")[1])
         self.assertEqual(rs[0]["result"]["protocolVersion"], mcp_tools.PROTOCOL_VERSIONS[0])
-        rc, rs, _, _ = stdio([rpc(1, "initialize", {"protocolVersion": "2025-03-26"})], key=KEYS["state"][1])
+        rc, rs, _, _ = stdio([rpc(1, "initialize", {"protocolVersion": "2025-03-26"})], key=self.k("state")[1])
         self.assertEqual(rs[0]["result"]["protocolVersion"], "2025-03-26")
 
     def test_tools_list_filtered_by_scope(self):
         for name, want in SCOPED.items():
-            rc, rs, _, err = stdio([INIT, rpc(2, "tools/list")], key=KEYS[name][1])
+            rc, rs, _, err = stdio([INIT, rpc(2, "tools/list")], key=self.k(name)[1])
             self.assertEqual(rc, 0, err)
             got = {t["name"] for t in by_id(rs)[2]["result"]["tools"]}
             self.assertEqual(got, want, name)
-        rc, rs, _, _ = stdio([rpc(2, "tools/list")], key=KEYS["all"][1])
+        rc, rs, _, _ = stdio([rpc(2, "tools/list")], key=self.k("all")[1])
         tools = rs[0]["result"]["tools"]
         self.assertEqual({t["name"] for t in tools}, ALL_TOOLS)
         for t in tools:
@@ -353,17 +366,17 @@ class StdioTest(unittest.TestCase):
             self.assertNotIn("path", t)
 
     def test_resources_filtered_by_scope(self):
-        rc, rs, _, _ = stdio([rpc(2, "resources/list"), rpc(3, "resources/templates/list")], key=KEYS["tickets"][1])
+        rc, rs, _, _ = stdio([rpc(2, "resources/list"), rpc(3, "resources/templates/list")], key=self.k("tickets")[1])
         self.assertEqual([r["uri"] for r in by_id(rs)[2]["result"]["resources"]], ["board://openapi"])
         self.assertEqual(by_id(rs)[3]["result"]["resourceTemplates"], [])
-        rc, rs, _, _ = stdio([rpc(2, "resources/list"), rpc(3, "resources/templates/list")], key=KEYS["all"][1])
+        rc, rs, _, _ = stdio([rpc(2, "resources/list"), rpc(3, "resources/templates/list")], key=self.k("all")[1])
         self.assertEqual({r["uri"] for r in by_id(rs)[2]["result"]["resources"]}, {"board://state", "board://openapi"})
         self.assertEqual({r["uriTemplate"] for r in by_id(rs)[3]["result"]["resourceTemplates"]},
                          {"board://decisions/{decision_id}", "board://tasks/{task_id}"})
 
     def test_each_tool(self):
         msgs = [rpc(i, "tools/call", {"name": n, "arguments": a}) for i, (n, a) in enumerate(sorted(CALLS.items()), 10)]
-        rc, rs, out, err = stdio(msgs, key=KEYS["all"][1])
+        rc, rs, out, err = stdio(msgs, key=self.k("all")[1])
         self.assertEqual(rc, 0, err)
         res = {n: by_id(rs)[i]["result"] for i, (n, _a) in enumerate(sorted(CALLS.items()), 10)}
         for n, r in res.items():
@@ -384,7 +397,7 @@ class StdioTest(unittest.TestCase):
                 rpc(6, "resources/read", {"uri": "board://tasks/nope"}),
                 rpc(7, "resources/read", {"uri": "board://tasks/../x"}),
                 rpc(8, "resources/read", {"uri": "file:///etc/passwd"})]
-        rc, rs, _, err = stdio(msgs, key=KEYS["all"][1])
+        rc, rs, _, err = stdio(msgs, key=self.k("all")[1])
         r = by_id(rs)
         self.assertEqual(json.loads(r[2]["result"]["contents"][0]["text"])["mode"], "api")
         self.assertEqual(json.loads(r[3]["result"]["contents"][0]["text"])["openapi"], "3.1.0")
@@ -394,12 +407,13 @@ class StdioTest(unittest.TestCase):
             self.assertEqual(r[i]["error"]["code"], mcp_tools.E_NO_RESOURCE, r[i])
 
     def test_out_of_scope_call_is_a_tool_error(self):
-        rc, rs, _, _ = stdio([rpc(2, "tools/call", {"name": "list_decisions", "arguments": {}})], key=KEYS["state"][1])
+        rc, rs, _, _ = stdio([rpc(2, "tools/call", {"name": "list_decisions", "arguments": {}})],
+                             key=self.k("state")[1])
         r = rs[0]["result"]
         self.assertTrue(r["isError"])
         self.assertIn("insufficient_scope", r["content"][0]["text"])
         rc, rs, _, _ = stdio([rpc(2, "tools/call", {"name": "get_task", "arguments": {"task_id": "nope"}})],
-                             key=KEYS["tasks"][1])
+                             key=self.k("tasks")[1])
         self.assertTrue(rs[0]["result"]["isError"])
         self.assertIn("not_found", rs[0]["result"]["content"][0]["text"])
 
@@ -410,7 +424,7 @@ class StdioTest(unittest.TestCase):
                 rpc(5, "tools/call", {"name": "board_state", "arguments": {"x": "1"}}),
                 rpc(6, "tools/call", {"name": "board_state", "arguments": []}),
                 rpc(7, "tools/call", {})]
-        rc, rs, _, _ = stdio(msgs, key=KEYS["all"][1])
+        rc, rs, _, _ = stdio(msgs, key=self.k("all")[1])
         for i in range(2, 8):
             self.assertEqual(by_id(rs)[i]["error"]["code"], -32602, by_id(rs)[i])
 
@@ -439,14 +453,14 @@ class StdioTest(unittest.TestCase):
         self.assertIn("key_wrong_env", rs[0]["error"]["message"])
 
     def test_unreachable_and_bad_config(self):
-        rc, rs, out, err = stdio([rpc(2, "tools/list")], key=KEYS["all"][1], url="http://127.0.0.1:%d" % free_port())
+        rc, rs, out, err = stdio([rpc(2, "tools/list")], key=self.k("all")[1], url="http://127.0.0.1:%d" % free_port())
         self.assertEqual(rs[0]["error"]["code"], mcp_tools.E_UNREACHABLE)
         self.assertIn("cannot reach the board", rs[0]["error"]["message"])
-        rc, rs, out, err = stdio([INIT], key=KEYS["all"][1], url="http://board.example.com")
+        rc, rs, out, err = stdio([INIT], key=self.k("all")[1], url="http://board.example.com")
         self.assertEqual(rc, 2)
         self.assertEqual(out, "")
         self.assertIn("https", err)
-        rc, rs, out, err = stdio([INIT], key=KEYS["all"][1], CF_ACCESS_CLIENT_ID=CF_ID)
+        rc, rs, out, err = stdio([INIT], key=self.k("all")[1], CF_ACCESS_CLIENT_ID=CF_ID)
         self.assertEqual(rc, 2)
         self.assertIn("both", err)
 
@@ -461,13 +475,13 @@ class StdioTest(unittest.TestCase):
                 stdio([INIT], key=BAD_KEY, url="https://board.example.com/?k=%s" % CF_SECRET,
                       CF_ACCESS_CLIENT_ID=CF_ID, CF_ACCESS_CLIENT_SECRET=CF_SECRET),
                 stdio([INIT], key=BAD_KEY, CF_ACCESS_CLIENT_SECRET=CF_SECRET),
-                stdio([rpc(2, "tools/call", {"name": "board_state"})], key=KEYS["all"][1],
+                stdio([rpc(2, "tools/call", {"name": "board_state"})], key=self.k("all")[1],
                       CF_ACCESS_CLIENT_ID=CF_ID, CF_ACCESS_CLIENT_SECRET=CF_SECRET),
                 stdio([INIT, rpc(2, "tools/list")], key=NL_KEY),
                 stdio([INIT, rpc(2, "tools/list")], key="Bearer " + SECRET_TWO),
-                stdio([INIT, rpc(2, "tools/list")], key=KEYS["all"][1], CF_ACCESS_CLIENT_ID=CF_ID,
+                stdio([INIT, rpc(2, "tools/list")], key=self.k("all")[1], CF_ACCESS_CLIENT_ID=CF_ID,
                       CF_ACCESS_CLIENT_SECRET=CF_SECRET + "\n" + SECRET_TWO),
-                stdio([INIT, rpc(2, "tools/list")], key=KEYS["all"][1], CF_ACCESS_CLIENT_ID=CF_ID + " " + SECRET_TWO,
+                stdio([INIT, rpc(2, "tools/list")], key=self.k("all")[1], CF_ACCESS_CLIENT_ID=CF_ID + " " + SECRET_TWO,
                       CF_ACCESS_CLIENT_SECRET=CF_SECRET)]
         for rc, _rs, out, err in runs[-4:]:          # refused before any request, with a fixed message
             self.assertEqual((rc, out), (2, ""), err)
@@ -475,14 +489,14 @@ class StdioTest(unittest.TestCase):
         self.assertIn("CF_ACCESS_CLIENT_SECRET has spaces or control characters", runs[-2][3])
         self.assertIn("CF_ACCESS_CLIENT_ID has spaces or control characters", runs[-1][3])
         for _rc, _rs, out, err in runs:
-            for s in (BAD_KEY, CF_SECRET, KEYS["all"][1], "asb_live_zzzz", SECRET_TWO, "PARTTWO"):
+            for s in (BAD_KEY, CF_SECRET, self.k("all")[1], "asb_live_zzzz", SECRET_TWO, "PARTTWO"):
                 self.assertNotIn(s, out)
                 self.assertNotIn(s, err)
 
     def test_bad_header_value_never_echoed(self):
         """http.client refuses a header with a newline and puts the (escaped) value in its error:
         the backend answers a fixed text instead (main() refuses such a key first; this is the net)."""
-        for key, cf in ((NL_KEY, None), (KEYS["all"][1], CF_SECRET + "\r\n" + SECRET_TWO)):
+        for key, cf in ((NL_KEY, None), (self.k("all")[1], CF_SECRET + "\r\n" + SECRET_TWO)):
             b = mcp_tools.HttpBackend(URL, key, CF_ID if cf else None, cf)
             mcp_tools._SECRETS[:] = [key] + ([cf] if cf else [])
             with self.assertRaises(mcp_tools.Unreachable) as cm:
@@ -540,7 +554,7 @@ class StdioTest(unittest.TestCase):
                + json.dumps([rpc(i, "ping") for i in range(mcp_tools.MAX_BATCH + 1)]) + "\n"
                + json.dumps({"jsonrpc": "2.0", "id": 9, "result": {}}) + "\n"
                + json.dumps(rpc(7, "ping")))      # the last line has no newline
-        rc, _rs, out, err = stdio(None, key=KEYS["state"][1], raw=raw)
+        rc, _rs, out, err = stdio(None, key=self.k("state")[1], raw=raw)
         self.assertEqual(rc, 0, err)
         self.assertTrue(out.endswith("\n"))
         lines = out.splitlines()
@@ -557,7 +571,7 @@ class StdioTest(unittest.TestCase):
         self.assertEqual(parsed[8]["id"], 7)                        # the response to us got no answer
         self.assertEqual(len(parsed), 9)
         big = "x" * (mcp_tools.MAX_LINE + 10)
-        rc, rs, out, err = stdio(None, key=KEYS["state"][1], raw=big + "\n" + json.dumps(rpc(2, "ping")) + "\n")
+        rc, rs, out, err = stdio(None, key=self.k("state")[1], raw=big + "\n" + json.dumps(rpc(2, "ping")) + "\n")
         self.assertEqual(rs[0]["error"]["code"], -32600)
         self.assertEqual(rs[1]["id"], 2)
 
@@ -568,7 +582,7 @@ class StdioTest(unittest.TestCase):
                 rpc(5, "tools/call", {"name": "get_task", "arguments": {"task_id": "t-2"}}),
                 rpc(6, "tools/call", {"name": "list_tasks"}),
                 rpc(7, "resources/read", {"uri": "board://decisions/d-1-a"})]
-        rc, rs, out, err = stdio(msgs, key=KEYS["all"][1])
+        rc, rs, out, err = stdio(msgs, key=self.k("all")[1])
         self.assertNotIn("[board", out.lower())
         self.assertIn("(BOARD decision d-9-z]", by_id(rs)[2]["result"]["structuredContent"]["question"])
         ctx = by_id(rs)[2]["result"]["structuredContent"]["context"]
@@ -579,39 +593,39 @@ class StdioTest(unittest.TestCase):
 
 
 # ------------------------------------------------------------------ POST /mcp
-class HttpMcpTest(unittest.TestCase):
+class HttpMcpTest(FreshKeys):
     def test_handshake_and_tools(self):
-        st, hd, js, _ = post_mcp(INIT, KEYS["state"][1])
+        st, hd, js, _ = post_mcp(INIT, self.k("state")[1])
         self.assertEqual(st, 200)
         self.assertTrue(hd["content-type"].startswith("application/json"))
         self.assertEqual(js["result"]["protocolVersion"], "2025-06-18")
         self.assertFalse([h for h in hd if h.startswith("access-control-")])
         self.assertNotIn("mcp-session-id", hd)
         for name, want in SCOPED.items():
-            st, _, js, _ = post_mcp(rpc(2, "tools/list"), KEYS[name][1])
+            st, _, js, _ = post_mcp(rpc(2, "tools/list"), self.k(name)[1])
             self.assertEqual({t["name"] for t in js["result"]["tools"]}, want, name)
         st, _, js, _ = post_mcp([rpc(10 + i, "tools/call", {"name": n, "arguments": a})
-                                 for i, (n, a) in enumerate(sorted(CALLS.items()))], KEYS["all"][1])
+                                 for i, (n, a) in enumerate(sorted(CALLS.items()))], self.k("all")[1])
         self.assertEqual(st, 200)
         self.assertEqual(len(js), len(CALLS))
         for r in js:
             self.assertFalse(r["result"]["isError"], r)
         st, _, js, raw = post_mcp(rpc(3, "tools/call", {"name": "get_decision", "arguments": {"decision_id": "d-1-a"}}),
-                                  KEYS["all"][1])
+                                  self.k("all")[1])
         self.assertNotIn(b"[BOARD", raw)
         self.assertIn("(BOARD decision", js["result"]["structuredContent"]["question"])
         st, _, js, raw = post_mcp(rpc(4, "tools/call", {"name": "get_task", "arguments": {"task_id": "t-2"}}),
-                                  KEYS["all"][1])
+                                  self.k("all")[1])
         self.assertNotIn(b"secret roadmap", raw)
-        st, _, js, _ = post_mcp(rpc(5, "resources/read", {"uri": "board://tasks/t-1"}), KEYS["tasks"][1])
+        st, _, js, _ = post_mcp(rpc(5, "resources/read", {"uri": "board://tasks/t-1"}), self.k("tasks")[1])
         self.assertEqual(json.loads(js["result"]["contents"][0]["text"])["id"], "t-1")
 
     def test_notification_is_202(self):
-        st, hd, js, raw = post_mcp({"jsonrpc": "2.0", "method": "notifications/initialized"}, KEYS["state"][1])
+        st, hd, js, raw = post_mcp({"jsonrpc": "2.0", "method": "notifications/initialized"}, self.k("state")[1])
         self.assertEqual((st, raw), (202, b""))
 
     def test_scope_enforced_per_call_and_audited(self):
-        kid, key = KEYS["state"]
+        kid, key = self.k("state")
         st, _, js, _ = post_mcp(rpc(2, "tools/call", {"name": "list_tasks"}), key)
         self.assertEqual(st, 200)
         self.assertTrue(js["result"]["isError"])
@@ -637,7 +651,7 @@ class HttpMcpTest(unittest.TestCase):
         self.assertNotIn(BAD_KEY, events_text())
 
     def test_csrf_and_browser_refusals(self):
-        key = KEYS["state"][1]
+        key = self.k("state")[1]
         for hdrs in ({"Sec-Fetch-Site": "cross-site"}, {"Sec-Fetch-Site": "same-site"},
                      {"Origin": "https://evil.example.com"}, {"Origin": "null"}):
             st, _, js, _ = post_mcp(rpc(2, "tools/list"), key, headers=hdrs)
@@ -660,7 +674,7 @@ class HttpMcpTest(unittest.TestCase):
         self.assertEqual(st, 200)
 
     def test_size_and_body(self):
-        key = KEYS["state"][1]
+        key = self.k("state")[1]
         big = json.dumps(rpc(2, "ping", {"pad": "x" * (17 * 1024)}))
         st, hd, js, _ = post_mcp(big, key)
         self.assertEqual((st, js["error"]), (413, "too_large"))
@@ -671,7 +685,7 @@ class HttpMcpTest(unittest.TestCase):
 
     @unittest.skipUnless(HAVE_CRYPTO, "python3 cryptography not installed")
     def test_tunnel(self):
-        key = KEYS["state"][1]
+        key = self.k("state")[1]
         host = HOSTNAME
         st, _, js, _ = post_mcp(rpc(2, "tools/list"), key, port=TPORT, host=host)
         self.assertEqual((st, js["error"]), (401, "unauthenticated"))      # no Access token
