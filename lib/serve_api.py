@@ -427,8 +427,8 @@ class Api:
                     h.wfile.write(b"event: revoked\ndata: {}\n\n")
                     h.wfile.flush()
                     return None
-                if changed:
-                    data = json.dumps(self._st(), ensure_ascii=False)
+                if changed:      # the same masked view as every other read (lib/pii.py)
+                    data = json.dumps(self.S.pii.mask(self._st()), ensure_ascii=False)
                     h.wfile.write(("event: state\ndata: %s\n\n" % data).encode("utf-8"))
                 else:
                     h.wfile.write(b": keepalive\n\n")

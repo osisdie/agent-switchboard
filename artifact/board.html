@@ -4953,6 +4953,14 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
   }
   // Roles from meta/operator id lists (same rule as board-serve: no release managers → approvers).
   function rolesFor(id) {
+    // Local mode: board-serve masks other people's emails in the id lists (role labels), so the
+    // viewer's own roles come from the state flags, never from comparing the lists.
+    if (isLocal() && S.mode === 'live' && S.userReady) {
+      const out = [];
+      if (S.isApprover) out.push('approver');
+      if (S.askerOnly) out.push('asker');
+      return out.length ? out : ['viewer'];
+    }
     const ids = (k) => (S.operator && Array.isArray(S.operator[k]) ? S.operator[k].map(lc) : null);
     const ap = ids('approver_ids'), rm = ids('release_manager_ids');
     if (!id || !ap) return null;

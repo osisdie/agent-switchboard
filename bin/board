@@ -110,6 +110,10 @@
 #                                              the session's own taken ticket (from inside it)
 #                                              tracker tickets (fleet.yaml tickets.trackers; REF is
 #                                              KEY or tracker:KEY); writes and take: approvers only
+#   board mirror state                         the board state as an anonymous Artifact viewer may
+#                                              see it (no private card text, no ticket text, no
+#                                              account, no one's email): the only source for the
+#                                              operator's write_db documents
 #   board mask                                 JSON on stdin -> other people's emails replaced by
 #                                              role labels (owner, approver, ...), for the mirror
 #   board guard scrub|scrub-json|screen|has-marker|secrets
@@ -2486,6 +2490,9 @@ case "$sub" in
   # JSON on stdin -> the same with other people's emails replaced by role labels (lib/pii.py), for
   # anything the operator mirrors to the Artifact db
   mask) exec python3 "$REPO/lib/pii.py" mask ;;
+  # the board state as an anonymous Artifact viewer may see it: the operator's only mirror source
+  mirror) [ "${1:-}" = state ] || { echo "usage: board mirror state" >&2; exit 2; }
+          exec python3 "$REPO/lib/mirror.py" state ;;
   -h|--help|help) usage ;;
   "") usage; exit 2 ;;
   *) echo "board: unknown command '$sub'" >&2; usage >&2; exit 2 ;;

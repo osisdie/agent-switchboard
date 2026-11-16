@@ -501,8 +501,12 @@ masked: `local`, session codes, key ids and the Artifact board's opaque claude.a
 they are. `me` (the viewer's own identity) is never masked. The raw values stay on disk and in the
 CLI. In local mode the page takes the viewer's roles from `state.approver` / `state.asker` (and
 `/api/me`), never by comparing the masked lists. The operator never mirrors an email to the
-Artifact db: it mirrors tasks from `board task ls --json --viewer` (masked) and passes any other
-document through `board mask` (JSON on stdin, masked for an anonymous viewer) before `write_db`.
+Artifact db: it builds every document from **`board mirror state`** (`lib/mirror.py`: the board
+state with every viewer rule applied, no private card text, no ticket text, no account email or
+`account_hint`, everyone's email masked), and passes anything else through `board mask` (JSON on
+stdin, masked for an anonymous viewer) before `write_db`. `board task ls --json --viewer` gives the
+same view of the tasks. Responses that echo a ticket link (`taken_by`, `released_by`) are masked
+for non-owners too, and so is every `/api/v1/events` frame.
 
 **Askers** (`fleet.yaml` `askers`, emails and `local`, matched like approvers) see the board as a
 viewer does (every decision's question, session cards, tasks without ticket text, all messages and

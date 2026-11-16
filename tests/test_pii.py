@@ -82,6 +82,10 @@ serve:
     aud: AUD123
     certs_url: file://%s/certs.json
     allowed_emails: [%s, %s, %s, %s, %s]
+tickets:
+  trackers:
+    - name: demo
+      type: fake
 """ % (OWN, BOSS, RM, ANN, PORT, "true" if HAVE_CRYPTO else "false", TPORT, HOSTNAME, TMP, OWN, BOSS, RM, ANN, VIEWER))
 
 
@@ -187,6 +191,27 @@ def get(path, who=None, key=None):
     return r.status, raw
 
 
+def post(path, who, body):
+    hdrs = {"Host": HOSTNAME, "Cf-Access-Jwt-Assertion": JWT[who], "X-Board": "1", "Origin": "https://" + HOSTNAME,
+            "Content-Type": "application/json"}
+    c = http.client.HTTPConnection("127.0.0.1", TPORT, timeout=60)
+    c.request("POST", path, body=json.dumps(body).encode(), headers=hdrs)
+    r = c.getresponse()
+    raw = r.read().decode()
+    c.close()
+    return r.status, raw
+
+
+def get_tickets(path, who):
+    hdrs = {"Host": HOSTNAME, "Cf-Access-Jwt-Assertion": JWT[who], "X-Board": "1"}
+    c = http.client.HTTPConnection("127.0.0.1", TPORT, timeout=60)
+    c.request("GET", path, headers=hdrs)
+    r = c.getresponse()
+    raw = r.read().decode()
+    c.close()
+    return r.status, raw
+
+
 def emails_in(raw, but=None):
     return sorted({e.lower() for e in EMAIL_RE.findall(raw)} - ({but} if but else set()))
 
@@ -202,6 +227,18 @@ class Unit(unittest.TestCase):
                       "note": "ask %s or %s" % (OWN, STRANGER)})
         self.assertEqual(out, {"answered_by": "approver", "me": ANN, "owner": "API", "ids": ["owner", "u_1", "local"],
                                "note": "ask owner or someone"})
+        intl = m.walk({"note": "ping jöhn@exämple.de and 用戶@例子.廣告。 v1.2@3 stays"})
+        self.assertEqual(intl, {"note": "ping someone and someone。 v1.2@3 stays"})
+
+    def test_mirror_state(self):
+        r = subprocess.run([os.path.join(REPO, "bin", "board"), "mirror", "state"], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        st = json.loads(r.stdout)
+        self.assertEqual(emails_in(r.stdout), [])                  # no one's email, not even an owner's
+        self.assertEqual((st["mode"], st["account"], st["operator"].get("account_hint")), ("mirror", None, None))
+        self.assertEqual({d["id"]: d.get("answered_by") for d in st["decisions"]}["d-1-a"], "approver")
+        self.assertEqual(subprocess.run([os.path.join(REPO, "bin", "board"), "mirror", "nope"],
+                                        capture_output=True).returncode, 2)
 
     def test_cli_mask_and_viewer_task_list(self):
         r = subprocess.run([os.path.join(REPO, "bin", "board"), "mask"], input=json.dumps(
@@ -284,8 +321,35 @@ class Served(unittest.TestCase):
             st, raw = get(path, key=key)
             self.assertEqual(st, 200, (path, raw[:200]))
             self.assertEqual(emails_in(raw), [], path)
+        # the event stream's first frame too
+        sock = socket.create_connection(("127.0.0.1", PORT), timeout=10)
+        sock.sendall(("GET /api/v1/events HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nAuthorization: Bearer %s\r\n\r\n"
+                      % (PORT, key)).encode())
+        buf = b""
+        while b"event: state" not in buf or not buf.rstrip().endswith(b"}"):
+            c = sock.recv(65536)
+            if not c:
+                break
+            buf += c
+        sock.close()
+        self.assertIn(b"event: state", buf)
+        self.assertEqual(emails_in(buf.decode("utf-8", "replace")), [])
         st, raw = get("/api/v1/whoami", key=key)
         self.assertEqual(json.loads(raw)["owner"], OWN)            # the key's own owner, to its holder
+
+    def test_ticket_responses(self):
+        """A take / release echoes the link (taken_by, released_by): masked for non-owners."""
+        st, raw = post("/api/tickets/take", BOSS, {"ref": "demo:DEMO-1", "session": "API"})
+        self.assertEqual(st, 200, raw)
+        self.assertEqual(emails_in(raw, but=BOSS), [])
+        self.assertNotIn(BOSS, raw)                                 # their own email: "you"
+        self.assertIn('"you"', raw)
+        st, raw = get_tickets("/api/tickets/demo:DEMO-1", RM)
+        self.assertEqual(st, 200, raw)
+        self.assertEqual(emails_in(raw, but=RM), [])
+        st, raw = post("/api/tickets/demo:DEMO-1/release", OWN, {})
+        self.assertEqual(st, 200, raw)
+        self.assertIn(OWN, raw)                                     # an owner sees the raw link
 
     def test_no_owners_falls_back_to_approvers(self):
         write_fleet(owners=False)

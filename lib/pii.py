@@ -28,7 +28,8 @@ import fleet  # noqa: E402
 
 EMAIL_RE = re.compile(r"[^@\s:]{1,64}@[^@\s]{1,189}\.[^@\s.]{1,63}")
 # an email inside free text (a note, a message body): every one is masked, known or not
-TEXT_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63})*\.[A-Za-z]{2,63}")
+# (\w is Unicode: internationalised local parts and domains, e.g. jöhn@exämple.de, 用戶@例子.廣告)
+TEXT_EMAIL_RE = re.compile(r"[\w.%+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63})*\.[^\W\d_]{2,63}")
 PREFIX_RE = re.compile(r"^(board:|cli:)", re.I)
 # Fields that hold who did something. `owner` is not here: a task's owner is a session code.
 IDENT_KEYS = frozenset(("by", "answered_by", "resolved_by", "released_by", "updated_by", "created_by",

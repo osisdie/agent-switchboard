@@ -1120,9 +1120,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except Exception as exc:  # noqa: BLE001 - never a traceback (or a header) in a response
             log("tickets: unexpected %s" % type(exc).__name__)
             return self.send_json(502, {"error": "ticket_upstream", "detail": "unexpected error"})
-        return self.send_json(200, tickets.redact_tree(t))
+        return self.send_json(200, self.viewer_mask(tickets.redact_tree(t), ident, via, cfg))
 
-    def ticket_reply(self, fn):
+    def ticket_reply(self, fn, ident=None, via=None):
         """Run a ticket write; TicketError -> its status and {error, detail, ...}."""
         try:
             out = fn()
@@ -1133,7 +1133,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             log("tickets: unexpected %s" % type(exc).__name__)
             return self.send_json(500, {"error": "ticket_failed", "detail": "unexpected error"})
         self.hub_kick()
-        return self.send_json(200, tickets.redact_tree(out))
+        # a take / release / write echoes the link (taken_by, released_by): emails for owners only
+        return self.send_json(200, self.viewer_mask(tickets.redact_tree(out), ident, via, fleet.load_fleet()))
 
     def ticket_take(self, body, ident, via):
         """POST /api/tickets/take {ref, session, comment?, transition?, assign?}: approvers only,
@@ -1152,7 +1153,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return writes.take(ref, session, ident, via=via, home=self.server.home,
                                comment_text=c if isinstance(c, str) else None, do_comment=c is not False,
                                do_transition=tr, do_assign=asg)
-        return self.ticket_reply(run)
+        return self.ticket_reply(run, ident, via)
 
     def ticket_write(self, raw_ref, op, body, ident, via):
         """POST /api/tickets/<ref>/comment {text} | transition {to} | assign {who} | release {}:
@@ -1169,7 +1170,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not isinstance(v, str):
                 raise tickets.TicketError("bad_body", "%s must be a string" % field)
             return getattr(writes, op)(ref, v, ident, via=via, home=self.server.home)
-        return self.ticket_reply(run)
+        return self.ticket_reply(run, ident, via)
 
     def viewer_mask(self, obj, ident, via, cfg):
         """Other people's emails are for owners only: anyone else gets role labels ("you" for their
