@@ -254,6 +254,30 @@ class Unit(unittest.TestCase):
         self.assertNotIn("by owner", line.lower())
 
 
+    def test_relay_label_for_old_messages_without_kind(self):
+        """A message stored before askers existed has no kind: its label follows the sender's role
+        now, so an asker-only sender is never relayed as a [BOARD ask] from the owner."""
+        old = {"id": "m-2-x", "by": ANN.upper(), "to": "API", "status": "new", "body": "can we ship today?"}
+        line = messages.relay_text(old)
+        self.assertTrue(line.startswith("[BOARD asker m-2-x] from %s (an asker, not an approver" % ANN.upper()), line)
+        self.assertNotIn("[BOARD ask ", line)
+        for who in (BOSS, RM, "someone@example.com", None):
+            with self.subTest(by=who):
+                self.assertTrue(messages.relay_text(dict(old, by=who)).startswith("[BOARD ask m-2-x] "))
+        both = fleet.load_fleet()
+        both["approvers"] = [BOSS, ANN]                      # an asker who is also an approver decides
+        self.assertTrue(messages.relay_text(old, both).startswith("[BOARD ask m-2-x] "))
+        self.assertTrue(messages.relay_text(dict(old, kind="asker", asker=ANN)).startswith("[BOARD asker m-2-x] "))
+        # the CLI the operator runs
+        os.makedirs(os.path.join(HOME, "messages"), exist_ok=True)
+        with open(os.path.join(HOME, "messages", "m-2-x.json"), "w") as fh:
+            json.dump(dict(old, created_at=1), fh)
+        r = board("message", "show", "m-2-x")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(r.stdout.startswith("[BOARD asker m-2-x] from "), r.stdout)
+        os.remove(os.path.join(HOME, "messages", "m-2-x.json"))
+
+
 class Local(unittest.TestCase):
     """The local listener's identity `local` is an asker here."""
 

@@ -268,11 +268,25 @@ def reply(home, mid, frm, text):
     return row, redacted
 
 
-def relay_text(rec):
+def asker_only_now(by, cfg=None):
+    """Is BY an asker who is not an approver or release manager in fleet.yaml today? (The rule of
+    serve.asker_only, kept here so the CLI needs no server module.)"""
+    who = str(by or "").strip().lower()
+    if not who:
+        return False
+    cfg = cfg if cfg is not None else fleet.load_fleet()
+    ids = lambda k: {str(i).strip().lower() for i in fleet.id_list(cfg, k)}  # noqa: E731
+    return who in ids("askers") and who not in ids("approvers") | ids("release_managers")
+
+
+def relay_text(rec, cfg=None):
     """The text the operator sends for a message: `[BOARD ask <id>] <body> — reply ...`, with the
-    release reminder when the guard had held it."""
+    release reminder when the guard had held it. A message stored without a `kind` (before askers
+    existed) whose sender is asker-only now is relayed as an asker's, never as a [BOARD ask]."""
     if rec.get("kind") == "ticket":
         return ticket_relay_text(rec)
+    if rec.get("kind") is None and asker_only_now(rec.get("by"), cfg):
+        rec = dict(rec, kind="asker", asker=rec.get("by"))
     note = ""
     if rec.get("released_by"):
         note = "(%s) " % (RELEASED_NOTE % rec["released_by"])
