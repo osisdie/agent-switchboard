@@ -14,7 +14,7 @@
 > 以英文版 [README.md](README.md) 為準；這份翻譯可能會落後。
 
 替一整組長時間執行的 **Claude Code** session 準備的總機（switchboard）：用一個看板（**Agent Switchboard**）呈現誰在工作、誰卡住了，
-以及哪些事正在等人類做決定。你可以直接在看板上回答，用手機也行。它也會為整組 session 的專注工作累計番茄鐘。可以先試試
+以及哪些事正在等人類做決定。你可以直接在看板上回答，用手機也行。它也用 [🍅 番茄鐘](#-ai-focus-pomodoros)計算整組 session 的專注工作。可以先試試
 [線上 demo](https://osisdie.github.io/agent-switchboard/demo.html)（只有範例資料，不會送出任何東西）。
 
 同一個看板頁面可以走**兩種通道**：自架（`board-serve`，透過 Cloudflare Tunnel 並以 Cloudflare Access
@@ -23,18 +23,35 @@
 
 > 狀態：早期階段。資料契約在 [`docs/contract.md`](docs/contract.md)，其餘一切都以它為依據。
 
+<a id="-ai-focus-pomodoros"></a>
+## 🍅 AI 專注番茄鐘
+
+一整組 AI session 一天到底完成了多少專注工作？看板用人類的番茄鐘來算。每個 session 和每個 teammate
+工作時都各自計自己的番茄鐘：專注 25 分鐘算一個 🍅，多出來的接著算。**今日**把整組加起來，分開列出
+session 和 teammate，把總時數換算成人的專注工時，並選出當天的冠軍。
+
+人專注的一天通常算 8 到 12 個番茄鐘，所以這是用同一把尺量 AI 每天的專注時間。它從 collector 本來就在
+讀的 session 狀態算出來（不花 token，不記錄提示內容），並保留最近 14 天。
+
+<img src="docs/assets/screenshots/pomodoro-dark.webp" width="100%" alt="深色模式的番茄鐘面板：今日 AI 團隊 19 個番茄鐘、專注 9 小時 28 分，session 和 teammate 分開列出，8 條計時，約 9.5 人時，冠軍與亞軍，以及選取今天的最近 14 天長條圖">
+
+怎麼計算、面板顯示什麼、怎麼設定：見[番茄鐘](#pomodoro)。
+
 ## 畫面截圖
 
-全部來自內建的 demo 資料（`scripts/screenshots.py`）。也可以在瀏覽器裡試試[線上 demo](https://osisdie.github.io/agent-switchboard/demo.html)：只有範例資料，不會送出任何東西。
+全部來自內建的 demo 資料（`scripts/screenshots.py`），深色模式。也可以在瀏覽器裡試試[線上 demo](https://osisdie.github.io/agent-switchboard/demo.html)：只有範例資料，不會送出任何東西。
 
-| | |
-|---|---|
-| <a href="docs/assets/screenshots/overview-zh.webp"><img src="docs/assets/screenshots/overview-zh.webp" width="420" alt="繁體中文介面的看板"></a><br>總覽（繁體中文） | <a href="docs/assets/screenshots/overview-light.webp"><img src="docs/assets/screenshots/overview-light.webp" width="420" alt="淺色模式的看板：待你處理的數量、用量與系統表，以及按鍵面板"></a><br>總覽（English，淺色） |
-| <a href="docs/assets/screenshots/overview-dark.webp"><img src="docs/assets/screenshots/overview-dark.webp" width="420" alt="深色模式的看板"></a><br>總覽（深色） | <a href="docs/assets/screenshots/deck.webp"><img src="docs/assets/screenshots/deck.webp" width="420" alt="按鍵面板：等待數、依等待內容上色的 session 按鍵、用量圓環、消耗速度和全體長條"></a><br>按鍵面板：等待中的按鍵、用量、消耗速度 |
-| <a href="docs/assets/screenshots/session-card.webp"><img src="docs/assets/screenshots/session-card.webp" width="420" alt="依狀態分欄的 session 卡片，附待處理徽章、用量和 teammate；其中一張展開成在做什麼、最近、用量、分支、待處理和位置"></a><br>Session 卡片，其中一張展開 | <a href="docs/assets/screenshots/decisions.webp"><img src="docs/assets/screenshots/decisions.webp" width="420" alt="決策卡片：有 Allow / Deny 的權限提示，以及附選項的問題"></a><br>決策：權限提示、問題、關卡 |
-| <a href="docs/assets/screenshots/notifications.webp"><img src="docs/assets/screenshots/notifications.webp" width="420" alt="通知對話框：靜音、分級門檻和在線狀態"></a><br>通知：靜音與分級 | <a href="docs/assets/screenshots/resources.webp"><img src="docs/assets/screenshots/resources.webp" width="420" alt="資源區塊：記憶體、swap、磁碟和各 session 的程序"></a><br>資源：記憶體、磁碟、程序 |
-| <a href="docs/assets/screenshots/usage-popover.webp"><img src="docs/assets/screenshots/usage-popover.webp" width="420" alt="用量提示框：兩個區間的重設時間、達到的門檻和帳號"></a><br>用量提示框：重設時間、門檻、帳號 | <a href="docs/assets/screenshots/profile-menu.webp"><img src="docs/assets/screenshots/profile-menu.webp" width="420" alt="個人選單：身分、角色、主題與語言切換和 API 金鑰"></a><br>個人選單：主題與語言 |
-| <a href="docs/assets/screenshots/phone-dark.webp"><img src="docs/assets/screenshots/phone-dark.webp" width="420" alt="手機上的看板，深色模式"></a><br>手機，深色模式 | <a href="docs/assets/screenshots/pwa-standalone.webp"><img src="docs/assets/screenshots/pwa-standalone.webp" width="420" alt="iPhone 主畫面 app 的看板，避開狀態列"></a><br>iPhone 主畫面 app |
+**總覽**：待你處理的數量、用量與系統表，以及按鍵面板。
+
+<img src="docs/assets/screenshots/overview-dark.webp" width="100%" alt="深色模式的看板：待你處理的數量、用量與系統表，以及按鍵面板">
+
+**按鍵面板**：每個 session 一個按鍵，依等待的內容上色，加上用量、消耗速度和 🍅 今日。
+
+<img src="docs/assets/screenshots/deck.webp" width="100%" alt="按鍵面板：等待數、依等待內容上色的 session 按鍵、用量圓環、消耗速度、🍅 今日按鍵和全體長條">
+
+**決策**：關卡、問題和權限提示，在看板上回答。
+
+<img src="docs/assets/screenshots/decisions-dark.webp" width="100%" alt="深色模式的決策卡片：附 approve / request changes 的生命週期關卡、附選項的問題，以及有 Allow / Deny 的權限提示">
 
 ## 問題
 
@@ -529,6 +546,7 @@ board rc clear API               # 忘掉設定：回到 fleet.yaml（預設開�
   `/compact`）：提示請在它的決策卡片上回答。
 - 用 **收起面板** 收起，或在個人選單（**按鍵面板**）設定。選擇會記在這個瀏覽器裡。
 
+<a id="pomodoro"></a>
 ### 番茄鐘（Pomodoro）
 
 一個輕鬆有趣的統計：看 AI 團隊一天完成了多少專注工作。點子來自 [ulanzi-lab](https://github.com/osisdie/ulanzi-lab)

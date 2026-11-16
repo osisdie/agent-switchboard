@@ -7,7 +7,7 @@
 2. scripts/build-site.py builds the site; it is served on 127.0.0.1 and opened headless:
    - demo.html boots the demo adapter by itself, makes no request beyond its own origin (no
      /api, no fonts, nothing third-party) and never calls claude.use, also while clicking
-     around (card, decision answer, notifications, profile menu, theme);
+     around (card, decision answer, the pomodoro panel, notifications, profile menu, theme);
    - index.html shows every screenshot and links the demo, the repo, README and contract.
 
 Needs python playwright and a Chromium it can launch; without them it prints "skipped" and
@@ -76,7 +76,7 @@ def main():
         check("the script runs", r.returncode == 0, r.stderr[-400:])
         want = sorted(n + ".webp" for n in names)
         got = sorted(os.listdir(shots)) if os.path.isdir(shots) else []
-        check("every shot is written (%d)" % len(want), got == want and len(want) == 12 and "deck.webp" in want, got)
+        check("every shot is written (%d)" % len(want), got == want and len(want) == 4 and "pomodoro-dark.webp" in want, got)
         for f in got:
             with open(os.path.join(shots, f), "rb") as fh:
                 head = fh.read(12)
@@ -84,20 +84,22 @@ def main():
             check("  %s: WebP, %d KB" % (f, size // 1024), head[:4] == b"RIFF" and head[8:12] == b"WEBP" and size <= MAX_BYTES)
         # Reruns keep images that only differ by rasterization noise, and replace real changes.
         before = {f: open(os.path.join(shots, f), "rb").read() for f in got}
-        shutil.copyfile(os.path.join(shots, "profile-menu.webp"), os.path.join(shots, "resources.webp"))
+        shutil.copyfile(os.path.join(shots, "deck.webp"), os.path.join(shots, "decisions-dark.webp"))
         r = subprocess.run([sys.executable, os.path.join(REPO, "scripts", "screenshots.py"), "--out", shots,
-                            "--only", "overview-light,overview-dark,resources"], capture_output=True, text=True, timeout=300)
-        check("rerun: unchanged views keep their file byte for byte",
+                            "--only", "overview-dark,pomodoro-dark,decisions-dark"], capture_output=True, text=True, timeout=300)
+        check("rerun: unchanged views keep their file byte for byte (1x and 2x)",
               r.stdout.count("(unchanged)") == 2 and all(open(os.path.join(shots, f), "rb").read() == before[f]
-                                                       for f in ("overview-light.webp", "overview-dark.webp")), r.stdout)
+                                                       for f in ("overview-dark.webp", "pomodoro-dark.webp")), r.stdout)
         check("rerun: a different image is replaced",
-              open(os.path.join(shots, "resources.webp"), "rb").read() != before["profile-menu.webp"]
-              and "resources" in r.stdout and "resources        1280x860  @1x" in r.stdout and "(unchanged)" not in r.stdout.split("resources ")[-1], r.stdout)
+              open(os.path.join(shots, "decisions-dark.webp"), "rb").read() != before["deck.webp"]
+              and "decisions-dark   1280x860  @1x" in r.stdout and "(unchanged)" not in r.stdout.split("decisions-dark ")[-1], r.stdout)
         # Same size, one digit different: a visible change must never pass as noise (1x and 2x).
         digit = "() => { const n = document.getElementById('needs-n'); n.textContent = String(Number(n.textContent) + 1); }"
         pct = "() => { const p = document.querySelector('#u-5h .u-p'); p.textContent = p.textContent.replace('91', '92'); }"
-        for shot, js, what in (("overview-light", digit, "the Needs-you count"), ("usage-popover", pct, "91% -> 92%"),
-                               ("phone-dark", pct, "91% -> 92% at 2x")):
+        # --eval runs once the panel is open, so it reaches the pomodoro total.
+        pomo = "() => { const t = document.querySelector('#pomo .pm-total strong'); t.textContent = t.textContent.replace('19', '18'); }"
+        for shot, js, what in (("overview-dark", digit, "the Needs-you count"), ("overview-dark", pct, "91% -> 92%"),
+                               ("pomodoro-dark", pomo, "19 -> 18 pomodoros at 2x")):
             prev = open(os.path.join(shots, shot + ".webp"), "rb").read()
             r = subprocess.run([sys.executable, os.path.join(REPO, "scripts", "screenshots.py"), "--out", shots,
                                 "--only", shot, "--eval", js], capture_output=True, text=True, timeout=300)
@@ -147,6 +149,9 @@ def main():
             page.click('article[aria-label="Session API"] .scard-toggle')
             page.click('#dec-d-2-demo button.option, #dec-d-2-demo .opts button')
             page.wait_for_timeout(300)
+            page.keyboard.press("Escape")
+            page.click("#deck-grid .dkey.pomo")
+            page.locator("#pomo .pm-hist").wait_for(state="visible")
             page.keyboard.press("Escape")
             page.click("#notif-btn")
             page.wait_for_timeout(200)

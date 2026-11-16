@@ -13,7 +13,7 @@
 
 A switchboard for a fleet of long-running **Claude Code** sessions: one board, **Agent Switchboard**,
 that shows who is working, who is blocked, and what is waiting for a human decision. You can answer from the board,
-including from your phone. It also keeps a pomodoro tally of the fleet's focused work. Try the
+including from your phone. It also counts the fleet's focused work in [🍅 pomodoros](#-ai-focus-pomodoros). Try the
 [live demo](https://osisdie.github.io/agent-switchboard/demo.html) first (sample data only, nothing is sent anywhere).
 
 The same board page runs on **two channels**: self-hosted (`board-serve`, reachable from your phone
@@ -23,18 +23,36 @@ recommended setup.** See [Two channels](#two-channels-self-hosted-and-artifact-r
 > Status: early. The data contract is in [`docs/contract.md`](docs/contract.md). Everything else
 > follows it.
 
+## 🍅 AI focus pomodoros
+
+How much focused work does a fleet of AI sessions get done in a day? The board counts it in human
+pomodoros. Every session and every teammate keeps its own pomodoro while it works: 25 minutes of
+focus is one 🍅, and the rest carries over. **Today** adds up the whole fleet, splits sessions from
+teammates, shows the total as person-hours of focus and names the day's champion.
+
+A focused human day is often counted as 8 to 12 pomodoros, so this gives a daily measure of AI focus
+time on the same scale. It is counted from the session states the collector already reads (zero
+tokens, no prompt text), and the last 14 days are kept.
+
+<img src="docs/assets/screenshots/pomodoro-dark.webp" width="100%" alt="The Pomodoro panel in dark mode: AI fleet 19 pomodoros and 9h 28m of focus today, sessions and teammates split, 8 streams, about 9.5 person-hours, the champion and runner-up, and a bar chart of the last 14 days with today selected">
+
+How it counts, what the panel shows and the settings: [Pomodoro](#pomodoro).
+
 ## Screenshots
 
-All from the built-in demo data (`scripts/screenshots.py`). Try the [live demo](https://osisdie.github.io/agent-switchboard/demo.html) in your browser: sample data only, nothing is sent anywhere.
+From the built-in demo data (`scripts/screenshots.py`), dark mode. Try the [live demo](https://osisdie.github.io/agent-switchboard/demo.html) in your browser: sample data only, nothing is sent anywhere.
 
-| | |
-|---|---|
-| <a href="docs/assets/screenshots/overview-light.webp"><img src="docs/assets/screenshots/overview-light.webp" width="420" alt="The board in light mode: the needs-you count, usage and system meters, and the Deck panel"></a><br>Overview, light | <a href="docs/assets/screenshots/overview-dark.webp"><img src="docs/assets/screenshots/overview-dark.webp" width="420" alt="The board in dark mode"></a><br>Overview, dark |
-| <a href="docs/assets/screenshots/deck.webp"><img src="docs/assets/screenshots/deck.webp" width="420" alt="The Deck panel: the HITL count, session keys coloured by what they wait for, usage rings, the burn rate and the fleet strip"></a><br>Deck panel: waiting keys, usage, burn rate | <a href="docs/assets/screenshots/session-card.webp"><img src="docs/assets/screenshots/session-card.webp" width="420" alt="Session cards by state with badges, meters and teammates; one expanded into Doing, Recent, Meter, Branch, Pending and Where"></a><br>Session cards, one expanded |
-| <a href="docs/assets/screenshots/decisions.webp"><img src="docs/assets/screenshots/decisions.webp" width="420" alt="Decision cards: a permission prompt with Allow / Deny and a question with its options"></a><br>Decisions: permission prompts, questions, gates | <a href="docs/assets/screenshots/notifications.webp"><img src="docs/assets/screenshots/notifications.webp" width="420" alt="The Notifications dialog: mutes, triage floor and presence"></a><br>Notifications: mutes and triage |
-| <a href="docs/assets/screenshots/resources.webp"><img src="docs/assets/screenshots/resources.webp" width="420" alt="The Resources section: memory, swap, disks and per-session processes"></a><br>Resources: memory, disks, processes | <a href="docs/assets/screenshots/usage-popover.webp"><img src="docs/assets/screenshots/usage-popover.webp" width="420" alt="The usage popover: both windows with reset times, the threshold reached and the account"></a><br>Usage popover: resets, threshold, account |
-| <a href="docs/assets/screenshots/profile-menu.webp"><img src="docs/assets/screenshots/profile-menu.webp" width="420" alt="The profile menu: identity, roles, theme and language switchers, API keys"></a><br>Profile menu: theme and language | <a href="docs/assets/screenshots/phone-dark.webp"><img src="docs/assets/screenshots/phone-dark.webp" width="420" alt="The board on a phone, dark mode"></a><br>Phone, dark mode |
-| <a href="docs/assets/screenshots/pwa-standalone.webp"><img src="docs/assets/screenshots/pwa-standalone.webp" width="420" alt="The board as an iPhone home-screen app, clear of the status bar"></a><br>iPhone home-screen app | <a href="docs/assets/screenshots/overview-zh.webp"><img src="docs/assets/screenshots/overview-zh.webp" width="420" alt="The board in Traditional Chinese (繁體中文)"></a><br>Overview, Traditional Chinese |
+**Overview:** the needs-you count, usage and system meters, and the Deck.
+
+<img src="docs/assets/screenshots/overview-dark.webp" width="100%" alt="The board in dark mode: the needs-you count, usage and system meters, and the Deck panel">
+
+**Deck:** one key per session, coloured by what it waits for, with usage, burn rate and 🍅 Today.
+
+<img src="docs/assets/screenshots/deck.webp" width="100%" alt="The Deck panel: the waiting count, session keys coloured by what they wait for, usage rings, the burn rate, the 🍅 Today key and the fleet strip">
+
+**Decisions:** gates, questions and permission prompts, answered on the board.
+
+<img src="docs/assets/screenshots/decisions-dark.webp" width="100%" alt="Decision cards in dark mode: lifecycle gates with approve / request changes, questions with their options, and a permission prompt with Allow / Deny">
 
 ## The problem
 

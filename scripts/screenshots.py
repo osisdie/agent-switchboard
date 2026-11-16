@@ -21,7 +21,6 @@ playwright expects is not installed.
 """
 import argparse
 import base64
-import json
 import datetime as dt
 import os
 import sys
@@ -56,24 +55,15 @@ READY_JS = """() => {
 }"""
 SETTLE_JS = "() => document.fonts.ready.then(() => new Promise((ok) => requestAnimationFrame(() => requestAnimationFrame(ok))))"
 DESKTOP = {"width": 1280, "height": 860}
-PHONE = {"width": 390, "height": 844}
 
-# name: (alt text, viewport, color scheme, device scale factor)
+# name: (alt text, viewport, color scheme, device scale factor). A few representative views, all
+# dark, each shown full width in the README and on the Pages site (scripts/build-site.py).
 SHOTS = {
-    "overview-light": ("The board in light mode: the needs-you count, usage and system meters, and the Deck panel", DESKTOP, "light", 1),
-    "overview-dark": ("The board in dark mode", DESKTOP, "dark", 1),
-    "deck": ("The Deck panel: the HITL count, session keys coloured by what they wait for, usage rings, the burn rate and the fleet strip", DESKTOP, "dark", 1),
-    "session-card": ("Session cards by state with badges, meters and teammates; one expanded into Doing, Recent, Meter, Branch, Pending and Where", DESKTOP, "light", 1),
-    "decisions": ("Decision cards: a permission prompt with Allow / Deny and a question with its options", DESKTOP, "light", 1),
-    "notifications": ("The Notifications dialog: mutes, triage floor and presence", {"width": 1280, "height": 1100}, "light", 1),
-    "resources": ("The Resources section: memory, swap, disks and per-session processes", DESKTOP, "light", 1),
-    "usage-popover": ("The usage popover: both windows with reset times, the threshold reached and the account", DESKTOP, "light", 1),
-    "profile-menu": ("The profile menu: identity, roles, theme and language switchers, API keys", DESKTOP, "light", 1),
-    "phone-dark": ("The board on a phone, dark mode", PHONE, "dark", 2),
-    "pwa-standalone": ("The board as an iPhone home-screen app, clear of the status bar", {"width": 393, "height": 852}, "light", 2),
-    "overview-zh": ("The board in Traditional Chinese (繁體中文)", DESKTOP, "light", 1),
+    "overview-dark": ("The board in dark mode: the needs-you count, usage and system meters, and the Deck panel", DESKTOP, "dark", 1),
+    "pomodoro-dark": ("The 🍅 Pomodoro panel: today's fleet total, sessions and teammates, person-hours of focus, the champion and the last 14 days", DESKTOP, "dark", 2),
+    "deck": ("The Deck panel: the HITL count, session keys coloured by what they wait for, usage rings, the burn rate and the fleet strip", DESKTOP, "dark", 2),
+    "decisions-dark": ("Decision cards: a permission prompt with Allow / Deny and a question with its options", DESKTOP, "dark", 1),
 }
-LANG = {"overview-zh": "zh-TW"}  # shots in another language; English otherwise
 
 WEBP_JS = """async ([b64, q]) => {
   const img = new Image();
@@ -143,36 +133,22 @@ def union(page, sels, pad=12):
     return {"x": max(0, x0), "y": max(0, y0), "width": x1 - max(0, x0), "height": y1 - max(0, y0)}
 
 
-def shoot(page, name):
-    """Set the page up for one shot and return the PNG bytes."""
-    if name in ("overview-light", "overview-dark", "phone-dark", "pwa-standalone", "overview-zh"):
-        return page.screenshot()
-    if name == "session-card":
-        page.click('article[aria-label="Session API"] .scard-toggle')
-        page.locator('article[aria-label="Session API"] .scard-toggle[aria-expanded="true"]').wait_for()
-        page.wait_for_timeout(150)
-        return page.screenshot(full_page=True, clip=union(page, ["#board .sec-head", "#board-cols"]))
+def prepare(page, name):
+    """Set the page up for one shot; return a function that takes it (PNG bytes)."""
+    if name == "overview-dark":
+        return page.screenshot
     if name == "deck":
-        return page.locator("#deck").screenshot()
-    if name == "decisions":
-        return page.screenshot(full_page=True, clip=union(page, ["#decisions .sec-head", "#dec-d-1-demo", "#dec-d-2-demo"]))
-    if name == "notifications":
-        page.click("#notif-btn")
-        page.locator("#notif").wait_for(state="visible")
+        # the keys and their heading, not the empty width to the right of the grid
+        return lambda: page.screenshot(full_page=True, clip=union(page, ["#h-deck", "#deck-grid"]))
+    if name == "decisions-dark":
+        return lambda: page.screenshot(full_page=True, clip=union(page, ["#decisions .sec-head", "#dec-d-1-demo", "#dec-d-2-demo"]))
+    if name == "pomodoro-dark":
+        # Today (the default pick): the fleet total, the champion and the 14-day chart. The list of
+        # sessions below it is left out: the shot stays wide enough to read at full width.
+        page.click("#deck-grid .dkey.pomo")
+        page.locator("#pomo .pm-hist").wait_for(state="visible")
         page.wait_for_timeout(250)
-        return page.locator("#notif").screenshot()
-    if name == "resources":
-        return page.locator("#resources").screenshot()
-    if name == "usage-popover":
-        page.hover("#usage")
-        page.locator("#usage-pop").wait_for(state="visible")
-        page.wait_for_timeout(200)
-        return page.screenshot(full_page=True, clip=union(page, ["#usage", "#usage-pop"], pad=16))
-    if name == "profile-menu":
-        page.click("#acct-btn")
-        page.locator("#acct-panel").wait_for(state="visible")
-        page.wait_for_timeout(200)
-        return page.screenshot(full_page=True, clip=union(page, ["#acct-btn", "#acct-panel"], pad=16))
+        return lambda: page.screenshot(full_page=True, clip=union(page, ["#pomo .info-head", "#pomo .pm-head", "#pomo .pm-hist"], pad=20))
     raise KeyError(name)
 
 
@@ -220,23 +196,20 @@ def shoot_all(sync_playwright, page_url, names, args):
             _alt, viewport, scheme, scale = SHOTS[name]
             ctx = browser.new_context(viewport=viewport, device_scale_factor=scale, color_scheme=scheme,
                                       timezone_id="UTC", locale="en-US", reduced_motion="reduce")
-            if name == "pwa-standalone":
-                ctx.add_init_script("Object.defineProperty(navigator, 'standalone', { get: () => true });")
             # The language is chosen before the page's pre-paint script reads it.
-            ctx.add_init_script("try { localStorage.setItem('switchboard.lang', %s); } catch (e) {}" % json.dumps(LANG.get(name, "en")))
+            ctx.add_init_script("try { localStorage.setItem('switchboard.lang', 'en'); } catch (e) {}")
             page = ctx.new_page()
             page.clock.set_fixed_time(DEMO_TIME)
-            if name == "pwa-standalone":
-                cdp = ctx.new_cdp_session(page)
-                cdp.send("Emulation.setSafeAreaInsetsOverride", {"insets": {"top": 59, "bottom": 34, "left": 0, "right": 0}})
             page.set_default_timeout(LOAD_TIMEOUT_MS)
             page.goto(page_url, wait_until="load")
             page.wait_for_function(READY_JS, polling=100)
             page.evaluate(SETTLE_JS)
-            if args.eval:
-                page.evaluate(args.eval)
             page.wait_for_timeout(300)
-            data = to_webp(conv, shoot(page, name))
+            capture = prepare(page, name)
+            if args.eval:  # after the set-up, so it can reach an opened panel
+                page.evaluate(args.eval)
+                page.wait_for_timeout(100)
+            data = to_webp(conv, capture())
             path = os.path.join(args.out, name + ".webp")
             old = open(path, "rb").read() if os.path.isfile(path) else None
             if old and (old == data or same_image(conv, old, data, scale)):
