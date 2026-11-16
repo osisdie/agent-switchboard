@@ -45,6 +45,8 @@ except ImportError:  # pragma: no cover - CI installs python3-cryptography
     HAVE_CRYPTO = False
 
 BOSS, RM, ANN, NOBODY = "boss@example.com", "rm@example.com", "ann@example.com", "intruder@example.com"
+OWN, VIEWER = "own@example.com", "viewer@example.com"
+ACCOUNT = "account-holder@example.com"
 HOSTNAME = "board.example.com"
 
 
@@ -59,13 +61,15 @@ def free_port():
 PORT, TPORT = free_port(), free_port()
 
 
-def write_fleet(allowed_emails=None, local_role="askers"):
+def write_fleet(allowed_emails=None, local_role="askers", owners=None):
     """local is an asker by default (so the local listener tests the asker), ANN an asker on the
     tunnel. allowed_emails: None = unset (the fallback set)."""
     approvers = [BOSS] + (["local"] if local_role == "approvers" else [])
     asks = [ANN] + (["local"] if local_role == "askers" else [])
     tunnel = ("    allowed_emails: %s\n" % json.dumps(allowed_emails)) if allowed_emails is not None else ""
     with open(os.path.join(CFG, "fleet.yaml"), "w") as fh:
+        if owners is not None:
+            fh.write("owners: %s\n" % json.dumps(owners))
         fh.write("""approvers: %s
 release_managers: [%s]
 askers: %s
@@ -105,7 +109,9 @@ def fixtures():
     wj(os.path.join(HOME, "messages", "m-1-h.json"), {"id": "m-1-h", "to": "API", "body": "held one", "by": BOSS,
                                                       "status": "held", "held_reason": "secret request",
                                                       "created_at": NOW})
-    wj(os.path.join(HOME, "account.json"), {"email": "owner@example.com", "org": "x"})
+    wj(os.path.join(HOME, "account.json"), {"email": ACCOUNT, "org": "x"})
+    wj(os.path.join(HOME, "operator.json"), {"heartbeat_at": NOW, "version": "t", "operator_session": "BOARD",
+                                             "account_hint": "second laptop"})
 
 
 def b64(b):
@@ -125,7 +131,7 @@ def make_jwts():
         p = b64(json.dumps({"aud": ["AUD123"], "iss": "https://team.example.com", "exp": now + 3600, "iat": now,
                             "email": email}).encode())
         return h + "." + p + "." + b64(key.sign((h + "." + p).encode(), padding.PKCS1v15(), hashes.SHA256()))
-    return {e: tok(e) for e in (BOSS, ANN, NOBODY)}
+    return {e: tok(e) for e in (BOSS, ANN, NOBODY, OWN, VIEWER)}
 
 
 JWT = {}
@@ -361,6 +367,62 @@ class Tunnel(unittest.TestCase):
         finally:
             write_fleet()
         self.assertEqual(req("GET", "/api/state", who=ANN)[0], 200)
+
+
+class AccountEmail(unittest.TestCase):
+    """The Claude account email (and the operator's account_hint) are for owners only; with no
+    owners configured, approvers count as owners (a single-user setup)."""
+
+    def setUp(self):
+        need_crypto(self)
+
+    def view(self, who):
+        st, _, s = req("GET", "/api/state", who=who)
+        self.assertEqual(st, 200, (who, s))
+        raw = json.dumps(s)
+        return s["account"], s["operator"].get("account_hint"), ACCOUNT in raw
+
+    def test_owner_only(self):
+        write_fleet(owners=[OWN], allowed_emails=[BOSS, OWN, ANN, VIEWER])
+        try:
+            self.assertEqual(self.view(OWN), ({"email": ACCOUNT, "org": "x"}, "second laptop", True))
+            for who in (BOSS, ANN, VIEWER):                  # approver (not owner), asker, viewer
+                self.assertEqual(self.view(who), ({"hidden": True}, None, False), who)
+            local = req("GET", "/api/state")[2]              # local is an asker here
+            self.assertEqual((local["account"], local["operator"]["account_hint"]), ({"hidden": True}, None))
+        finally:
+            write_fleet()
+
+    def test_no_owners_falls_back_to_approvers(self):
+        self.assertEqual(self.view(BOSS), ({"email": ACCOUNT, "org": "x"}, "second laptop", True))
+        self.assertEqual(self.view(ANN), ({"hidden": True}, None, False))
+        out = board("doctor").stdout
+        self.assertIn("owners not set", out)
+        write_fleet(owners=[OWN])
+        try:
+            self.assertNotIn("owners not set", board("doctor").stdout)
+            self.assertEqual(req("GET", "/api/state", who=OWN)[0], 200)   # owners are in the tunnel fallback
+        finally:
+            write_fleet()
+
+    def test_events_frames_too(self):
+        write_fleet(owners=[OWN], allowed_emails=[BOSS, OWN])
+        try:
+            s = socket.create_connection(("127.0.0.1", TPORT), timeout=10)
+            s.sendall(("GET /api/events HTTP/1.1\r\nHost: %s\r\nCf-Access-Jwt-Assertion: %s\r\n\r\n"
+                       % (HOSTNAME, JWT[BOSS])).encode())
+            buf = b""
+            while b"event: state" not in buf or not buf.rstrip().endswith(b"}"):
+                c = s.recv(65536)
+                if not c:
+                    break
+                buf += c
+            s.close()
+            self.assertIn(b"event: state", buf)
+            self.assertNotIn(ACCOUNT.encode(), buf)
+            self.assertNotIn(b"second laptop", buf)
+        finally:
+            write_fleet()
 
 
 if __name__ == "__main__":

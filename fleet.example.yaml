@@ -30,10 +30,12 @@ release_managers: []
 # at most 10 per 10 minutes. Emails (and "local"), matched like approvers.
 askers: []
 # askers: [teammate@example.com]
-# Who administers API keys (`board apikey`, docs/contract.md "API keys"): issue a key to anyone,
-# approve key requests, revoke, rotate, set or extend expiry, change scopes. Owners sit above
-# approvers for key administration only; answering still needs `approvers`. Empty = nobody can
-# approve a key request (approvers can still issue keys to listed people or themselves).
+# The board's owners. They administer API keys (`board apikey`, docs/contract.md "API keys"):
+# issue a key to anyone, approve key requests, revoke, rotate, set or extend expiry, change scopes;
+# empty = nobody can approve a key request (approvers can still issue keys to listed people or
+# themselves). Only owners see the Claude account email the sessions run on; with empty owners,
+# approvers see it (a single-user board), and `board doctor` reminds you to set owners.
+# Answering still needs `approvers`.
 owners: []
 # owners: [owner@example.com, owner.backup@example.com]
 # apikeys:

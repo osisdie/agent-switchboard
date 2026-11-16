@@ -878,8 +878,9 @@ Claude Code 會把 `rate_limits.five_hour` 和 `rate_limits.seven_day`（`used_p
 
 把滑鼠移到用量計上或聚焦它（手機上點一下），會顯示詳細資料：兩個區間的已用百分比和重設時間、最後一次
 回報用量的時間、達到的門檻，以及 session 使用的帳號。帳號來自 `~/.claude.json`（只取
-`oauthAccount.emailAddress` 和 `organizationName`，絕不讀 token），而且**只有 approver 看得到**；
-其他人，以及 Artifact 看板的所有檢視者，都只會看到「帳號：已隱藏」。用 `BOARD_SHOW_ACCOUNT=0`
+`oauthAccount.emailAddress` 和 `organizationName`，絕不讀 token），而且**只有 owner 看得到**（`fleet.yaml`
+的 `owners`；沒設定 owners 時由 approver 代替）。不是 owner 的 approver、提問者、其他人，以及 Artifact 看板的
+所有檢視者，都只會看到「帳號：已隱藏」。用 `BOARD_SHOW_ACCOUNT=0`
 或 `fleet.yaml` 的 `usage: {show_account: false}` 關閉。
 
 頁首其他的方塊、計數和標籤也用同樣的方式說明自己（滑鼠移上、聚焦或點一下；按 Escape 或點別處關閉）：

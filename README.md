@@ -970,8 +970,9 @@ with `hooks/board-statusline-tap.sh` (your command moves to `BOARD_STATUSLINE_NE
 Hover or focus the usage meter (on a phone, tap it) for the details: both windows with the percent
 used and when they reset, when usage was last reported, the threshold reached, and the account the
 sessions run on. The account comes from `~/.claude.json` (only `oauthAccount.emailAddress` and
-`organizationName`, never a token) and is shown to **approvers only**; everyone else, and every
-viewer of the Artifact board, sees "account: hidden". Turn it off with `BOARD_SHOW_ACCOUNT=0` or
+`organizationName`, never a token) and is shown to **owners only** (`owners` in `fleet.yaml`; with
+no owners set, approvers). Approvers who are not owners, askers, everyone else, and every viewer of
+the Artifact board see "account: hidden". Turn it off with `BOARD_SHOW_ACCOUNT=0` or
 `usage: {show_account: false}` in `fleet.yaml`.
 
 Every other tile, meter and pill in the header explains itself the same way (hover, focus or tap;

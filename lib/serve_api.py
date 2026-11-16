@@ -306,6 +306,7 @@ class Api:
         with h.server.hub.cond:
             st = dict(h.server.hub.state or {})
         st["sessions"] = S.cards_for(st.get("sessions"), False)
+        st["operator"] = S.owner_only_operator(st.get("operator"))     # a key is never an owner
         st.update({"mode": "api", "me": None, "writable": False, "can_message": False, "account": None})
         # Q3: an API key is never an approver or release manager, so no ticket text (task titles,
         # sessions' task, ticket relay messages) reaches it: /state, /events, /sessions, /tasks.

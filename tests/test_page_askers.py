@@ -2,6 +2,8 @@
 """tests/test_page_askers.py — optional headless check of the board page for an asker (fleet.yaml
 `askers`): the message composer is shown with the asker note, the decision answer buttons are not,
 and the profile menu shows the asker role. An approver on the same board still gets the buttons.
+The Claude account email in the usage popover is shown to owners only: an approver who is not an
+owner sees "hidden" (with no owners configured, approvers count as owners).
 
 Needs python playwright and a Chromium it can launch; without them it prints "skipped" and
 exits 0, so it never blocks anyone. CI does not run it.
@@ -60,17 +62,27 @@ def serve(tmp, role):
     for d in (home, cfg, sess, os.path.join(home, "decisions")):
         os.makedirs(d)
     port = free_port()
-    approvers = ["boss@example.invalid"] + (["local"] if role == "approver" else [])
+    approvers = ["boss@example.invalid"] + (["local"] if role.startswith("approver") or role == "owner" else [])
     askers = ["local"] if role == "asker" else []
+    owners = {"owner": ["local"], "approver, not owner": ["boss@example.invalid"]}.get(role)
     with open(os.path.join(cfg, "fleet.yaml"), "w", encoding="utf-8") as fh:
+        if owners:
+            fh.write("owners: %s\n" % json.dumps(owners))
         fh.write("approvers: %s\naskers: %s\nsessions:\n  - code: API\n    cwd: /w\nserve:\n  enabled: true\n  port: %d\n"
                  % (json.dumps(approvers), json.dumps(askers), port))
     now = int(time.time() * 1000)
+    # the collector reads the account from CLAUDE_JSON: a fixture, never the real ~/.claude.json
+    with open(os.path.join(tmp, "claude.json"), "w", encoding="utf-8") as fh:
+        json.dump({"oauthAccount": {"emailAddress": ACCOUNT, "organizationName": "Example Org"}}, fh)
+    with open(os.path.join(home, "usage.json"), "w", encoding="utf-8") as fh:
+        json.dump({"five_hour": {"pct": 42, "resets_at": now + 3600000}, "seven_day": {"pct": 7, "resets_at": now + 86400000},
+                   "updated_at": now}, fh)
     with open(os.path.join(home, "decisions", "d-1-ask.json"), "w", encoding="utf-8") as fh:
         json.dump({"id": "d-1-ask", "kind": "question", "from": "API", "question": "Ship it?", "options": ["yes", "no"],
                    "status": "pending", "answer": None, "answered_by": None, "answered_at": None, "relayed_at": None,
                    "created_at": now}, fh)
-    env = dict(os.environ, BOARD_HOME=home, BOARD_CONFIG_DIR=cfg, CLAUDE_SESSIONS_DIR=sess, ALERT_DESKTOP="0")
+    env = dict(os.environ, BOARD_HOME=home, BOARD_CONFIG_DIR=cfg, CLAUDE_SESSIONS_DIR=sess, ALERT_DESKTOP="0",
+               CLAUDE_JSON=os.path.join(tmp, "claude.json"))
     for k in list(env):
         if k.startswith(("SLACK_", "SMTP_", "ALERT_WEBHOOK", "LINE_", "AWS_", "BOARD_PUBLIC_URL", "BOARD_NOW_MS")):
             env.pop(k)
@@ -88,12 +100,14 @@ def serve(tmp, role):
     return proc, "http://127.0.0.1:%d" % port, home
 
 
+ACCOUNT = "account-holder@example.invalid"
 VIEW_JS = """() => {
   const vis = (el) => !!el && !el.hidden && el.getClientRects().length > 0;
   const card = document.getElementById('dec-d-1-ask');
   const btns = card ? [...card.querySelectorAll('.opts button')].filter(vis).map((b) => b.textContent.trim()) : null;
   return { composer: vis(document.getElementById('composer')), note: vis(document.getElementById('msg-asker-note')),
            readonly: vis(document.getElementById('msg-readonly')), card: !!card, buttons: btns,
+           acct: (document.querySelector('.u-acct') || {}).textContent || null, html: document.documentElement.outerHTML,
            cardText: card ? card.textContent : '' };
 }"""
 
@@ -109,7 +123,7 @@ def main():
             except Exception as exc:  # noqa: BLE001 - no browser installed: skip, don't fail
                 print("skipped: cannot launch Chromium (%s)" % str(exc).splitlines()[0][:160])
                 return 0
-            for role in ("asker", "approver"):
+            for role in ("asker", "approver", "approver, not owner", "owner"):
                 print("local adapter (%s):" % role)
                 srv, base, home = serve(os.path.join(tmp, role), role)
                 page = browser.new_page(viewport={"width": 1280, "height": 900})
@@ -117,6 +131,8 @@ def main():
                 page.wait_for_selector("#dec-d-1-ask", timeout=10000)
                 page.wait_for_function("() => !document.getElementById('composer').hidden || "
                                        "!document.getElementById('msg-readonly').hidden", timeout=10000)
+                page.hover("#usage")                         # the usage popover is built when it opens
+                page.wait_for_selector("#usage-pop .u-acct", timeout=5000)
                 v = page.evaluate(VIEW_JS)
                 check("%s: composer shown" % role, v["composer"], v)
                 if role == "asker":
@@ -133,8 +149,12 @@ def main():
                     roles = page.evaluate("() => [...document.querySelectorAll('#acct-roles li')].map((l) => l.textContent)")
                     check("asker: the profile shows the asker role", roles == ["Asker (messages only)"], roles)
                 else:
-                    check("approver: no asker note", not v["note"], v)
-                    check("approver: answer buttons shown", v["buttons"] == ["yes", "no"], v)
+                    check("%s: no asker note" % role, not v["note"], v)
+                    check("%s: answer buttons shown" % role, v["buttons"] == ["yes", "no"], v)
+                sees = role in ("approver", "owner")          # "approver": no owners set, so the fallback
+                check("%s: account email %s" % (role, "shown" if sees else "hidden"),
+                      (ACCOUNT in (v["acct"] or "")) == sees and (ACCOUNT in v["html"]) == sees,
+                      v["acct"])
                 page.close()
                 srv.terminate()
                 srv.wait(10)

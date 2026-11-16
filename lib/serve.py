@@ -300,6 +300,17 @@ def deciders(cfg):
     return set(fleet.id_list(cfg, "approvers")) | set(fleet.id_list(cfg, "release_managers"))
 
 
+def owner_ids(cfg):
+    """Who owns the board: fleet.yaml `owners`, else `approvers` (a single-user setup keeps
+    working). For the board's own owner-only surfaces; API key administration never falls back
+    (lib/apikeys.py fails closed with empty owners)."""
+    return fleet.id_list(cfg, "owners") or fleet.id_list(cfg, "approvers")
+
+
+def is_owner(cfg, ident):
+    return match_id(ident, owner_ids(cfg)) is not None
+
+
 def askers(cfg):
     """`askers`: board users who may only send messages (and read the replies). Never deciders:
     they answer nothing, release nothing, read no tickets."""
@@ -339,14 +350,14 @@ def self_release_refused(rec, ident, approvers):
 
 def tunnel_allowed(cfg):
     """Emails the tunnel listener serves: serve.tunnel.allowed_emails, else approvers ∪
-    release_managers ∪ askers (emails only; "local" never applies on the tunnel). An explicit
+    release_managers ∪ askers ∪ owners (emails only; "local" never applies on the tunnel). An explicit
     allowed_emails stays authoritative: an asker missing from it cannot reach the board."""
     s = cfg.get("serve") if isinstance(cfg.get("serve"), dict) else {}
     t = s.get("tunnel") if isinstance(s.get("tunnel"), dict) else {}
     explicit = t.get("allowed_emails")
     if isinstance(explicit, str):
         explicit = [explicit]
-    ids = explicit if isinstance(explicit, list) else sorted(messagers(cfg))
+    ids = explicit if isinstance(explicit, list) else sorted(messagers(cfg) | set(fleet.id_list(cfg, "owners")))
     return {str(x).strip().lower() for x in ids if "@" in str(x or "")}
 
 
@@ -645,6 +656,15 @@ def scheduler_view(doc):
             "applied": [x for x in ls.get("applied") or [] if isinstance(x, str) and lessons.ID_RE.fullmatch(x)],
             "hints": [{"lesson": str(x.get("lesson")), "text": str(x.get("text"))[:160]}
                       for x in ls.get("hints") or [] if isinstance(x, dict)][:20]}
+
+
+def owner_only_operator(op):
+    """The operator block for anyone but an owner: no account_hint (free text about the account
+    the operator runs on; owners only, like the account email). A new dict: the hub's shared state
+    is never changed."""
+    if not isinstance(op, dict):
+        return op
+    return dict(op, account_hint=None)
 
 
 def cards_for(sessions, approver):
@@ -1158,17 +1178,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
                       "asker": asker_only(cfg, ident),
                       "account": self.account_for(ident, cfg), "page_version": page_version()})
         state["sessions"] = cards_for(state.get("sessions"), match_id(ident, fleet.id_list(cfg, "approvers")) is not None)
+        if not is_owner(cfg, ident):
+            state["operator"] = owner_only_operator(state.get("operator"))
         return ticket_text_for(state, match_id(ident, sorted(deciders(cfg))) is not None)
 
     def account_for(self, ident, cfg):
-        """The Claude account the sessions run on: {email, org} for approvers, {hidden: true} for
-        everyone else, None when it is not known or switched off (collector, account.json)."""
+        """The Claude account the sessions run on: {email, org} for owners (fleet.yaml owners, else
+        approvers), {hidden: true} for everyone else, None when it is not known or switched off
+        (collector, account.json). The email is personal data: approvers who are not owners,
+        askers and viewers never get it."""
         if not fleet.account_enabled(cfg):  # also when a stale account.json is still there
             return None
         rec = read_json(os.path.join(self.server.home, "account.json"))
         if not isinstance(rec, dict) or not rec.get("email"):
             return None
-        if match_id(ident, fleet.id_list(cfg, "approvers")) is None:
+        if not is_owner(cfg, ident):
             return {"hidden": True}
         return {"email": str(rec["email"]), "org": str(rec["org"]) if rec.get("org") else None}
 

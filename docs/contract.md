@@ -484,6 +484,7 @@ of `claude.use("db")`. It runs one or two listeners, both on `127.0.0.1`:
 On the tunnel listener a verified email must also be in `serve.tunnel.allowed_emails` (default:
 the emails in `approvers` ∪ `release_managers` ∪ `askers`), or every route, `/api/state` included,
 answers 403 `not_allowed`. Listing a viewer there lets them read the board; only approvers decide.
+(`owners` are in the fallback set too.)
 When `allowed_emails` is set it is authoritative: an asker missing from it cannot reach the board
 (`board doctor` warns).
 
@@ -591,10 +592,18 @@ State (`/api/state` and every SSE frame):
 ```
 
 `account` is the Claude account the sessions run on, from `$BOARD_HOME/account.json` (the collector
-copies only `oauthAccount.emailAddress` / `organizationName` from `~/.claude.json`, mode 0600). Only
-an identity in `approvers` gets the email; everyone else gets `{"hidden": true}`. `null` when it is
-unknown or switched off (`BOARD_SHOW_ACCOUNT=0`, or `usage.show_account: false` in fleet.yaml). The
-operator never mirrors it to the Artifact db.
+copies only `oauthAccount.emailAddress` / `organizationName` from `~/.claude.json`, mode 0600). It
+is personal data: only an **owner** gets the email (fleet.yaml `owners`; when `owners` is empty,
+`approvers` count as owners, so a single-user board keeps working, and `board doctor` says to set
+`owners`). Approvers who are not owners, askers and viewers get `{"hidden": true}`, and so does
+every `/api/v1` key (`null` there). `null` when it is unknown or switched off
+(`BOARD_SHOW_ACCOUNT=0`, or `usage.show_account: false` in fleet.yaml). The operator's
+`operator.account_hint` follows the same rule (owners only; `null` for everyone else). The operator
+never mirrors either to the Artifact db.
+
+**Owners on the board vs. API keys.** The board's owner-only surfaces fall back to `approvers` when
+`owners` is empty. API key administration does not: with empty `owners` it fails closed (see "API
+keys").
 
 The shape matches what the page reads from the Artifact db (`sessions/*`, `decisions/*`, `tasks/*`,
 `approvals/*`, `messages/*` + replies, `meta/operator`, `meta/ledger`, `meta/resources`). `task` is the title of the
@@ -997,8 +1006,9 @@ atomically (a fresh 0600 temp file, then rename) under `apikeys.lock`:
 | `expire --expires D` (set or extend) | yes | no | no |
 | `scopes --scopes a,b` (revoke + reissue) | yes (active keys) | no | no |
 
-- `owners` is a list in `fleet.yaml`, above approvers for key administration only. Empty `owners`
-  fails closed: nobody can approve a request, rotate, re-expire or rescope.
+- `owners` is a list in `fleet.yaml`, above approvers for key administration. Empty `owners`
+  fails closed here: nobody can approve a request, rotate, re-expire or rescope. (The board's
+  owner-only surfaces, such as the account email, fall back to approvers instead.)
 - A listed person is anyone in `owners`, `approvers`, `release_managers` or
   `serve.tunnel.allowed_emails`.
 - Someone else's key is "no such key" (exit 1) to a non-owner's `show` and `revoke`, exactly as an
