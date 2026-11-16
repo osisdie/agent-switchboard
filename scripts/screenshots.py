@@ -12,7 +12,9 @@ session codes, example.com, no host names, emails or paths from this machine.
 Stable output: the page clock is frozen at DEMO_TIME (UTC, en-US), so relative times and dates
 are the same on every run. Chromium's rasterization still varies now and then: a few pixels,
 scattered over the page. An existing image is kept when the new render matches it within
-SAME_TOLERANCE (git stays clean). A visible change, even one digit, is clustered: it fails the
+SAME_TOLERANCE (git stays clean). Rarely (about one fresh render in ten on a starved CPU) a few
+glyphs of a variable-font label come out a fraction of a pixel off; a render that differs is
+therefore checked with up to RERENDERS fresh ones before the file is replaced. A visible change, even one digit, is clustered: it fails the
 per-tile cap and is written. Google Fonts load when the network allows; offline, the fallback
 fonts are used (the images then differ slightly).
 
@@ -30,6 +32,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 OUT = os.path.join(REPO, "docs", "assets", "screenshots")
 DEMO_TIME = dt.datetime(2026, 1, 15, 10, 30, tzinfo=dt.timezone.utc)
 MAX_BYTES = 200 * 1024
+RERENDERS = 2           # fresh renders that may still match the image on disk (see shoot_all)
 # When is a new render "the same" as the image on disk? Measured on this page: rasterization noise
 # moves at most ~16 pixels by more than `big` within any 16x16 tile at 2x (3 at 1x), scattered
 # over the page; a one-digit edit moves 19+ (1x) or 49+ (2x) pixels in one tile. So: every tile
@@ -187,38 +190,58 @@ def main(argv):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def render(browser, conv, page_url, name, args):
+    """One fresh render of shot NAME (a new browser context): WebP bytes."""
+    _alt, viewport, scheme, scale = SHOTS[name]
+    ctx = browser.new_context(viewport=viewport, device_scale_factor=scale, color_scheme=scheme,
+                              timezone_id="UTC", locale="en-US", reduced_motion="reduce")
+    try:
+        # The language is chosen before the page's pre-paint script reads it.
+        ctx.add_init_script("try { localStorage.setItem('switchboard.lang', 'en'); } catch (e) {}")
+        page = ctx.new_page()
+        page.clock.set_fixed_time(DEMO_TIME)
+        page.set_default_timeout(LOAD_TIMEOUT_MS)
+        page.goto(page_url, wait_until="load")
+        page.wait_for_function(READY_JS, polling=100)
+        page.evaluate(SETTLE_JS)
+        page.wait_for_timeout(300)
+        capture = prepare(page, name)
+        if args.eval:  # after the set-up, so it can reach an opened panel
+            page.evaluate(args.eval)
+            page.wait_for_timeout(100)
+        return to_webp(conv, capture())
+    finally:
+        ctx.close()
+
+
 def shoot_all(sync_playwright, page_url, names, args):
     """Render each shot into args.out (see the module docstring)."""
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, executable_path=os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE") or None)
         conv = browser.new_page()
         for name in names:
-            _alt, viewport, scheme, scale = SHOTS[name]
-            ctx = browser.new_context(viewport=viewport, device_scale_factor=scale, color_scheme=scheme,
-                                      timezone_id="UTC", locale="en-US", reduced_motion="reduce")
-            # The language is chosen before the page's pre-paint script reads it.
-            ctx.add_init_script("try { localStorage.setItem('switchboard.lang', 'en'); } catch (e) {}")
-            page = ctx.new_page()
-            page.clock.set_fixed_time(DEMO_TIME)
-            page.set_default_timeout(LOAD_TIMEOUT_MS)
-            page.goto(page_url, wait_until="load")
-            page.wait_for_function(READY_JS, polling=100)
-            page.evaluate(SETTLE_JS)
-            page.wait_for_timeout(300)
-            capture = prepare(page, name)
-            if args.eval:  # after the set-up, so it can reach an opened panel
-                page.evaluate(args.eval)
-                page.wait_for_timeout(100)
-            data = to_webp(conv, capture())
+            _alt, viewport, _scheme, scale = SHOTS[name]
             path = os.path.join(args.out, name + ".webp")
             old = open(path, "rb").read() if os.path.isfile(path) else None
-            if old and (old == data or same_image(conv, old, data, scale)):
+            same = lambda d: old == d or same_image(conv, old, d, scale)  # noqa: E731
+            data = render(browser, conv, page_url, name, args)
+            # Chromium now and then draws a variable-font instance (the Deck's Archivo ring labels,
+            # weight 760 at 82% width) slightly differently in a fresh page under CPU starvation:
+            # one render in ten, a few glyphs set a fraction of a pixel off. A real change shows in
+            # every render; a fluke does not repeat. So a render that differs from the image on
+            # disk is checked with up to RERENDERS fresh ones before the file is replaced.
+            if old and not same(data):
+                for _ in range(RERENDERS):
+                    again = render(browser, conv, page_url, name, args)
+                    if same(again):
+                        data = old
+                        break
+            if old and same(data):
                 print("%-16s %4dx%-4d @%dx  %6d bytes  (unchanged)" % (name, viewport["width"], viewport["height"], scale, len(old)))
             else:
                 with open(path, "wb") as fh:
                     fh.write(data)
                 print("%-16s %4dx%-4d @%dx  %6d bytes" % (name, viewport["width"], viewport["height"], scale, len(data)))
-            ctx.close()
         browser.close()
     return 0
 
