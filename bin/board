@@ -91,11 +91,13 @@
 #   board message reply MSG_ID --from CODE "text"|-
 #                                              store a session's reply (secrets redacted)
 #   board message show MSG_ID [--json]         the relay text, or "held" (never relay it)
-#   board apikey create --name N --owner WHO --by WHO [--scopes a,b] [--expires 90d|DATE] [--json]
-#   board apikey request --name N --by WHO [--scopes a,b] [--expires 90d|DATE]
-#   board apikey approve|revoke ID --by WHO | ls --by WHO [--all] [--json] | show ID --by WHO
-#   board apikey rotate ID --by OWNER [--grace 24h] | expire ID --expires D --by OWNER
-#   board apikey scopes ID --scopes a,b --by OWNER
+#   board apikey create --name N --owner WHO --by WHO [--scopes a,b] [--expires 90d|DATE]
+#                       [--rate N] [--test] [--json]
+#   board apikey request --name N --by WHO [--scopes a,b] [--expires 90d|DATE] [--json]
+#   board apikey approve ID --by OWNER [--scopes a,b] [--expires D] | revoke ID --by WHO
+#   board apikey ls --by WHO [--all] [--json] | show ID --by WHO [--json]
+#   board apikey rotate ID --by OWNER [--grace 24h] [--json] | expire ID --expires D --by OWNER
+#   board apikey scopes ID --scopes a,b --by OWNER [--json]
 #                                              API keys (lib/apikeys.py): shown once, only a
 #                                              peppered hash kept; owners administer every key,
 #                                              approvers issue to listed people, anyone requests

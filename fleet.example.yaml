@@ -30,6 +30,8 @@ release_managers: []
 # approve a key request (approvers can still issue keys to listed people or themselves).
 owners: []
 # owners: [owner@example.com, owner.backup@example.com]
+# apikeys:
+#   request_ttl_days: 14     # a key request no owner approved by then lapses (1-90)
 
 # Self-hosted board (bin/board-serve, 127.0.0.1 only); fleet-up starts it when enabled.
 # Its approvers / release_managers are emails (verified by Cloudflare Access) and "local"

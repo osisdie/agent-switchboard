@@ -1253,7 +1253,8 @@ rules (details in `docs/contract.md`, "API keys"):
   revoke, rotate with a grace window, set or extend the expiry, and change scopes (which revokes
   and reissues). Approvers issue keys to themselves or to people listed in `fleet.yaml`. Anyone
   else sees and revokes only their own keys, and can `request` one; it stays pending, and unusable,
-  until an owner approves it. Every change and every refusal is audited, never the key.
+  until an owner approves it (the owner can narrow its scopes), and lapses after 14 days. Every
+  change and every refusal is audited, never the key.
 - **Leaks are caught.** gitleaks has a rule for the key shape (only `tests/fixtures/` is
   allowlisted), and the secret guard and the hook redact `asb_live_…`/`asb_test_…` everywhere.
 

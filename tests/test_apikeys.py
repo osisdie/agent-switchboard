@@ -333,8 +333,13 @@ class Authorization(Base):
 
     def test_revoke_rules(self):
         theirs, _ = create(RM)
-        self.assertEqual(board("revoke", theirs, "--by", VIEWER).returncode, 4)
-        self.assertEqual(board("revoke", theirs, "--by", APPROVER).returncode, 4)
+        unknown = board("revoke", "zzzzzzzzzzzz", "--by", VIEWER)
+        for by in (VIEWER, APPROVER):                # someone else's key: exactly like an unknown id
+            r = board("revoke", theirs, "--by", by)
+            self.assertEqual((r.returncode, r.stdout), (unknown.returncode, unknown.stdout))
+            self.assertEqual(r.stderr.replace(theirs, "zzzzzzzzzzzz"), unknown.stderr)
+        self.assertEqual(apikeys.status(record(theirs), NOW), "active")
+        self.assertEqual([e["reason"] for e in events() if e["result"] == "refused"], ["not_authorized"] * 2)
         issued, _ = create(RM, APPROVER)
         board("revoke", issued, "--by", APPROVER, check=0)            # an approver revokes a key they issued
         board("revoke", theirs, "--by", OWNER, check=0)
@@ -386,6 +391,106 @@ class Authorization(Base):
         self.assertNotIn(key.rsplit("_", 1)[1], raw)
         self.assertNotIn(req["key"].rsplit("_", 1)[1], raw)
         self.assertNotIn(record(kid)["hash"], raw)
+
+
+class Review(Base):
+    """api-review of A1: lapsing requests, approve output, pepper safety, invisible characters."""
+
+    def request(self, by=VIEWER, now=NOW, *extra):
+        r = board("request", "--name", "req", "--by", by, "--json", *extra, now=now, check=0)
+        return json.loads(r.stdout)
+
+    def test_request_lapses(self):
+        req = self.request()
+        for later in (NOW + 14 * DAY, NOW + 3 * 365 * DAY):
+            before = record(req["id"])
+            r = board("approve", req["id"], "--by", OWNER, now=later)
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("request expired; ask again", r.stderr)
+            self.assertEqual(record(req["id"]), before)
+            self.assertEqual(apikeys.verify(req["key"], now=later), (None, "expired"))
+            self.assertEqual(board("expire", req["id"], "--expires", "30d", "--by", OWNER, now=later).returncode, 1)
+        rows = json.loads(board("ls", "--by", VIEWER, "--all", "--json", now=NOW + 14 * DAY).stdout)
+        self.assertEqual([(x["status"], x["reason"]) for x in rows], [("expired", "lapsed")])
+        self.assertEqual(json.loads(board("ls", "--by", VIEWER, "--json", now=NOW + 14 * DAY).stdout), [])
+        ev = [e for e in events() if e["action"] == "approve"]
+        self.assertEqual({(e["result"], e["reason"]) for e in ev}, {("refused", "lapsed")})
+        fresh = self.request(VIEWER, NOW + DAY)
+        board("approve", fresh["id"], "--by", OWNER, now=NOW + 14 * DAY, check=0)    # 13 days old: fine
+
+    def test_request_ttl_from_config(self):
+        with open(os.path.join(CFG, "fleet.yaml"), "a") as fh:
+            fh.write("apikeys:\n  request_ttl_days: 2\n")
+        try:
+            req = self.request()
+            self.assertEqual(board("approve", req["id"], "--by", OWNER, now=NOW + 2 * DAY).returncode, 1)
+        finally:
+            with open(os.path.join(CFG, "fleet.yaml"), "w") as fh:
+                fh.write(FLEET)
+
+    def test_approve_shows_scopes_and_age_and_may_narrow(self):
+        req = self.request(VIEWER, NOW, "--scopes", "read:state,read:tasks,tickets:read")
+        r = board("approve", req["id"], "--by", OWNER, "--scopes", "read:state,read:decisions", now=NOW + DAY)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("only narrow", r.stderr)
+        r = board("approve", req["id"], "--by", OWNER, "--scopes", "read:tasks", now=NOW + DAY + 3600000, check=0)
+        self.assertIn("scopes read:tasks (requested read:state,read:tasks,tickets:read)", r.stdout)
+        self.assertIn("requested 1d 1h ago", r.stdout)
+        self.assertEqual(record(req["id"])["scopes"], ["read:tasks"])
+        ev = [e for e in events() if e["action"] == "approve"][-1]
+        self.assertEqual((ev["scopes"], ev["requested_scopes"], ev["request_age_ms"]),
+                         (["read:tasks"], ["read:state", "read:tasks", "tickets:read"], DAY + 3600000))
+        other = self.request(RM)
+        r = board("approve", other["id"], "--by", OWNER, check=0)
+        self.assertIn("scopes read:state, requested 0h 0m ago", r.stdout)
+
+    def test_withdraw_vs_deny(self):
+        mine, theirs = self.request(VIEWER), self.request(RM)
+        self.assertIn("withdrawn", board("revoke", mine["id"], "--by", VIEWER, check=0).stdout)
+        self.assertIn("denied", board("revoke", theirs["id"], "--by", OWNER, check=0).stdout)
+        self.assertEqual((record(mine["id"])["revoke_reason"], record(theirs["id"])["revoke_reason"]),
+                         ("withdrawn", "denied"))
+
+    def test_no_new_pepper_over_existing_keys(self):
+        kid, key = create()
+        pep = os.path.join(home(), "secrets", "apikey.pepper")
+        os.unlink(pep)
+        for args in (("create", "--name", "x", "--owner", VIEWER, "--by", OWNER), ("request", "--name", "x", "--by", RM),
+                     ("rotate", kid, "--by", OWNER)):
+            r = board(*args)
+            self.assertEqual((r.returncode, r.stdout), (1, ""), args)
+            self.assertIn("apikey.pepper is missing but 1 key(s) exist", r.stderr)
+        self.assertFalse(os.path.lexists(pep))
+        self.assertEqual(len(os.listdir(os.path.join(home(), "apikeys"))), 1)
+
+    def test_pepper_written_whole_and_never_through_a_symlink(self):
+        create()
+        d = os.path.join(home(), "secrets")
+        self.assertEqual(os.listdir(d), ["apikey.pepper"])                 # no temp file left
+        self.assertEqual(os.path.getsize(os.path.join(d, "apikey.pepper")), 32)
+        kid, key = create()
+        real = os.path.join(d, "apikey.pepper")
+        os.rename(real, os.path.join(d, "elsewhere"))
+        os.symlink(os.path.join(d, "elsewhere"), real)
+        self.assertEqual(apikeys.verify(key, now=NOW), (None, "unknown"))
+        r = board("create", "--name", "x", "--owner", VIEWER, "--by", OWNER)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("symlink", r.stderr)
+
+    def test_invisible_characters_refused(self):
+        for name in ("a\u202eb", "zero\u200bwidth", "line\u2028sep", "x\ufeff"):
+            r = board("create", "--name", name, "--owner", VIEWER, "--by", OWNER)
+            self.assertEqual(r.returncode, 2, repr(name))
+        for who in ("vie\u200bwer@example.com", "viewer@exam\u202eple.com"):
+            r = board("create", "--name", "x", "--owner", who, "--by", OWNER)
+            self.assertEqual(r.returncode, 2, repr(who))
+            self.assertEqual(board("request", "--name", "x", "--by", who).returncode, 2)
+
+    def test_refused_show_is_audited(self):
+        theirs, _ = create(RM)
+        self.assertEqual(board("show", theirs, "--by", VIEWER).returncode, 1)
+        ev = [e for e in events() if e["action"] == "show"]
+        self.assertEqual([(e["result"], e["reason"], e["by"]) for e in ev], [("refused", "not_authorized", VIEWER)])
 
 
 class Gitleaks(unittest.TestCase):

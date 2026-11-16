@@ -20,7 +20,9 @@ Who may do what (--by WHO; "board:<who>" when the board page asks on someone's b
                                  release_managers, serve.tunnel.allowed_emails); ls/show their own
                                  keys; revoke their own keys or keys they issued
   anyone else                    ls/show/revoke their own keys; request a key for themselves (it
-                                 stays pending, and unusable, until an owner approves it)
+                                 stays pending, and unusable, until an owner approves it; a request
+                                 lapses after apikeys.request_ttl_days, default 14)
+Someone else's key does not exist for a non-owner: show and revoke answer "no such key".
 Matching is case-insensitive. Every change, and every refusal, is audited in events.jsonl
 (type "apikey"); never a key, never a hash.
 
@@ -28,13 +30,15 @@ Usage (through `board apikey ...`):
   apikeys.py create --name N --owner WHO --by WHO [--scopes a,b] [--expires 90d|YYYY-MM-DD]
                     [--rate N] [--test] [--json]
   apikeys.py request --name N --by WHO [--scopes a,b] [--expires 90d|YYYY-MM-DD] [--json]
-  apikeys.py approve ID --by OWNER [--expires 90d|YYYY-MM-DD]
+  apikeys.py approve ID --by OWNER [--scopes a,b] [--expires 90d|YYYY-MM-DD]
+                    (--scopes: the requested scopes or fewer)
   apikeys.py ls --by WHO [--owner WHO] [--all] [--json]
   apikeys.py show ID --by WHO [--json]
   apikeys.py revoke ID --by WHO
   apikeys.py rotate ID --by OWNER [--grace 0|30m|24h|7d] [--expires 90d|YYYY-MM-DD] [--json]
   apikeys.py expire ID --expires 90d|YYYY-MM-DD --by OWNER
   apikeys.py scopes ID --scopes a,b --by OWNER [--json]
+  --rate N: requests a minute (1-%(maxrate)d, default %(rate)d); --test: an asb_test_ key for the mock board.
 create, request, rotate and scopes print the new key alone on stdout (or {"id", "key", ...} with
 --json) and a note on stderr: copy it now, it is never shown again. ls hides revoked and expired
 keys unless --all.
@@ -57,6 +61,7 @@ import secrets
 import stat
 import sys
 import time
+import unicodedata
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import fleet  # noqa: E402
@@ -79,6 +84,7 @@ DAY_MS = 86400 * 1000
 DEFAULT_DAYS, MAX_DAYS, MAX_GRACE_DAYS = 90, 365, 7
 DEFAULT_RATE, MAX_RATE = 60, 600
 MAX_PENDING_PER_OWNER = 5
+DEFAULT_REQUEST_TTL_DAYS, MAX_REQUEST_TTL_DAYS = 14, 90
 NAME_MAX = 60
 EMAIL_RE = re.compile(r"[^@\s]{1,64}@[^@\s]{1,189}\.[^@\s.]{1,63}")
 CTL_RE = re.compile("[\x00-\x1f\x7f-\x9f]")
@@ -105,9 +111,26 @@ def identity(raw):
     if s.lower().startswith("board:"):
         s, via = s[len("board:"):].strip(), "board"
     s = s.lower()
-    if s != "local" and not (len(s) <= 254 and EMAIL_RE.fullmatch(s) and not CTL_RE.search(s)):
+    if s != "local" and not (len(s) <= 254 and EMAIL_RE.fullmatch(s) and not CTL_RE.search(s)
+                             and not invisible(s)):
         raise Bad("--by/--owner: an email or \"local\" (got %r)" % str(raw)[:60])
     return s, via
+
+
+def invisible(s):
+    """Unicode format and separator characters (bidi controls, zero-width, line/paragraph
+    separators): text that reads differently from what it is."""
+    return any(unicodedata.category(c) in ("Cf", "Zl", "Zp") for c in s)
+
+
+def request_ttl_ms(cfg=None):
+    """How long a key request may wait for an owner (fleet.yaml apikeys.request_ttl_days)."""
+    cfg = fleet.load_fleet() if cfg is None else cfg
+    a = cfg.get("apikeys") if isinstance(cfg.get("apikeys"), dict) else {}
+    d = a.get("request_ttl_days", DEFAULT_REQUEST_TTL_DAYS)
+    if not isinstance(d, int) or isinstance(d, bool) or not 1 <= d <= MAX_REQUEST_TTL_DAYS:
+        d = DEFAULT_REQUEST_TTL_DAYS
+    return d * DAY_MS
 
 
 def _ids(cfg, key):
@@ -182,28 +205,45 @@ def locked(home, wait_s=5.0):
 
 
 def pepper(home, create=False):
-    """The pepper bytes, or None when there is none yet (and create is False). A pepper file that
-    others can read, or of the wrong size, is refused rather than used."""
+    """The pepper bytes, or None when there is none yet (and create is False). Never follows a
+    symlink; a pepper file not owned by this user, readable by others, or of the wrong size is
+    refused rather than used. A new one is made only while no key exists (a lost pepper is
+    restored from a backup, never silently replaced: every key would stop working), and atomically
+    (a full temp file, then a hard link), so a crash never leaves an empty pepper."""
     path = os.path.join(home, PEPPER)
-    if create and not os.path.exists(path):
+    if create and not os.path.lexists(path):
+        n = len(load_all(home))
+        if n:
+            raise Bad("%s is missing but %d key(s) exist: restore it from your backup (without it no key can be "
+                      "checked), or move apikeys/ aside to start over; nothing written" % (PEPPER, n), 1)
         _mkdir_private(os.path.dirname(path))
+        tmp = "%s.tmp.%d.%s" % (path, os.getpid(), secrets.token_hex(4))
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         try:
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        except FileExistsError:
-            pass
-        else:
             with os.fdopen(fd, "wb") as fh:
                 fh.write(secrets.token_bytes(PEPPER_BYTES))
                 fh.flush()
                 os.fsync(fh.fileno())
+            try:
+                os.link(tmp, path)          # fails if another writer won: theirs is kept
+            except FileExistsError:
+                pass
+        finally:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
     try:
-        st = os.stat(path)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     except FileNotFoundError:
         return None
-    if stat.S_IMODE(st.st_mode) & 0o077:
-        raise Bad("%s is readable by others; chmod 600 it (and consider every key exposed)" % PEPPER, 1)
-    with open(path, "rb") as fh:
-        data = fh.read()
+    except OSError:
+        raise Bad("%s is not a regular file (a symlink?); refused" % PEPPER, 1) from None
+    with os.fdopen(fd, "rb") as fh:
+        st = os.fstat(fh.fileno())
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid():
+            raise Bad("%s is not a regular file owned by this user; refused" % PEPPER, 1)
+        if stat.S_IMODE(st.st_mode) & 0o077:
+            raise Bad("%s is readable by others; chmod 600 it (and consider every key exposed)" % PEPPER, 1)
+        data = fh.read(PEPPER_BYTES + 1)
     if len(data) != PEPPER_BYTES:
         raise Bad("%s is not %d bytes; keys cannot be checked" % (PEPPER, PEPPER_BYTES), 1)
     return data
@@ -256,24 +296,33 @@ def audit(home, ev):
 
 
 # ------------------------------------------------------------------ status (pure)
-def status(rec, now):
+def lapsed(rec, now, ttl_ms=None):
+    """A request no owner approved within the request TTL: it can never be approved."""
+    if rec.get("state") != "pending":
+        return False
+    ttl_ms = request_ttl_ms() if ttl_ms is None else ttl_ms
+    at = rec.get("created_at")
+    return not isinstance(at, int) or now - at >= ttl_ms
+
+
+def status(rec, now, ttl_ms=None):
     """active | pending | revoked | expired, as of now. A rotated key whose grace window is over
-    counts as revoked."""
+    counts as revoked; a request older than the request TTL counts as expired (lapsed)."""
     if rec.get("state") == "revoked":
         return "revoked"
     g = rec.get("grace_until")
     if isinstance(g, int) and g <= now:
         return "revoked"
     if rec.get("state") == "pending":
-        return "pending"
+        return "expired" if lapsed(rec, now, ttl_ms) else "pending"
     if not isinstance(rec.get("expires_at"), int) or rec["expires_at"] <= now:
         return "expired"
     return "active"
 
 
-def view(rec, now):
+def view(rec, now, ttl_ms=None):
     """What ls/show (and later /api/me) may show: never the hash."""
-    st = status(rec, now)
+    st = status(rec, now, ttl_ms)
     revoked_at = rec.get("revoked_at")
     if st == "revoked" and revoked_at is None:
         revoked_at = rec.get("grace_until")
@@ -283,7 +332,8 @@ def view(rec, now):
             "last_used_at": rec.get("last_used_at"), "status": st, "revoked_at": revoked_at,
             "revoked_by": rec.get("revoked_by"), "approved_by": rec.get("approved_by"),
             "rate_per_min": rec.get("rate_per_min"), "successor": rec.get("successor"),
-            "predecessor": rec.get("predecessor"), "grace_until": rec.get("grace_until")}
+            "predecessor": rec.get("predecessor"), "grace_until": rec.get("grace_until"),
+            "reason": "lapsed" if lapsed(rec, now, ttl_ms) else rec.get("revoke_reason") if st == "revoked" else None}
 
 
 # ------------------------------------------------------------------ parsing
@@ -337,9 +387,11 @@ def parse_grace(raw):
 
 
 def parse_name(raw):
+    if invisible(str(raw or "")):     # before the whitespace fold: U+2028/2029 count as \s
+        raise Bad("--name: no invisible, bidi or line-separator characters")
     s = re.sub(r"\s+", " ", str(raw or "")).strip()
     if not s or len(s) > NAME_MAX or CTL_RE.search(s):
-        raise Bad("--name: 1 to %d printable characters" % NAME_MAX)
+        raise Bad("--name: 1 to %d printable characters (no invisible or bidi characters)" % NAME_MAX)
     import guard  # noqa: WPS433 - only needed here
     if guard.changed(s)[1]:
         raise Bad("--name: looks like it holds a secret; pick a plain label")
@@ -478,7 +530,8 @@ def cmd_create(home, argv, pending=False):
     kind = "test" if o.get("test") else "live"
     with locked(home):
         if pending:
-            n = sum(1 for k in load_all(home) if k.get("owner") == owner and status(k, now) == "pending")
+            ttl = request_ttl_ms(cfg)
+            n = sum(1 for k in load_all(home) if k.get("owner") == owner and status(k, now, ttl) == "pending")
             if n >= MAX_PENDING_PER_OWNER:
                 raise Bad("%s has %d pending requests already; wait for an owner" % (owner, n), 1)
         pep = pepper(home, create=True)
@@ -507,22 +560,48 @@ def _one(home, argv, action, values, flags=()):
     return kid, o, by, via
 
 
+def _age(ms):
+    d, h = divmod(max(0, ms) // 3600000, 24)
+    return "%dd %dh" % (d, h) if d else "%dh %dm" % (h, max(0, ms) // 60000 % 60)
+
+
 def cmd_approve(home, argv):
-    kid, o, by, via = _one(home, argv, "approve", ("by", "expires"))
+    kid, o, by, via = _one(home, argv, "approve", ("by", "expires", "scopes"))
     now = now_ms()
+    ttl = request_ttl_ms()
     with locked(home):
         rec = load(home, kid)
         _owner_only(home, "approve", by, via, rec)
-        if status(rec, now) != "pending":
-            raise Bad("key %s is %s, not pending" % (kid, status(rec, now)), 1)
-        ttl = rec.get("requested_ttl_ms") if isinstance(rec.get("requested_ttl_ms"), int) else DEFAULT_DAYS * DAY_MS
+        if lapsed(rec, now, ttl):
+            audit(home, {"action": "approve", "by": by, "via": via, "key_id": kid, "owner": rec.get("owner"),
+                         "result": "refused", "reason": "lapsed", "request_age_ms": now - (rec.get("created_at") or 0)})
+            raise Bad("request expired; ask again (requests lapse after %d days)" % (ttl // DAY_MS), 1)
+        st = status(rec, now, ttl)
+        if st != "pending":
+            raise Bad("key %s is %s, not pending" % (kid, st), 1)
+        requested = list(rec.get("scopes") or [])
+        scopes = requested
+        if o.get("scopes"):
+            scopes = parse_scopes(o["scopes"])
+            wider = [x for x in scopes if x not in requested]
+            if wider:
+                raise Bad("--scopes may only narrow the request (%s); not requested: %s"
+                          % (",".join(requested), ",".join(wider)))
+        ttl_key = rec.get("requested_ttl_ms") if isinstance(rec.get("requested_ttl_ms"), int) else DEFAULT_DAYS * DAY_MS
         rec["expires_at"] = parse_expires(o.get("expires"), now) if o.get("expires") else \
-            min(now + ttl, now + MAX_DAYS * DAY_MS)
-        rec.update({"state": "active", "approved_by": by, "approved_at": now})
+            min(now + ttl_key, now + MAX_DAYS * DAY_MS)
+        age = now - (rec.get("created_at") or now)
+        rec.update({"state": "active", "approved_by": by, "approved_at": now, "scopes": scopes})
         save(home, rec)
-    audit(home, {"action": "approve", "by": by, "via": via, "key_id": kid, "name": rec.get("name"),
-                 "owner": rec.get("owner"), "expires_at": rec["expires_at"], "result": "ok"})
-    print("%s active (approved for %s, expires %s)" % (kid, rec.get("owner"), fmt_time(rec["expires_at"])))
+    ev = {"action": "approve", "by": by, "via": via, "key_id": kid, "name": rec.get("name"),
+          "owner": rec.get("owner"), "scopes": scopes, "request_age_ms": age, "expires_at": rec["expires_at"],
+          "result": "ok"}
+    if scopes != requested:
+        ev["requested_scopes"] = requested
+    audit(home, ev)
+    print("%s active: approved for %s, scopes %s%s, requested %s ago, expires %s" % (
+        kid, rec.get("owner"), ",".join(scopes), " (requested %s)" % ",".join(requested) if scopes != requested else "",
+        _age(age), fmt_time(rec["expires_at"])))
     return 0
 
 
@@ -534,17 +613,21 @@ def cmd_revoke(home, argv):
         r = roles(fleet.load_fleet(), by)
         mine = rec.get("owner") == by or ("approver" in r and rec.get("created_by") == by)
         if "owner" not in r and not mine:
-            _deny(home, "revoke", by, via, "--by %s may revoke only their own keys (or keys they issued, as an "
-                  "approver)" % by, kid, rec.get("owner"))
+            # someone else's key does not exist for this caller: the same answer as an unknown id
+            audit(home, {"action": "revoke", "by": by, "via": via, "key_id": kid, "owner": rec.get("owner"),
+                         "result": "refused", "reason": "not_authorized"})
+            raise Bad("no such key: %s" % kid, 1)
         before = status(rec, now)
         if before == "revoked":
             raise Bad("key %s is already revoked" % kid, 1)
-        rec.update({"state": "revoked", "revoked_at": now, "revoked_by": by,
-                    "revoke_reason": "denied" if before == "pending" else "revoked"})
+        reason = "revoked"
+        if rec.get("state") == "pending":
+            reason = "withdrawn" if rec.get("owner") == by else "denied"
+        rec.update({"state": "revoked", "revoked_at": now, "revoked_by": by, "revoke_reason": reason})
         save(home, rec)
     audit(home, {"action": "revoke", "by": by, "via": via, "key_id": kid, "name": rec.get("name"),
-                 "owner": rec.get("owner"), "was": before, "result": "ok"})
-    print("%s revoked" % kid)
+                 "owner": rec.get("owner"), "was": before, "reason": reason, "result": "ok"})
+    print("%s %s" % (kid, reason))
     return 0
 
 
@@ -600,6 +683,8 @@ def cmd_expire(home, argv):
         st = status(rec, now)
         if st == "revoked":
             raise Bad("key %s is revoked" % kid, 1)
+        if lapsed(rec, now):
+            raise Bad("request expired; ask again", 1)
         before = rec.get("expires_at")
         if st == "pending":
             rec["requested_ttl_ms"] = at - now
@@ -628,8 +713,8 @@ def cmd_ls(home, argv):
     by, _ = identity(o["by"])
     cfg = fleet.load_fleet()
     want = identity(o["owner"])[0] if o.get("owner") else None
-    now = now_ms()
-    rows = [view(r, now) for r in load_all(home) if _visible(cfg, by, r) and (want is None or r.get("owner") == want)]
+    now, ttl = now_ms(), request_ttl_ms(cfg)
+    rows = [view(r, now, ttl) for r in load_all(home) if _visible(cfg, by, r) and (want is None or r.get("owner") == want)]
     if not o.get("all"):
         rows = [r for r in rows if r["status"] in ("active", "pending")]
     rows.sort(key=lambda r: (r.get("created_at") or 0, r["id"]))
@@ -642,7 +727,8 @@ def cmd_ls(home, argv):
     head = ("ID", "NAME", "OWNER", "SCOPES", "CREATED", "EXPIRES", "LAST USED", "STATUS")
     table = [head] + [(r["id"], r["name"] or "", r["owner"] or "", ",".join(r["scopes"]), fmt_time(r["created_at"]),
                        fmt_time(r["expires_at"]), fmt_time(r["last_used_at"]),
-                       r["status"] + (" (grace)" if r["status"] == "active" and r["grace_until"] else ""))
+                       r["status"] + (" (grace)" if r["status"] == "active" and r["grace_until"] else "")
+                       + (" (lapsed)" if r["reason"] == "lapsed" else ""))
                       for r in rows]
     w = [max(len(str(row[i])) for row in table) for i in range(len(head))]
     for row in table:
@@ -651,17 +737,19 @@ def cmd_ls(home, argv):
 
 
 def cmd_show(home, argv):
-    kid, o, by, _ = _one(home, argv, "show", ("by",), ("json",))
+    kid, o, by, via = _one(home, argv, "show", ("by",), ("json",))
     rec = load(home, kid)
     if not _visible(fleet.load_fleet(), by, rec):
+        audit(home, {"action": "show", "by": by, "via": via, "key_id": kid, "owner": rec.get("owner"),
+                     "result": "refused", "reason": "not_authorized"})
         raise Bad("no such key: %s" % kid, 1)   # someone else's key: not even its existence
     v = view(rec, now_ms())
     if o.get("json"):
         print(json.dumps(v, ensure_ascii=False, sort_keys=True))
         return 0
     for k in ("id", "name", "owner", "kind", "scopes", "status", "created_at", "created_by", "approved_by",
-              "expires_at", "last_used_at", "rate_per_min", "revoked_at", "revoked_by", "grace_until",
-              "predecessor", "successor"):
+              "expires_at", "last_used_at", "rate_per_min", "revoked_at", "revoked_by", "reason",
+              "grace_until", "predecessor", "successor"):
         val = v[k]
         if k.endswith("_at") or k == "grace_until":
             val = fmt_time(val)
@@ -687,7 +775,7 @@ COMMANDS = {
 
 def usage():
     return (__doc__ % {"scopes": ", ".join(SCOPES), "default": DEFAULT_DAYS, "max": MAX_DAYS,
-                       "grace": MAX_GRACE_DAYS}).strip()
+                       "grace": MAX_GRACE_DAYS, "rate": DEFAULT_RATE, "maxrate": MAX_RATE}).strip()
 
 
 def main(argv):

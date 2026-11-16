@@ -710,20 +710,26 @@ atomically (a fresh 0600 temp file, then rename) under `apikeys.lock`:
   "kind": "live|test", "scopes": ["read:state"], "hash": "<hex>",
   "created_by": "owner@example.com", "created_at": 0, "expires_at": 0,
   "state": "active|pending|revoked", "revoked_at": null, "revoked_by": null,
-  "revoke_reason": "revoked|denied|rotated|rescoped", "last_used_at": null, "rate_per_min": 60,
+  "revoke_reason": "revoked|denied|withdrawn|rotated|rescoped", "last_used_at": null, "rate_per_min": 60,
   "approved_by": null, "approved_at": null, "requested_ttl_ms": 0,
   "predecessor": null, "successor": null, "grace_until": null }
 ```
 
 - `hash` = HMAC-SHA256(pepper, the whole key), compared with `hmac.compare_digest`. The pepper is
-  32 random bytes in `secrets/apikey.pepper` (0600, made on the first create or request). A copy
-  of `apikeys/` alone is useless; a pepper file that others can read is refused, not used.
+  32 random bytes in `secrets/apikey.pepper` (0600). It is made on the first create or request,
+  atomically (a full temp file, then a hard link), and **only while no key exists**: with keys
+  present and the pepper missing, every command that would need it exits 1 and says to restore it
+  from a backup. A copy of `apikeys/` alone is useless. A pepper that is a symlink, not owned by
+  this user, readable by others or not 32 bytes is refused, not used.
 - **The key is shown once**: create, request, rotate and scopes print it alone on stdout (or
   `{"id", "key", ...}` with `--json`) and say on stderr that it is never shown again. It is never
   stored, logged or audited, and `ls`/`show` never print the hash.
 - **Status**, computed as of now: `revoked` (`state` revoked, or a rotated key whose `grace_until`
-  has passed), `pending` (a request no owner has approved yet), `expired` (`expires_at` passed),
-  else `active`. Only an active key verifies. `last_used_at` is written at most once a minute.
+  has passed), `pending` (a request no owner has approved yet), `expired` (`expires_at` passed, or
+  a request older than `apikeys.request_ttl_days`, default 14: **lapsed**), else `active`. Only an
+  active key verifies. `ls`/`show` add `reason`: `lapsed`, or the `revoke_reason`. A lapsed
+  request can never be approved or re-expired ("request expired; ask again"): its secret was
+  handed out when it was requested. `last_used_at` is written at most once a minute.
 - Expiry: `--expires Nd|YYYY-MM-DD` (a date means through that day, UTC). Default 90 days, at most
   365 days from now, never "never". A request's lifetime starts when it is approved.
 - Scopes: `read:state`, `read:decisions`, `read:tasks`, `read:messages`, `tasks:write`,
@@ -737,9 +743,9 @@ atomically (a fresh 0600 temp file, then rename) under `apikeys.lock`:
 |---|---|---|---|
 | `create --owner P` (active at once) | any P | P = themselves or a listed person | no: `request` |
 | `request` (pending, for themselves) | yes | yes | yes (at most 5 pending each) |
-| `approve` a request | yes | no | no |
+| `approve [--scopes a,b]` a request (the requested scopes, or fewer) | yes | no | no |
 | `ls` / `show` | every key | their own keys | their own keys |
-| `revoke` | any key (a pending one = denied) | their own, or keys they issued | their own |
+| `revoke` | any key (someone else's pending request = denied) | their own, or keys they issued | their own (their own pending request = withdrawn) |
 | `rotate [--grace D]` | yes (active keys) | no | no |
 | `expire --expires D` (set or extend) | yes | no | no |
 | `scopes --scopes a,b` (revoke + reissue) | yes (active keys) | no | no |
@@ -748,17 +754,23 @@ atomically (a fresh 0600 temp file, then rename) under `apikeys.lock`:
   fails closed: nobody can approve a request, rotate, re-expire or rescope.
 - A listed person is anyone in `owners`, `approvers`, `release_managers` or
   `serve.tunnel.allowed_emails`.
-- Someone else's key is "no such key" (exit 1) to a non-owner's `show`: not even its existence.
+- Someone else's key is "no such key" (exit 1) to a non-owner's `show` and `revoke`, exactly as an
+  unknown id: not even its existence.
+- `approve` prints and audits the scopes it grants (and the requested ones when narrowed) and the
+  request's age.
+- Names and identities refuse control characters and Unicode format or separator characters
+  (bidi controls, zero-width, U+2028/2029).
 - **Rotate** creates a successor with the same owner, name and scopes (new expiry: `--expires`, else
   90 days) and links both ways (`successor` / `predecessor`). The old key keeps working until
   `grace_until` (`--grace 0|Nm|Nh|Nd`, at most 7 days; default 0 = revoked now). **Scopes** does
   the same with new scopes, the old key revoked at once and the expiry kept. Only an active key that
   was not replaced yet can be rotated or rescoped.
 
-**Audit.** Every change and every refusal appends to `events.jsonl`:
-`{"ts", "type": "apikey", "action": "create|request|approve|revoke|rotate|scopes|expire", "by",
-"via": "cli|board", "key_id", "owner", "name", "result": "ok|refused", "reason"?, ...}`. Never the
-key, never the hash.
+**Audit.** Every change and every refusal (a `show` of someone else's key included) appends to
+`events.jsonl`: `{"ts", "type": "apikey", "action": "create|request|approve|revoke|rotate|scopes|
+expire|show", "by", "via": "cli|board", "key_id", "owner", "name", "result": "ok|refused", "reason"?,
+...}` (`approve` adds `scopes`, `requested_scopes` when narrowed, `request_age_ms`). Never the key,
+never the hash.
 
 **Exit codes** (`board apikey`): 0 ok, 1 unknown key or a key in the wrong state, 2 usage (an
 unknown scope, a bad date or identity), 4 not authorized (nothing written), 8 the key store is busy.
