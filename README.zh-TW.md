@@ -480,7 +480,21 @@ pane 標題裡的任務、執行中或閒置、記憶體用量）、已用的 co
   連續失敗時會暫停該追蹤系統。
 
 `board ticket doctor` 檢查每個追蹤系統，並告訴你 token 是否已設定（絕不顯示值）。
-寫入、把工單接成任務，以及看板上的工單面板之後才會加入（`docs/design/tickets-and-api.md`）。
+
+**接手工單**。approver 把工單交給某個 session：`board ticket take WEB-12 --session API --by <你>`，
+或在看板上用 `POST /api/tickets/take`。看板會建立一個連到該工單的任務，operator 把固定格式的
+`[BOARD ticket WEB-12] taken for API …` 轉送給那個 session。接著追蹤系統會（可選地）收到一則留言、
+移到 in-progress、設定負責人；其中任何一步失敗，接手仍然成立（`partial`）。已被接手的工單會被拒絕。
+
+- **授權範圍**（擁有者定的規則）。session 用 `board ticket show` 核對轉送內容，
+  之後可以在那張工單上依 delivery harness 一路做到開出 PR/MR（含）。
+  進度留言與移到 in-progress 由它以自己的身分做（`board ticket comment|transition --session <CODE>`），
+  絕不借用核可者的 `--by`。
+- **絕不授權的事**。合併、production 部署、關閉或取消工單、其他工單或 repo，以及任何紅線。
+- **留言**。從看板發出的留言（`board ticket comment`、接手時的留言）都會經過機密防護，
+  結尾加上 `(via agent-switchboard)`，不含 email。
+
+`board ticket release` 結束接手。看板上的工單面板之後才會加入（`docs/design/tickets-and-api.md`）。
 
 ### Session 動作：Remote Control 與壓縮
 

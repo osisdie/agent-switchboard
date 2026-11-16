@@ -1,7 +1,8 @@
 # agent-switchboard: tickets on the board + open API / MCP / developer portal (design)
 
-Status: agreed, with the decisions in "Decisions" below. T1 (tickets core) is implemented; see
-"Implementation notes (T1)" at the end for where it differs from this text. The binding formats
+Status: agreed, with the decisions in "Decisions" below. T1 (tickets core) and T3 (writes, take,
+relay) are implemented; see the implementation notes at the end for where they differ from this
+text. The binding formats
 are in `docs/contract.md`.
 
 ## 1. Data model and files
@@ -351,3 +352,22 @@ Where T1 differs from the text above (`docs/contract.md`, "Tickets", is binding)
 - **The route** answers 403 `no_approvers` when approvers and release_managers are both empty, and
   403 `not_approver` otherwise; the refusal is audited as a `ticket` event.
 - **Mock:** `BOARD_MOCK=1` already loads only `fake` trackers; the rest of mock mode is A4.
+
+## Implementation notes (T3)
+
+- **Writes** are configured per tracker (`comment`, `transition` with its `states`, `assign`), with
+  POST/PUT/PATCH and a JSON body template filled by type; `ref` optionally picks the new comment's
+  id. `fake` trackers support all three and log them to `tickets/fake-writes.jsonl`.
+- **Take** follows the lifecycle in section 2, with the tracker's `take:` config (`transition`,
+  `assign`, `comment` with `{task_id}`, `{session}`, `{key}`) as the default upstream writes; the
+  request can skip each (`comment: false`, `transition: false`, `assign: false`) or give its own
+  comment. `board task new` gained `--ticket TRACKER:KEY [--ticket-url URL]`.
+- **The relay** text follows decision Q4 (not the earlier "plan stage" wording) and names the
+  check: `Verify with board ticket show TRACKER:KEY`. Tracker text in it is defanged (one line,
+  no brackets or double quotes). `--watch` prints `ticket KEY taken <msgId>` (and `released`): the
+  message id is added so the operator can run `board message show`.
+- **Release** is implemented (a `released` relay ends the authority); reassign is release + take.
+  A link becomes `done` lazily, when it is read after its task reached `maintain` or ended. The
+  5-minute refresh and the drift badge come with the board panel (T4).
+- `board ticket show` is the worker's check: exit 0 only for one active take, and it reports
+  whether `taken_by` is an approver now.

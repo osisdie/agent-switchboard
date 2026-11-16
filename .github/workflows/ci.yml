@@ -93,3 +93,5 @@ jobs:
         run: python3 tests/test_api_v1.py -v
       - name: tickets tests
         run: python3 tests/test_tickets.py -v
+      - name: ticket take tests
+        run: python3 tests/test_tickets_take.py -v

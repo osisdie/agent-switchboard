@@ -58,6 +58,11 @@ listeners (docs/contract.md, "Local adapter API"):
                                        Sec-Fetch-Site (else 403 csrf, before anything else);
                                        approvers ∪ release_managers only, checked before any
                                        tracker call; cached, redacted
+  POST /api/tickets/take               {"ref", "session", "comment"?, "transition"?, "assign"?}
+                                       (approvers only): task + link + a ticket relay, then the
+                                       tracker's take writes; 409 already_taken
+  POST /api/tickets/<ref>/comment|transition|assign|release   {"text"}|{"to"}|{"who"}|{}
+                                       (approvers only; comments carry "(via agent-switchboard)")
 
 --check prints the resolved settings and exits. --watch serves nothing: it prints one line per
 item the local-mode operator must relay (see prompts/board-operator.md, "Local mode").
@@ -638,6 +643,11 @@ def cards_for(sessions, approver):
 
 
 # Why a recorded answer was not delivered (decision status_reason; the page words them).
+# Q3 (ticket text for approvers and release managers only): lib/tickets/viewer.py, kept under these
+# names here for the routes that build board state.
+from tickets.viewer import tasks_for, ticket_text_for  # noqa: E402,F401
+
+
 REASON_CODES = ("screen", "partial", "moved_on", "timeout", "not_approver", "unknown_session", "operator", "config")
 UNDELIVERED = ("stale", "timeout", "unauthorized")
 
@@ -1070,6 +1080,55 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.send_json(502, {"error": "ticket_upstream", "detail": "unexpected error"})
         return self.send_json(200, tickets.redact_tree(t))
 
+    def ticket_reply(self, fn):
+        """Run a ticket write; TicketError -> its status and {error, detail, ...}."""
+        try:
+            out = fn()
+        except tickets.TicketError as exc:
+            extra = {"Retry-After": str(int(exc.retry_after))} if exc.status == 429 and exc.retry_after else None
+            return self.send_json(exc.status, exc.to_json(), extra)
+        except Exception as exc:  # noqa: BLE001 - never a traceback (or a header) in a response
+            log("tickets: unexpected %s" % type(exc).__name__)
+            return self.send_json(500, {"error": "ticket_failed", "detail": "unexpected error"})
+        self.hub_kick()
+        return self.send_json(200, tickets.redact_tree(out))
+
+    def ticket_take(self, body, ident, via):
+        """POST /api/tickets/take {ref, session, comment?, transition?, assign?}: approvers only,
+        checked (and a refusal audited) before anything is fetched, sent or written. `comment`:
+        a string (scrubbed, footer added), false to skip, absent for the tracker's take.comment."""
+        from tickets import writes  # noqa: WPS433
+        ref, session = body.get("ref"), body.get("session")
+        c, tr, asg = body.get("comment"), body.get("transition", True), body.get("assign", True)
+
+        def run():
+            writes.checked(ident, "take", ref, via, self.server.home)
+            if not isinstance(ref, str) or not isinstance(session, str):
+                raise tickets.TicketError("bad_body", "ref and session must be strings")
+            if not (c is None or c is False or isinstance(c, str)) or not isinstance(tr, bool) or not isinstance(asg, bool):
+                raise tickets.TicketError("bad_body", "comment: string|false; transition, assign: booleans")
+            return writes.take(ref, session, ident, via=via, home=self.server.home,
+                               comment_text=c if isinstance(c, str) else None, do_comment=c is not False,
+                               do_transition=tr, do_assign=asg)
+        return self.ticket_reply(run)
+
+    def ticket_write(self, raw_ref, op, body, ident, via):
+        """POST /api/tickets/<ref>/comment {text} | transition {to} | assign {who} | release {}:
+        approvers only, checked (and a refusal audited) before anything is sent or written."""
+        from tickets import writes  # noqa: WPS433
+        ref = urllib.parse.unquote(raw_ref)[:tickets.REF_MAX + 1]
+
+        def run():
+            writes.checked(ident, op, ref, via, self.server.home)
+            if op == "release":
+                return writes.release(ref, ident, via=via, home=self.server.home)
+            field = {"comment": "text", "transition": "to", "assign": "who"}[op]
+            v = body.get(field)
+            if not isinstance(v, str):
+                raise tickets.TicketError("bad_body", "%s must be a string" % field)
+            return getattr(writes, op)(ref, v, ident, via=via, home=self.server.home)
+        return self.ticket_reply(run)
+
     def state_for(self, ident):
         with self.server.hub.cond:
             state = dict(self.server.hub.state)
@@ -1078,7 +1137,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                       "can_message": match_id(ident, sorted(deciders(cfg))) is not None,
                       "account": self.account_for(ident, cfg), "page_version": page_version()})
         state["sessions"] = cards_for(state.get("sessions"), match_id(ident, fleet.id_list(cfg, "approvers")) is not None)
-        return state
+        return ticket_text_for(state, match_id(ident, sorted(deciders(cfg))) is not None)
 
     def account_for(self, ident, cfg):
         """The Claude account the sessions run on: {email, org} for approvers, {hidden: true} for
@@ -1183,6 +1242,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if m:
                 body = self.read_body()
                 return self.release(m.group(1), body, ident, via)
+            if path == "/api/tickets/take":
+                body = self.read_body()
+                return self.ticket_take(body, ident, via)
+            m = re.fullmatch(r"/api/tickets/([^/]+)/(comment|transition|assign|release)", path)
+            if m:
+                body = self.read_body()
+                return self.ticket_write(m.group(1), m.group(2), body, ident, via)
             if path == "/api/messages":
                 body = self.read_body()
                 return self.message(body, ident, via)
@@ -1872,7 +1938,14 @@ def actionable(home):
     for path in glob.glob(os.path.join(home, "messages", "*.json")):
         m = read_json(path)
         if isinstance(m, dict) and m.get("status") == "new":
-            out.append((as_int(m.get("created_at")), "message %s new" % m.get("id"), ("m", m.get("id"))))
+            tk = m.get("ticket") if isinstance(m.get("ticket"), dict) else {}
+            if m.get("kind") == "ticket" and m.get("event") in ("taken", "released") \
+                    and tickets.KEY_RE.fullmatch(str(tk.get("key") or "")):
+                # A ticket take/release: relay `board message show <id>` ([BOARD ticket KEY] ...).
+                out.append((as_int(m.get("created_at")), "ticket %s %s %s" % (tk["key"], m["event"], m.get("id")),
+                            ("m", m.get("id"))))
+            else:
+                out.append((as_int(m.get("created_at")), "message %s new" % m.get("id"), ("m", m.get("id"))))
     for r in lessons.board_view(home, 10 ** 6):   # a new auto lesson waits for the operator's note
         if r.get("status") == "candidate" and r.get("source") == "auto" and not r.get("cause") and not r.get("resolution"):
             out.append((as_int(r.get("first_seen")), "lesson %s candidate" % r["id"], ("l", r["id"])))
