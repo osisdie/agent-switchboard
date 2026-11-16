@@ -42,6 +42,11 @@ NOW = 1_800_000_000_000
 DAY = 86400 * 1000
 
 
+def secret_of(key):
+    """The secret part of a key, by position: base64url secrets can contain "_" themselves."""
+    return key[len("asb_live_") + apikeys.KID_LEN + 1:]
+
+
 def home():
     return os.environ["BOARD_HOME"]
 
@@ -97,7 +102,7 @@ class ShownOnce(Base):
         self.assertTrue(apikeys.KEY_RE.fullmatch(key))
         self.assertIn("never shown again", r.stderr)
         self.assertNotIn(key, r.stderr)
-        secret = key.rsplit("_", 1)[1]
+        secret = secret_of(key)
         stored = tree_bytes()
         self.assertNotIn(secret.encode(), stored)          # not in any file: records, pepper, events
         kid = key.split("_")[2]
@@ -388,8 +393,8 @@ class Authorization(Base):
         self.assertEqual(acts, ["create", "rotate", "expire", "request", "approve", "revoke"])
         with open(os.path.join(home(), "events.jsonl"), encoding="utf-8") as fh:
             raw = fh.read()
-        self.assertNotIn(key.rsplit("_", 1)[1], raw)
-        self.assertNotIn(req["key"].rsplit("_", 1)[1], raw)
+        self.assertNotIn(secret_of(key), raw)
+        self.assertNotIn(secret_of(req["key"]), raw)
         self.assertNotIn(record(kid)["hash"], raw)
 
 
@@ -576,11 +581,11 @@ class Redaction(unittest.TestCase):
             for text in (key, "use %s please" % key, "Authorization: Bearer " + key, '{"k": "%s"}' % key,
                          "curl -H 'X-Key: %s' http://127.0.0.1/api/v1/whoami" % key):
                 out = guard.scrub(text)
-                self.assertNotIn(key.rsplit("_", 1)[1], out, text)
+                self.assertNotIn(secret_of(key), out, text)
                 self.assertIn("[REDACTED]", out)
             r = subprocess.run([sys.executable, os.path.join(REPO, "lib", "guard.py"), "scrub-out"],
                                input=json.dumps({"note": "key " + key}), capture_output=True, text=True)
-            self.assertNotIn(key.rsplit("_", 1)[1], r.stdout)
+            self.assertNotIn(secret_of(key), r.stdout)
 
     def test_hook_redacts_keys(self):
         if not shutil.which("jq"):
@@ -591,7 +596,7 @@ class Redaction(unittest.TestCase):
         key = apikeys.new_key(tempfile.mkdtemp(dir=TMP), "live")[1]
         r = subprocess.run(["jq", "-r", jq_def + " .[] | redact"], input=json.dumps(["export K=x; echo " + key]),
                            capture_output=True, text=True, check=True)
-        self.assertNotIn(key.rsplit("_", 1)[1], r.stdout)
+        self.assertNotIn(secret_of(key), r.stdout)
         self.assertIn("[REDACTED]", r.stdout)
 
 
