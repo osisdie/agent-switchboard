@@ -1,7 +1,7 @@
 # agent-switchboard: tickets on the board + open API / MCP / developer portal (design)
 
-Status: agreed, with the decisions in "Decisions" below. T1 (tickets core) and T3 (writes, take,
-relay) are implemented; see the implementation notes at the end for where they differ from this
+Status: agreed, with the decisions in "Decisions" below. T1 (tickets core), T3 (writes, take,
+relay) and T4 (the board panel) are implemented; see the implementation notes at the end for where they differ from this
 text. The binding formats
 are in `docs/contract.md`.
 
@@ -385,3 +385,16 @@ Where T1 differs from the text above (`docs/contract.md`, "Tickets", is binding)
 - **Transport:** Streamable HTTP with JSON responses only (no SSE stream, no session id); stdio is
   newline-delimited JSON-RPC. The stdio client refuses redirects and plain http to a non-loopback
   host, so the key never leaves for another host or in clear text.
+
+## Implementation notes (T4)
+
+- The panel is a section of `artifact/board.html` ("Tickets"), present only for approvers ∪
+  release managers (Q3); approvers get the actions. Take and release have a confirm step that
+  shows the Q4 text (the same words as the relay, `lib/tickets/writes.py` `AUTHORIZES`).
+- `GET /api/tickets/<ref>` also returns `link` (the newest take) and `tracker` (capabilities,
+  states, what a take does upstream), so the panel needs no other route.
+- The 5-minute refresh runs in the page, only while it is visible and a ticket is shown or taken;
+  the drift badge compares the tracker's `done` category with a task that is still going. Session
+  cards get a `KEY taken` / `KEY closed upstream` chip from `task.ticket` (approvers and release
+  managers only).
+- Demo mode has three sample tickets; Artifact mode shows a note (the page cannot reach trackers).
