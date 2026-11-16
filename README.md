@@ -590,7 +590,8 @@ The avatar at the top right of the board opens a small menu:
   a request from this machine) or your email (verified by Cloudflare Access), from
   `GET /api/me`. On the Artifact board: your claude.ai account, and whether you can edit the board.
   The demo shows a sample identity.
-- **Your roles:** approver, release manager, or viewer.
+- **Your roles:** approver, release manager, asker (messages only), or viewer. An asker gets the
+  message composer but no answer buttons.
 - **Theme:** Light, Dark or System. The choice is kept in this browser (`localStorage`; if storage
   is blocked it lasts for the page view) and applied before the page paints, so there is no flash.
   Inside the claude.ai viewer, a theme the viewer has set wins: the switcher then shows it and is
@@ -969,8 +970,9 @@ with `hooks/board-statusline-tap.sh` (your command moves to `BOARD_STATUSLINE_NE
 Hover or focus the usage meter (on a phone, tap it) for the details: both windows with the percent
 used and when they reset, when usage was last reported, the threshold reached, and the account the
 sessions run on. The account comes from `~/.claude.json` (only `oauthAccount.emailAddress` and
-`organizationName`, never a token) and is shown to **approvers only**; everyone else, and every
-viewer of the Artifact board, sees "account: hidden". Turn it off with `BOARD_SHOW_ACCOUNT=0` or
+`organizationName`, never a token) and is shown to **owners only** (`owners` in `fleet.yaml`; with
+no owners set, approvers). Approvers who are not owners, askers, everyone else, and every viewer of
+the Artifact board see "account: hidden". Turn it off with `BOARD_SHOW_ACCOUNT=0` or
 `usage: {show_account: false}` in `fleet.yaml`.
 
 Every other tile, meter and pill in the header explains itself the same way (hover, focus or tap;
@@ -1138,10 +1140,16 @@ The tunnel listener **refuses to start** without `hostname`, `team_domain`, `aud
 - **With empty `approvers`, every answer is refused.** The identity is checked against
   `approvers` / `release_managers` before anything is written, so a refused answer never touches
   the decision. In particular, it can't cancel an approver's answer that is waiting to be relayed.
-  Only approvers and release managers send messages.
+  Only approvers, release managers and askers send messages.
+- **Askers** (`askers` in `fleet.yaml`) see the board as a viewer does, and the only thing they
+  may write is a message to sessions: no answers, no settings, no tickets. Their messages reach sessions as
+  `[BOARD asker <id>] from <email> (an asker, not an approver: information only, …)`, never as the
+  owner's, at most 10 per 10 minutes. Use it for someone who needs to talk to sessions, instead of
+  making them an approver.
 - On the tunnel, a verified email must also be in `serve.tunnel.allowed_emails` (default: the
-  emails in `approvers` ∪ `release_managers`). Everyone else gets 403, even for reading. Add a
-  read-only viewer there if you want one.
+  emails in `approvers` ∪ `release_managers` ∪ `askers`). Everyone else gets 403, even for
+  reading. Add a read-only viewer there if you want one. When it is set it wins, and
+  `board doctor` warns about askers missing from it.
 - Sessions are sent with an allowlist of fields (no `cwd`, pid or session id). `GET /api/me` is
   built from the verified identity and `fleet.yaml` only; it never echoes a request header.
 - Every write is logged to `events.jsonl` as `type: "serve"`, with the identity and `via`
@@ -1394,7 +1402,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `lib/pomodoro.py` | Pomodoro timer and daily tallies (`pomodoro.json`) for the board and `board pomodoro` |
 | `lib/resources.py` | Resources sampler (memory, disks, OOM, per-session processes and teammates) for `resources.json`, the snapshot digest and `board resources` |
 | `docs/design/` | Design notes, e.g. `resources-and-scheduling.md` (resources, scheduler, lessons) |
-| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), the resources sampler (`test_resources.py`, fixture `/proc`), the secret guardrails (`test_guard.py`), API keys (`test_apikeys.py`), the public API and its tunnel exposure (`test_api_v1.py`), the card extras (`test_cards.py`), Remote Control (`test_rc.py`, scripted tmux in `fake_tmux.py`), the pomodoro timer (`test_pomodoro.py`), and the optional headless checks of the page's alert links, notifications control, profile menu and theme, home-screen app, session cards, usage popover, header popovers, language toggle, Deck panel and pomodoro (`test_page_links.py`, `test_page_notify.py`, `test_page_profile.py`, `test_page_pwa.py`, `test_page_cards.py`, `test_page_guard.py` (held-message cards), `test_page_usage.py`, `test_page_header_tips.py`, `test_page_i18n.py`, `test_page_deck.py`, `test_page_rc.py` (Remote Control chip and switches), `test_page_pomodoro.py`, plus `test_site.py` for the screenshots and the Pages site: need python playwright, skip without it; not run in CI) |
+| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), the resources sampler (`test_resources.py`, fixture `/proc`), the secret guardrails (`test_guard.py`), API keys (`test_apikeys.py`), the public API and its tunnel exposure (`test_api_v1.py`), askers (`test_askers.py`), the card extras (`test_cards.py`), Remote Control (`test_rc.py`, scripted tmux in `fake_tmux.py`), the pomodoro timer (`test_pomodoro.py`), and the optional headless checks of the page's alert links, notifications control, profile menu and theme, home-screen app, session cards, usage popover, header popovers, language toggle, Deck panel and pomodoro (`test_page_links.py`, `test_page_notify.py`, `test_page_profile.py`, `test_page_pwa.py`, `test_page_cards.py`, `test_page_guard.py` (held-message cards), `test_page_askers.py` (the asker's composer), `test_page_usage.py`, `test_page_header_tips.py`, `test_page_i18n.py`, `test_page_deck.py`, `test_page_rc.py` (Remote Control chip and switches), `test_page_pomodoro.py`, plus `test_site.py` for the screenshots and the Pages site: need python playwright, skip without it; not run in CI) |
 | `CONTRIBUTING.md` | Dev setup, tests, and the rule for keeping `README.zh-TW.md` in sync |
 | `fleet.example.yaml`, `.env.example` | Example config |
 

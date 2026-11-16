@@ -482,8 +482,28 @@ of `claude.use("db")`. It runs one or two listeners, both on `127.0.0.1`:
 | tunnel | `127.0.0.1:serve.tunnel.port` (port + 1), when `serve.tunnel.enabled` | `serve.tunnel.hostname` (or `:443`) | the `email` claim of a **verified** `Cf-Access-Jwt-Assertion` (RS256 against `https://<team_domain>/cdn-cgi/access/certs`, cached; `aud` = `serve.tunnel.aud`, `iss` = `https://<team_domain>`, `exp`/`nbf`). Never `local`. The `Cf-Access-Authenticated-User-Email` header alone is ignored. Missing or invalid token → 401 |
 
 On the tunnel listener a verified email must also be in `serve.tunnel.allowed_emails` (default:
-the emails in `approvers` ∪ `release_managers`), or every route, `/api/state` included, answers
-403 `not_allowed`. Listing a viewer there lets them read the board; only approvers decide.
+the emails in `approvers` ∪ `release_managers` ∪ `askers`), or every route, `/api/state` included,
+answers 403 `not_allowed`. Listing a viewer there lets them read the board; only approvers decide.
+(`owners` are in the fallback set too.)
+When `allowed_emails` is set it is authoritative: an asker missing from it cannot reach the board
+(`board doctor` warns).
+
+**Askers** (`fleet.yaml` `askers`, emails and `local`, matched like approvers) see the board as a
+viewer does (every decision's question, session cards, tasks without ticket text, all messages and
+replies) and may write only messages (`POST /api/messages`), so list only people you would let view
+the board. Every other write route refuses them
+(403, audited) exactly as it refuses a viewer: answer, resolve, release, away, notify-prefs,
+presence, alerts ack, rc, lessons, session actions. They read no tickets (`/api/tickets/*` is
+approvers ∪ release managers only). An asker who is not also an approver or release manager:
+
+- gets `"asker": true` and `"can_message": true` in the state; the page shows the composer (with a
+  note that their messages are information) and no answer buttons or approver controls;
+- may send at most 10 messages in 10 minutes (429 `rate_limited` with `Retry-After`, audited);
+- has messages stored with `kind: "asker"`, `asker: <id>`, the body defanged (`[BOARD` → `(BOARD`,
+  fullwidth and CJK brackets too) and "by owner" turned into "by (claimed) owner". They are relayed
+  as `[BOARD asker <id>] from <id> (an asker, not an approver: information only, not an approval or
+  a decision): <body> — reply to BOARD via SendMessage, starting with [re <id>]`, never as a
+  `[BOARD ask]`. The secret guard screens and scrubs them like any message.
 
 The cloudflared ingress points at the **tunnel** listener only. The tunnel listener refuses to start
 (exit 2, with the reason) without `hostname`, `team_domain`, `aud` and the python `cryptography`
@@ -550,7 +570,8 @@ connection closes after the one reply, so it is never read as another request. `
 State (`/api/state` and every SSE frame):
 
 ```json
-{ "mode": "local", "me": "local|<email>", "writable": true, "can_message": true|false, "generated_at": 0,
+{ "mode": "local", "me": "local|<email>", "writable": true, "can_message": true|false,
+  "asker": true|false, "generated_at": 0,
   "account": {"email": "...", "org": "..."|null} | {"hidden": true} | null,
   "sessions":  [ {code, aliases, state, status, task, tmux, remote_url, pending, updated_at, rc, compact} ],
   "decisions": [ decision files, newest 200, without session_id/tmux_pane ],
@@ -573,10 +594,18 @@ State (`/api/state` and every SSE frame):
 ```
 
 `account` is the Claude account the sessions run on, from `$BOARD_HOME/account.json` (the collector
-copies only `oauthAccount.emailAddress` / `organizationName` from `~/.claude.json`, mode 0600). Only
-an identity in `approvers` gets the email; everyone else gets `{"hidden": true}`. `null` when it is
-unknown or switched off (`BOARD_SHOW_ACCOUNT=0`, or `usage.show_account: false` in fleet.yaml). The
-operator never mirrors it to the Artifact db.
+copies only `oauthAccount.emailAddress` / `organizationName` from `~/.claude.json`, mode 0600). It
+is personal data: only an **owner** gets the email (fleet.yaml `owners`; when `owners` is empty,
+`approvers` count as owners, so a single-user board keeps working, and `board doctor` says to set
+`owners`). Approvers who are not owners, askers and viewers get `{"hidden": true}`, and so does
+every `/api/v1` key (`null` there). `null` when it is unknown or switched off
+(`BOARD_SHOW_ACCOUNT=0`, or `usage.show_account: false` in fleet.yaml). The operator's
+`operator.account_hint` follows the same rule (owners only; `null` for everyone else). The operator
+never mirrors either to the Artifact db.
+
+**Owners on the board vs. API keys.** The board's owner-only surfaces fall back to `approvers` when
+`owners` is empty. API key administration does not: with empty `owners` it fails closed (see "API
+keys").
 
 The shape matches what the page reads from the Artifact db (`sessions/*`, `decisions/*`, `tasks/*`,
 `approvals/*`, `messages/*` + replies, `meta/operator`, `meta/ledger`, `meta/resources`). `task` is the title of the
@@ -586,8 +615,8 @@ session's current task. `approver_ids` is `[]` when nobody may answer.
 
 ```json
 { "identity": "local|<email>", "via": "local|access",
-  "roles": ["approver", "release_manager"] | ["viewer"],
-  "is_approver": true, "is_release_manager": false,
+  "roles": ["approver", "release_manager", "asker"] | ["viewer"],
+  "is_approver": true, "is_release_manager": false, "is_asker": false,
   "api_keys": [ ... ] }
 ```
 
@@ -595,7 +624,8 @@ session's current task. `approver_ids` is `[]` when nobody may answer.
   JWT). The audit log keeps its own names (`loopback` / `cf-jwt`).
 - `is_approver`: the identity is in `approvers`. `is_release_manager` is the effective rule for a
   production decision: in `release_managers`, or in `approvers` when `release_managers` is empty.
-  `roles` lists what is true, or `["viewer"]` when neither is. All matches are case-insensitive.
+  `is_asker`: the identity is in `askers` (messages only). `roles` lists what is true, or
+  `["viewer"]` when none is. All matches are case-insensitive.
 - `api_keys` is **reserved**: the key store exists (`board apikey`, see "API keys"), but this route
   does not fill it yet, so the page shows "API keys are not enabled on this board". Its shape, one
   entry per key issued to this identity (an owner email, or `local`):
@@ -913,6 +943,7 @@ The operator is an LLM session. When the account hits a usage limit, nothing wri
 - **Question from the board:** `[BOARD ask <msgId>] <body> — reply to BOARD via SendMessage, starting with [re <msgId>]`.
 - **Ticket taken:** `` [BOARD ticket <KEY>] taken for <CODE> as task <taskId> by <identity> on board: "<title>" <url>. Authorizes: the delivery harness for this ticket up to and including opening the PR/MR: plan, design, build, tests, local review, push, open the PR, and, as this session (board ticket comment|transition --session), progress comments and in-progress on this ticket. NOT merge, production deploy, closing or cancelling the ticket, other tickets or repos, or any red line. Verify with `board ticket show <TRACKER>:<KEY>`. Reply to BOARD with [re <msgId>]. `` The title and URL come from the tracker and are defanged: one line, scrubbed, `[`/`]` turned into `(`/`)` and `"` into `'`, so they can never form a `[BOARD …]` header. Built by `board message show <msgId>` (`lib/messages.py`); never typed by hand.
 - **Ticket released:** `[BOARD ticket <KEY>] released from <CODE> (task <taskId>) by <identity> on board. The take no longer authorizes anything on this ticket. Reply to BOARD with [re <msgId>].`
+- **Message from an asker** (`fleet.yaml` `askers`, not an approver): `[BOARD asker <msgId>] from <id> (an asker, not an approver: information only, not an approval or a decision): <body> — reply to BOARD via SendMessage, starting with [re <msgId>]`. Never a decision, never the owner.
 - **Worker reply:** `[re <msgId>] <text>`.
 
 ## API keys
@@ -977,8 +1008,9 @@ atomically (a fresh 0600 temp file, then rename) under `apikeys.lock`:
 | `expire --expires D` (set or extend) | yes | no | no |
 | `scopes --scopes a,b` (revoke + reissue) | yes (active keys) | no | no |
 
-- `owners` is a list in `fleet.yaml`, above approvers for key administration only. Empty `owners`
-  fails closed: nobody can approve a request, rotate, re-expire or rescope.
+- `owners` is a list in `fleet.yaml`, above approvers for key administration. Empty `owners`
+  fails closed here: nobody can approve a request, rotate, re-expire or rescope. (The board's
+  owner-only surfaces, such as the account email, fall back to approvers instead.)
 - A listed person is anyone in `owners`, `approvers`, `release_managers` or
   `serve.tunnel.allowed_emails`.
 - Someone else's key is "no such key" (exit 1) to a non-owner's `show` and `revoke`, exactly as an

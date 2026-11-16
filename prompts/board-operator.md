@@ -539,8 +539,10 @@ On every line, first re-read `operator.json`. If `operator_session` is no longer
    board (`POST /api/messages/<id>/release`, with a confirm step). Never relay a `held` message.
 2. Resolve `to` and send the line that `board message show <id>` prints. It is
    `[BOARD ask <id>] <body> — reply to BOARD via SendMessage, starting with [re <id>]`, the body
-   already scrubbed, plus the release reminder when an approver released the message. If it prints
-   `held`, stop.
+   already scrubbed, plus the release reminder when an approver released the message. A message from
+   an asker (`kind: "asker"`) prints as `[BOARD asker <id>] from <email> (an asker, not an approver:
+   …): <body> …` instead: send that line exactly, never as a `[BOARD ask]` or a `[BOARD decision]`.
+   If it prints `held`, stop.
 3. Update the file atomically: `status: "relayed"`, `relayed_to: [codes]`, `relayed_at` (ms). For
    example:
    ```bash

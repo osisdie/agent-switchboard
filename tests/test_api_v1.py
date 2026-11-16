@@ -114,6 +114,9 @@ def fixtures():
                                              "sessions": {}, "days": {TODAY: {"API": {"done": 2, "focus_ms": 3000000}}},
                                              "notified": {}})
     wj(os.path.join(HOME, "scheduler.json"), {"mode": "normal", "lessons": {"applied": [], "hints": []}})
+    wj(os.path.join(HOME, "operator.json"), {"heartbeat_at": NOW, "version": "t", "operator_session": "BOARD",
+                                             "account_hint": "second laptop"})
+    wj(os.path.join(HOME, "account.json"), {"email": "account-holder@example.com", "org": "x"})
 
 
 def mkkey(scopes, owner=DEV, *extra):
@@ -466,6 +469,8 @@ class Local(Fresh):
         self.assertEqual(api["card"].get("private"), "hidden")
         self.assertNotIn("prompt", api["card"])
         self.assertEqual((js["account"], js["writable"], js["can_message"], js["mode"]), (None, False, False, "api"))
+        self.assertIsNone(js["operator"]["account_hint"])
+        self.assertNotIn("account-holder@example.com", json.dumps(js))
         st, _, js = self.req("/api/v1/messages/m-1-a", KEYS["messages"][1])
         self.assertEqual(st, 200)
         self.assertNotIn(FAKE_TOKEN, json.dumps(js))

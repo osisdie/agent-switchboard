@@ -141,7 +141,7 @@ start
 # ---------------------------------------------------------------- state
 echo "state:"
 eq "GET /api/state 200" "$(req GET /api/state)" "200"
-eq "state keys" "$(body 'keys | join(",")')" "account,approvals,can_message,consensus,decisions,generated_at,ledger,lessons,me,messages,mode,notify,operator,owner_away,page_version,pomodoro,rc,replies,resources,scheduler,sessions,tasks,writable"
+eq "state keys" "$(body 'keys | join(",")')" "account,approvals,asker,can_message,consensus,decisions,generated_at,ledger,lessons,me,messages,mode,notify,operator,owner_away,page_version,pomodoro,rc,replies,resources,scheduler,sessions,tasks,writable"
 eq "page_version is the hash of artifact/board.html" "$(body .page_version)" "$(sha256sum "$REPO/artifact/board.html" | cut -c1-12)"
 pv="$(body .page_version)"
 req GET / >/dev/null
@@ -333,7 +333,7 @@ eq "HEAD /?d=... 200" "$(req HEAD "/?d=d-1-perm" -I)" "200"
 # ---------------------------------------------------------------- GET /api/me
 echo "me:"
 eq "GET /api/me 200" "$(req GET /api/me)" "200"
-eq "me keys" "$(body 'keys | join(",")')" "identity,is_approver,is_release_manager,roles,via"
+eq "me keys" "$(body 'keys | join(",")')" "identity,is_approver,is_asker,is_release_manager,roles,via"
 eq "me: local identity via the local listener" "$(body '.identity + "/" + .via')" "local/local"
 eq "me: local is an approver" "$(body '[.roles[], .is_approver] | map(tostring) | join(",")')" "approver,true"
 eq "me: not a release manager (release_managers set)" "$(body .is_release_manager)" "false"

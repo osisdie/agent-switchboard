@@ -24,10 +24,18 @@ resume_fallback_seconds: 15   # fleet-up: start fresh only if `claude -r NAME` e
 # decision (gate or stage "production") needs `release_managers` (falls back to `approvers`).
 approvers: []
 release_managers: []
-# Who administers API keys (`board apikey`, docs/contract.md "API keys"): issue a key to anyone,
-# approve key requests, revoke, rotate, set or extend expiry, change scopes. Owners sit above
-# approvers for key administration only; answering still needs `approvers`. Empty = nobody can
-# approve a key request (approvers can still issue keys to listed people or themselves).
+# Askers (self-hosted board): people who see the board as a viewer does and may only send messages
+# to sessions (@CODE / @all). They answer nothing, release nothing, change no settings and read no tickets. Their
+# messages reach sessions labelled as theirs ([BOARD asker <id>] from <email>), information only,
+# at most 10 per 10 minutes. Emails (and "local"), matched like approvers.
+askers: []
+# askers: [teammate@example.com]
+# The board's owners. They administer API keys (`board apikey`, docs/contract.md "API keys"):
+# issue a key to anyone, approve key requests, revoke, rotate, set or extend expiry, change scopes;
+# empty = nobody can approve a key request (approvers can still issue keys to listed people or
+# themselves). Only owners see the Claude account email the sessions run on; with empty owners,
+# approvers see it (a single-user board), and `board doctor` reminds you to set owners.
+# Answering still needs `approvers`.
 owners: []
 # owners: [owner@example.com, owner.backup@example.com]
 # apikeys:
@@ -47,7 +55,7 @@ serve:
   #   hostname: board.example.com
   #   team_domain: yourteam.cloudflareaccess.com
   #   aud: "<Application Audience (AUD) Tag>"   # needs python3 cryptography to verify tokens
-  #   allowed_emails: [viewer@example.com]     # who may open it at all (default: approvers ∪ release_managers)
+  #   allowed_emails: [viewer@example.com]     # who may open it at all (default: approvers ∪ release_managers ∪ askers)
   #   api_service_tokens: [<client id>.access] # Access service tokens (common_name) allowed on /api/v1
   # The public read-only API, /api/v1 (docs/contract.md "Public API"): a board API key
   # (`board apikey`) on every call. On the tunnel also a verified Access service token from
