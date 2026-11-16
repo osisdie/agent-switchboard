@@ -3062,6 +3062,9 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
   async function rmLoad() {
     if (!rmUsable() || RM.loading) { renderReminders(); return; }
     if (S.demo) { RM.owner = true; renderReminders(); return; }
+    // /api/me says whether this viewer has reminders: nobody else ever asks the route (no 403s).
+    if (!P.me) return;                 // loadMe() calls back here once it knows
+    if (P.me.reminders !== true) { RM.owner = false; RM.list = []; renderReminders(); rmSchedule(); return; }
     RM.loading = true;
     try {
       const j = await adapter.reminders();
@@ -4579,7 +4582,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
   }
 
   wirePops();
-  function renderAll() { renderHeader(); renderBanners(); renderNotif(); renderDecisions(); renderConsensus(); renderTasks(); renderBoard(); renderMessages(); renderApprovals(); renderResources(); renderLessons(); renderReminders(); if (!RM.tried && rmUsable() && !S.demo && S.mode === 'live') { RM.tried = true; rmLoad(); } if ($('#info').open) renderLedger(); openLinked(); }
+  function renderAll() { renderHeader(); renderBanners(); renderNotif(); renderDecisions(); renderConsensus(); renderTasks(); renderBoard(); renderMessages(); renderApprovals(); renderResources(); renderLessons(); renderReminders(); if (!RM.tried && rmUsable() && !S.demo && S.mode === 'live' && P.me) { RM.tried = true; rmLoad(); } if ($('#info').open) renderLedger(); openLinked(); }
 
   /* ----------------------------------------------------------- deep links */
   // Alerts link to <board>/?d=<decision id> (m= message, c= consensus); a #<id> or #dec-<id> hash
@@ -5205,7 +5208,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     P.loading = true; P.tried = true;
     fetch('/api/me', { credentials: 'same-origin', cache: 'no-store' })
       .then((r) => (r.ok ? r.json() : null)).catch(() => null)
-      .then((j) => { P.loading = false; if (j && typeof j === 'object' && j.identity) P.me = j; renderProfile(); });
+      .then((j) => { P.loading = false; if (j && typeof j === 'object' && j.identity) P.me = j; renderProfile(); rmLoad(); });
   }
   function loadClaudeMe() {
     if (P.claudeTried || !userNs || typeof userNs.me !== 'function') return;

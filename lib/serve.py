@@ -1284,8 +1284,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def me_for(self, ident, via):
         """GET /api/me: built only from the verified identity and fleet.yaml, never from request
         headers. api_keys is added by the key backend once it exists (docs/contract.md)."""
+        cfg = fleet.load_fleet()
         me = {"identity": ident, "via": "access" if via == "cf-jwt" else "local"}
-        me.update(roles_of(fleet.load_fleet(), ident))
+        me.update(roles_of(cfg, ident))
+        # Whether this identity has reminders (the owner): the page asks /api/reminders only then.
+        me["reminders"] = reminders.owner_of(ident, cfg) is not None
         return me
 
     def static(self, name, ctype):

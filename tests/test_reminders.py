@@ -373,6 +373,14 @@ class RouteTests(unittest.TestCase):
             with e:
                 return e.code, json.loads(e.read() or b"{}")
 
+    def test_me_flag(self):
+        for owners, approvers, want in (("[]", "[local]", True), ("[LOCAL]", "[]", True),
+                                        ("[owner@example.com]", "[local]", False), ("[]", "[]", False)):
+            with self.subTest(owners=owners, approvers=approvers):
+                self.fleet(owners=owners, approvers=approvers)
+                st, out = self.call("GET", "/api/me")
+                self.assertEqual((st, out["reminders"]), (200, want))
+
     def test_owner_flow(self):
         self.fleet(approvers="[local]")              # no owners: the approvers fallback
         st, out = self.call("POST", "/api/reminders", {"title": "Meeting", "at": "23:59", "lead_min": 5, "repeat": "daily"})

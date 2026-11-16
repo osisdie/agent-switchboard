@@ -637,8 +637,12 @@ session's current task. `approver_ids` is `[]` when nobody may answer.
 { "identity": "local|<email>", "via": "local|access",
   "roles": ["approver", "release_manager", "asker"] | ["viewer"],
   "is_approver": true, "is_release_manager": false, "is_asker": false,
+  "reminders": true,
   "api_keys": [ ... ] }
 ```
+
+- `reminders`: whether this identity has reminders (an owner: `owners`, else `approvers`; see
+  "Reminders"). The page calls `GET /api/reminders` only when it is true.
 
 - `via` is `local` for the local listener and `access` for the tunnel (a verified Cloudflare Access
   JWT). The audit log keeps its own names (`loopback` / `cf-jwt`).
@@ -739,7 +743,7 @@ collector, the CLI and board-serve all write it):
   in the section nav while a reminder is in its lead window or due (until acked or closed). The
   banner is the page's one live region for reminders: a row is announced once when it appears, with
   its time in words set once; the per-second countdown is `aria-hidden`. It
-  reloads every 30 s while visible. A two-note chime plays once at T − lead, only after a click or
+  reloads every 30 s while visible, and asks for them only when `/api/me` says `reminders: true`. A two-note chime plays once at T − lead, only after a click or
   key on the page (no AudioContext before that). Demo mode has three sample reminders.
 
 ## Tickets

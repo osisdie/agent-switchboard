@@ -333,7 +333,7 @@ eq "HEAD /?d=... 200" "$(req HEAD "/?d=d-1-perm" -I)" "200"
 # ---------------------------------------------------------------- GET /api/me
 echo "me:"
 eq "GET /api/me 200" "$(req GET /api/me)" "200"
-eq "me keys" "$(body 'keys | join(",")')" "identity,is_approver,is_asker,is_release_manager,roles,via"
+eq "me keys" "$(body 'keys | join(",")')" "identity,is_approver,is_asker,is_release_manager,reminders,roles,via"
 eq "me: local identity via the local listener" "$(body '.identity + "/" + .via')" "local/local"
 eq "me: local is an approver" "$(body '[.roles[], .is_approver] | map(tostring) | join(",")')" "approver,true"
 eq "me: not a release manager (release_managers set)" "$(body .is_release_manager)" "false"
