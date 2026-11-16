@@ -110,6 +110,11 @@ def fixtures():
                                                       "status": "held", "held_reason": "secret request",
                                                       "created_at": NOW})
     wj(os.path.join(HOME, "account.json"), {"email": ACCOUNT, "org": "x"})
+    # a task taken from a tracker ticket: its title is ticket text (Q3: deciders only)
+    wj(os.path.join(HOME, "tasks", "t-9-tk.json"), {
+        "id": "t-9-tk", "title": "PROJ-7: Secret roadmap item", "owner": "API", "stage": "plan", "updated_at": NOW,
+        "ticket": {"provider": "jira", "key": "PROJ-7", "url": "https://tracker.example.invalid/PROJ-7",
+                   "title_at_take": "Secret roadmap item"}})
     wj(os.path.join(HOME, "operator.json"), {"heartbeat_at": NOW, "version": "t", "operator_session": "BOARD",
                                              "account_hint": "second laptop"})
 
@@ -288,6 +293,17 @@ class Local(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(HOME, "owner-away")))
         refused = [e for e in events()[before:] if e.get("type") == "serve" and e.get("result") == "refused"]
         self.assertGreaterEqual(len(refused), len(routes) - 1)
+
+    def test_no_ticket_text_in_the_state_for_askers(self):
+        st, _, s = req("GET", "/api/state")                        # local is an asker
+        t = [x for x in s["tasks"] if x["id"] == "t-9-tk"][0]
+        self.assertEqual((t["title"], t["ticket"]), ("PROJ-7", {"provider": "jira", "key": "PROJ-7"}))
+        self.assertNotIn("Secret roadmap item", json.dumps(s))
+        if HAVE_CRYPTO:                                             # an approver still reads it
+            st, _, s = req("GET", "/api/state", who=BOSS)
+            self.assertIn("Secret roadmap item", json.dumps(s))
+            st, _, s = req("GET", "/api/state", who=ANN)
+            self.assertNotIn("Secret roadmap item", json.dumps(s))
 
     def test_no_tickets_for_askers(self):
         st, _, js = req("GET", "/api/tickets/PROJ-1", csrf=True)
