@@ -464,6 +464,11 @@ pane 標題裡的任務、執行中或閒置、記憶體用量）、已用的 co
 `[re <msgId>] …` 回覆，回覆會串在原訊息底下。**訊息只是資訊，絕不是核准。**
 向 session 要機密值的訊息會被攔下，不會轉送（見[機密防護](#secret-guardrails)）。
 
+這一區只顯示最近有動靜的 5 則對話（有新回覆的對話會再回到上面）。被攔下的訊息，以及有你還沒標為已讀的回覆的對話，
+會固定在最上面；**標為已讀** 會記在你的瀏覽器裡。**歷史（N 則較舊）** 打開其餘的對話，一次 20 則，可依 session
+篩選、也可搜尋。長的訊息和回覆只顯示前幾行（**顯示更多**），每則對話顯示最新的 3 則回覆。自架看板的狀態只帶最近
+20 則對話（加上所有被攔下的），歷史由 `GET /api/messages` 分頁提供；磁碟上的內容一律不刪。
+
 ### 提醒（Reminders）
 
 你自己的鬧鐘：`board remind add "Meeting" --at 3pm`（或 `15:00`）會在下午 3 點前 5 分鐘通知一次，
@@ -1240,7 +1245,7 @@ curl -s -H "CF-Access-Client-Id: $CF_ID" -H "CF-Access-Client-Secret: $CF_SECRET
 
 看板本身也是一個 MCP server，Claude Code、Claude Desktop 或任何 MCP client 都能用 API 金鑰讀取它：
 工具有 `board_state`、`list_sessions`、`list_decisions`、`get_decision`、`list_tasks`、`get_task`、
-`get_message`，資源有 `board://state`、`board://decisions/{id}`、`board://tasks/{id}`、
+`list_messages`、`get_message`，資源有 `board://state`、`board://decisions/{id}`、`board://tasks/{id}`、
 `board://openapi`。client 只看得到金鑰 scope 允許的工具。它是唯讀的，而且和所有金鑰一樣永遠不能回答
 決策；看板文字裡的 `[BOARD` 會變成 `(BOARD` 送出。兩種傳輸方式共用一張工具表（`lib/mcp_tools.py`；
 細節見 `docs/contract.md` 的 "MCP"）：
@@ -1356,7 +1361,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `lib/pomodoro.py` | 番茄鐘計時與每日統計（`pomodoro.json`），供看板和 `board pomodoro` 使用 |
 | `lib/resources.py` | 資源取樣器（記憶體、磁碟、OOM、每個 session 的程序與 teammate），產生 `resources.json`、snapshot 摘要和 `board resources` |
 | `docs/design/` | 設計文件，例如 `resources-and-scheduling.md`（資源、排程器、經驗） |
-| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`）、資源取樣器（`test_resources.py`，fixture `/proc`）、機密防護（`test_guard.py`）、API 金鑰（`test_apikeys.py`）、公開 API 與 tunnel 曝露（`test_api_v1.py`）、MCP server（`test_mcp.py`）、提問者（`test_askers.py`）、各角色能做什麼（`test_roles.py`）、誰看得到誰的 email（`test_pii.py`）、卡片補充資訊（`test_cards.py`）、Remote Control（`test_rc.py`，用 `fake_tmux.py` 模擬 tmux 畫面）、番茄鐘計時（`test_pomodoro.py`），以及選用的頁面告警連結、通知控制、個人選單與主題、主畫面 app、session 卡片、用量提示框、頁首提示框、語言切換、按鍵面板與番茄鐘 headless 檢查（`test_page_links.py`、`test_page_notify.py`、`test_page_profile.py`、`test_page_pwa.py`、`test_page_cards.py`、`test_page_guard.py`（被攔下的訊息卡片）、`test_page_askers.py`（提問者的訊息輸入框）、`test_page_roles.py`（各角色看到的控制項）、`test_page_usage.py`、`test_page_header_tips.py`、`test_page_i18n.py`、`test_page_deck.py`、`test_page_rc.py`（Remote Control 標籤與開關）、`test_page_pomodoro.py`，以及截圖和 Pages 網站的 `test_site.py`：需要 python playwright，沒有就略過；CI 不執行） |
+| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`）、資源取樣器（`test_resources.py`，fixture `/proc`）、機密防護（`test_guard.py`）、API 金鑰（`test_apikeys.py`）、公開 API 與 tunnel 曝露（`test_api_v1.py`）、MCP server（`test_mcp.py`）、提問者（`test_askers.py`）、各角色能做什麼（`test_roles.py`）、誰看得到誰的 email（`test_pii.py`）、卡片補充資訊（`test_cards.py`）、Remote Control（`test_rc.py`，用 `fake_tmux.py` 模擬 tmux 畫面）、番茄鐘計時（`test_pomodoro.py`），以及選用的頁面告警連結、通知控制、個人選單與主題、主畫面 app、session 卡片、用量提示框、頁首提示框、語言切換、按鍵面板與番茄鐘 headless 檢查（`test_page_links.py`、`test_page_notify.py`、`test_page_profile.py`、`test_page_pwa.py`、`test_page_cards.py`、`test_page_guard.py`（被攔下的訊息卡片）、`test_page_askers.py`（提問者的訊息輸入框）、`test_page_messages.py`（最近的對話與歷史）、`test_page_roles.py`（各角色看到的控制項）、`test_page_usage.py`、`test_page_header_tips.py`、`test_page_i18n.py`、`test_page_deck.py`、`test_page_rc.py`（Remote Control 標籤與開關）、`test_page_pomodoro.py`，以及截圖和 Pages 網站的 `test_site.py`：需要 python playwright，沒有就略過；CI 不執行） |
 | `CONTRIBUTING.md` | 開發環境設定、測試，以及讓 `README.zh-TW.md` 保持同步的規則 |
 | `fleet.example.yaml`、`.env.example` | 設定範例 |
 

@@ -528,6 +528,18 @@ class Api:
             raise ApiError(404, "not_found", "not a kept day")
         return self.ok(S.guard.scrub_tree(view))
 
+    def messages(self):
+        """The message history, as GET /api/messages gives it to the page, through the viewer filter
+        a key gets everywhere (Q3: no ticket text; other people's emails masked) before the search,
+        so a search never matches what the key would not see."""
+        S = self.S
+        try:
+            before, limit, to, q = S.history_query({k: [v] for k, v in self.query.items()})
+        except ValueError as exc:
+            raise ApiError(400, "bad_request", str(exc)) from None
+        return self.ok(S.message_page(self.h.server.home, before, limit, to, q,
+                                      view=lambda st: S.pii.mask(S.ticket_text_for(st, False))))
+
     def message(self):
         S, home, mid = self.S, self.h.server.home, self.params["message_id"]
         m = S.read_json(os.path.join(home, "messages", mid + ".json"))

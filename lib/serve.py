@@ -48,6 +48,9 @@ listeners (docs/contract.md, "Local adapter API"):
   POST /api/lessons/<id>               {"action": "edit"|"activate"|"retire"|"delete", ...}  (owners
                                        only; edit takes title/rule/cause/resolution; delete needs
                                        "confirm": "delete" and appends a tombstone; audited)
+  GET  /api/messages?before=&limit=&to=&q=   older message threads, a page at a time (the page's
+                                       History view): X-Board: 1 and no cross-site Sec-Fetch-Site
+                                       (else 403 csrf), the same viewer filter as /api/state
   GET  /api/pomodoro/day?d=YYYY-MM-DD one kept day's per-stream pomodoro breakdown (read-only,
                                        on demand; the pushed view has daily totals only)
   GET  /api/v1/...                     the public read-only API (lib/serve_api.py, routes in
@@ -608,25 +611,16 @@ class StateBuilder:
             approvals.append(row)
         approvals.sort(key=lambda a: as_int(a.get("answered_at")), reverse=True)
 
-        messages, replies = [], {}
-        for path in glob.glob(self.p("messages", "*.json")):
-            m = read_json(path)
-            if isinstance(m, dict) and m.get("id"):
-                messages.append(m)
-        messages.sort(key=lambda m: as_int(m.get("created_at")), reverse=True)
-        messages = messages[:20]
+        # The recent window (docs/contract.md "Messages: recent and history"): the 20 threads with
+        # the latest activity, every held one besides, and how many older threads there are.
+        threads = message_threads(self.home)
+        window = message_window(threads)
+        messages = [t["m"] for t in window]
+        replies = {}
         for m in messages:
-            if not MSG_ID_RE.fullmatch(str(m["id"])):
-                continue
-            rs = []
-            for f in glob.glob(self.p("messages", m["id"], "replies", "*.json")):
-                r = read_json(f)
-                if isinstance(r, dict):
-                    r.setdefault("id", os.path.basename(f)[:-5])
-                    rs.append(r)
-            rs.sort(key=lambda r: as_int(r.get("created_at")))
+            rs = thread_replies(self.home, m["id"])
             if rs:
-                replies[m["id"]] = rs[:50]
+                replies[m["id"]] = rs
 
         op = read_json(self.p("operator.json")) or {}
         operator = {k: op.get(k) for k in OPERATOR_KEYS if k in op}
@@ -648,6 +642,7 @@ class StateBuilder:
         # guardrails"): whatever reached $BOARD_HOME, no secret value leaves through the page.
         return guard.scrub_tree({"sessions": sessions, "decisions": decisions, "tasks": tasks[:50],
                 "approvals": approvals[:100], "messages": messages, "replies": replies,
+                "messages_older": len(threads) - len(window),
                 "operator": operator, "ledger": ledger if isinstance(ledger, dict) else None,
                 "owner_away": away.away_record(self.home),
                 "consensus": away.consensus_items(self.home, now_ms())[-50:],
@@ -669,6 +664,130 @@ def scheduler_view(doc):
             "applied": [x for x in ls.get("applied") or [] if isinstance(x, str) and lessons.ID_RE.fullmatch(x)],
             "hints": [{"lesson": str(x.get("lesson")), "text": str(x.get("text"))[:160]}
                       for x in ls.get("hints") or [] if isinstance(x, dict)][:20]}
+
+
+STATE_THREADS = 20      # the threads /api/state and SSE carry (plus every held one)
+REPLIES_PER_THREAD = 50  # the latest replies of a thread that are served
+HISTORY_LIMIT = 20       # GET /api/messages: the default page size (at most HISTORY_MAX)
+HISTORY_MAX = 50
+# The message and reply fields the board serves (an allowlist: anything else a writer or the
+# operator put in a file stays on disk). The page's own fields, plus the kind / asker / ticket
+# relay ones the contract documents (docs/contract.md "Messages"; ticket text is viewer-scoped).
+MESSAGE_KEYS = ("id", "to", "body", "by", "created_at", "status", "relayed_to", "relayed_at", "held_reason",
+                "held_at", "released_by", "released_at", "kind", "asker", "event", "ticket", "task_id")
+REPLY_KEYS = ("id", "from", "body", "created_at", "redacted")
+CURSOR_RE = re.compile(r"([0-9]{1,16})\.(m-[0-9]+-[a-z0-9]+)")
+
+
+def _reply_times(home, mid):
+    """When each reply was stored: from the reply ids (r-<ms>-<hex>, lib/messages.py), so ordering
+    threads needs no reply file to be read."""
+    out = []
+    for f in glob.glob(os.path.join(home, "messages", mid, "replies", "r-*.json")):
+        try:
+            out.append(int(os.path.basename(f)[:-5].split("-")[1]))
+        except (IndexError, ValueError):
+            continue
+    return out
+
+
+def message_threads(home):
+    """Every message thread, latest activity first: [{"m": record + last_activity_at, "at"}].
+    Activity is the latest of the message's creation, its release and its replies, so a new reply
+    brings an old thread back up. Ties: the higher id first (stable for the history cursor)."""
+    out = []
+    for path in glob.glob(os.path.join(home, "messages", "*.json")):
+        m = read_json(path)
+        if not isinstance(m, dict) or not MSG_ID_RE.fullmatch(str(m.get("id") or "")):
+            continue
+        at = max([as_int(m.get("created_at")), as_int(m.get("released_at"))] + _reply_times(home, m["id"]))
+        row = {k: m[k] for k in MESSAGE_KEYS if k in m}
+        row["last_activity_at"] = at
+        out.append({"m": row, "at": at})
+    out.sort(key=lambda t: (t["at"], t["m"]["id"]), reverse=True)
+    return out
+
+
+def message_window(threads):
+    """The threads the state carries: the STATE_THREADS latest, and every held one besides (a held
+    message waits for an approver, however old). Order kept."""
+    return [t for i, t in enumerate(threads) if i < STATE_THREADS or t["m"].get("status") == "held"]
+
+
+def thread_replies(home, mid):
+    """A thread's latest REPLIES_PER_THREAD replies, oldest first."""
+    rs = []
+    for f in glob.glob(os.path.join(home, "messages", mid, "replies", "*.json")):
+        r = read_json(f)
+        if isinstance(r, dict):
+            r.setdefault("id", os.path.basename(f)[:-5])
+            rs.append({k: r[k] for k in REPLY_KEYS if k in r})
+    rs.sort(key=lambda r: as_int(r.get("created_at")))
+    return rs[-REPLIES_PER_THREAD:]
+
+
+def message_cursor(t):
+    return "%d.%s" % (t["at"], t["m"]["id"])
+
+
+def message_page(home, before=None, limit=HISTORY_LIMIT, to=None, q=None, view=None):
+    """One page of the message history (GET /api/messages, /api/v1/messages): threads strictly
+    older than the cursor `before` ("<activity ms>.<message id>", from a thread's
+    last_activity_at and id), optionally only those to session `to` (or "all"), and only those
+    whose text matches `q` (case-insensitive, also in the replies). `view(state) -> state` is the
+    viewer's filter; the search runs on what it returns (scrubbed, viewer-scoped), so a search can
+    never find text the viewer would not see. Returns {messages, replies, next}: `next` is the
+    cursor for the following page, or None at the end."""
+    threads = message_threads(home)
+    if before is not None:
+        at, mid = before
+        threads = [t for t in threads if (t["at"], t["m"]["id"]) < (at, mid)]
+    if to:
+        threads = [t for t in threads if str(t["m"].get("to") or "") == to]
+    q = (q or "").strip().lower()
+    out, reps, more = [], {}, False
+    for t in threads:
+        part = guard.scrub_tree({"messages": [t["m"]], "replies": {t["m"]["id"]: thread_replies(home, t["m"]["id"])}})
+        if view:
+            part = view(part)
+        m, rs = part["messages"][0], part["replies"].get(t["m"]["id"]) or []
+        if q and q not in json.dumps([m.get("to"), m.get("by"), m.get("body"), m.get("ticket")]
+                                     + [[r.get("from"), r.get("body")] for r in rs], ensure_ascii=False).lower():
+            continue
+        if len(out) == limit:
+            more = True
+            break
+        out.append(m)
+        if rs:
+            reps[m["id"]] = rs
+    nxt = "%d.%s" % (as_int(out[-1].get("last_activity_at")), out[-1]["id"]) if more and out else None
+    return {"messages": out, "replies": reps, "next": nxt}
+
+
+def history_query(qs):
+    """GET /api/messages query: before, limit, to, q (each at most once; anything else is a 400).
+    Returns (before, limit, to, q) or raises ValueError(detail)."""
+    if set(qs) - {"before", "limit", "to", "q"} or any(len(v) != 1 for v in qs.values()):
+        raise ValueError("expected before, limit, to and q, each at most once")
+    get = lambda k: qs[k][0] if k in qs else None  # noqa: E731
+    before = None
+    if get("before") is not None:
+        m = CURSOR_RE.fullmatch(get("before"))
+        if not m:
+            raise ValueError("before must be a cursor from `next`")
+        before = (int(m.group(1)), m.group(2))
+    limit = HISTORY_LIMIT
+    if get("limit") is not None:
+        if not re.fullmatch(r"[0-9]{1,3}", get("limit")) or not 1 <= int(get("limit")) <= HISTORY_MAX:
+            raise ValueError("limit must be 1..%d" % HISTORY_MAX)
+        limit = int(get("limit"))
+    to = get("to")
+    if to is not None and to != "all" and not CODE_RE.fullmatch(to):
+        raise ValueError("to must be a session code or all")
+    q = get("q")
+    if q is not None and len(q) > 200:
+        raise ValueError("q is at most 200 characters")
+    return before, limit, to or None, q
 
 
 def owner_only_operator(op):
@@ -1062,7 +1181,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         try:
             self.check_host()
             path = urllib.parse.urlsplit(self.path).path
-            if TICKET_GET_RE.fullmatch(path) or path == "/api/reminders":
+            if TICKET_GET_RE.fullmatch(path) or path == "/api/reminders" or path == "/api/messages":
                 self.check_fetch()   # before identity, audit or any tracker call
             ident, via = self.identity()
         except Refused as exc:
@@ -1090,12 +1209,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 and is_owner(cfg, ident)}), ident, via, cfg))
         if path == "/api/pomodoro/day":
             return self.pomodoro_day()
+        if path == "/api/messages":
+            return self.message_history(ident, via)
         m = TICKET_GET_RE.fullmatch(path)
         if m:
             return self.ticket_get(m.group(1), ident, via)
         if path in STATIC:
             return self.static(*STATIC[path])
         return self.send_json(404, {"error": "not_found"})
+
+    def message_history(self, ident, via):
+        """GET /api/messages?before=&limit=&to=&q=: older threads for the page's History view,
+        through the same viewer filter as /api/state (viewer_for)."""
+        qs = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query, keep_blank_values=True)
+        try:
+            before, limit, to, q = history_query(qs)
+        except ValueError as exc:
+            return self.send_json(400, {"error": "bad_request", "detail": str(exc)})
+        cfg = fleet.load_fleet()
+        return self.send_json(200, message_page(self.server.home, before, limit, to, q,
+                                                view=lambda st: self.viewer_for(st, ident, via, cfg)))
 
     def pomodoro_day(self):
         """GET /api/pomodoro/day?d=YYYY-MM-DD: one kept day's per-stream breakdown, fetched by the
@@ -1273,6 +1406,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         state["sessions"] = cards_for(state.get("sessions"), match_id(ident, fleet.id_list(cfg, "approvers")) is not None)
         if not is_owner(cfg, ident):
             state["operator"] = owner_only_operator(state.get("operator"))
+        return self.viewer_for(state, ident, via, cfg)
+
+    def viewer_for(self, state, ident, via, cfg):
+        """What one viewer may see of board text, for /api/state, SSE and GET /api/messages alike
+        (a part of the state, such as {messages, replies}, goes through it the same way): ticket
+        text for deciders only, other people's emails for owners only (viewer_mask)."""
         state = ticket_text_for(state, match_id(ident, sorted(deciders(cfg))) is not None)
         return self.viewer_mask(state, ident, via, cfg)
 

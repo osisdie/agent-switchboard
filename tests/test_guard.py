@@ -670,13 +670,17 @@ class EndToEnd(unittest.TestCase):
     def test_02_no_file_or_env_route(self):
         probes = ["/.env", "/tmp-local/.env", "/../config/.env", "/%2e%2e/config/.env", "/api/env", "/api/file?path=.env",
                   "/api/config", "/proc/self/environ", "/icons/../../config/.env", "/artifact/board.html",
-                  "/api/state/../../.env", "/static/.env", "/lib/serve.py", "/api/debug", "/api/messages",
-                  "/api/messages/m-1-a", "/api/messages/m-1-a/replies"]
+                  "/api/state/../../.env", "/static/.env", "/lib/serve.py", "/api/debug",
+                  "/api/messages/m-1-a", "/api/messages/m-1-a/replies", "/api/messages/../../.env"]
         for p in probes:
             with self.subTest(p):
                 st, body = self.get(p)
                 self.assertIn(st, (404, 405), p)
                 self.assertClean(body, p)
+        # GET /api/messages is the History page (the board's own fetch only): without X-Board, 403.
+        st, body = self.get("/api/messages")
+        self.assertEqual(st, 403)
+        self.assertClean(body, "/api/messages")
 
     def test_03_route_table_is_fixed(self):
         """The GET and POST routes of board-serve are a fixed allowlist: no route joins a request

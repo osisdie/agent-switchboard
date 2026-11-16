@@ -484,6 +484,17 @@ class Local(Fresh):
         self.assertNotIn(FAKE_TOKEN, json.dumps(js))
         self.assertIn("[REDACTED]", js["body"])
         self.assertEqual([r["body"] for r in js["replies"]], ["done"])
+        # The history list: the same scrubbed view, a page at a time, read:messages only.
+        st, _, js = self.req("/api/v1/messages?limit=5", KEYS["messages"][1])
+        self.assertEqual((st, sorted(js)), (200, ["messages", "next", "replies"]))
+        self.assertIn("m-1-a", [m["id"] for m in js["messages"]])
+        self.assertNotIn(FAKE_TOKEN, json.dumps(js))
+        self.assertEqual([r["body"] for r in js["replies"]["m-1-a"]], ["done"])
+        self.assertEqual(self.req("/api/v1/messages?q=done", KEYS["messages"][1])[2]["messages"][0]["id"], "m-1-a")
+        self.assertEqual(self.req("/api/v1/messages?q=" + FAKE_TOKEN[:20], KEYS["messages"][1])[2]["messages"], [])
+        self.assertEqual(self.req("/api/v1/messages", KEYS["state"][1])[0], 403)
+        for q in ("limit=0", "limit=51", "before=x", "to=%2F", "x=1"):
+            self.assertEqual(self.req("/api/v1/messages?" + q, KEYS["messages"][1])[0], 400, q)
         st, _, js = self.req("/api/v1/decisions/d-1-a", KEYS["decisions"][1])
         self.assertNotIn("secret_field", js)
 
@@ -589,17 +600,22 @@ class TicketText(Fresh):
         self.assertEqual(js["ticket"], {"provider": "tracker", "key": "WEB-9"})
         st, _, js = self.req("/api/v1/state", self.all)
         self.assertIn("t-9", [t["id"] for t in js["tasks"]], "the ticket task is there, without its text")
-        # The event stream's first frame.
+        # The event stream's first frame, with a key of its own: the routes above spent this one's
+        # burst (20 per key), and one more request would be a 429.
+        stream_key = mkkey(",".join(apikeys.SCOPES), DEV, "--rate", "600")[1]
         s_ = socket.create_connection(("127.0.0.1", PORT), timeout=10)
         s_.sendall(("GET /api/v1/events HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nAuthorization: Bearer %s\r\n\r\n"
-                    % (PORT, self.all)).encode())
+                    % (PORT, stream_key)).encode())
         buf = b""
         while b"event: state" not in buf or not buf.split(b"event: state", 1)[1].count(b"\n\n"):
             c = s_.recv(65536)
             if not c:
                 break
             buf += c
+            if b"\r\n" in buf and not buf.startswith(b"HTTP/1.1 200"):   # a refusal: fail now, not at the timeout
+                break
         s_.close()
+        self.assertTrue(buf.startswith(b"HTTP/1.1 200"), buf[:200])
         frame = buf.decode("utf-8", "replace")
         self.assertIn("event: state", frame)
         self.assertIn("WEB-9", frame)

@@ -295,6 +295,13 @@ class Served(unittest.TestCase):
                 self.assertEqual((m["m-1-a"]["by"], m["m-1-a"]["asker"]), ("you", "you") if who == ANN
                                  else ("asker", "asker"))
                 self.assertEqual((m["m-1-b"]["by"], m["m-1-b"]["released_by"]), ("someone", "owner"))
+                # the message history (GET /api/messages) masks exactly as the state, before the search
+                st, raw = get_tickets("/api/messages", who)
+                self.assertEqual(st, 200)
+                self.assertEqual(emails_in(raw, but=who), [], who)
+                h = {x["id"]: x for x in json.loads(raw)["messages"]}
+                self.assertEqual((h["m-1-b"]["by"], h["m-1-b"]["released_by"]), ("someone", "owner"))
+                self.assertEqual(json.loads(get_tickets("/api/messages?q=stranger", who)[1])["messages"], [])
                 self.assertEqual(s["approvals"][0]["answered_by"], "owner")
                 self.assertEqual(s["tasks"][0]["gates"][0]["approved_by"], "you" if who == BOSS else "approver")
                 self.assertEqual(s["owner_away"]["by"], "owner")
@@ -330,10 +337,11 @@ class Served(unittest.TestCase):
                            capture_output=True, text=True, check=True)
         key = json.loads(r.stdout)["key"]
         for path in ("/api/v1/state", "/api/v1/decisions", "/api/v1/decisions/d-1-a", "/api/v1/tasks",
-                     "/api/v1/tasks/t-1", "/api/v1/messages/m-1-b"):
+                     "/api/v1/tasks/t-1", "/api/v1/messages/m-1-b", "/api/v1/messages"):
             st, raw = get(path, key=key)
             self.assertEqual(st, 200, (path, raw[:200]))
             self.assertEqual(emails_in(raw), [], path)
+        self.assertEqual(json.loads(get("/api/v1/messages?q=stranger", key=key)[1])["messages"], [])
         # the event stream's first frame too
         sock = socket.create_connection(("127.0.0.1", PORT), timeout=10)
         sock.sendall(("GET /api/v1/events HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nAuthorization: Bearer %s\r\n\r\n"
