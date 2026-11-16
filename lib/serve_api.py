@@ -76,11 +76,30 @@ def api_settings(cfg):
             "auth_fail_per_min": fails, "request_ttl_ms": apikeys.request_ttl_ms(cfg)}
 
 
+IDLE_S = 60          # every bucket is full again after a minute: an idle entry carries nothing
+PRUNE_EVERY_S = 30
+_pruned = [0.0]
+
+
+def _prune(now):
+    """Drop bucket entries idle for a minute (they are full again) and audit marks older than
+    AUDIT_EVERY_S, so the tables don't grow with every tunnel IP or kid. Caller holds _lock."""
+    if now - _pruned[0] < PRUNE_EVERY_S:
+        return
+    _pruned[0] = now
+    for table in (_fails, _buckets):
+        for k in [k for k, (_t, last) in table.items() if now - last >= IDLE_S]:
+            del table[k]
+    for k in [k for k, t in _audited.items() if now - t >= AUDIT_EVERY_S]:
+        del _audited[k]
+
+
 def _take(table, key, per_min, burst, now):
     """Token bucket: (allowed, seconds to wait)."""
     cap = max(1, min(burst, per_min))
     rate = per_min / 60.0
     with _lock:
+        _prune(now)
         tokens, last = table.get(key, (float(cap), now))
         tokens = min(cap, tokens + (now - last) * rate)
         if tokens >= 1:
@@ -101,6 +120,7 @@ def reset_limits():
         _buckets.clear()
         _fails.clear()
         _audited.clear()
+        _pruned[0] = 0.0
 
 
 # ------------------------------------------------------------------ the request
@@ -233,11 +253,16 @@ def authenticate(h, st, route, via, client):
             raise ApiError(429, "rate_limited", "too many failed attempts", {"Retry-After": str(wait)})
         raise ApiError(status, error, detail, hdr)
 
-    if not _peek_fails(bucket, per_min, now):
-        raise ApiError(429, "rate_limited", "too many failed attempts", {"Retry-After": "60"})
+    spent = not _peek_fails(bucket, per_min, now)
     if not km:
+        if spent:              # junk from one source past its budget: refused, not audited
+            raise ApiError(429, "rate_limited", "too many failed attempts", {"Retry-After": "60"})
         fail(401, "invalid_key", "the key is not valid (Authorization: Bearer asb_live_…)", "malformed")
     rec, reason = apikeys.verify(key, "live", h.server.home, ttl_ms=st["request_ttl_ms"])
+    if rec is None and spent:
+        # someone keeps guessing this kid's secret: wrong guesses wait (not audited), but the
+        # holder of the real key is never locked out by them
+        raise ApiError(429, "rate_limited", "too many failed attempts", {"Retry-After": "60"})
     if rec is None:
         if reason == "wrong_env":
             fail(403, "key_wrong_env", "a test key works only on the mock board", reason)

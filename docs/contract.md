@@ -828,8 +828,10 @@ Transfer-Encoding, a body on a GET dropped and the connection closed):
    (one generic answer); an `asb_test_` key → 403 `key_wrong_env`. These failures are audited and
    counted **per kid** when the key has the shape of one (someone guessing that key's secret,
    from anywhere), else **per source** (the tunnel's `Cf-Connecting-Ip`, else the listener), up to
-   `serve.api.auth_fail_per_min` (default 10) a minute; past it, 429 with `Retry-After` for that
-   kid or that source. Then the route's scope (403 `insufficient_scope`), then the key's rate: a
+   `serve.api.auth_fail_per_min` (default 10) a minute; past it, 429 with `Retry-After` and no
+   audit row. A spent kid bucket still lets the **real** key through (it is checked first), so
+   guessing a kid's secret can't lock its holder out; a spent source bucket refuses its junk.
+   The limiter tables live in memory and drop entries idle for a minute. Then the route's scope (403 `insufficient_scope`), then the key's rate: a
    token bucket of `rate_per_min` with a burst of 20 (429 `rate_limited`, `Retry-After`).
    `last_used_at` is recorded (at most once a minute). The Access cookie (`CF_Authorization`) and
    `local` are never credentials here.
@@ -857,8 +859,8 @@ never reaches board-serve unauthenticated. There is no Access bypass for the API
 
 **Audit** (`events.jsonl`, type `api`): every refused key check (`action: "auth_fail"`, `key_id`
 when the key had the right shape, `reason`, `route`, `via`, `client`, `result`), every
-`insufficient_scope`, and each key's successful use of a route at most once a minute
-(`action` = the route's handler, with `owner` and `name`). `client` is `loopback`,
+`insufficient_scope`, and each key's successful use of a route at most once a minute per
+board-serve process (`action` = the route's handler, with `owner` and `name`). `client` is `loopback`,
 `service:<common_name>` or `email:<email>`. Never a key.
 
 ## Secret guardrails

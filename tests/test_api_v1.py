@@ -525,6 +525,21 @@ class Local(Fresh):
 
 
 class Unit(unittest.TestCase):
+    def test_limiter_tables_are_pruned(self):
+        serve_api.reset_limits()
+        t0 = 1000.0
+        for i in range(5000):
+            serve_api._fails["tunnel:203.0.113.%d" % i] = (0.0, t0)
+            serve_api._buckets["k%d" % i] = (0.0, t0)
+            serve_api._audited[("k%d" % i, "state")] = t0
+        serve_api._take(serve_api._fails, "fresh", 10, 10, t0 + 30)     # nothing idle a minute yet
+        self.assertEqual(len(serve_api._fails), 5001)
+        serve_api._take(serve_api._fails, "fresh2", 10, 10, t0 + 61)
+        self.assertEqual(set(serve_api._fails), {"fresh", "fresh2"})
+        self.assertEqual(serve_api._buckets, {})
+        self.assertEqual(serve_api._audited, {})
+        serve_api.reset_limits()
+
     def test_junk_never_reaches_a_file_lookup(self):
         real = apikeys.load
 
@@ -639,9 +654,12 @@ class Tunnel(Fresh):
             # a guessed secret counts against its kid, from anywhere
             kid, key = mkkey("read:state")
             wrong = key[:-1] + ("A" if key[-1] != "A" else "B")
-            got = [self.t("/api/v1/whoami", "svc", wrong, ip="198.51.100.%d" % i)[0] for i in range(4)]
-            self.assertEqual(got, [401, 401, 401, 429])
-            self.assertEqual(self.t("/api/v1/whoami", "svc", key, ip="198.51.100.9")[0], 429)
+            got = [self.t("/api/v1/whoami", "svc", wrong, ip="198.51.100.%d" % i)[0] for i in range(5)]
+            self.assertEqual(got, [401, 401, 401, 429, 429])
+            rows = [e for e in events() if e.get("action") == "auth_fail" and e.get("key_id") == kid]
+            self.assertEqual(len(rows), 3)                            # the 429s are not audited
+            self.assertEqual(self.t("/api/v1/whoami", "svc", key, ip="198.51.100.9")[0], 200)   # the holder gets in
+            self.assertEqual(self.t("/api/v1/whoami", "svc", wrong, ip="198.51.100.9")[0], 429)
             self.assertEqual(self.t("/api/v1/whoami", "svc", self.all, ip="198.51.100.9")[0], 200)
         finally:
             write_fleet()
