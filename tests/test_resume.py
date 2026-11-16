@@ -126,7 +126,10 @@ PROSE = [screen(["● The API enforces a weekly limit; I added a backoff."]),
          screen(["● I changed the classifier.", "", "  Usage limit reached is now matched only at line start."]),
          screen(["● Summary:", "", "  Weekly limit reached screens are handled."]),
          screen(["● The notice text we look for, after this change, is the one that reads", "  usage limit reached · resets 3pm."]),
-         screen(["● Two paragraphs.", "", "  The first one.", "", "  You've hit your limit is what the client prints."])]
+         screen(["● Two paragraphs.", "", "  The first one.", "", "  You've hit your limit is what the client prints."]),
+         # multi-line tool output below a "⎿" line
+         screen(["● Bash(cat fixture.txt)", "  ⎿  line one", "     You've hit your limit · resets 3pm"]),
+         screen(["● Bash(cat fixture.txt)", "  ⎿  line one", "", "  Usage limit reached · resets 3pm"])]
 
 
 def run(*args, env=None):
@@ -314,7 +317,11 @@ class ClassifyTest(unittest.TestCase):
             return "\n".join(["Claude Code v2", "", "❯ fix the flaky upload test"] + reply + [TOP, "❯" + NB, RULE, FOOT])
         self.assertEqual(self.st(bare(["You've hit your limit · resets 3pm"])), "idle")
         self.assertEqual(self.st(screen(["You've hit your limit · resets 3pm"])), "none", "after HEAD's ● reply line")
-        self.assertEqual(self.st(screen(["● Bash(ls)", "  ⎿  a.txt", "", "You've hit your limit · resets 3pm"])), "idle")
+        # below a tool result a plain line is that tool's output, never a notice
+        self.assertEqual(self.st(screen(["● Bash(ls)", "  ⎿  a.txt", "", "You've hit your limit · resets 3pm"])), "none")
+        # notices on "⎿" lines themselves still count
+        self.assertEqual(self.st(screen(["  ⎿  You've hit your limit · resets 3pm"])), "idle")
+        self.assertEqual(self.st(screen(["  ⎿  Automatic continue cancelled · /rate-limit-options to re-arm"])), "idle")
         self.assertEqual(self.st(screen(["● Working on it.", "", "You've hit your limit · resets 3pm"])), "none")
         self.assertEqual(self.st(screen(["You've hit your limit · resets 3pm", "", "● Something after it."])), "none")
 

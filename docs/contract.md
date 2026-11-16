@@ -2629,13 +2629,13 @@ CLI: `board resume CODE [CODE...] [--dry-run] [--by NAME] [--json]`, `board resu
 **Claude's limit notice.** `limit_regex` is matched at the **start** of a line's text, and only on
 two kinds of line in the last reply (between the last echoed prompt and the input box): a
 tool-result / system line (`⎿ Usage limit reached · limit resets 3pm`, matched after the `⎿`),
-or the last non-blank line before the box when no assistant `●` line comes before it in the
-reply. That walk up passes blank lines (Claude draws a reply's later paragraphs indented, without
-`●`) and stops only at a `⎿` line. Assistant prose that mentions limits never counts, in any
-paragraph: "● The API enforces a weekly limit", a wrapped "● … the one that reads / usage limit
-reached …", or "● Summary:" followed by a blank line and "  Weekly limit reached screens are
-handled.". Neither does tool output whose line does not start with the notice (`⎿ docs/x.md:
-Usage limit …`).
+or the last non-blank line before the box when no assistant `●` line and no tool-result `⎿`
+line comes before it in the reply (blank lines do not stop that walk: Claude draws a reply's later
+paragraphs indented, without `●`, and a tool's output continues below its `⎿` line). Assistant
+prose and tool output that mention limits never count, in any paragraph: "● The API enforces a
+weekly limit", a wrapped "● … the one that reads / usage limit reached …", "● Summary:" followed
+by a blank line and "  Weekly limit reached screens are handled.", a tool output line `⎿
+docs/x.md: Usage limit …`, or the later lines of a tool's output.
 
 **Screens** (Claude Code 2.1.x; the patterns are `fleet.yaml limit_resume.*`, Python regexes):
 

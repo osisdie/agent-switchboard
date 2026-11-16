@@ -155,14 +155,13 @@ def last_reply(lines, top, window=15):
 
 
 def _after_bullet(lines, k):
-    """Does an assistant "●" line come before line K in LINES (the reply)? Blank lines do not stop
-    the walk (Claude draws a reply's later paragraphs indented, without "●"); a "⎿" line does (what
-    follows a tool result is not that paragraph's prose)."""
+    """Does an assistant "●" line or a tool result "⎿" line come before line K in LINES (the
+    reply)? Blank lines do not stop the walk: Claude draws a reply's later paragraphs indented and
+    without "●", and a tool's output continues below its "⎿" line. A plain line under either is
+    prose or tool output, never a standalone notice (a notice on a "⎿" line itself is matched
+    there)."""
     for j in range(k - 1, -1, -1):
-        s = lines[j].strip()
-        if s.startswith(TOOL):
-            return False
-        if s.startswith(BULLET):
+        if lines[j].strip().startswith((BULLET, TOOL)):
             return True
     return False
 
@@ -170,9 +169,9 @@ def _after_bullet(lines, k):
 def limit_notice(lines, c, last_only=True):
     """Claude's own usage-limit notice among LINES, else None. A notice is a tool-result / system
     line ("⎿ Usage limit reached · …") whose text STARTS with limit_regex, or (LAST_ONLY: only
-    the last non-blank line; else any line) a line that starts with it and has no assistant "●"
-    line before it in LINES, up to the last "⎿" line (_after_bullet). Assistant prose that
-    mentions limits never counts, in any paragraph of the reply."""
+    the last non-blank line; else any line) a line that starts with it and has no "●" or "⎿" line
+    before it in LINES (_after_bullet). Assistant prose and tool output that mention limits never
+    count, in any paragraph of the reply."""
     rx = _rx(c, "limit_regex", re.I)
     nonblank = [k for k, ln in enumerate(lines or []) if ln.strip()]
     for k in nonblank:
