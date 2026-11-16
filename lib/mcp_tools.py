@@ -16,8 +16,9 @@ a rescoped or revoked key shows within a minute. tools/call never needs it: the 
 out-of-scope call itself (403 insufficient_scope).
 
 Output: every string in a result (keys included) has "[BOARD" turned into "(BOARD"
-(lib/away.py DEFANG_RE, the board's own defang), so text a session or person wrote can never look
-like a relay line to the client's agent. The board has already run its secret guard over it.
+(lib/messages.py defang: also fullwidth or CJK brackets, fullwidth letters and invisible characters
+in between), so text a session or person wrote can never look like a relay line to the client's
+agent. The board has already run its secret guard over it.
 
 Errors: a refused key or listener (401, key_wrong_env, Cloudflare Access refusals, a redirect to
 a login page) is JSON-RPC error -32001; no such resource -32002; an unreachable board or a
@@ -42,8 +43,9 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import api_spec  # noqa: E402
-import away  # noqa: E402
+import apikeys  # noqa: E402
 import guard  # noqa: E402
+import messages  # noqa: E402
 
 PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")   # newest first
 SERVER_INFO = {"name": "agent-switchboard", "title": "agent-switchboard board", "version": api_spec.VERSION}
@@ -53,6 +55,7 @@ MAX_BATCH = 10          # JSON-RPC messages in one batch
 MAX_LINE = 1 << 20      # one stdio message
 MAX_RESPONSE = 8 << 20  # one /api/v1 answer read by the stdio client
 TIMEOUT_S = 15
+HEADER_VALUE_RE = re.compile(r"[\x21-\x7e]{1,512}")   # a Cloudflare client id or secret: printable, no spaces
 E_PARSE, E_REQUEST, E_METHOD, E_PARAMS, E_INTERNAL = -32700, -32600, -32601, -32602, -32603
 E_ACCESS, E_NO_RESOURCE, E_UNREACHABLE = -32001, -32002, -32003
 # The board's answers that mean "this key (or this client) may not use the board at all": an MCP
@@ -141,7 +144,7 @@ def allowed(scope, scopes):
 def defang(obj):
     """Every string (and key) in a JSON value with "[BOARD" made "(BOARD" (case-insensitive)."""
     if isinstance(obj, str):
-        return away.DEFANG_RE.sub(r"(\1", obj)
+        return messages.defang(obj)
     if isinstance(obj, list):
         return [defang(x) for x in obj]
     if isinstance(obj, dict):
@@ -418,7 +421,11 @@ class HttpBackend:
                     "the board answered a redirect (HTTP %d), not followed; behind Cloudflare Access, "
                     "set CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET" % status)}
             ra = exc.headers.get("Retry-After") if exc.headers else None
-        except (urllib.error.URLError, OSError, ValueError) as exc:
+        except ValueError:
+            # http.client refuses a header value with a control character, and its message carries
+            # the value (escaped, so redaction can't find it): never pass any of it on
+            raise Unreachable("invalid request header") from None
+        except (urllib.error.URLError, OSError) as exc:
             reason = getattr(exc, "reason", exc)
             raise Unreachable(redact("cannot reach the board at %s: %s" % (self.base, reason))) from None
         if len(raw) > MAX_RESPONSE:
@@ -490,9 +497,16 @@ def main(argv=None, doc=None):
         log("BOARD_API_KEY is not set: create a key with `board apikey create` (or ask an approver for one) "
             "and pass it in the MCP client's env")
         return 2
+    if not apikeys.KEY_RE.fullmatch(key):     # fixed text: never a piece of the value
+        log("BOARD_API_KEY is not a board API key (asb_live_<id>_<secret>, one line, no spaces)")
+        return 2
     if bool(cf_id) != bool(cf_secret):
         log("set both CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET, or neither")
         return 2
+    for name, val in (("CF_ACCESS_CLIENT_ID", cf_id), ("CF_ACCESS_CLIENT_SECRET", cf_secret)):
+        if val is not None and not HEADER_VALUE_RE.fullmatch(val):
+            log("%s has spaces or control characters" % name)
+            return 2
     try:
         backend = HttpBackend(os.environ.get("BOARD_API_URL", "").strip() or DEFAULT_URL, key, cf_id, cf_secret)
     except ValueError as exc:

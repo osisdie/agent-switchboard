@@ -1258,8 +1258,9 @@ The board as an MCP server, for Claude Code, Claude Desktop or any MCP client. O
   `http://127.0.0.1:39410`; `https` unless the host is loopback, no credentials, query or
   fragment), and optionally `CF_ACCESS_CLIENT_ID` + `CF_ACCESS_CLIENT_SECRET` (both or neither),
   sent as `CF-Access-Client-Id` / `CF-Access-Client-Secret` for a board behind Cloudflare Access.
-  A missing key, a bad URL or half a service token: a message on stderr and exit 2, before any
-  request. JSON-RPC 2.0, one message (or batch, at most 10) per line on stdin and stdout; stdout
+  A missing key, a key not in the key's shape (one line, no spaces), a bad URL, half a service
+  token or one with spaces or control characters: a fixed message on stderr (never a piece of the
+  value) and exit 2, before any request. JSON-RPC 2.0, one message (or batch, at most 10) per line on stdin and stdout; stdout
   carries nothing else; a line over 1 MiB is answered `-32600` and skipped. Redirects are never
   followed (the key would go wherever one points); no proxy is used for a loopback board.
 - **Streamable HTTP**: `POST /mcp` on board-serve, either listener. JSON responses only: no SSE
@@ -1300,8 +1301,9 @@ already. Listing is a convenience, not the check: `tools/call` never consults it
 refuses an out-of-scope call itself.
 
 **Results.** A tool's JSON is the route's answer, as `content` text and as `structuredContent`.
-Every string in it, keys included, has `[BOARD` (any case) turned into `(BOARD`, so text a session
-or person wrote can never pass for a relay line. The board's secret guard has run over it already,
+Every string in it, keys included, goes through the board's defang (`lib/messages.py`): `[BOARD`
+becomes `(BOARD`, also with fullwidth or CJK brackets, fullwidth letters or invisible characters in
+between, so text a session or person wrote can never pass for a relay line. The board's secret guard has run over it already,
 and ticket text stays hidden (decision Q3), as on `/api/v1`.
 
 **Errors.** The board refusing the client (401, `key_wrong_env`, a listener or Access refusal, a
