@@ -26,26 +26,26 @@ listeners (docs/contract.md, "Local adapter API"):
                                        board ask answered in the session; `board resolve --in-pane`)
   POST /api/messages                   {"to": "CODE"|"all", "body": "..."}  (screened by the secret
                                        guard: a secret request is stored "held", never relayed)
-  POST /api/messages/<id>/release      {"confirm": "release"}  (approvers only: release a held
+  POST /api/messages/<id>/release      {"confirm": "release"}  (owners only: release a held
                                        message after a false positive; audited)
-  POST /api/away                       {"state": "on"|"off", "said": "..."}   (approvers only;
+  POST /api/away                       {"state": "on"|"off", "said": "..."}   (owners only;
                                        via `board away on|off --by board:<identity>`)
   POST /api/notify-prefs               {"op": "mute"|"unmute"|"level"|"presence", ...}  (approvers
                                        only; via `board mute|unmute|notify-level|notify-presence`)
-  POST /api/presence                   {"visible": bool, "idle_ms": ms}  (approvers only;
+  POST /api/presence                   {"visible": bool, "idle_ms": ms}  (owners only, else 204 ignored;
                                        the board page's heartbeat, recorded in presence.json)
-  POST /api/alerts/ack                 {"scope": "all"}  (approvers only; the Deck panel's
+  POST /api/alerts/ack                 {"scope": "all"}  (owners only; the Deck panel's
                                        "acknowledge all", via `board ack --by board:<identity> '*'`)
-  POST /api/sessions/<code>/action     {"action": "compact"|"rc_on"|"rc_off"}  (approvers only;
+  POST /api/sessions/<code>/action     {"action": "compact"|"rc_on"|"rc_off"}  (owners only;
                                        stored via `board session CODE compact --queue-only` /
                                        `board rc on|off CODE --no-apply`, then `board session
                                        apply` types the fixed command in the background)
   POST /api/rc                         {"code": "CODE"|"all", "state": "on"|"off"}  (the same for
                                        Remote Control, also for all sessions)
   GET  /api/lessons[?q=TEXT]           the scheduler's lessons (also in /api/state), searchable
-  POST /api/lessons                    {"title", "rule"?, "cause"?, "resolution"?}  (approvers only;
+  POST /api/lessons                    {"title", "rule"?, "cause"?, "resolution"?}  (owners only;
                                        via `board lesson add --by board:<identity> --file <0600 tmp>`)
-  POST /api/lessons/<id>               {"action": "edit"|"activate"|"retire"|"delete", ...}  (approvers
+  POST /api/lessons/<id>               {"action": "edit"|"activate"|"retire"|"delete", ...}  (owners
                                        only; edit takes title/rule/cause/resolution; delete needs
                                        "confirm": "delete" and appends a tombstone; audited)
   GET  /api/pomodoro/day?d=YYYY-MM-DD one kept day's per-stream pomodoro breakdown (read-only,
@@ -311,7 +311,7 @@ def owner_ids(cfg):
     """Who owns the board: fleet.yaml `owners`, else `approvers` (a single-user setup keeps
     working). For the board's own owner-only surfaces; API key administration never falls back
     (lib/apikeys.py fails closed with empty owners)."""
-    return fleet.id_list(cfg, "owners") or fleet.id_list(cfg, "approvers")
+    return fleet.owner_ids(cfg)
 
 
 def is_owner(cfg, ident):
@@ -341,13 +341,16 @@ def roles_of(cfg, ident):
     is_approver = match_id(ident, fleet.id_list(cfg, "approvers")) is not None
     is_rm = match_id(ident, allowed_ids(cfg, {"gate": "production"})) is not None
     is_asker = match_id(ident, askers(cfg)) is not None
-    roles = [r for r, on in (("approver", is_approver), ("release_manager", is_rm), ("asker", is_asker)) if on] \
-        or ["viewer"]
-    return {"roles": roles, "is_approver": is_approver, "is_release_manager": is_rm, "is_asker": is_asker}
+    owner = is_owner(cfg, ident)
+    roles = [r for r, on in (("owner", owner), ("approver", is_approver), ("release_manager", is_rm),
+                             ("asker", is_asker)) if on] or ["viewer"]
+    return {"roles": roles, "is_owner": owner, "is_approver": is_approver, "is_release_manager": is_rm,
+            "is_asker": is_asker}
 
 
 def self_release_refused(rec, ident, approvers):
-    """Four eyes on a held message: with more than one approver, its sender may not release it.
+    """Four eyes on a held message: with more than one possible releaser (the owners, see
+    owner_ids; the caller passes that list), its sender may not release it.
     Except `local`: every request on the loopback listener is `local`, i.e. the owner at this
     machine, who could edit $BOARD_HOME anyway; refusing it would only lock the owner out."""
     who = str(ident or "").strip().lower()
@@ -1078,8 +1081,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                                              r.get("rule"), r.get("rule_kind")], ensure_ascii=False).lower()]
             cfg = fleet.load_fleet()
             return self.send_json(200, self.viewer_mask(guard.scrub_tree({
-                "lessons": rows, "can_edit": match_id(ident, fleet.id_list(cfg, "approvers")) is not None}),
-                ident, via, cfg))
+                "lessons": rows, "can_edit": match_id(ident, fleet.id_list(cfg, "approvers")) is not None
+                and is_owner(cfg, ident)}), ident, via, cfg))
         if path == "/api/pomodoro/day":
             return self.pomodoro_day()
         m = TICKET_GET_RE.fullmatch(path)
@@ -1260,6 +1263,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                       "can_message": match_id(ident, sorted(messagers(cfg))) is not None,
                       "asker": asker_only(cfg, ident),
                       "approver": match_id(ident, fleet.id_list(cfg, "approvers")) is not None,
+                      "owner": is_owner(cfg, ident) and match_id(ident, fleet.id_list(cfg, "approvers")) is not None,
                       "account": self.account_for(ident, cfg), "page_version": page_version()})
         state["sessions"] = cards_for(state.get("sessions"), match_id(ident, fleet.id_list(cfg, "approvers")) is not None)
         if not is_owner(cfg, ident):
@@ -1511,6 +1515,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if by is None:
                 self.audit(ident, via, "answer", id=did, result="refused", reason="not an approver")
                 raise Refused(403, "not_approver", "you may not answer this decision")
+            # A permission prompt (allow/deny) or a pane question is answered by pressing keys in a
+            # session on the owner's machine: owners only.
+            if (kind == "permission" or (kind == "question" and dec.get("source") == "pane")) \
+                    and not is_owner(cfg, ident):
+                self.audit(ident, via, "answer", id=did, result="refused", reason="not an owner")
+                raise Refused(403, "not_owner", "only the board's owner answers prompts in a session")
             if dec.get("status") not in ("pending", "unauthorized", "answered"):
                 self.audit(ident, via, "answer", id=did, result="gone", status=dec.get("status"))
                 raise Refused(409, "gone", "decision is already %s" % dec.get("status"))
@@ -1691,7 +1701,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return self.send_json(201, out)
 
     def release(self, mid, body, ident, via):
-        """Release a held message (a false positive of the secret guard): approvers only, and the
+        """Release a held message (a false positive of the secret guard): owners only, and the
         body must confirm it ({"confirm": "release"}, the page's second click). Audited; the
         relay then carries a reminder that this authorizes no secret values."""
         if not MSG_ID_RE.fullmatch(mid):
@@ -1701,15 +1711,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if via not in ("loopback", "cf-jwt"):
             self.audit(ident, via, "message-release", id=mid, result="refused", reason="channel")
             raise Refused(403, "release_refused", "held messages are released only on the board itself")
-        by = self.approver(ident, via, "message-release", what="release a held message", id=mid)
+        by = self.owner(ident, via, "message-release", what="release a held message", id=mid)
         if body.get("confirm") != "release":
             raise Refused(400, "confirm_required", "confirm the release: {\"confirm\": \"release\"}")
         with self.server.write_lock:
             rec = messages.read(self.server.home, mid) or {}
-            approvers = fleet.id_list(fleet.load_fleet(), "approvers")
-            if self_release_refused(rec, ident, approvers):
+            # releasing is owner-only, so the four-eyes rule counts owners: a single owner may release
+            # a message they sent themselves (nobody else could)
+            releasers = owner_ids(fleet.load_fleet())
+            if self_release_refused(rec, ident, releasers):
                 self.audit(ident, via, "message-release", id=mid, result="refused", reason="self-release")
-                raise Refused(403, "self_release", "another approver must release a message you sent")
+                raise Refused(403, "self_release", "another owner must release a message you sent")
             try:
                 messages.release(self.server.home, mid, by)
             except messages.MessageError as exc:
@@ -1765,7 +1777,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         raise Refused(409, "gone", "the decision is no longer open")
 
     def set_away(self, body, ident, via):
-        """Owner-away mode from the board: approvers only (the rule of an ordinary answer)."""
+        """Owner-away mode from the board: owners only (an owner who is an approver)."""
         state, said = body.get("state"), body.get("said", "")
         if state not in ("on", "off"):
             raise Refused(400, "bad_state", "state must be \"on\" or \"off\"")
@@ -1784,6 +1796,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if by is None:
             self.audit(ident, via, "away", state=state, result="refused", reason="not an approver")
             raise Refused(403, "not_approver", "only approvers change owner-away mode")
+        if not is_owner(cfg, ident):      # owner-away unlocks the cross-session consensus rules
+            self.audit(ident, via, "away", state=state, result="refused", reason="not an owner")
+            raise Refused(403, "not_owner", "only the board's owner changes owner-away mode")
         home = self.server.home
         if reason:  # `said` is broadcast to every session
             self.audit(ident, via, "away", state=state, result="held", reason=reason)
@@ -1815,7 +1830,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         action = "add" if lid is None else body.get("action")
         if lid is not None and (not lessons.ID_RE.fullmatch(lid) or action not in ("edit", "activate", "retire", "delete")):
             raise Refused(400, "bad_request", "a lesson id and action edit|activate|retire|delete")
-        by = self.approver(ident, via, "lesson", what="change lessons", lesson=lid, op=action)
+        by = self.owner(ident, via, "lesson", what="change lessons", lesson=lid, op=action)
         if action == "delete" and body.get("confirm") != "delete":
             raise Refused(400, "confirm_required", "send \"confirm\": \"delete\" to delete a lesson")
         fields = {k: body[k] for k in ("title", "rule", "cause", "resolution") if k in body}
@@ -1845,6 +1860,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
         raise Refused(*{1: (404, "not_found"), 2: (400, "bad_lesson"), 4: (403, "not_approver"),
                         6: (400, "held_text"), 8: (409, "busy")}.get(rc, (500, "lesson_failed")), msg or "not saved")
 
+    def owner(self, ident, via, action, what="change notification settings", **kw):
+        """Owner-only board controls: an approver (the board CLI checks that again) who is also an
+        owner (fleet.yaml owners, else approvers). 403 not_owner otherwise, audited."""
+        by = self.approver(ident, via, action, what=what, **kw)
+        if not is_owner(fleet.load_fleet(), ident):
+            self.audit(ident, via, action, result="refused", reason="not an owner", **kw)
+            raise Refused(403, "not_owner", "only the board's owner may %s" % what)
+        return by
+
+    def send_empty(self, status=204):
+        self.send_response(status)
+        self.send_header("Content-Length", "0")
+        self.common_headers()
+        if self.close_connection:
+            self.send_header("Connection", "close")
+        self.end_headers()
+
     def approver(self, ident, via, action, what="change notification settings", **kw):
         """The configured spelling of an approver identity; fails closed (403) otherwise."""
         approvers = fleet.id_list(fleet.load_fleet(), "approvers")
@@ -1858,7 +1890,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return by
 
     def notify_prefs(self, body, ident, via):
-        """Notification controls from the board: approvers only, through the board CLI (argv)."""
+        """Notification controls from the board: owners only, through the board CLI (argv)."""
         op, target = body.get("op"), body.get("channel")
         if op not in ("mute", "unmute", "level", "presence"):
             raise Refused(400, "bad_op", "op must be mute, unmute, level or presence")
@@ -1899,7 +1931,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 raise Refused(400, "bad_level", "level must be warn, high or urgent")
             argv = ["notify-presence", "on" if reduce else "off"] + (["--level", level] if level else [])
         kw = {"op": op, "channel": target} if op != "presence" else {"op": op}
-        by = self.approver(ident, via, "notify-prefs", **kw)
+        by = self.owner(ident, via, "notify-prefs", **kw)
         with self.server.write_lock:
             rc, out, err = self.board(*(argv + ["--by", "board:%s" % by]))
             if rc != 0:
@@ -1923,7 +1955,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             raise Refused(400, "bad_body", "visible must be true or false")
         if idle is not None and (not isinstance(idle, int) or isinstance(idle, bool) or idle > MAX_IDLE_MS):
             raise Refused(400, "bad_body", "idle_ms must be milliseconds (at most a day) or null")
-        by = self.approver(ident, via, "presence")
+        cfg = fleet.load_fleet()
+        by = match_id(ident, fleet.id_list(cfg, "approvers"))
+        if by is None or not is_owner(cfg, ident):
+            # only the owner's presence may hold back the owner's pushes: anyone else's heartbeat is
+            # ignored (not stored, not counted, not audited), with no error the page would repeat
+            return self.send_empty(204)
         now = now_ms()
         seen = now - max(0, idle) if idle is not None else None
         changed = prefs.record_presence(self.server.home, by, visible, seen, via, now)
@@ -1938,7 +1975,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         condition that opens again alerts again."""
         if body.get("scope") != "all":
             raise Refused(400, "bad_scope", "scope must be \"all\"")
-        by = self.approver(ident, via, "alerts-ack", what="acknowledge alerts", scope="all")
+        by = self.owner(ident, via, "alerts-ack", what="acknowledge alerts", scope="all")
         with self.server.write_lock:
             rc, out, err = self.board("ack", "--by", "board:%s" % by, "*")
             if rc != 0 and not (rc == 1 and not err):  # 1 and silent: nothing was open
@@ -1968,7 +2005,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         one session it is the same as POST /api/sessions/<code>/action {action: rc_on|rc_off}.
         Who is asking is checked first, so a refused probe is audited whatever it sent."""
         code, state = body.get("code"), body.get("state")
-        by = self.approver(ident, via, "rc", what="change Remote Control",
+        by = self.owner(ident, via, "rc", what="change Remote Control",
                            code=self._audit_str(code), state=self._audit_str(state))
         if state not in ("on", "off"):
             raise Refused(400, "bad_state", "state must be \"on\" or \"off\"")
@@ -1980,7 +2017,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         """POST /api/sessions/<code>/action {action}: an allowlisted session action. Approvers
         only, checked before the input."""
         name = body.get("action")
-        by = self.approver(ident, via, "session-action", what="run session actions",
+        by = self.owner(ident, via, "session-action", what="run session actions",
                            code=self._audit_str(code), name=self._audit_str(name))
         if name not in actions.ACTIONS:
             raise Refused(400, "bad_action", "action must be one of %s" % ", ".join(sorted(actions.ACTIONS)))

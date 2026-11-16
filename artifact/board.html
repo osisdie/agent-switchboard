@@ -1297,7 +1297,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     got: { sessions: false, decisions: false, messages: false, tasks: false, approvals: false, operator: false, consensus: false },
     slow: false, feedError: null, offlineDetail: null,
     me: null, userReady: false, writable: null,   // writable: true | false | null (unknown → let writes decide)
-    canEditBoard: null, canMessageLocal: false, askerOnly: false, isApprover: false,          // claude mode: Editor/Owner (writes shared docs, sends messages); Contributors only answer
+    canEditBoard: null, canMessageLocal: false, askerOnly: false, isApprover: false, isOwner: false,          // claude mode: Editor/Owner (writes shared docs, sends messages); Contributors only answer
     myAnswers: new Map(),        // claude mode: decisionId -> my answers/<me>/d/<id> doc
     canSend: 'off',
     confirm: null,               // { id, choice }
@@ -1430,11 +1430,16 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     if (!Array.isArray(ids)) return null;
     return !!S.me && ids.includes(S.me);
   }
-  // Local mode: may this viewer turn owner-away mode on or off (board-serve checks it again)?
+  // Local mode: the owner-only controls (owner-away, notifications, alert acks, Remote Control,
+  // session actions, lessons, releasing a held message, the presence heartbeat). board-serve says
+  // who is an owner (state.owner: fleet.yaml owners, else approvers) and checks it again.
   function awayEditor() {
     if (S.demo) return true;
-    return isLocal() && S.mode === 'live' && S.isApprover;
+    return isLocal() && S.mode === 'live' && S.isOwner;
   }
+  // Answering a permission prompt or a pane question presses keys on the owner's machine: owners
+  // only on the self-hosted board (the Artifact board keeps its approver rule).
+  function promptAnswerer() { return S.demo || !isLocal() || S.isOwner; }
   function limitText() {
     const L = S.operator && S.operator.limit;
     if (!L || typeof L !== 'object') return null;
@@ -1981,8 +1986,11 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       d.status === 'unauthorized' ? h('span', { class: 'status unauthorized', text: tr('unauthorized') }) : null,
       escChip(d),
       timeEl(d.created_at)));
-    const live = pressable && !busy && canAnswer();
-    const liveMulti = multi && !busy && canAnswer();
+    const live = pressable && !busy && canAnswer() && promptAnswerer();
+    const liveMulti = multi && !busy && canAnswer() && promptAnswerer();
+    if ((pressable || multi) && !busy && canAnswer() && !promptAnswerer()) {
+      card.append(h('p', { class: 'note owneronly', text: tr('Only the board\'s owner answers questions in a session.') }));
+    }
     let sendMulti = null;
     const pickedAll = () => picks.length === qs.length && qs.every((q, i) => Number.isInteger(picks[i]) || !!cleanText(texts[i]));
     const list = qs.length ? qs : [{ question: str(d.question) || tr('Question'), options: [] }];
@@ -2152,6 +2160,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     }
     if (busy) {
       card.append(h('p', { class: 'saving', text: tr('Saving your answer…') }));
+    } else if (isPerm && canAnswer() && !promptAnswerer()) {
+      card.append(h('p', { class: 'note owneronly', text: tr('Only the board\'s owner answers permission prompts.') }));
     } else if (canAnswer()) {
       if (appr === false) { tip = tr('You are not an approver — your answer won\'t be relayed'); card.append(h('p', { class: 'note noappr', text: tr('You are not an approver — your answer won\'t be relayed.') })); }
       if (offline) { tip = tip || tr('Answers will queue until the operator returns'); card.append(h('p', { class: 'note queue', text: tr('Operator offline — answers are saved and queued until the operator returns.') })); }
@@ -5068,6 +5078,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       S.canMessageLocal = st.can_message === true;
       S.askerOnly = st.asker === true;
       S.isApprover = st.approver === true;
+      S.isOwner = st.owner === true;
       // board-serve has a newer board.html than the one this tab was served: offer a reload.
       const mine = document.querySelector('meta[name="board-version"]');
       S.newVersion = !!(mine && st.page_version && st.page_version !== mine.getAttribute('content'));
@@ -5150,7 +5161,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
   // and their API keys. local: GET /api/me; claude: the user capability; demo: a sample identity.
   const THEME_KEY = 'switchboard.theme';
   const THEMES = ['light', 'dark', 'system'];
-  const ROLE_LABEL = { approver: 'Approver', release_manager: 'Release manager', asker: 'Asker (messages only)', viewer: 'Viewer' };
+  const ROLE_LABEL = { owner: 'Owner', approver: 'Approver', release_manager: 'Release manager', asker: 'Asker (messages only)', viewer: 'Viewer' };
   const KEY_STATUS = ['active', 'revoked', 'expired'];
   const rootEl = document.documentElement;
   const themeBoot = window.switchboardTheme && typeof window.switchboardTheme === 'object' ? window.switchboardTheme : null;
@@ -5222,6 +5233,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     // viewer's own roles come from the state flags, never from comparing the lists.
     if (isLocal() && S.mode === 'live' && S.userReady) {
       const out = [];
+      if (S.isOwner) out.push('owner');
       if (S.isApprover) out.push('approver');
       if (S.askerOnly) out.push('asker');
       return out.length ? out : ['viewer'];
@@ -6193,6 +6205,9 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "Release manager": "Release manager",
       "Viewer": "檢視者",
       "Asker (messages only)": "提問者（只能傳訊息）",
+      "Owner": "擁有者",
+      "Only the board's owner answers questions in a session.": "只有看板的擁有者能回答 session 裡的問題。",
+      "Only the board's owner answers permission prompts.": "只有看板的擁有者能回答權限提示。",
       "You can read the threads. Only approvers, release managers and askers can send messages.": "你可以閱讀對話串。只有 approver、release manager 和提問者可以傳送訊息。",
       "You are an asker: your messages reach the session as information from you, never as a decision. You cannot answer decisions.": "你是提問者：你的訊息會以你的名義、作為資訊送到 session，絕不會被當成決策。你不能回答決策。",
       "Theme": "主題",

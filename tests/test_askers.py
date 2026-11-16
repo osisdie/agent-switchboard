@@ -221,7 +221,7 @@ class Unit(unittest.TestCase):
         self.assertEqual(serve.roles_of(cfg, ANN.upper())["roles"], ["asker"])
         self.assertTrue(serve.roles_of(cfg, ANN)["is_asker"])
         self.assertFalse(serve.roles_of(cfg, ANN)["is_approver"])
-        self.assertEqual(serve.roles_of(cfg, BOSS)["roles"], ["approver"])
+        self.assertEqual(serve.roles_of(cfg, BOSS)["roles"], ["owner", "approver"])   # no owners set: fallback
         self.assertEqual(serve.roles_of(cfg, NOBODY)["roles"], ["viewer"])
         self.assertNotIn(ANN, serve.deciders(cfg))                        # askers never decide
         self.assertIn(ANN, serve.messagers(cfg))
@@ -275,7 +275,6 @@ class Local(unittest.TestCase):
                   ("/api/messages/m-1-h/release", {"confirm": "release"}),
                   ("/api/away", {"state": "on", "said": "back later"}),
                   ("/api/notify-prefs", {"op": "mute", "channel": "slack", "for": "1h"}),
-                  ("/api/presence", {"visible": True, "idle_ms": 0}),
                   ("/api/alerts/ack", {"scope": "all"}),
                   ("/api/rc", {"code": "API", "state": "on"}),
                   ("/api/lessons", {"title": "be careful"}),
@@ -287,6 +286,10 @@ class Local(unittest.TestCase):
                 st, _, js = req("POST", path, body)
                 self.assertEqual(st, 403, (path, js))
                 self.assertIn(js["error"], ("not_approver", "no_approvers"))
+        # an asker's presence heartbeat is not refused but ignored (204, not stored): only an owner's counts
+        st, _, js = req("POST", "/api/presence", {"visible": True, "idle_ms": 0})
+        self.assertEqual((st, js), (204, None))
+        self.assertFalse(os.path.exists(os.path.join(HOME, "presence.json")))
         self.assertEqual(read_json("decisions", "d-1-a.json")["status"], "pending")
         self.assertIsNone(read_json("decisions", "d-1-a.json")["answered_by"])
         self.assertEqual(read_json("messages", "m-1-h.json")["status"], "held")

@@ -129,6 +129,13 @@ def id_list(cfg, key):
     return [str(v) for v in val if v not in (None, "")]
 
 
+def owner_ids(cfg):
+    """The board's owners: `owners`, else `approvers` (a single-user board keeps working). The one
+    rule for the board's owner-only surfaces (board-serve, reminders); API key administration never
+    falls back (lib/apikeys.py)."""
+    return id_list(cfg, "owners") or id_list(cfg, "approvers")
+
+
 def board_home():
     return os.environ.get("BOARD_HOME") or os.path.join(os.path.expanduser("~"), ".agent-switchboard")
 

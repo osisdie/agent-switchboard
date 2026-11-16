@@ -360,7 +360,7 @@ def main():
             pg.wait_for_timeout(400)
             s = pg.evaluate(MENU_JS)
             check("local: identity from /api/me", s["name"] == "local" and s["via"].startswith("Local listener") and s["avatar"] == "L", s)
-            check("local: roles", s["roles"] == ["Approver"], s)
+            check("local: roles (no owners set: the approver is the owner)", s["roles"] == ["Owner", "Approver"], s)
             check("local: API keys not enabled, no list", s["keysOff"] and s["keysOffText"] == "API keys are not enabled on this board." and s["keys"] == [], s)
             check("local: no sign-out link", not s["signout"], s)
             pg.click("#acct-btn")

@@ -520,6 +520,36 @@ eq "approver's allow -> press ok" "$?" "0"
 eq "allow sends 1" "$(grep '^send-keys' "$FAKE_TMUX_LOG" | tail -1)" "send-keys -t %42 1"
 eq "decision relayed" "$(jq -r .status "$BOARD_HOME/decisions/$d.json")" "relayed"
 
+# Owners only: a permission prompt (or a pane question) is answered, and pressed, only for an owner
+# (fleet.yaml owners, else approvers). An approver who is not an owner is refused (exit 4, audited,
+# nothing recorded); press refuses an answer whose answered_by is not an owner.
+cp "$BOARD_CONFIG_DIR/fleet.yaml" "$T/fleet.yaml.own"
+{ grep -v '^approvers:' "$T/fleet.yaml.own"; printf 'approvers: [user-1, boss]\nowners: [Boss]\n'; } > "$BOARD_CONFIG_DIR/fleet.yaml"
+C2="make release --all"
+read -r tu d <<<"$(perm "$C2")"
+"$B" answer "$d" allow --by user-1 >/dev/null 2>&1
+eq "owners only: an approver who is not an owner answers a permission prompt -> exit 4" "$?" "4"
+eq "...left pending, nothing recorded" "$(jq -r '"\(.status)/\(.answered_by)"' "$BOARD_HOME/decisions/$d.json")" "pending/null"
+eq "...audited as not an owner" "$(jq -s -r --arg d "$d" '[.[] | select(.type=="unauthorized" and .id==$d)] | last | .reason' "$BOARD_HOME/events.jsonl")" "not an owner"
+jq -n --arg n "$(now_ms 2>/dev/null || date +%s000)" '{id: "d-9-pane", kind: "question", source: "pane", from: "CP", question: "Which?",
+  options: ["A", "B"], status: "pending", answer: null, answered_by: null, answered_at: null, relayed_at: null,
+  created_at: ($n | tonumber)}' > "$BOARD_HOME/decisions/d-9-pane.json"
+"$B" answer d-9-pane A --by user-1 >/dev/null 2>&1
+eq "owners only: an approver who is not an owner answers a pane question -> exit 4" "$?" "4"
+eq "...left pending" "$(jq -r .status "$BOARD_HOME/decisions/d-9-pane.json")" "pending"
+"$B" answer "$d" allow --by boss >/dev/null 2>&1
+eq "an owner answers it (owners matched case-insensitively)" "$?" "0"
+{ grep -v '^approvers:' "$T/fleet.yaml.own"; printf 'approvers: [user-1, boss]\nowners: [someone-else]\n'; } > "$BOARD_CONFIG_DIR/fleet.yaml"
+: > "$FAKE_TMUX_LOG"
+FAKE_TMUX_SCREEN="$(screen "$C2")" press CP allow --expect "$tu"
+eq "press: answered_by is no longer an owner -> exit 4" "$?" "4"
+eq "...no keys sent" "$(sent_keys)" "0"
+{ grep -v '^approvers:' "$T/fleet.yaml.own"; printf 'approvers: [user-1, boss]\nowners: [Boss]\n'; } > "$BOARD_CONFIG_DIR/fleet.yaml"
+FAKE_TMUX_SCREEN="$(screen "$C2")" press CP allow --expect "$tu"
+eq "press: an owner's allow -> press ok" "$?" "0"
+cp "$T/fleet.yaml.own" "$BOARD_CONFIG_DIR/fleet.yaml"
+rm -f "$BOARD_HOME/decisions/d-9-pane.json"
+
 read -r tu d <<<"$(perm "terraform destroy -auto-approve")"
 "$B" answer "$d" deny --by user-1 >/dev/null
 : > "$FAKE_TMUX_LOG"

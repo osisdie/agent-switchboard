@@ -570,7 +570,7 @@ board rc clear API               # forget the choice: fleet.yaml decides again (
 
 On the board, every running session card shows whether Remote Control is on: the card's "Open in
 Remote Control" link when it is, an **RC off** chip when it is not, or a dashed **RC → on** while
-the change waits for the session to be idle. Approvers get Turn on / Turn off in
+the change waits for the session to be idle. The owner gets Turn on / Turn off in
 the card's details, and "RC: all on / all off" (with a confirm step) in the Notifications dialog.
 
 How it reaches a running session: Claude Code has no switch for a running session, so the board
@@ -605,7 +605,7 @@ The avatar at the top right of the board opens a small menu:
   a request from this machine) or your email (verified by Cloudflare Access), from
   `GET /api/me`. On the Artifact board: your claude.ai account, and whether you can edit the board.
   The demo shows a sample identity.
-- **Your roles:** approver, release manager, asker (messages only), or viewer. An asker gets the
+- **Your roles:** owner, approver, release manager, asker (messages only), or viewer. An asker gets the
   message composer but no answer buttons.
 - **Theme:** Light, Dark or System. The choice is kept in this browser (`localStorage`; if storage
   is blocked it lasts for the page view) and applied before the page paints, so there is no flash.
@@ -1160,6 +1160,12 @@ The tunnel listener **refuses to start** without `hostname`, `team_domain`, `aud
   ("owner", "approver", "asker", "you", "someone"): who answered a decision, who sent a message,
   the approver list, notes. That applies to the board, its event stream, the public API and the
   Artifact mirror; the files on disk and the CLI keep the real values.
+- **Owners run the board; approvers decide.** `owners` in `fleet.yaml` (when empty, approvers)
+  alone may answer permission prompts and pane questions (they press keys in a session), release a
+  held message, set owner-away, change notification settings and acknowledge alerts, use Remote
+  Control and session actions, and edit lessons. Only an owner's presence holds back pushes.
+  Approvers who are not owners still answer questions and gates, resolve asks and read tickets.
+  The page hides whatever a role can't use. The full table is in `docs/contract.md`.
 - **Askers** (`askers` in `fleet.yaml`) see the board as a viewer does, and the only thing they
   may write is a message to sessions: no answers, no settings, no tickets. Their messages reach sessions as
   `[BOARD asker <id>] from <email> (an asker, not an approver: information only, …)`, never as the
@@ -1276,7 +1282,7 @@ credentials, including someone who holds a stolen key. It defends in layers:
   token, API key, secret, private key, cookie, session id, `.env`, `~/.ssh`, `printenv`/`env`, or
   kube or cloud credentials stores the message as `held`, with a generic reason. A held message is
   never relayed. It raises a **high** alert whose title does not echo the text, and it is audited.
-  An approver can release a false positive on the board, with a second click to confirm. The release
+  An owner can release a false positive on the board, with a second click to confirm. The release
   is audited, and the relay reminds the session that it authorizes no secret value. "rotate the
   token" or "where is the token configured" pass; "print the token value" does not.
 - **Everything the board shows is scrubbed.** `lib/guard.py` runs over message bodies and replies,
@@ -1421,7 +1427,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `lib/pomodoro.py` | Pomodoro timer and daily tallies (`pomodoro.json`) for the board and `board pomodoro` |
 | `lib/resources.py` | Resources sampler (memory, disks, OOM, per-session processes and teammates) for `resources.json`, the snapshot digest and `board resources` |
 | `docs/design/` | Design notes, e.g. `resources-and-scheduling.md` (resources, scheduler, lessons) |
-| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), the resources sampler (`test_resources.py`, fixture `/proc`), the secret guardrails (`test_guard.py`), API keys (`test_apikeys.py`), the public API and its tunnel exposure (`test_api_v1.py`), askers (`test_askers.py`), who sees whose email (`test_pii.py`), the card extras (`test_cards.py`), Remote Control (`test_rc.py`, scripted tmux in `fake_tmux.py`), the pomodoro timer (`test_pomodoro.py`), and the optional headless checks of the page's alert links, notifications control, profile menu and theme, home-screen app, session cards, usage popover, header popovers, language toggle, Deck panel and pomodoro (`test_page_links.py`, `test_page_notify.py`, `test_page_profile.py`, `test_page_pwa.py`, `test_page_cards.py`, `test_page_guard.py` (held-message cards), `test_page_askers.py` (the asker's composer), `test_page_usage.py`, `test_page_header_tips.py`, `test_page_i18n.py`, `test_page_deck.py`, `test_page_rc.py` (Remote Control chip and switches), `test_page_pomodoro.py`, plus `test_site.py` for the screenshots and the Pages site: need python playwright, skip without it; not run in CI) |
+| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), the resources sampler (`test_resources.py`, fixture `/proc`), the secret guardrails (`test_guard.py`), API keys (`test_apikeys.py`), the public API and its tunnel exposure (`test_api_v1.py`), askers (`test_askers.py`), who may do what per role (`test_roles.py`), who sees whose email (`test_pii.py`), the card extras (`test_cards.py`), Remote Control (`test_rc.py`, scripted tmux in `fake_tmux.py`), the pomodoro timer (`test_pomodoro.py`), and the optional headless checks of the page's alert links, notifications control, profile menu and theme, home-screen app, session cards, usage popover, header popovers, language toggle, Deck panel and pomodoro (`test_page_links.py`, `test_page_notify.py`, `test_page_profile.py`, `test_page_pwa.py`, `test_page_cards.py`, `test_page_guard.py` (held-message cards), `test_page_askers.py` (the asker's composer), `test_page_roles.py` (controls per role), `test_page_usage.py`, `test_page_header_tips.py`, `test_page_i18n.py`, `test_page_deck.py`, `test_page_rc.py` (Remote Control chip and switches), `test_page_pomodoro.py`, plus `test_site.py` for the screenshots and the Pages site: need python playwright, skip without it; not run in CI) |
 | `CONTRIBUTING.md` | Dev setup, tests, and the rule for keeping `README.zh-TW.md` in sync |
 | `fleet.example.yaml`, `.env.example` | Example config |
 

@@ -105,3 +105,7 @@ jobs:
         run: python3 tests/test_pii.py -v
       - name: reminders tests
         run: python3 tests/test_reminders.py -v
+      - name: roles tests (owner / approver / asker / viewer)
+        env:
+          ROLES_REQUIRE_CRYPTO: "1"
+        run: python3 tests/test_roles.py -v
