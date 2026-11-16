@@ -151,6 +151,9 @@ def main():
                 else:
                     check("%s: no asker note" % role, not v["note"], v)
                     check("%s: answer buttons shown" % role, v["buttons"] == ["yes", "no"], v)
+                if role in ("asker", "approver, not owner"):     # other people's emails: owners only
+                    check("%s: no one else's email on the page" % role, "boss@example.invalid" not in v["html"],
+                          [x for x in v["html"].split() if "@example.invalid" in x][:3])
                 sees = role in ("approver", "owner")          # "approver": no owners set, so the fallback
                 check("%s: account email %s" % (role, "shown" if sees else "hidden"),
                       (ACCOUNT in (v["acct"] or "")) == sees and (ACCOUNT in v["html"]) == sees,

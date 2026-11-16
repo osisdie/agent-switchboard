@@ -488,6 +488,22 @@ answers 403 `not_allowed`. Listing a viewer there lets them read the board; only
 When `allowed_emails` is set it is authoritative: an asker missing from it cannot reach the board
 (`board doctor` warns).
 
+**Who sees whose identity.** Only an owner (`owners`, else `approvers`) sees other people's
+emails. For everyone else, board-serve (`/api/state`, every `/api/events` frame, `/api/lessons`) and
+every `/api/v1` read (a key is never an owner) serve **role labels** in their place (`lib/pii.py`):
+`owner`, `approver`, `release manager`, `asker`, `viewer` (a listed tunnel viewer), `you` (the
+viewer's own email, only on the tunnel, where it is verified), or `someone`. This covers identity
+fields (`answered_by`, `resolved_by`, message `by` / `released_by` / `asker`, lessons
+`updated_by` / `retired_by`, `owner_away.by`, gate `approved_by`, approvals, notification and Remote
+Control `by`), the id lists `operator.approver_ids` / `release_manager_ids`, any value that is an
+email, and every email inside free text (a note, a message body). Only email-shaped identities are
+masked: `local`, session codes, key ids and the Artifact board's opaque claude.ai user ids stay as
+they are. `me` (the viewer's own identity) is never masked. The raw values stay on disk and in the
+CLI. In local mode the page takes the viewer's roles from `state.approver` / `state.asker` (and
+`/api/me`), never by comparing the masked lists. The operator never mirrors an email to the
+Artifact db: it mirrors tasks from `board task ls --json --viewer` (masked) and passes any other
+document through `board mask` (JSON on stdin, masked for an anonymous viewer) before `write_db`.
+
 **Askers** (`fleet.yaml` `askers`, emails and `local`, matched like approvers) see the board as a
 viewer does (every decision's question, session cards, tasks without ticket text, all messages and
 replies) and may write only messages (`POST /api/messages`), so list only people you would let view
@@ -571,7 +587,7 @@ State (`/api/state` and every SSE frame):
 
 ```json
 { "mode": "local", "me": "local|<email>", "writable": true, "can_message": true|false,
-  "asker": true|false, "generated_at": 0,
+  "asker": true|false, "approver": true|false, "generated_at": 0,
   "account": {"email": "...", "org": "..."|null} | {"hidden": true} | null,
   "sessions":  [ {code, aliases, state, status, task, tmux, remote_url, pending, updated_at, rc, compact} ],
   "decisions": [ decision files, newest 200, without session_id/tmux_pane ],

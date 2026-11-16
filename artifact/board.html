@@ -1255,7 +1255,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     got: { sessions: false, decisions: false, messages: false, tasks: false, approvals: false, operator: false, consensus: false },
     slow: false, feedError: null, offlineDetail: null,
     me: null, userReady: false, writable: null,   // writable: true | false | null (unknown → let writes decide)
-    canEditBoard: null, canMessageLocal: false, askerOnly: false,          // claude mode: Editor/Owner (writes shared docs, sends messages); Contributors only answer
+    canEditBoard: null, canMessageLocal: false, askerOnly: false, isApprover: false,          // claude mode: Editor/Owner (writes shared docs, sends messages); Contributors only answer
     myAnswers: new Map(),        // claude mode: decisionId -> my answers/<me>/d/<id> doc
     canSend: 'off',
     confirm: null,               // { id, choice }
@@ -1380,7 +1380,10 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     return !hb || Date.now() - hb > STALE_MS;
   }
   // true / false when meta/operator.approver_ids is known, null when it is not.
+  // Local mode: board-serve says whether this viewer is an approver (state.approver); the id lists it
+  // serves carry role labels instead of other people's emails unless the viewer is an owner.
   function approverState() {
+    if (isLocal() && S.mode === 'live' && S.userReady) return S.isApprover;
     const ids = S.operator && S.operator.approver_ids;
     if (!Array.isArray(ids)) return null;
     return !!S.me && ids.includes(S.me);
@@ -1388,8 +1391,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
   // Local mode: may this viewer turn owner-away mode on or off (board-serve checks it again)?
   function awayEditor() {
     if (S.demo) return true;
-    const ids = S.operator && S.operator.approver_ids;
-    return isLocal() && S.mode === 'live' && !!S.me && Array.isArray(ids) && ids.some((i) => lc(i) === lc(S.me));
+    return isLocal() && S.mode === 'live' && S.isApprover;
   }
   function limitText() {
     const L = S.operator && S.operator.limit;
@@ -2295,7 +2297,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       else e.append(h('strong', { text: tr('No approvals recorded yet.') }), tr('Each gate decision an approver answers is logged here once the operator relays it.'));
     }
     const appr = S.operator && Array.isArray(S.operator.approver_ids) ? S.operator.approver_ids : null;
-    const by = (id) => !id ? '—' : tr(S.me && id === S.me ? 'you' : appr ? (appr.includes(id) ? 'an approver' : 'not an approver') : 'an editor');
+    // board-serve masks other people's emails for non-owners: the label "you" is the viewer
+    const by = (id) => !id ? '—' : tr((S.me && id === S.me) || id === 'you' ? 'you' : appr ? (appr.includes(id) ? 'an approver' : 'not an approver') : 'an editor');
     reconcile($('#appr-body'), rows, (r) => r.id, (r) => JSON.stringify(r) + '|' + (S.me || '') + '|' + str(appr) + '|' + str((S.tasks.find((t) => t.id === r.task_id) || {}).title), (r) => {
       const task = S.tasks.find((t) => t.id === r.task_id);
       const ans = str(r.answer);
@@ -4803,6 +4806,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       S.me = str(st.me) || null; S.writable = st.writable !== false; S.userReady = true;
       S.canMessageLocal = st.can_message === true;
       S.askerOnly = st.asker === true;
+      S.isApprover = st.approver === true;
       // board-serve has a newer board.html than the one this tab was served: offer a reload.
       const mine = document.querySelector('meta[name="board-version"]');
       S.newVersion = !!(mine && st.page_version && st.page_version !== mine.getAttribute('content'));

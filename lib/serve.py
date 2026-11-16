@@ -97,6 +97,7 @@ import actions  # noqa: E402
 import prefs  # noqa: E402
 import rc  # noqa: E402
 import resources  # noqa: E402
+import pii  # noqa: E402
 import serve_api  # noqa: E402
 
 _SELF = sys.modules[__name__]   # handed to serve_api for its helpers (no second import of this file)
@@ -1056,9 +1057,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.page()
         if path == "/api/state":
             self.hub_kick()
-            return self.send_json(200, self.state_for(ident))
+            return self.send_json(200, self.state_for(ident, via))
         if path == "/api/events":
-            return self.events(ident)
+            return self.events(ident, via)
         if path == "/api/me":
             return self.send_json(200, self.me_for(ident, via))
         if path == "/api/lessons":
@@ -1068,8 +1069,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 rows = [r for r in rows if q in json.dumps([r.get("title"), r.get("cause"), r.get("resolution"),
                                                              r.get("rule"), r.get("rule_kind")], ensure_ascii=False).lower()]
             cfg = fleet.load_fleet()
-            return self.send_json(200, guard.scrub_tree({
-                "lessons": rows, "can_edit": match_id(ident, fleet.id_list(cfg, "approvers")) is not None}))
+            return self.send_json(200, self.viewer_mask(guard.scrub_tree({
+                "lessons": rows, "can_edit": match_id(ident, fleet.id_list(cfg, "approvers")) is not None}),
+                ident, via, cfg))
         if path == "/api/pomodoro/day":
             return self.pomodoro_day()
         m = TICKET_GET_RE.fullmatch(path)
@@ -1169,18 +1171,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return getattr(writes, op)(ref, v, ident, via=via, home=self.server.home)
         return self.ticket_reply(run)
 
-    def state_for(self, ident):
+    def viewer_mask(self, obj, ident, via, cfg):
+        """Other people's emails are for owners only: anyone else gets role labels ("you" for their
+        own verified email on the tunnel; on the local listener everyone is `local`)."""
+        if is_owner(cfg, ident):
+            return obj
+        return pii.mask(obj, cfg, viewer=ident if via == "cf-jwt" else None)
+
+    def state_for(self, ident, via=None):
         with self.server.hub.cond:
             state = dict(self.server.hub.state)
         cfg = fleet.load_fleet()
         state.update({"mode": "local", "me": ident, "writable": True,
                       "can_message": match_id(ident, sorted(messagers(cfg))) is not None,
                       "asker": asker_only(cfg, ident),
+                      "approver": match_id(ident, fleet.id_list(cfg, "approvers")) is not None,
                       "account": self.account_for(ident, cfg), "page_version": page_version()})
         state["sessions"] = cards_for(state.get("sessions"), match_id(ident, fleet.id_list(cfg, "approvers")) is not None)
         if not is_owner(cfg, ident):
             state["operator"] = owner_only_operator(state.get("operator"))
-        return ticket_text_for(state, match_id(ident, sorted(deciders(cfg))) is not None)
+        state = ticket_text_for(state, match_id(ident, sorted(deciders(cfg))) is not None)
+        return self.viewer_mask(state, ident, via, cfg)
 
     def account_for(self, ident, cfg):
         """The Claude account the sessions run on: {email, org} for owners (fleet.yaml owners, else
@@ -1231,7 +1242,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(data)
 
-    def events(self, ident):
+    def events(self, ident, via=None):
         hub, srv = self.server.hub, self.server
         with srv.sse_lock:
             if srv.sse_count >= MAX_SSE:
@@ -1253,7 +1264,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     changed = hub.version != seen
                     seen = hub.version
                 if changed:
-                    data = json.dumps(self.state_for(ident), ensure_ascii=False)
+                    data = json.dumps(self.state_for(ident, via), ensure_ascii=False)
                     self.wfile.write(("event: state\ndata: %s\n\n" % data).encode("utf-8"))
                 else:
                     self.wfile.write(b": keepalive\n\n")

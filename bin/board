@@ -110,6 +110,8 @@
 #                                              the session's own taken ticket (from inside it)
 #                                              tracker tickets (fleet.yaml tickets.trackers; REF is
 #                                              KEY or tracker:KEY); writes and take: approvers only
+#   board mask                                 JSON on stdin -> other people's emails replaced by
+#                                              role labels (owner, approver, ...), for the mirror
 #   board guard scrub|scrub-json|screen|has-marker|secrets
 #                                              the secret guard (lib/guard.py) for scripts
 #   board doctor                               check dependencies and installation
@@ -1157,7 +1159,8 @@ task_ls() {
     return 0
   fi
   local all; all="$(jq -s 'sort_by(.updated_at)' "${files[@]}")"
-  if [ "$viewer" = 1 ]; then printf '%s' "$all" | python3 "$REPO/lib/tickets/viewer.py" tasks; return; fi
+  # --viewer: no ticket text (Q3) and no one's email (only owners see those; lib/pii.py)
+  if [ "$viewer" = 1 ]; then printf '%s' "$all" | python3 "$REPO/lib/tickets/viewer.py" tasks | python3 "$REPO/lib/pii.py" mask; return; fi
   if [ "$json" = 1 ]; then echo "$all"; return 0; fi
   {
     printf 'ID\tOWNER\tSTAGE\tGATES\tARTIFACTS\tTITLE\tSTATUS\n'
@@ -2480,6 +2483,9 @@ case "$sub" in
     esac ;;
   ticket) guarded python3 "$REPO/lib/tickets/cli.py" "$@" ;;
   guard) [ $# -gt 0 ] || { python3 "$GUARD" --help; exit 2; }; exec python3 "$GUARD" "$@" ;;
+  # JSON on stdin -> the same with other people's emails replaced by role labels (lib/pii.py), for
+  # anything the operator mirrors to the Artifact db
+  mask) exec python3 "$REPO/lib/pii.py" mask ;;
   -h|--help|help) usage ;;
   "") usage; exit 2 ;;
   *) echo "board: unknown command '$sub'" >&2; usage >&2; exit 2 ;;

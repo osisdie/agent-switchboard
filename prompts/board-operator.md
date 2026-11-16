@@ -96,7 +96,10 @@ Waiting costs no tokens. When it fires:
 
 1. Read `snapshot.json`. Compare it with what you last wrote, and keep only changed sessions and
    decisions.
-2. Send one `write_db` **batch** with the diff:
+2. Send one `write_db` **batch** with the diff. **Never write an email to the db**: the page's
+   viewers are not all owners. Pass every document you build from local files through `board mask`
+   (JSON on stdin; emails become role labels such as `approver` or `owner`; claude.ai user ids,
+   `local` and session codes stay) before you write it:
    - `sessions/{code}`: `code, aliases, state, status, task, tmux, remote_url, pending, updated_at,
      title, repo, branch, last_event, notification_type`. `task` is a short summary you write. Never
      copy raw prompt text. `title`, `repo` and `branch` come from the snapshot as they are (already
@@ -261,7 +264,8 @@ db.
 
 - Mirror the tasks into `tasks/{id}` (`id, title, owner, stage, artifacts{}, gates[], updated_at`)
   in the same diff batch as sessions and decisions, from **`board task ls --json --viewer`**, never
-  from the raw `$BOARD_HOME/tasks/*.json`. That list already hides ticket text: a task taken from a
+  from the raw `$BOARD_HOME/tasks/*.json`. That list already hides ticket text and other people's
+  emails (a gate's `approved_by` is a role label). A task taken from a
   tracker ticket has the ticket's key as its `title` and no tracker title or URL, because the
   Artifact page's viewers may not be approvers or release managers, and only they read ticket text
   (owner decision Q3). Use the same title for a session's task in the mirrored session doc, and
