@@ -514,8 +514,9 @@ board rc clear API               # 忘掉設定：回到 fleet.yaml（預設開�
 - **語言：** English（預設）或繁體中文。整個介面一次只用一種語言：標題、按鈕、橫幅、卡片、對話框和
   訊息都會切換。資料保持原樣：任務標題、問題、回答和 session 名稱一律不翻譯。選擇存在這個瀏覽器裡，
   並設定 `<html lang>`。
-- **我的 API 金鑰：** 保留給之後的金鑰後端。在那之前，選單會顯示「API keys are not enabled on this
-  board」。資料格式寫在 `docs/contract.md`（"Who am I"）。
+- **我的 API 金鑰：** 金鑰儲存和 `board apikey` 已經有了（見 [API 金鑰](#api-keys)），但頁面還不會
+  列出金鑰：選單會顯示「API keys are not enabled on this board」。資料格式寫在 `docs/contract.md`
+  （"Who am I"）。
 - **登出** Cloudflare Access（`/cdn-cgi/access/logout`），只有透過 tunnel 時才會出現。
 
 按 Escape 會關閉選單，焦點回到頭像按鈕。
@@ -1111,6 +1112,35 @@ Artifact 頁面無法提供同層的檔案，所以只有以 `data:` URI 內嵌�
 
 `board guard scrub|screen|secrets` 可以在 shell 裡跑同樣的檢查。`secrets` 只列 key 名稱，不列值。
 
+<a id="api-keys"></a>
+
+### API 金鑰
+
+API 金鑰給之後要呼叫看板 `/api/v1`（和它的 MCP server）的腳本與服務使用。現在可以用 `board apikey`
+管理；路由和金鑰頁面在之後的改動才會加上。規則如下（細節見 `docs/contract.md` 的 "API keys"）：
+
+- **金鑰屬於一個人**（`--owner`，email 或 `local`）。這只是標明歸屬，不代表任何權限：金鑰不能回答
+  決策、按權限提示、設定 owner-away、投票、通過 production gate，也不能管理金鑰。
+- **只顯示一次。**`create` 只在 stdout 印出一次金鑰（`asb_live_<id>_<secret>`）。看板只存它的
+  HMAC，用的 pepper 放在自己的 0600 檔案裡，所以光是複製 `apikeys/` 資料夾沒有用。每把金鑰都會
+  過期：預設 90 天，最長 365 天。
+- **誰能做什麼。**`fleet.yaml` 的 `owners` 管理所有金鑰：發給別人、核准申請、撤銷、帶寬限期輪替、
+  設定或延長期限、變更 scope（會撤銷後重發）。approver 可以發金鑰給自己或 `fleet.yaml` 列出的人。
+  其他人只能看到、撤銷自己的金鑰，也可以 `request` 申請一把；在 owner 核准前它是 pending，不能使用。
+  每次變更和每次拒絕都記入稽核，金鑰本身從不記錄。
+- **外洩會被抓到**。gitleaks 有一條針對這種金鑰格式的規則（只有 `tests/fixtures/` 在允許清單裡），
+  機密防護和 hook 也會在所有地方遮掉 `asb_live_…`/`asb_test_…`。
+
+```bash
+board apikey create --name "CI reader" --owner dev@example.com --scopes read:state,read:tasks \
+  --expires 30d --by owner@example.com          # prints the key once
+board apikey request --name "my script" --by dev@example.com
+board apikey approve <id> --by owner@example.com
+board apikey ls --by dev@example.com            # id, name, scopes, created, expires, last used, status
+board apikey rotate <id> --grace 24h --by owner@example.com
+board apikey revoke <id> --by dev@example.com
+```
+
 ## 機密與去識別化
 
 任何東西離開你的機器之前，都會先經過兩項檢查。詳見
@@ -1144,7 +1174,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 |---|---|
 | `docs/contract.md` | 具約束力的資料契約：本機檔案、資料庫 collection、生命週期階段與關卡、轉發格式、降級模式 |
 | `hooks/board-hook.sh` | 生命週期 hook：寫入 `state/<session_id>.json`、附加到 `events.jsonl`，永遠以 exit 0 結束 |
-| `bin/board` | CLI：`ls`、`snapshot`、`ask`、`task new/stage/ls/show/set/dep/pr`、`decisions`、`answer`、`mark`、`resolve`、`limit`、`resources`、`pomodoro`、`schedule`、`press`、`notify`、`mute`、`unmute`、`notify-level`、`notify-presence`、`rc`、`session`、`away`、`consensus`、`message`、`guard`、`doctor`。結束碼：2 = 用法錯誤（也包括 `answer --option` 不一致），3 = 拒絕按鍵，4 = 拒絕回答／投票，5 = 按鍵做到一半（已送出按鍵、沒有按 Enter），6 = 被機密防護拒絕，7 = 拒絕按鍵（提示不在畫面上） |
+| `bin/board` | CLI：`ls`、`snapshot`、`ask`、`task new/stage/ls/show/set/dep/pr`、`decisions`、`answer`、`mark`、`resolve`、`limit`、`resources`、`pomodoro`、`schedule`、`press`、`notify`、`mute`、`unmute`、`notify-level`、`notify-presence`、`rc`、`session`、`away`、`consensus`、`message`、`apikey`、`guard`、`doctor`。結束碼：2 = 用法錯誤（也包括 `answer --option` 不一致），3 = 拒絕按鍵，4 = 拒絕回答／投票，5 = 按鍵做到一半（已送出按鍵、沒有按 Enter），6 = 被機密防護拒絕，7 = 拒絕按鍵（提示不在畫面上） |
 | `bin/board-collect` | 不耗 token 的收集器：snapshot、diff，每一輪執行 `board-notify`；首次安裝時用 `--baseline` |
 | `bin/board-notify`、`lib/notify.py` | 告警：`send`、`ack`、`tick`、`test`、`status`、`gate`。轉接器（slack、desktop、email、line、sns、webhook）、等級、升級、確認、勿擾時段、去除重複 |
 | `lib/prefs.py` | 通知控制：靜音、最低等級、在場（`board mute`、`notify-level`、`notify-presence`），以及 `lib/notify.py` 套用的送出規則 |
@@ -1165,14 +1195,15 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `.github/workflows/ci.yml` | CI：gitleaks、shellcheck、測試、readme-sync |
 | `.github/workflows/pages.yml` | 建置靜態 demo 網站並部署到 GitHub Pages（push 到 main 時） |
 | `docs/assets/screenshots/` | README 和 Pages 網站用的截圖（`scripts/screenshots.py`） |
-| `.gitleaks.toml` | gitleaks 預設規則，加上針對測試 fixture 的小範圍允許清單 |
+| `.gitleaks.toml` | gitleaks 預設規則、一條針對看板 API 金鑰的規則，加上針對測試 fixture 的小範圍允許清單 |
+| `lib/apikeys.py` | API 金鑰：金鑰儲存（加 pepper 的雜湊，0600）、誰能發放／核准／輪替／撤銷，以及 `/api/v1` 之後會用的驗證（`board apikey`） |
 | `lib/away.py` | 為 snapshot 和 `board-serve` 讀取 owner-away 模式與共識項目 |
 | `lib/guard.py`、`lib/messages.py` | 機密防護：對外的去除機密與對內的要機密篩檢；看板訊息與回覆都經過它們（攔下、放行、回覆） |
 | `lib/cards.py` | board-serve 用的卡片補充資訊（`cards.json`）：teammate 與其任務、session 用量、最近的工具呼叫、最後一則訊息與指示（僅核可者）、領先／落後、狀態持續時間 |
 | `lib/pomodoro.py` | 番茄鐘計時與每日統計（`pomodoro.json`），供看板和 `board pomodoro` 使用 |
 | `lib/resources.py` | 資源取樣器（記憶體、磁碟、OOM、每個 session 的程序與 teammate），產生 `resources.json`、snapshot 摘要和 `board resources` |
 | `docs/design/` | 設計文件，例如 `resources-and-scheduling.md`（資源、排程器、經驗） |
-| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`）、資源取樣器（`test_resources.py`，fixture `/proc`）、機密防護（`test_guard.py`）、卡片補充資訊（`test_cards.py`）、Remote Control（`test_rc.py`，用 `fake_tmux.py` 模擬 tmux 畫面）、番茄鐘計時（`test_pomodoro.py`），以及選用的頁面告警連結、通知控制、個人選單與主題、主畫面 app、session 卡片、用量提示框、頁首提示框、語言切換、按鍵面板與番茄鐘 headless 檢查（`test_page_links.py`、`test_page_notify.py`、`test_page_profile.py`、`test_page_pwa.py`、`test_page_cards.py`、`test_page_guard.py`（被攔下的訊息卡片）、`test_page_usage.py`、`test_page_header_tips.py`、`test_page_i18n.py`、`test_page_deck.py`、`test_page_rc.py`（Remote Control 標籤與開關）、`test_page_pomodoro.py`，以及截圖和 Pages 網站的 `test_site.py`：需要 python playwright，沒有就略過；CI 不執行） |
+| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`）、資源取樣器（`test_resources.py`，fixture `/proc`）、機密防護（`test_guard.py`）、API 金鑰（`test_apikeys.py`）、卡片補充資訊（`test_cards.py`）、Remote Control（`test_rc.py`，用 `fake_tmux.py` 模擬 tmux 畫面）、番茄鐘計時（`test_pomodoro.py`），以及選用的頁面告警連結、通知控制、個人選單與主題、主畫面 app、session 卡片、用量提示框、頁首提示框、語言切換、按鍵面板與番茄鐘 headless 檢查（`test_page_links.py`、`test_page_notify.py`、`test_page_profile.py`、`test_page_pwa.py`、`test_page_cards.py`、`test_page_guard.py`（被攔下的訊息卡片）、`test_page_usage.py`、`test_page_header_tips.py`、`test_page_i18n.py`、`test_page_deck.py`、`test_page_rc.py`（Remote Control 標籤與開關）、`test_page_pomodoro.py`，以及截圖和 Pages 網站的 `test_site.py`：需要 python playwright，沒有就略過；CI 不執行） |
 | `CONTRIBUTING.md` | 開發環境設定、測試，以及讓 `README.zh-TW.md` 保持同步的規則 |
 | `fleet.example.yaml`、`.env.example` | 設定範例 |
 

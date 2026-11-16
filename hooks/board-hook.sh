@@ -104,6 +104,7 @@ def redact:
   # URL userinfo: scheme://user:password@host
   | gsub("://[^/\\s:@]+:[^/\\s@]+@"; "://[REDACTED]@")
   # vendor tokens
+  | gsub("asb_(live|test)_[A-Za-z0-9_-]{8,}"; "[REDACTED]")
   | gsub("xox[abposr]-[A-Za-z0-9-]+"; "[REDACTED]")
   | gsub("(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})"; "[REDACTED]")
   | gsub("\\b(sk|pk|rk)_(live|test)_[A-Za-z0-9]{16,}"; "[REDACTED]")

@@ -37,6 +37,9 @@ $BOARD_HOME/
   schedule-state.json       # jam episodes and advisory delivery (see "Scheduler"); schedule.lock
   schedule-off              # present = the scheduler is paused (`board schedule off`)
   lessons.jsonl             # what the scheduler learned (append-only, 0600; see "Lessons"); lessons.lock
+  apikeys/<kid>.json        # one API key: its peppered hash and metadata, never the key (0600; see "API keys")
+  apikeys.lock              # flock held by `board apikey` while it changes a key
+  secrets/apikey.pepper     # 32 random bytes for the key hashes (0600, made on the first create or request)
 ```
 
 ### state/<session_id>.json
@@ -69,7 +72,7 @@ Map hook events to states like this:
 | `SessionEnd` | offline |
 | `SessionStart` | rest |
 
-`pending` is cleared on the next `PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit` or `Stop`. The hook writes the state file atomically (write to a temp file, then `mv`). It never blocks Claude, prints nothing to stdout and always exits 0. It does not record prompt text. The only input it captures is a ≤200-char summary of the pending tool's input, and for `AskUserQuestion` its questions and options (redacted and clipped, see Pane questions). Token-like values (bearer tokens, Slack/GitHub/AWS keys, `password=`/`token=`/`secret=`/`api_key=` values, long base64/hex runs) are replaced by `[REDACTED]` before storing. `summary_truncated`, `summary_len` and `summary_sha256` describe the full input string. When a `PermissionRequest` carries no `tool_use_id` and more than one in-flight tool use could match it, the hook does not guess: `pending.ambiguous` is `true` and no permission decision is created. `$BOARD_HOME` is mode 0700 and its files 0600 (umask 077 in every writer).
+`pending` is cleared on the next `PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit` or `Stop`. The hook writes the state file atomically (write to a temp file, then `mv`). It never blocks Claude, prints nothing to stdout and always exits 0. It does not record prompt text. The only input it captures is a ≤200-char summary of the pending tool's input, and for `AskUserQuestion` its questions and options (redacted and clipped, see Pane questions). Token-like values (bearer tokens, Slack/GitHub/AWS keys, board API keys, `password=`/`token=`/`secret=`/`api_key=` values, long base64/hex runs) are replaced by `[REDACTED]` before storing. `summary_truncated`, `summary_len` and `summary_sha256` describe the full input string. When a `PermissionRequest` carries no `tool_use_id` and more than one in-flight tool use could match it, the hook does not guess: `pending.ambiguous` is `true` and no permission decision is created. `$BOARD_HOME` is mode 0700 and its files 0600 (umask 077 in every writer).
 
 ### snapshot.json (collector output)
 ```json
@@ -587,19 +590,19 @@ session's current task. `approver_ids` is `[]` when nobody may answer.
 - `is_approver`: the identity is in `approvers`. `is_release_manager` is the effective rule for a
   production decision: in `release_managers`, or in `approvers` when `release_managers` is empty.
   `roles` lists what is true, or `["viewer"]` when neither is. All matches are case-insensitive.
-- `api_keys` is **reserved** for the key backend (a later change) and absent until it exists. The page
-  shows "API keys are not enabled on this board" without it. Its shape, one entry per key issued to
-  this identity (an owner email, or `local`):
+- `api_keys` is **reserved**: the key store exists (`board apikey`, see "API keys"), but this route
+  does not fill it yet, so the page shows "API keys are not enabled on this board". Its shape, one
+  entry per key issued to this identity (an owner email, or `local`):
 
   ```json
-  { "id": "key_…", "name": "Phone shortcut", "scopes": ["state:read"],
-    "created_at": 0, "expires_at": 0|null, "last_used_at": 0|null,
-    "status": "active|revoked|expired" }
+  { "id": "<kid>", "name": "Phone shortcut", "scopes": ["read:state"],
+    "created_at": 0, "expires_at": 0, "last_used_at": 0|null,
+    "status": "active|pending|revoked|expired" }
   ```
 
-  Times are epoch ms; `null` means no expiry / never used. `scopes` are opaque strings defined by
-  the key backend. **The key secret is never returned** by this or any later read: it is shown once,
-  when the key is created. Create and revoke endpoints come with the backend.
+  Times are epoch ms; `null` means never used. Every key expires. `id` is the key's 12-character
+  kid. **The key secret is never returned** by this or any later read: it is shown once, when the
+  key is created.
 
 The page's profile menu (header, top right) reads this route in local mode. In Artifact mode it
 uses the `user` capability instead (`me()`: `canEdit`, `isOwner`; the name stays empty because the
@@ -684,6 +687,81 @@ The operator is an LLM session. When the account hits a usage limit, nothing wri
 - **Decision answered on the board:** `[BOARD decision <id>] <answer> (by owner on board)`. For `kind=permission`, the operator runs `board press` instead of sending a message.
 - **Question from the board:** `[BOARD ask <msgId>] <body> — reply to BOARD via SendMessage, starting with [re <msgId>]`.
 - **Worker reply:** `[re <msgId>] <text>`.
+
+## API keys
+
+API keys are the only identity on the coming `/api/v1` (and its MCP server). This section covers
+the key store and its CLI; the routes come later. A key is **issued to a person** and is
+**attribution, never authority**: no key answers a decision, presses a prompt, sets owner-away,
+votes in consensus, passes a production gate or manages keys. Anything that needs authority becomes
+a pending board decision for an approver.
+
+**Format.** `asb_live_<kid>_<secret>` (`asb_test_` for the mock board): `kid` is 12 characters
+`[0-9a-z]`, `secret` 43 characters base64url (256 random bits). The gitleaks rule
+`agent-switchboard-api-key` in `.gitleaks.toml` matches exactly this shape. The secret guard
+(`lib/guard.py`, which notify uses too) and the hook's jq redaction replace `asb_live_…` /
+`asb_test_…` with `[REDACTED]`.
+
+**Store** (`lib/apikeys.py`). `$BOARD_HOME/apikeys/<kid>.json`, 0600 in a 0700 directory, written
+atomically (a fresh 0600 temp file, then rename) under `apikeys.lock`:
+
+```json
+{ "schema_version": 1, "id": "<kid>", "name": "CI reader", "owner": "dev@example.com|local",
+  "kind": "live|test", "scopes": ["read:state"], "hash": "<hex>",
+  "created_by": "owner@example.com", "created_at": 0, "expires_at": 0,
+  "state": "active|pending|revoked", "revoked_at": null, "revoked_by": null,
+  "revoke_reason": "revoked|denied|rotated|rescoped", "last_used_at": null, "rate_per_min": 60,
+  "approved_by": null, "approved_at": null, "requested_ttl_ms": 0,
+  "predecessor": null, "successor": null, "grace_until": null }
+```
+
+- `hash` = HMAC-SHA256(pepper, the whole key), compared with `hmac.compare_digest`. The pepper is
+  32 random bytes in `secrets/apikey.pepper` (0600, made on the first create or request). A copy
+  of `apikeys/` alone is useless; a pepper file that others can read is refused, not used.
+- **The key is shown once**: create, request, rotate and scopes print it alone on stdout (or
+  `{"id", "key", ...}` with `--json`) and say on stderr that it is never shown again. It is never
+  stored, logged or audited, and `ls`/`show` never print the hash.
+- **Status**, computed as of now: `revoked` (`state` revoked, or a rotated key whose `grace_until`
+  has passed), `pending` (a request no owner has approved yet), `expired` (`expires_at` passed),
+  else `active`. Only an active key verifies. `last_used_at` is written at most once a minute.
+- Expiry: `--expires Nd|YYYY-MM-DD` (a date means through that day, UTC). Default 90 days, at most
+  365 days from now, never "never". A request's lifetime starts when it is approved.
+- Scopes: `read:state`, `read:decisions`, `read:tasks`, `read:messages`, `tasks:write`,
+  `write:messages`, `tickets:read`, `tickets:write`, `tickets:take`. An unknown scope is refused
+  (exit 2). There is no answer, press, away, consensus, production or key-admin scope.
+
+**Who may do what.** `--by WHO` is an email or `local`; `board:<who>` means the board page asks on
+`<who>`'s behalf (audited as `via: board`). Matching is case-insensitive.
+
+| Action | `owners` | `approvers` | anyone else |
+|---|---|---|---|
+| `create --owner P` (active at once) | any P | P = themselves or a listed person | no: `request` |
+| `request` (pending, for themselves) | yes | yes | yes (at most 5 pending each) |
+| `approve` a request | yes | no | no |
+| `ls` / `show` | every key | their own keys | their own keys |
+| `revoke` | any key (a pending one = denied) | their own, or keys they issued | their own |
+| `rotate [--grace D]` | yes (active keys) | no | no |
+| `expire --expires D` (set or extend) | yes | no | no |
+| `scopes --scopes a,b` (revoke + reissue) | yes (active keys) | no | no |
+
+- `owners` is a list in `fleet.yaml`, above approvers for key administration only. Empty `owners`
+  fails closed: nobody can approve a request, rotate, re-expire or rescope.
+- A listed person is anyone in `owners`, `approvers`, `release_managers` or
+  `serve.tunnel.allowed_emails`.
+- Someone else's key is "no such key" (exit 1) to a non-owner's `show`: not even its existence.
+- **Rotate** creates a successor with the same owner, name and scopes (new expiry: `--expires`, else
+  90 days) and links both ways (`successor` / `predecessor`). The old key keeps working until
+  `grace_until` (`--grace 0|Nm|Nh|Nd`, at most 7 days; default 0 = revoked now). **Scopes** does
+  the same with new scopes, the old key revoked at once and the expiry kept. Only an active key that
+  was not replaced yet can be rotated or rescoped.
+
+**Audit.** Every change and every refusal appends to `events.jsonl`:
+`{"ts", "type": "apikey", "action": "create|request|approve|revoke|rotate|scopes|expire", "by",
+"via": "cli|board", "key_id", "owner", "name", "result": "ok|refused", "reason"?, ...}`. Never the
+key, never the hash.
+
+**Exit codes** (`board apikey`): 0 ok, 1 unknown key or a key in the wrong state, 2 usage (an
+unknown scope, a bad date or identity), 4 not authorized (nothing written), 8 the key store is busy.
 
 ## Secret guardrails
 

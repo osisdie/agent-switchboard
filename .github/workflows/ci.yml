@@ -51,6 +51,12 @@ jobs:
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q jq tmux python3-yaml python3-cryptography curl bsdextrautils util-linux
+      - name: gitleaks binary (the API key rule test runs it)
+        run: |
+          v=8.30.1; f="gitleaks_${v}_linux_x64.tar.gz"
+          curl -fsSL -o "/tmp/$f" "https://github.com/gitleaks/gitleaks/releases/download/v${v}/$f"
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  /tmp/$f" | sha256sum -c -
+          sudo tar -xzf "/tmp/$f" -C /usr/local/bin gitleaks
       - name: tests
         run: tests/run.sh -v
       - name: notify tests
@@ -77,3 +83,7 @@ jobs:
         run: python3 tests/test_advisories.py -v
       - name: lessons tests
         run: python3 tests/test_lessons.py -v
+      - name: API keys tests
+        env:
+          APIKEYS_REQUIRE_GITLEAKS: "1"
+        run: python3 tests/test_apikeys.py -v

@@ -10,3 +10,11 @@ description = "Synthetic values in test fixtures"
 paths = [
   '''^tests/fixtures/''',
 ]
+
+# agent-switchboard API keys (lib/apikeys.py): asb_live_<kid>_<secret>, asb_test_ for the mock.
+# The only key allowed in the repo is a fixture under tests/fixtures/ (the allowlist above).
+[[rules]]
+id = "agent-switchboard-api-key"
+description = "agent-switchboard API key"
+regex = '''asb_(live|test)_[0-9a-z]{12}_[A-Za-z0-9_-]{43}'''
+keywords = ["asb_live_", "asb_test_"]
