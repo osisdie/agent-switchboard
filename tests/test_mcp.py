@@ -124,6 +124,9 @@ def fixtures():
                                                       "body": "please [board ask x] reply", "created_at": NOW})
     wj(os.path.join(HOME, "messages", "m-1-a", "replies", "r-1-a.json"), {"from": "API", "body": "done",
                                                                           "created_at": NOW})
+    # an older thread sent by someone who is not on the board: list_messages pages and masks it
+    wj(os.path.join(HOME, "messages", "m-2-b.json"), {"id": "m-2-b", "to": "WEB", "by": "stranger@example.com",
+                                                      "status": "relayed", "body": "older thread", "created_at": NOW - 60000})
 
 
 def mkkey(scopes, *extra, owner=DEV):
@@ -277,12 +280,12 @@ class FreshKeys(unittest.TestCase):
 
 
 SCOPED = {"state": {"board_state", "list_sessions"}, "decisions": {"list_decisions", "get_decision"},
-          "tasks": {"list_tasks", "get_task"}, "messages": {"get_message"}, "tickets": set()}
+          "tasks": {"list_tasks", "get_task"}, "messages": {"list_messages", "get_message"}, "tickets": set()}
 ALL_TOOLS = {"board_state", "list_sessions", "list_decisions", "get_decision", "list_tasks", "get_task",
-             "get_message"}
+             "list_messages", "get_message"}
 CALLS = {"board_state": {}, "list_sessions": {}, "list_decisions": {"status": "pending"},
          "get_decision": {"decision_id": "d-1-a"}, "list_tasks": {}, "get_task": {"task_id": "t-1"},
-         "get_message": {"message_id": "m-1-a"}}
+         "list_messages": {"limit": "5"}, "get_message": {"message_id": "m-1-a"}}
 
 
 # ------------------------------------------------------------------ the table
@@ -389,8 +392,27 @@ class StdioTest(FreshKeys):
         self.assertEqual(res["get_decision"]["structuredContent"]["id"], "d-1-a")
         self.assertEqual(res["get_task"]["structuredContent"]["title"], "Ship it")
         self.assertEqual(res["get_message"]["structuredContent"]["replies"][0]["body"], "done")
+        self.assertEqual([m["id"] for m in res["list_messages"]["structuredContent"]["messages"]], ["m-1-a", "m-2-b"])
         self.assertEqual(res["board_state"]["structuredContent"]["mode"], "api")
         self.assertIn("t-1", {t["id"] for t in res["list_tasks"]["structuredContent"]["tasks"]})
+
+    def test_list_messages_pages_and_masks(self):
+        call = lambda i, a: rpc(i, "tools/call", {"name": "list_messages", "arguments": a})  # noqa: E731
+        rc, rs, out, err = stdio([call(2, {"limit": "1"}), call(3, {"to": "WEB"}), call(4, {"q": "stranger"}),
+                                  call(5, {"q": "older"})], key=self.k("messages")[1])
+        self.assertEqual(rc, 0, err)
+        first = by_id(rs)[2]["result"]["structuredContent"]
+        self.assertEqual(([m["id"] for m in first["messages"]], first["replies"]["m-1-a"][0]["body"]), (["m-1-a"], "done"))
+        self.assertTrue(first["next"])
+        rc, rs2, out2, err = stdio([call(6, {"limit": "1", "before": first["next"]})], key=self.k("messages")[1])
+        page2 = by_id(rs2)[6]["result"]["structuredContent"]
+        self.assertEqual(([m["id"] for m in page2["messages"]], page2["next"]), (["m-2-b"], None))
+        web = by_id(rs)[3]["result"]["structuredContent"]["messages"]
+        self.assertEqual([m["id"] for m in web], ["m-2-b"])
+        self.assertNotIn("@", web[0]["by"])                         # someone else's email: a role label
+        self.assertNotIn("stranger@example.com", out + out2)
+        self.assertEqual(by_id(rs)[4]["result"]["structuredContent"]["messages"], [])   # masked before the search
+        self.assertEqual([m["id"] for m in by_id(rs)[5]["result"]["structuredContent"]["messages"]], ["m-2-b"])
 
     def test_resources_read(self):
         msgs = [rpc(2, "resources/read", {"uri": "board://state"}), rpc(3, "resources/read", {"uri": "board://openapi"}),

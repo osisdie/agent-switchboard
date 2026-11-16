@@ -141,7 +141,7 @@ start
 # ---------------------------------------------------------------- state
 echo "state:"
 eq "GET /api/state 200" "$(req GET /api/state)" "200"
-eq "state keys" "$(body 'keys | join(",")')" "account,approvals,approver,asker,can_message,consensus,decisions,generated_at,ledger,lessons,me,messages,mode,notify,operator,owner,owner_away,page_version,pomodoro,rc,replies,resources,scheduler,sessions,tasks,writable"
+eq "state keys" "$(body 'keys | join(",")')" "account,approvals,approver,asker,can_message,consensus,decisions,generated_at,ledger,lessons,me,messages,messages_older,mode,notify,operator,owner,owner_away,page_version,pomodoro,rc,replies,resources,scheduler,sessions,tasks,writable"
 eq "page_version is the hash of artifact/board.html" "$(body .page_version)" "$(sha256sum "$REPO/artifact/board.html" | cut -c1-12)"
 pv="$(body .page_version)"
 req GET / >/dev/null
@@ -312,6 +312,78 @@ eq "day: a forwarded request refused" "$(req GET "/api/pomodoro/day?d=$past" -H 
 eq "day: POST not routed" "$(post "/api/pomodoro/day?d=$past" '{}')" "404"
 eq "day: no extra SSE payload (the pushed view has no per-stream day map)" "$(req GET /api/state >/dev/null; body -c '[.pomodoro.days[] | keys] | unique')" '[["date","done","focus_ms"]]'
 eq "day: fetching a day changes nothing in the pushed view" "$(req GET /api/state >/dev/null; body -c '.pomodoro')" "$sse_before"
+
+# ---------------------------------------------------------------- messages: recent window + history
+echo "messages history:"
+# 30 threads (m-1000-h00 .. m-1029-h29, half to API), an old held one, an old one with a late reply,
+# and a ticket relay whose tracker title a viewer never sees.
+python3 - "$BOARD_HOME/messages" <<'PY'
+import json, os, sys
+d = sys.argv[1]
+def w(p, o):
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    with open(p, "w") as fh:
+        json.dump(o, fh)
+for i in range(30):
+    w("%s/m-%d-h%02d.json" % (d, 1000 + i, i), {"id": "m-%d-h%02d" % (1000 + i, i), "to": "API" if i % 2 else "WEB",
+      "body": "thread %d %s" % (i, "zebra" if i == 7 else ""), "by": "boss@example.com" if i == 5 else "local",
+      "created_at": 1000 + i, "status": "relayed"})
+w(d + "/m-500-held.json", {"id": "m-500-held", "to": "CP", "body": "held one", "by": "local", "created_at": 500, "status": "held"})
+w(d + "/m-600-late.json", {"id": "m-600-late", "to": "WEB", "body": "old thread", "by": "local", "created_at": 600, "status": "replied",
+  "operator_note": "not for the page"})
+w(d + "/m-600-late/replies/r-5000-abc123.json", {"id": "r-5000-abc123", "from": "WEB", "body": "a late reply", "created_at": 5000, "pane_dump": "x"})
+w(d + "/m-700-tkt.json", {"id": "m-700-tkt", "kind": "ticket", "to": "CP", "body": "", "by": "local", "created_at": 700, "status": "relayed",
+  "ticket": {"provider": "jira", "key": "OPS-7", "title": "Quokka migration", "url": "https://tracker.example/OPS-7"}})
+PY
+for _ in $(seq 1 100); do req GET /api/state >/dev/null; [ "$(body '.messages | length')" = 21 ] && break; sleep 0.1; done
+# 30 + held + late + ticket + m-1-a (+ any earlier message) threads; the window: 20 latest + held.
+total="$(find "$BOARD_HOME/messages" -maxdepth 1 -name '*.json' | wc -l | tr -d ' ')"
+eq "state: 20 latest threads plus the held one" "$(body '.messages | length')" "21"
+eq "state: latest activity first (a late reply brings a thread up)" "$(body -r '[.messages[0:2][] | .id] | join(",")')" "m-600-late,m-1029-h29"
+eq "state: each thread carries last_activity_at" "$(body '.messages[0].last_activity_at')" "5000"
+eq "state: message fields are an allowlist" "$(body '[.messages[] | keys[]] | unique | join(",")')" "body,by,created_at,id,last_activity_at,status,to"
+eq "  reply fields too" "$(body '[.replies[][] | keys[]] | unique | join(",")')" "body,created_at,from,id"
+eq "state: the held message is in, however old" "$(body '[.messages[] | select(.id == "m-500-held")] | length')" "1"
+eq "state: messages_older counts the rest" "$(body '.messages_older')" "$((total - 21))"
+eq "state: replies only for the window" "$(body '.replies | has("m-1000-h00")')" "false"
+eq "history: 200 with X-Board" "$(req GET '/api/messages?limit=5' -H 'X-Board: 1')" "200"
+eq "  keys" "$(body '[keys[]] | join(",")')" "messages,next,replies"
+eq "  first page: the 5 latest" "$(body -r '[.messages[].id] | join(",")')" "m-600-late,m-1029-h29,m-1028-h28,m-1027-h27,m-1026-h26"
+eq "  replies come with the page" "$(body -r '.replies["m-600-late"][0].body')" "a late reply"
+eq "  next cursor" "$(body -r .next)" "1026.m-1026-h26"
+eq "page 2 after the cursor" "$(req GET '/api/messages?limit=5&before=1026.m-1026-h26' -H 'X-Board: 1' >/dev/null; body -r '[.messages[].id] | join(",")')" "m-1025-h25,m-1024-h24,m-1023-h23,m-1022-h22,m-1021-h21"
+n=0; cur=""; seen=""
+for _ in $(seq 1 20); do
+  req GET "/api/messages?limit=7${cur:+&before=$cur}" -H 'X-Board: 1' >/dev/null
+  seen="$seen$(body -r '.messages[].id')"$'\n'; n=$((n + $(body '.messages | length')))
+  cur="$(body -r '.next // empty')"; [ -z "$cur" ] && break
+done
+eq "paging to the end visits every thread once" "$n/$(grep -c . <<<"$seen" | tr -d ' ')/$(sort -u <<<"$seen" | grep -c .)" "$total/$total/$total"
+eq "to=API: only API threads" "$(req GET '/api/messages?to=API&limit=50' -H 'X-Board: 1' >/dev/null; body '[.messages[].to] | unique | join(",")')/$(body '.messages | length')" "API/15"
+eq "q: case-insensitive, also in replies" "$(req GET '/api/messages?q=LATE%20REPLY' -H 'X-Board: 1' >/dev/null; body -r '[.messages[].id] | join(",")')" "m-600-late"
+eq "q: in the body" "$(req GET '/api/messages?q=zebra' -H 'X-Board: 1' >/dev/null; body -r '[.messages[].id] | join(",")')" "m-1007-h07"
+eq "q + to + no match: an empty page, no cursor" "$(req GET '/api/messages?q=zebra&to=WEB' -H 'X-Board: 1' >/dev/null; body -c '[.messages, .next]')" "[[],null]"
+eq "the owner finds an email" "$(req GET '/api/messages?q=boss%40example' -H 'X-Board: 1' >/dev/null; body -r '[.messages[].id] | join(",")')" "m-1005-h05"
+eq "an approver finds the ticket title" "$(req GET '/api/messages?q=quokka' -H 'X-Board: 1' >/dev/null; body -r '[.messages[].id] | join(",")')" "m-700-tkt"
+write_cfg "" "[boss@example.com]"   # local is now a viewer: no ticket text (the state's own filter)
+eq "a viewer: the search never finds hidden text" "$(req GET '/api/messages?q=quokka' -H 'X-Board: 1' >/dev/null; body '.messages | length')" "0"
+eq "a viewer: another person's email is masked" "$(req GET '/api/messages?to=API&limit=50' -H 'X-Board: 1' >/dev/null; body -r '.messages[] | select(.id == "m-1005-h05") | .by | test("@")')" "false"
+eq "  and a search for it finds nothing" "$(req GET '/api/messages?q=boss%40example' -H 'X-Board: 1' >/dev/null; body '.messages | length')" "0"
+eq "a viewer: the ticket keeps provider and key only" "$(req GET '/api/messages?to=CP&limit=50' -H 'X-Board: 1' >/dev/null; body -c '.messages[] | select(.id == "m-700-tkt") | .ticket')" '{"provider":"jira","key":"OPS-7"}'
+eq "  and no tracker title anywhere in the page" "$(grep -c 'Quokka' "$T/body")" "0"
+write_cfg ""
+eq "no X-Board: 403 csrf" "$(req GET '/api/messages')/$(body -r .error)" "403/csrf"
+eq "cross-site Sec-Fetch-Site: 403" "$(req GET '/api/messages' -H 'X-Board: 1' -H 'Sec-Fetch-Site: cross-site')" "403"
+eq "same-origin Sec-Fetch-Site: 200" "$(req GET '/api/messages' -H 'X-Board: 1' -H 'Sec-Fetch-Site: same-origin')" "200"
+eq "a foreign Host refused" "$(req GET '/api/messages' -H 'X-Board: 1' -H 'Host: evil.example')" "421"
+eq "a forwarded request refused" "$(req GET '/api/messages' -H 'X-Board: 1' -H 'X-Forwarded-For: 203.0.113.9')" "403"
+for q in "?limit=0" "?limit=51" "?limit=x" "?before=1026" "?before=x.m-1-a" "?to=%2Fetc" "?q=$(printf 'a%.0s' $(seq 1 201))" "?limit=5&limit=6" "?x=1"; do
+  eq "bad query '${q:0:24}' 400" "$(req GET "/api/messages$q" -H 'X-Board: 1')" "400"
+done
+eq "POST /api/messages is still the send route (no history there)" "$(post /api/messages '{}')" "400"
+rm -rf "$BOARD_HOME"/messages/m-1???-h??.json "$BOARD_HOME"/messages/m-500-held.json "$BOARD_HOME"/messages/m-600-late* "$BOARD_HOME"/messages/m-700-tkt.json
+for _ in $(seq 1 100); do req GET /api/state >/dev/null; [ "$(body '.messages_older')" = 0 ] && break; sleep 0.1; done
+eq "removed again: messages_older 0" "$(body '.messages_older')" "0"
 
 eq "GET / 200" "$(req GET / -D "$T/hdr")" "200"
 grep -q '<meta name="board-mode" content="local">' "$T/body" && ok "page has the local-mode meta" || bad "page has the local-mode meta"
@@ -688,6 +760,10 @@ with open(os.path.join(home, "messages", "m-2-sse.json"), "w") as fh:
     json.dump({"id": "m-2-sse", "to": "all", "body": "sse!", "by": "local", "created_at": int(time.time() * 1000), "status": "new"}, fh)
 t0 = time.time()
 second = event()
+for _ in range(10):   # a frame already on its way (another change) may come first: wait for this one
+    if second is None or "m-2-sse" in [m["id"] for m in second["messages"]]:
+        break
+    second = event()
 print("second", [m["id"] for m in second["messages"]][0], "%.1f" % (time.time() - t0))
 EOF
 sse_pid=$!

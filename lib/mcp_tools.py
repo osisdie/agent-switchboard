@@ -105,6 +105,10 @@ TOOLS = [
     _tool("list_tasks", "List tasks", "/api/v1/tasks",
           "The latest 50 tasks with their lifecycle stage and gates, most recently updated first."),
     _tool("get_task", "Get a task", "/api/v1/tasks/{task_id}", "One task by id."),
+    _tool("list_messages", "List messages", "/api/v1/messages",
+          "Board message threads with their replies, latest activity first, 20 a page (limit up to 50). "
+          "`next` in the result is the cursor: pass it as `before` for the following page (null at the "
+          "end). Optionally only threads to one session (`to`: a code or all) or with some text (`q`)."),
     _tool("get_message", "Get a message", "/api/v1/messages/{message_id}",
           "One board message and its replies (a held message stays held)."),
 ]

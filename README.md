@@ -505,6 +505,13 @@ Workers reply with `[re <msgId>] …`, and replies thread under the message. **M
 information, never approvals.** A message that asks a session for a secret value is held, not
 relayed (see [Secret guardrails](#secret-guardrails)).
 
+The section shows the 5 threads with the latest activity (a new reply brings a thread back up).
+Held messages and threads with replies you have not marked read stay pinned on top; **Mark read**
+is kept in your browser. **History (N older)** opens the rest, 20 at a time, with a session filter
+and a search. Long messages and replies show their first lines (**Show more**), and a thread shows
+its latest 3 replies. On the self-hosted board the state carries the latest 20 threads (plus every
+held one) and `GET /api/messages` pages the history; nothing is deleted on disk.
+
 ### Reminders
 
 Your own alarms: `board remind add "Meeting" --at 3pm` (or `15:00`) sends a notice 5 minutes
@@ -1377,7 +1384,7 @@ curl -s -H "CF-Access-Client-Id: $CF_ID" -H "CF-Access-Client-Secret: $CF_SECRET
 
 The board is also an MCP server, so Claude Code, Claude Desktop or any MCP client can read it with
 an API key: tools `board_state`, `list_sessions`, `list_decisions`, `get_decision`, `list_tasks`,
-`get_task`, `get_message`, and resources `board://state`, `board://decisions/{id}`,
+`get_task`, `list_messages`, `get_message`, and resources `board://state`, `board://decisions/{id}`,
 `board://tasks/{id}`, `board://openapi`. A client sees only the tools its key's scopes allow. It is
 read-only, and like every key it can never answer a decision; `[BOARD` in board text arrives as
 `(BOARD`. Two transports, one tool table (`lib/mcp_tools.py`; details in `docs/contract.md`, "MCP"):
@@ -1498,7 +1505,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `lib/pomodoro.py` | Pomodoro timer and daily tallies (`pomodoro.json`) for the board and `board pomodoro` |
 | `lib/resources.py` | Resources sampler (memory, disks, OOM, per-session processes and teammates) for `resources.json`, the snapshot digest and `board resources` |
 | `docs/design/` | Design notes, e.g. `resources-and-scheduling.md` (resources, scheduler, lessons) |
-| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), the resources sampler (`test_resources.py`, fixture `/proc`), the secret guardrails (`test_guard.py`), API keys (`test_apikeys.py`), the public API and its tunnel exposure (`test_api_v1.py`), the MCP server (`test_mcp.py`), askers (`test_askers.py`), who may do what per role (`test_roles.py`), who sees whose email (`test_pii.py`), the card extras (`test_cards.py`), Remote Control (`test_rc.py`, scripted tmux in `fake_tmux.py`), the pomodoro timer (`test_pomodoro.py`), and the optional headless checks of the page's alert links, notifications control, profile menu and theme, home-screen app, session cards, usage popover, header popovers, language toggle, Deck panel and pomodoro (`test_page_links.py`, `test_page_notify.py`, `test_page_profile.py`, `test_page_pwa.py`, `test_page_cards.py`, `test_page_guard.py` (held-message cards), `test_page_askers.py` (the asker's composer), `test_page_roles.py` (controls per role), `test_page_usage.py`, `test_page_header_tips.py`, `test_page_i18n.py`, `test_page_deck.py`, `test_page_rc.py` (Remote Control chip and switches), `test_page_pomodoro.py`, plus `test_site.py` for the screenshots and the Pages site: need python playwright, skip without it; not run in CI) |
+| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), the resources sampler (`test_resources.py`, fixture `/proc`), the secret guardrails (`test_guard.py`), API keys (`test_apikeys.py`), the public API and its tunnel exposure (`test_api_v1.py`), the MCP server (`test_mcp.py`), askers (`test_askers.py`), who may do what per role (`test_roles.py`), who sees whose email (`test_pii.py`), the card extras (`test_cards.py`), Remote Control (`test_rc.py`, scripted tmux in `fake_tmux.py`), the pomodoro timer (`test_pomodoro.py`), and the optional headless checks of the page's alert links, notifications control, profile menu and theme, home-screen app, session cards, usage popover, header popovers, language toggle, Deck panel and pomodoro (`test_page_links.py`, `test_page_notify.py`, `test_page_profile.py`, `test_page_pwa.py`, `test_page_cards.py`, `test_page_guard.py` (held-message cards), `test_page_askers.py` (the asker's composer), `test_page_messages.py` (recent threads and history), `test_page_roles.py` (controls per role), `test_page_usage.py`, `test_page_header_tips.py`, `test_page_i18n.py`, `test_page_deck.py`, `test_page_rc.py` (Remote Control chip and switches), `test_page_pomodoro.py`, plus `test_site.py` for the screenshots and the Pages site: need python playwright, skip without it; not run in CI) |
 | `CONTRIBUTING.md` | Dev setup, tests, and the rule for keeping `README.zh-TW.md` in sync |
 | `fleet.example.yaml`, `.env.example` | Example config |
 

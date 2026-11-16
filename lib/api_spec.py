@@ -30,6 +30,10 @@ QUERY = {
     "status": (r"pending|answered|relayed|stale|timeout|unauthorized|answered_in_pane",
                "Only decisions with this status."),
     "d": (r"[0-9]{4}-[0-9]{2}-[0-9]{2}", "A day (YYYY-MM-DD) within the 14 kept days."),
+    "before": (r"[0-9]{1,16}\.m-[0-9]+-[a-z0-9]+", "A cursor: `next` from the previous page."),
+    "limit": (r"[1-9]|[1-4][0-9]|50", "Threads per page, 1..50 (default 20)."),
+    "to": (r"all|[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", "Only messages to this session code (or to all)."),
+    "q": (r"[^\x00-\x1f\x7f]{1,200}", "Text to look for (case-insensitive) in the messages and their replies."),
 }
 
 _OBJ = {"type": "object"}
@@ -73,6 +77,12 @@ ROUTES = [
     {"method": "GET", "path": "/api/v1/pomodoro/day", "scope": "read:state", "handler": "pomodoro_day",
      "tag": "state", "query": ["d"], "query_required": ["d"], "summary": "One kept day's per-session breakdown.",
      "schema": _OBJ},
+    {"method": "GET", "path": "/api/v1/messages", "scope": "read:messages", "handler": "messages",
+     "tag": "messages", "query": ["before", "limit", "to", "q"],
+     "summary": "Message threads, latest activity first, a page at a time (20 by default); `next` is the "
+                "cursor for the following page (null at the end). Scrubbed; a held message stays held.",
+     "schema": {"type": "object", "required": ["messages", "replies", "next"],
+                "properties": {"messages": _LIST, "replies": _OBJ, "next": {"type": ["string", "null"]}}}},
     {"method": "GET", "path": "/api/v1/messages/{message_id}", "scope": "read:messages", "handler": "message",
      "tag": "messages", "summary": "One board message and its replies (scrubbed; a held message stays held).",
      "schema": _OBJ},

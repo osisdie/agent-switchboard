@@ -438,6 +438,26 @@ dialog.notif { width: min(720px, calc(100vw - 24px)); }
 .replies .from { font-family: var(--f-mono); font-weight: 600; font-size: 12px; display: flex; gap: 8px; align-items: baseline; }
 .replies .from time { font-family: var(--f-body); font-weight: 400; color: var(--muted); }
 .replies p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* recent + history: pinned threads (held, new replies), long bodies clamped, the History view */
+@media (min-width: 901px) { .msg-layout > .msg-compose { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 64px); } }
+.thread.pinned { border-color: color-mix(in srgb, var(--lamp) 45%, var(--rule)); }
+.thread.unread { box-shadow: inset 3px 0 0 var(--cord); }
+.thread:focus-visible { outline: 2px solid var(--cord); outline-offset: 2px; }
+.thread .new-chip { font-size: 12px; font-weight: 600; padding: 1px 8px; border-radius: 999px; background: var(--cord-soft); color: var(--cord); }
+.thread .clamp { display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden; }
+.thread > .btn, .replies .more { justify-self: start; }
+.replies li[hidden] { display: none; }
+.msg-unread { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 0 0 10px; font-size: 13px; color: var(--muted); }
+.msg-hist { display: grid; gap: 10px; margin-top: 12px; }
+.msg-hist-btn { justify-self: start; }
+.msg-hist-panel { display: grid; gap: 10px; }
+.msg-hist-panel[hidden], .msg-hist[hidden], #msg-hist-more[hidden], .msg-unread[hidden] { display: none; }
+.msg-hist-panel > .btn { justify-self: start; }
+.msg-hist-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.msg-hist-bar input, .msg-hist-bar select { font: inherit; font-size: 14px; min-height: 36px; min-width: 0; padding: 6px 10px; border: 1px solid var(--rule); border-radius: 5px; background: var(--paper); color: var(--ink); }
+.msg-hist-bar input { flex: 1 1 200px; }
+.msg-hist-bar select { flex: 0 1 auto; max-width: 100%; }
+.msg-hist-status { margin: 0; font-size: 13px; color: var(--muted); }
 .readonly-note { font-size: 14px; color: var(--muted); padding: 12px 14px; border: 1px dashed var(--rule); border-radius: var(--r); }
 
 /* ---------- info dialog ---------- */
@@ -1174,7 +1194,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       <span class="hint" data-i18n>Mention a session to send it a note. Replies come back into the thread.</span>
     </div>
     <div class="msg-layout">
-      <div>
+      <div class="msg-compose">
         <form class="composer" id="composer" autocomplete="off">
           <label for="msg-input" data-i18n>New message</label>
           <textarea id="msg-input" placeholder="@API please rebase on main and rerun the tests" data-i18n-attr="placeholder" aria-autocomplete="list" aria-controls="mention-list" aria-expanded="false"></textarea>
@@ -1190,7 +1210,20 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       </div>
       <div>
         <div class="empty" id="msg-empty"><strong data-i18n>No messages yet.</strong><span data-i18n>Type @ and a session code to send the first one.</span></div>
+        <p class="msg-unread" id="msg-unread" hidden></p>
         <ol class="threads" id="threads"></ol>
+        <div class="msg-hist" id="msg-hist" hidden>
+          <button class="btn linkish msg-hist-btn" id="msg-hist-btn" type="button" aria-expanded="false" aria-controls="msg-hist-panel"><span id="msg-hist-t">History</span></button>
+          <div class="msg-hist-panel" id="msg-hist-panel" role="region" aria-labelledby="msg-hist-btn" hidden>
+            <div class="msg-hist-bar">
+              <select id="msg-hist-to" aria-label="Sent to" data-i18n-attr="aria-label"></select>
+              <input type="search" id="msg-hist-q" placeholder="Search older threads" aria-label="Search older threads" data-i18n-attr="placeholder aria-label">
+            </div>
+            <p class="msg-hist-status" id="msg-hist-status" role="status"></p>
+            <ol class="threads" id="msg-hist-list"></ol>
+            <button class="btn" id="msg-hist-more" type="button" hidden data-i18n>Load more</button>
+          </div>
+        </div>
       </div>
     </div>
   </section>
@@ -1278,7 +1311,10 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
   /* ------------------------------------------------------------------ setup */
   const params = new URLSearchParams(location.search);
   const STALE_MS = 10 * 60 * 1000;
-  const MAX_THREADS = 20;
+  // Messages: the threads board-serve's state carries by latest activity (lib/serve.py
+  // STATE_THREADS; the Artifact page subscribes to the replies of as many), and how many of the
+  // newest the Artifact page reads from the db for its recent list and History.
+  const MSG_WINDOW = 20, MSG_DB_LIMIT = 100;
   const LOAD_TIMEOUT_MS = 10000;
 
   const S = {
@@ -1294,6 +1330,11 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     lessons: [], sched: null,    // board-serve state.lessons and state.scheduler ({mode, applied, hints}); local and demo only
     lsQ: '', lsFilter: 'current', lsForm: null, lsConfirm: null,
     replies: new Map(),
+    messagesOlder: 0,            // board-serve: threads older than the state's window (state.messages_older)
+    msgOpen: new Set(),          // expanded long bodies ("<id>" / "<id>:<rid>") and earlier replies ("<id>#r")
+    msgShow: new Set(),          // threads a ?m= link asked for: shown with the recent ones
+    msgVisible: new Set(),       // threads on screen (recent and History): the Artifact page follows their replies
+    hist: { open: false, to: '', q: '', items: [], replies: new Map(), next: null, loading: false, err: null, count: 20, seq: 0, timer: 0 },
     got: { sessions: false, decisions: false, messages: false, tasks: false, approvals: false, operator: false, consensus: false },
     slow: false, feedError: null, offlineDetail: null,
     me: null, userReady: false, writable: null,   // writable: true | false | null (unknown → let writes decide)
@@ -1739,7 +1780,6 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     $('#needs-sub').textContent = parts.length ? parts.join(' · ') : tr('Nothing waiting');
     const nd = $('#nav-dec'); nd.textContent = a.decisions; nd.classList.toggle('hot', a.decisions > 0);
     $('#nav-board').textContent = S.sessions.length;
-    $('#nav-msg').textContent = S.messages.length;
     $('#nav-life').textContent = S.tasks.length;
     $('#nav-appr').textContent = S.approvals.length;
     document.title = a.total ? '(' + a.total + ') Agent Switchboard' : 'Agent Switchboard';
@@ -3025,21 +3065,61 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     box.append(rel);
     return box;
   }
+  // A long text shows its first lines; "Show more" opens it in place (the choice is kept, so a
+  // re-render keeps it open).
+  function clampText(key, text, cls) {
+    const long = text.length > MSG_CLAMP_CHARS || text.split('\n').length > MSG_CLAMP_LINES;
+    const open = S.msgOpen.has(key);
+    const p = h('p', { class: cls + (long && !open ? ' clamp' : ''), text });
+    if (!long) return p;
+    const b = h('button', { type: 'button', class: 'btn linkish more', 'aria-expanded': open ? 'true' : 'false', text: tr(open ? 'Show less' : 'Show more') });
+    b.addEventListener('click', () => {
+      const now = !S.msgOpen.has(key);
+      if (now) S.msgOpen.add(key); else S.msgOpen.delete(key);
+      p.classList.toggle('clamp', !now);
+      b.setAttribute('aria-expanded', now ? 'true' : 'false'); b.textContent = tr(now ? 'Show less' : 'Show more');
+    });
+    return [p, b];
+  }
   function buildThread(m) {
-    const replies = S.replies.get(m.id) || [];
+    const id = str(m.id), replies = threadReplies(id);
     const relayedTo = Array.isArray(m.relayed_to) ? m.relayed_to.map(str).filter(Boolean) : [];
-    return h('li', { id: 'thread-' + str(m.id), class: 'thread' },
+    const unread = isUnread(m), held = str(m.status) === 'held';
+    const li = h('li', { id: 'thread-' + id, class: 'thread' + (held || unread ? ' pinned' : '') + (unread ? ' unread' : ''), tabindex: '-1' },
       h('div', { class: 'thread-top' },
         h('span', { class: 'to', text: '→ @' + (str(m.to) || '?') }),
         h('span', { class: 'status ' + str(m.status), text: str(m.status) || 'new' }),
+        unread ? h('span', { class: 'new-chip', text: tr('New reply') }) : null,
         h('span', { text: tr('from {who}', { who: whoLabel(m.by) }) }),
         timeEl(m.created_at)),
-      h('p', { class: 'body', text: str(m.body) }),
+      clampText(id, str(m.body), 'body'),
       guardNote(m),
-      relayedTo.length || m.relayed_at ? h('span', { class: 'relay' }, relayedTo.length ? tr('Relayed to {who}', { who: relayedTo.join(', ') }) : tr('Relayed'), m.relayed_at ? ' · ' : '', m.relayed_at ? timeEl(m.relayed_at) : null) : null,
-      replies.length ? h('ol', { class: 'replies', 'aria-label': tr('Replies') }, replies.map((r) => h('li', null,
+      relayedTo.length || m.relayed_at ? h('span', { class: 'relay' }, relayedTo.length ? tr('Relayed to {who}', { who: relayedTo.join(', ') }) : tr('Relayed'), m.relayed_at ? ' · ' : '', m.relayed_at ? timeEl(m.relayed_at) : null) : null);
+    if (replies.length) {
+      // Only the latest replies; the earlier ones open in place.
+      const hide = replies.length > MSG_REPLIES_SHOWN && !S.msgOpen.has(id + '#r') ? replies.length - MSG_REPLIES_SHOWN : 0;
+      const items = replies.map((r, i) => h('li', { hidden: i < hide },
         h('span', { class: 'from' }, h('span', { text: str(r.from) || '?' }), timeEl(r.created_at)),
-        h('p', { text: str(r.body) })))) : null);
+        clampText(id + ':' + str(r.id || i), str(r.body), 'rbody')));
+      if (replies.length > MSG_REPLIES_SHOWN) {
+        const n = replies.length - MSG_REPLIES_SHOWN;
+        const b = h('button', { type: 'button', class: 'btn linkish more', 'aria-expanded': hide ? 'false' : 'true', text: hide ? tr('Show {n} earlier replies', { n }) : tr('Hide earlier replies') });
+        b.addEventListener('click', () => {
+          const open = !S.msgOpen.has(id + '#r');
+          if (open) S.msgOpen.add(id + '#r'); else S.msgOpen.delete(id + '#r');
+          items.forEach((x, i) => { x.hidden = !open && i < n; });
+          b.setAttribute('aria-expanded', open ? 'true' : 'false'); b.textContent = open ? tr('Hide earlier replies') : tr('Show {n} earlier replies', { n });
+        });
+        li.append(b);
+      }
+      li.append(h('ol', { class: 'replies', 'aria-label': tr('Replies') }, items));
+    }
+    if (unread) {
+      const b = h('button', { type: 'button', class: 'btn linkish', text: tr('Mark read') });
+      b.addEventListener('click', () => markRead([m]));
+      li.append(b);
+    }
+    return li;
   }
   /* --------------------------------------------------------------- reminders */
   // The owner's own alarms (lib/reminders.py; GET/POST /api/reminders). Only the owner (fleet.yaml
@@ -3477,15 +3557,76 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     } finally { S.busy.delete('ls-form'); const b = $('#lf-save'); if (b) b.disabled = false; }
   }
 
+  /* ------------------------------------------- messages: recent + history */
+  // The section shows the 5 threads with the latest activity (a new reply brings a thread back up),
+  // and pinned on top every held message and every thread with a reply this viewer has not marked
+  // read. The rest is in History: 20 at a time, by session and by text. board-serve pages it
+  // (GET /api/messages, the state carries the latest 20 and a count of the older ones); the demo
+  // and the Artifact page page what they have. "Read" is this viewer's own, in this browser.
+  const MSG_RECENT = 5, MSG_PAGE = 20, MSG_CLAMP_CHARS = 320, MSG_CLAMP_LINES = 6, MSG_REPLIES_SHOWN = 3;
+  const SEEN_KEY = 'switchboard.msgSeen';
+  // {base, t: {id: ms}}: replies up to base (when this browser first opened the board) or up to a
+  // thread's own mark are read. Storage blocked: from this page view on.
+  const msgSeen = (() => {
+    let v = null;
+    try { v = JSON.parse(localStorage.getItem(SEEN_KEY) || 'null'); } catch (e) { v = null; }
+    const ok = v && typeof v === 'object' && Number.isFinite(v.base);
+    const out = { base: ok ? v.base : Date.now(), t: {} };
+    if (ok && v.t && typeof v.t === 'object') for (const [k, x] of Object.entries(v.t)) if (/^m-[0-9]+-[a-z0-9]+$/.test(k) && Number.isFinite(x)) out.t[k] = x;
+    if (!ok) { try { localStorage.setItem(SEEN_KEY, JSON.stringify(out)); } catch (e) { /* this page view only */ } }
+    return out;
+  })();
+  const threadReplies = (id) => S.replies.get(id) || S.hist.replies.get(id) || [];
+  function lastReplyAt(m) { let t = 0; for (const r of threadReplies(str(m.id))) t = Math.max(t, ts(r.created_at)); return t; }
+  function activityOf(m) { return ts(m.last_activity_at) || Math.max(ts(m.created_at), ts(m.released_at), lastReplyAt(m)); }
+  function isUnread(m) {
+    if (!S.replies.has(str(m.id))) return false;   // only threads of the live window
+    const t = lastReplyAt(m);
+    return t > Math.max(msgSeen.base, msgSeen.t[str(m.id)] || 0);
+  }
+  function markRead(list) {
+    for (const m of list) msgSeen.t[str(m.id)] = lastReplyAt(m);
+    const keep = new Set(S.messages.map((m) => str(m.id)));
+    for (const k of Object.keys(msgSeen.t)) if (!keep.has(k)) delete msgSeen.t[k];
+    try { localStorage.setItem(SEEN_KEY, JSON.stringify(msgSeen)); } catch (e) { /* this page view only */ }
+    const first = list.length === 1 ? str(list[0].id) : null;
+    renderMessages();
+    // The focus stays on the thread when it is still shown, else goes to History or the heading.
+    const el = first && document.getElementById('thread-' + first);
+    const hb = $('#msg-hist-btn');
+    if (el) el.focus(); else if (!$('#msg-hist').hidden) hb.focus(); else { const hd = $('#h-messages'); hd.setAttribute('tabindex', '-1'); hd.focus(); }
+  }
+  function msgViews() {
+    const all = S.messages.slice().sort((a, b) => activityOf(b) - activityOf(a) || (str(b.id) > str(a.id) ? 1 : str(b.id) < str(a.id) ? -1 : 0));
+    const top = new Set(all.slice(0, MSG_RECENT).map((m) => str(m.id)));
+    const pinned = (m) => str(m.status) === 'held' || isUnread(m) || S.msgShow.has(str(m.id));
+    const shown = all.filter(pinned).concat(all.filter((m) => top.has(str(m.id)) && !pinned(m)));
+    const total = all.length + (isLocal() ? S.messagesOlder : 0);
+    return { all, shown, ids: new Set(shown.map((m) => str(m.id))), older: Math.max(0, total - shown.length), total,
+      boundary: all.length >= MSG_RECENT ? all[MSG_RECENT - 1] : null, unread: all.filter(isUnread) };
+  }
   function renderMessages() {
-    const list = S.messages.slice(0, MAX_THREADS);
+    const v = msgViews(), list = v.shown;
+    $('#nav-msg').textContent = v.total;
     const e = $('#msg-empty');
     e.hidden = list.length > 0;
     e.textContent = '';
     if (S.mode === 'connecting' || (S.mode === 'live' && !S.got.messages)) e.append(h('strong', { text: tr('Loading messages…') }));
     else if (S.mode === 'offline') e.append(h('strong', { text: tr('No board data.') }), tr('Threads appear here once the page can reach the board.'));
     else e.append(h('strong', { text: tr('No messages yet.') }), tr(canMessage() ? 'Type @ and a session code to send the first one.' : 'Messages that editors send to sessions appear here.'));
-    reconcile($('#threads'), list, (m) => m.id, (m) => JSON.stringify(m) + JSON.stringify(S.replies.get(m.id) || []) + (S.me || ''), buildThread);
+    const un = $('#msg-unread');
+    un.hidden = v.unread.length < 2;
+    un.textContent = '';
+    if (v.unread.length >= 2) {
+      const all = h('button', { type: 'button', class: 'btn linkish', text: tr('Mark all read') });
+      all.addEventListener('click', () => markRead(v.unread));
+      un.append(h('span', { text: tr('{n} threads have new replies.', { n: v.unread.length }) }), all);
+    }
+    reconcile($('#threads'), list, (m) => m.id, (m) => JSON.stringify(m) + JSON.stringify(threadReplies(str(m.id))) + (S.me || '') + isUnread(m), buildThread);
+    const was = [...S.msgVisible].join();
+    S.msgVisible = new Set(list.map((m) => str(m.id)));
+    renderHistory(v);
+    if (!isLocal() && !S.demo && [...S.msgVisible].join() !== was) syncReplySubs();
     const ok = canMessage();
     $('#composer').hidden = !ok;
     $('#msg-readonly').hidden = ok || !(S.mode === 'live' && S.userReady);
@@ -3494,6 +3635,80 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     const an = $('#msg-asker-note');
     if (an) an.hidden = !(ok && S.askerOnly);
   }
+  function histMatch(m, to, q) {
+    if (to && str(m.to) !== to) return false;
+    if (!q) return true;
+    return [m.to, m.by, m.body].concat(threadReplies(str(m.id)).flatMap((r) => [r.from, r.body])).some((x) => lc(x).includes(q));
+  }
+  function renderHistory(v) {
+    const H = S.hist;
+    $('#msg-hist').hidden = !v.older && !H.open;
+    $('#msg-hist-t').textContent = tr('History ({n} older)', { n: v.older });
+    $('#msg-hist-btn').setAttribute('aria-expanded', H.open ? 'true' : 'false');
+    $('#msg-hist-panel').hidden = !H.open;
+    if (!H.open) return;
+    const sel = $('#msg-hist-to'), codes = new Set(S.sessions.map((s) => str(s.code)).filter(Boolean));
+    for (const m of S.messages.concat(H.items)) if (str(m.to)) codes.add(str(m.to));
+    if (H.to) codes.add(H.to);
+    const opts = [['', tr('All sessions')]].concat([...codes].sort((a, b) => (a === 'all') - (b === 'all') || a.localeCompare(b)).map((c) => [c, '@' + c]));
+    if (sel.dataset.opts !== JSON.stringify(opts)) {
+      sel.dataset.opts = JSON.stringify(opts); sel.textContent = '';
+      for (const [val, label] of opts) sel.append(h('option', { value: val, text: label }));
+    }
+    sel.value = H.to;
+    let items, more;
+    if (isLocal()) { items = H.items.filter((m) => !v.ids.has(str(m.id))); more = !!H.next; }
+    else {
+      const top = new Set(v.all.slice(0, MSG_RECENT).map((m) => str(m.id)));
+      const pool = v.all.filter((m) => !v.ids.has(str(m.id)) && !top.has(str(m.id)) && histMatch(m, H.to, lc(H.q).trim()));
+      items = pool.slice(0, H.count); more = pool.length > H.count;
+    }
+    const st = $('#msg-hist-status');
+    st.textContent = H.err ? tr('Could not load the history: {why}', { why: H.err })
+      : H.loading && !items.length ? tr('Loading…')
+      : !items.length ? tr(H.to || H.q.trim() ? 'No older threads match.' : 'No older threads.')
+      : tr('Showing {n} older threads.', { n: items.length });
+    reconcile($('#msg-hist-list'), items, (m) => m.id, (m) => JSON.stringify(m) + JSON.stringify(threadReplies(str(m.id))) + (S.me || ''), buildThread);
+    for (const m of items) S.msgVisible.add(str(m.id));
+    const mb = $('#msg-hist-more');
+    mb.hidden = !more; mb.disabled = H.loading;
+  }
+  // board-serve: one page of older threads, after the 5th latest (the recent ones are above).
+  function histFetch(more) {
+    const H = S.hist, v = msgViews(), seq = ++H.seq;
+    const qs = new URLSearchParams();
+    const before = more ? H.next : v.boundary ? Math.floor(activityOf(v.boundary)) + '.' + str(v.boundary.id) : null;
+    if (before) qs.set('before', before);
+    qs.set('limit', String(MSG_PAGE));
+    if (H.to) qs.set('to', H.to);
+    if (H.q.trim()) qs.set('q', H.q.trim().slice(0, 200));
+    if (!more) { H.items = []; H.replies = new Map(); H.next = null; }
+    H.loading = true; H.err = null; renderMessages();
+    adapter.messageHistory(qs.toString()).then((j) => {
+      if (seq !== H.seq) return;
+      const seen = new Set(H.items.map((m) => str(m.id)));
+      for (const m of Array.isArray(j.messages) ? j.messages : []) if (m && typeof m === 'object' && !seen.has(str(m.id))) { H.items.push(m); seen.add(str(m.id)); }
+      if (j.replies && typeof j.replies === 'object') for (const [k, x] of Object.entries(j.replies)) if (Array.isArray(x)) H.replies.set(k, x.filter((r) => r && typeof r === 'object'));
+      H.next = typeof j.next === 'string' ? j.next : null;
+      H.loading = false; renderMessages();
+    }, (e) => {
+      if (seq !== H.seq) return;
+      H.loading = false; H.err = str(e && (e.code || e.message)) || 'error'; renderMessages();
+    });
+  }
+  function histReload() { if (isLocal()) histFetch(false); else { S.hist.count = MSG_PAGE; renderMessages(); } }
+  $('#msg-hist-btn').addEventListener('click', () => {
+    const H = S.hist;
+    H.open = !H.open;
+    if (H.open) histReload(); else renderMessages();
+  });
+  $('#msg-hist-to').addEventListener('change', (e) => { S.hist.to = e.target.value; histReload(); });
+  $('#msg-hist-q').addEventListener('input', (e) => {
+    S.hist.q = e.target.value;
+    clearTimeout(S.hist.timer);
+    S.hist.timer = setTimeout(histReload, isLocal() ? 250 : 0);
+  });
+  $('#msg-hist-more').addEventListener('click', () => { if (isLocal()) histFetch(true); else { S.hist.count += MSG_PAGE; renderMessages(); } });
 
   /* ----------------------------------------------------------- consensus */
   const CONS_LABEL = { pending: 'pending', agreed: 'agreed', objected: 'objected · parked for the owner', owner_back: 'back to the owner' };
@@ -4639,6 +4854,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     // Wait for that feed (and, for a decision, for the viewer's rights: the answer controls).
     if (!S.demo && !(S.mode === 'live' && S.got[k.feed] && (k.feed !== 'decisions' || S.userReady))) return;
     linked = null;
+    if (k.feed === 'messages' && S.messages.some((m) => str(m.id) === id)) { S.msgShow.add(id); renderMessages(); }
     try {
       const u = new URL(location.href);
       for (const x of LINKS) u.searchParams.delete(x.param);
@@ -4960,7 +5176,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
         S.decisions = docs(snap);
         S.got.decisions = true; maybeLoaded(snap); renderHeader(); renderDecisions(); renderTasks(); openLinked();
       }, feedFailed('decisions'));
-      db.collection('messages').orderBy('created_at', 'desc').limit(MAX_THREADS).onSnapshot((snap) => {
+      db.collection('messages').orderBy('created_at', 'desc').limit(MSG_DB_LIMIT).onSnapshot((snap) => {
         S.messages = docs(snap); S.got.messages = true;
         syncReplySubs(); renderHeader(); renderMessages(); openLinked();
       }, feedFailed('messages'));
@@ -4993,14 +5209,18 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       feedFailed('the board')(e);
     }
   }
+  // Replies of the newest MSG_WINDOW threads (as board-serve's window) and of every thread shown
+  // (recent, pinned, History): the latest 50 of each, oldest first, as board-serve serves them.
   function syncReplySubs() {
-    const want = new Set(S.messages.slice(0, MAX_THREADS).map((m) => m.id));
+    if (!db) return;
+    const want = new Set(S.messages.slice(0, MSG_WINDOW).map((m) => str(m.id)));
+    for (const id of S.msgVisible) want.add(id);
     for (const [id, un] of replySubs) if (!want.has(id)) { un(); replySubs.delete(id); S.replies.delete(id); }
     for (const id of want) {
       if (replySubs.has(id)) continue;
       try {
-        const un = db.collection('messages/' + id + '/replies').orderBy('created_at').limit(50).onSnapshot((snap) => {
-          S.replies.set(id, docs(snap)); renderMessages();
+        const un = db.collection('messages/' + id + '/replies').orderBy('created_at', 'desc').limit(50).onSnapshot((snap) => {
+          S.replies.set(id, docs(snap).reverse()); renderMessages();
         }, () => { replySubs.delete(id); });
         replySubs.set(id, un);
       } catch (e) { /* malformed id: skip its replies */ }
@@ -5063,6 +5283,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       if (S.demo || !st || typeof st !== 'object') return;
       S.sessions = arr(st.sessions).map((s) => Object.assign({}, s, { code: str(s.code) })).filter((s) => s.code);
       S.decisions = arr(st.decisions); S.messages = arr(st.messages); S.tasks = arr(st.tasks); S.approvals = arr(st.approvals);
+      S.messagesOlder = Number.isFinite(st.messages_older) && st.messages_older > 0 ? Math.floor(st.messages_older) : 0;
       S.operator = st.operator && typeof st.operator === 'object' ? st.operator : null;
       S.ledger = st.ledger && typeof st.ledger === 'object' ? st.ledger : null;
       S.away = st.owner_away && typeof st.owner_away === 'object' ? st.owner_away : null;
@@ -5152,6 +5373,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
           // A duration, not a time: board-serve applies it to its own clock.
           body: JSON.stringify({ visible, idle_ms: Math.max(0, Date.now() - interactionAt) }) });
       },
+      // Older threads for the Messages History view (same viewer filter as the state).
+      messageHistory(qs) { return call('/api/messages?' + qs, { headers: { 'X-Board': '1' } }); },
       fastPath() { return null; },
     };
   }
@@ -5425,6 +5648,20 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       { id: 'm-1-demo', to: 'DOCS', body: 'Add a section on the new config flags to the upgrade guide.', by: 'u_demo_editor', created_at: now - 40 * min, status: 'replied', relayed_to: ['DOCS'], relayed_at: now - 39 * min },
     ];
     S.replies = new Map([['m-1-demo', [{ id: 'r1', from: 'DOCS', body: 'Added under "Configuration changes", with a table of old and new flag names.', created_at: now - 31 * min }]]]);
+    // Older threads, so the History view has something to page through.
+    const OLD = [['API', 'Bump the client library and check the retry settings.'], ['WEB', 'The settings page needs the new empty state.'],
+      ['QA', 'Run the flaky suite three times and post the failures.'], ['OPS', 'Rotate the staging certificates before Friday.'],
+      ['DATA', 'Check the nightly export row counts against yesterday.'], ['DOCS', 'Link the migration notes from the README.'],
+      ['all', 'Reminder: no merges to main during the release freeze.'], ['API', 'Add cursor pagination to the list endpoint.'],
+      ['WEB', 'Split the bundle so the settings page loads faster.'], ['QA', 'Add a smoke test for the login redirect.'],
+      ['OPS', 'Archive the old staging logs.'], ['DATA', 'Backfill the missing day in the usage table.']];
+    OLD.forEach(([to, body], i) => S.messages.push({ id: 'm-' + (90 + i) + '-old', to, body, by: i % 2 ? 'u_demo_editor' : 'u_demo_you',
+      created_at: now - (2 + i) * 60 * min, status: i % 3 ? 'relayed' : 'replied', relayed_to: to === 'all' ? ['API', 'WEB'] : [to], relayed_at: now - (2 + i) * 60 * min + min }));
+    S.messages[3].body = 'Plan for the release week, so nothing collides:\n1. Monday: freeze main, cut the release branch.\n2. Tuesday: full regression on staging, fix only blockers.\n'
+      + '3. Wednesday: canary at 5%, watch error rates and latency for two hours.\n4. Thursday: 50%, then 100% if the dashboards stay green.\n5. Friday: retro, unfreeze main.\n'
+      + 'Ping me before any change to the deploy scripts.';
+    S.replies.set('m-90-old', [['API', 'Bumped to the new minor version.'], ['API', 'Retries were set to 10; lowered to 3 with backoff.'],
+      ['API', 'Tests pass locally.'], ['API', 'CI is green too.'], ['API', 'Opened the PR for review.']].map(([from, body], i) => ({ id: 'r' + i, from, body, created_at: now - 110 * min + i * 4 * min })));
     S.rc = { all: null, sessions: { DOCS: 'on' } };
     S.notify = { mutes: { slack: { until: now + 135 * min, by: 'board:you', include_urgent: false } },
       min_level: { all: { level: 'info', source: 'default' }, email: { level: 'urgent', source: 'prefs' } },
@@ -5955,6 +6192,23 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "Swap used": "已用 swap",
       "idle teammates": "閒置的 teammate",
       "Relayed to {who}": "已轉達給 {who}",
+      "History ({n} older)": "歷史（{n} 則較舊）",
+      "Sent to": "傳給",
+      "All sessions": "所有 session",
+      "Search older threads": "搜尋較舊的對話",
+      "Load more": "載入更多",
+      "Show more": "顯示更多",
+      "Show less": "收起",
+      "Show {n} earlier replies": "顯示較早的 {n} 則回覆",
+      "Hide earlier replies": "隱藏較早的回覆",
+      "New reply": "新回覆",
+      "Mark read": "標為已讀",
+      "Mark all read": "全部標為已讀",
+      "{n} threads have new replies.": "{n} 則對話有新回覆。",
+      "No older threads.": "沒有較舊的對話。",
+      "No older threads match.": "沒有符合的較舊對話。",
+      "Showing {n} older threads.": "顯示 {n} 則較舊的對話。",
+      "Could not load the history: {why}": "無法載入歷史：{why}",
       "Held by the secret guard, not relayed.": "已被機密防護攔下，未轉送。",
       "It looks like a request for a secret value": "看起來是在要機密的值",
       "secret request: asks to reveal a secret value": "要機密：要求透露機密的值",
