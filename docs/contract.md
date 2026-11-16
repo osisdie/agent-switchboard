@@ -1202,7 +1202,8 @@ bucket (none while nothing runs):
   oldest/today; `aria-selected` and a tinted, underlined bar mark the pick). Today is picked by
   default and uses this view. Picking a past day shows its total, its champion and its sessions
   (same rows, teammates folded) below the chart, from the endpoint below, fetched only then and
-  cached while the panel is open (a loading line, an error with "Try again"). The demo makes a
+  cached while the panel is open (a loading line, an error with "Try again"); the fetch waits
+  150 ms, so holding an arrow key fetches only the day it stops on. The demo makes a
   day's breakdown up from its totals (the same every time); the Artifact keeps the days pickable
   for their totals and says "Daily totals only on this board". Nothing polls.
 
@@ -1222,7 +1223,10 @@ Numbers, codes and teammate names only (scrubbed like the state), no clock. `ses
 streams with a 🍅 or focus that day, at most 50 teammates per session (the most 🍅, then focus) and
 the rest folded into `CODE/+others` (`streams`, `active`), so every sum over the rows equals
 `fleet`. `tz` is the setting only when it names a real zone (else `""`). A malformed or impossible
-date → 400; a day before the 14 kept or after today, or no file → 404.
+date → 400; a day before the 14 kept or after today, or no file → 404. Around local midnight the
+page's view and the endpoint can disagree on which day is today until the next state frame: the
+oldest bar may then get a 404 (the page shows its error state), and today's rows always come from
+the view.
 
 **Artifact:** the operator may mirror `board pomodoro --mirror` to
 `meta/pomodoro` (`today, tz, focus_ms, mode, fleet, sessions: {stream: {done, focus_ms}}, days,

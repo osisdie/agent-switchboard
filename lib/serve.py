@@ -43,13 +43,13 @@ listeners (docs/contract.md, "Local adapter API"):
   POST /api/rc                         {"code": "CODE"|"all", "state": "on"|"off"}  (the same for
                                        Remote Control, also for all sessions)
   GET  /api/lessons[?q=TEXT]           the scheduler's lessons (also in /api/state), searchable
-  GET  /api/pomodoro/day?d=YYYY-MM-DD one kept day's per-stream pomodoro breakdown (read-only,
-                                       on demand; the pushed view has daily totals only)
   POST /api/lessons                    {"title", "rule"?, "cause"?, "resolution"?}  (approvers only;
                                        via `board lesson add --by board:<identity> --file <0600 tmp>`)
   POST /api/lessons/<id>               {"action": "edit"|"activate"|"retire"|"delete", ...}  (approvers
                                        only; edit takes title/rule/cause/resolution; delete needs
                                        "confirm": "delete" and appends a tombstone; audited)
+  GET  /api/pomodoro/day?d=YYYY-MM-DD one kept day's per-stream pomodoro breakdown (read-only,
+                                       on demand; the pushed view has daily totals only)
 
 --check prints the resolved settings and exits. --watch serves nothing: it prints one line per
 item the local-mode operator must relay (see prompts/board-operator.md, "Local mode").

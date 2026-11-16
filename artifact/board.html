@@ -918,6 +918,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
   .pm-list li { grid-template-columns: minmax(0, 1fr) auto auto 3.2em; }
   .pm-list .pm-tom { display: none; }   /* the ×N says it; the name gets the room */
   .pm-hist { gap: 2px; height: 100px; }
+  #pomo .info-in { padding-inline: 12px; }   /* 14 day tabs at a 24 px pitch or more on a 390 px phone */
   .pm-day { font-size: 10px; }
 }
 </style>
@@ -3790,8 +3791,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       + '<path class="pr-leaf" d="M20 3c-2 2-5 3-7 3 2 1 4 2 5 4 1-2 1-4 2-7zm0 0c2 2 5 3 7 3-2 1-4 2-5 4-1-2-1-4-2-7z"/>';
     return svg;
   }
-  function pomoLabel(code, done, cur, team) {
-    const parts = [tr('{n} 🍅 today', { n: done })];
+  function pomoLabel(code, done, cur, team, past) {
+    const parts = [past ? tr('{n} 🍅', { n: done }) : tr('{n} 🍅 today', { n: done })];   // past: a day picked in the chart
     if (cur && cur.clock && (cur.ms || cur.live)) parts.unshift(tr('Pomodoro {t} of {full}', { t: mmss(cur.ms), full: mmss(cur.full) }) + (cur.live ? '' : ' (' + tr('paused') + ')'));
     if (team && team.n) parts.push(tr('{k} teammates: {n} 🍅, {focus} focus', { k: team.n, n: team.done, focus: pomoDur(team.focus) }));
     return [code].concat(parts).join(' · ');
@@ -3966,6 +3967,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
   let pomoSel = null;
   const pomoDayCache = new Map();  // date -> { state: 'loading' | 'ok' | 'error', data }
   const POMO_DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+  const POMO_DAY_WAIT_MS = 150;    // the fetch (not the pick) waits this long: holding an arrow key fetches the day it stops on
   function pomoDayData(p, day) {
     if (S.demo) return { state: 'ok', data: pomoDemoDay(p, day) };
     if (!isLocal() || typeof adapter.pomodoroDay !== 'function') return { state: 'totals' };
@@ -3973,12 +3975,16 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     if (e) return e;
     e = { state: 'loading', data: null };
     pomoDayCache.set(day, e);
-    const req = POMO_DAY_RE.test(day) ? adapter.pomodoroDay(day) : Promise.reject(new Error('bad date'));
-    req.then((j) => {
-      if (!j || typeof j !== 'object' || !j.sessions || typeof j.sessions !== 'object' || !j.fleet) throw new Error('bad reply');
-      e.state = 'ok'; e.data = j;
-    }).catch(() => { e.state = 'error'; })
-      .then(() => { if (pomoDayCache.get(day) === e && $('#pomo').open) renderPomoPanel(); });
+    setTimeout(() => {
+      if (pomoDayCache.get(day) !== e) return;
+      if (pomoSel !== day || !$('#pomo').open) { pomoDayCache.delete(day); return; }   // passed over: fetched if picked again
+      const req = POMO_DAY_RE.test(day) ? adapter.pomodoroDay(day) : Promise.reject(new Error('bad date'));
+      req.then((j) => {
+        if (!j || typeof j !== 'object' || !j.sessions || typeof j.sessions !== 'object' || !j.fleet) throw new Error('bad reply');
+        e.state = 'ok'; e.data = j;
+      }).catch(() => { e.state = 'error'; })
+        .then(() => { if (pomoDayCache.get(day) === e && $('#pomo').open) renderPomoPanel(); });
+    }, POMO_DAY_WAIT_MS);
     return e;
   }
   // The demo's breakdown of a past day: its total split over the demo streams by weights hashed
@@ -4134,8 +4140,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       const done = tot ? tot.done : (r && num(r.done)) || 0, focus = tot ? tot.focus : r ? pomoFocus(p, r, now) : 0;
       const folded = pomoFolded(r);
       const name = folded ? tr('{n} more teammates', { n: num(r.streams) }) : label;
-      const aria = sub ? pomoLabel(folded ? name : tr('teammate {name}', { name: label }), done, cur)
-        : pomoLabel(label, done, cur) + (tot && tot.n ? ' · ' + tr('teammates included') : '');
+      const aria = sub ? pomoLabel(folded ? name : tr('teammate {name}', { name: label }), done, cur, null, past)
+        : pomoLabel(label, done, cur, null, past) + (tot && tot.n ? ' · ' + tr('teammates included') : '');
       return h('li', { class: sub ? 'pm-sub' : null, 'aria-label': aria },
         h('span', { class: 'pm-code', title: folded ? pomoParent(key) + ' · ' + name : pomoName(key), text: name }),
         h('span', { class: 'pm-tom', 'aria-hidden': 'true', text: done ? '🍅'.repeat(Math.min(done, 8)) + (done > 8 ? '+' : '') : '·' }),
@@ -6133,6 +6139,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "AI fleet: {n} 🍅 · {focus} focus. Press for the pomodoro tally.": "AI 團隊：{n} 🍅 · 專注 {focus}。按下查看番茄鐘統計。",
       "Pomodoros: no data yet. Press for the pomodoro tally.": "番茄鐘：還沒有資料。按下查看番茄鐘統計。",
       "{n} 🍅 today": "今日 {n} 🍅",
+      "{n} 🍅": "{n} 🍅",
       "🍅×{n} today": "今日 🍅×{n}",
       "teammates +{n} 🍅 · {focus}": "teammate +{n} 🍅 · {focus}",
       "{k} teammates: {n} 🍅, {focus} focus": "{k} 個 teammate：{n} 🍅，專注 {focus}",
