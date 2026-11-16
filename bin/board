@@ -91,6 +91,16 @@
 #   board message reply MSG_ID --from CODE "text"|-
 #                                              store a session's reply (secrets redacted)
 #   board message show MSG_ID [--json]         the relay text, or "held" (never relay it)
+#   board apikey create --name N --owner WHO --by WHO [--scopes a,b] [--expires 90d|DATE]
+#                       [--rate N] [--test] [--json]
+#   board apikey request --name N --by WHO [--scopes a,b] [--expires 90d|DATE] [--json]
+#   board apikey approve ID --by OWNER [--scopes a,b] [--expires D] | revoke ID --by WHO
+#   board apikey ls --by WHO [--all] [--json] | show ID --by WHO [--json]
+#   board apikey rotate ID --by OWNER [--grace 24h] [--json] | expire ID --expires D --by OWNER
+#   board apikey scopes ID --scopes a,b --by OWNER [--json]
+#                                              API keys (lib/apikeys.py): shown once, only a
+#                                              peppered hash kept; owners administer every key,
+#                                              approvers issue to listed people, anyone requests
 #   board guard scrub|scrub-json|screen|has-marker|secrets
 #                                              the secret guard (lib/guard.py) for scripts
 #   board doctor                               check dependencies and installation
@@ -2417,6 +2427,12 @@ case "$sub" in
   rc) cmd_rc "$@" ;;
   session) cmd_session "$@" ;;
   message) exec python3 "$REPO/lib/messages.py" "$@" ;;
+  # create/request/rotate/scopes print a new key once: never through `guarded` (it would redact it).
+  apikey)
+    case "${1:-}" in
+      ls|show) guarded python3 "$REPO/lib/apikeys.py" "$@" ;;
+      *) exec python3 "$REPO/lib/apikeys.py" "$@" ;;
+    esac ;;
   guard) [ $# -gt 0 ] || { python3 "$GUARD" --help; exit 2; }; exec python3 "$GUARD" "$@" ;;
   -h|--help|help) usage ;;
   "") usage; exit 2 ;;

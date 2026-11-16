@@ -563,8 +563,9 @@ The avatar at the top right of the board opens a small menu:
   time: headings, buttons, banners, cards, dialogs and messages. Data stays as it is: task titles,
   questions, answers and session names are never translated. The choice is kept in this browser
   and sets `<html lang>`.
-- **My API keys:** reserved for a later key backend. Until then the menu says "API keys are not
-  enabled on this board". The shape is in `docs/contract.md` ("Who am I").
+- **My API keys:** the key store and `board apikey` exist (see [API keys](#api-keys)), but the page
+  does not list keys yet: the menu says "API keys are not enabled on this board". The shape is in
+  `docs/contract.md` ("Who am I").
 - **Sign out** of Cloudflare Access (`/cdn-cgi/access/logout`), shown only through the tunnel.
 
 Escape closes the menu and puts focus back on the avatar button.
@@ -1236,6 +1237,37 @@ credentials, including someone who holds a stolen key. It defends in layers:
 `board guard scrub|screen|secrets` runs the same checks from a shell. `secrets` lists key names,
 never values.
 
+### API keys
+
+API keys are for scripts and services that will call the board's coming `/api/v1` (and its MCP
+server). `board apikey` manages them now; the routes and the key page come in later changes. The
+rules (details in `docs/contract.md`, "API keys"):
+
+- **A key belongs to a person** (`--owner`, an email or `local`). That is attribution, never
+  authority: no key answers a decision, presses a prompt, sets owner-away, votes, passes a
+  production gate or manages keys.
+- **Shown once.** `create` prints the key (`asb_live_<id>_<secret>`) once on stdout. The board
+  keeps only an HMAC of it, keyed with a pepper in its own 0600 file, so a copied `apikeys/` folder
+  is useless. Every key expires: 90 days by default, at most 365.
+- **Who may do what.** `owners` in `fleet.yaml` administer every key: issue, approve requests,
+  revoke, rotate with a grace window, set or extend the expiry, and change scopes (which revokes
+  and reissues). Approvers issue keys to themselves or to people listed in `fleet.yaml`. Anyone
+  else sees and revokes only their own keys, and can `request` one; it stays pending, and unusable,
+  until an owner approves it (the owner can narrow its scopes), and lapses after 14 days. Every
+  change and every refusal is audited, never the key.
+- **Leaks are caught.** gitleaks has a rule for the key shape (only `tests/fixtures/` is
+  allowlisted), and the secret guard and the hook redact `asb_live_…`/`asb_test_…` everywhere.
+
+```bash
+board apikey create --name "CI reader" --owner dev@example.com --scopes read:state,read:tasks \
+  --expires 30d --by owner@example.com          # prints the key once
+board apikey request --name "my script" --by dev@example.com
+board apikey approve <id> --by owner@example.com
+board apikey ls --by dev@example.com            # id, name, scopes, created, expires, last used, status
+board apikey rotate <id> --grace 24h --by owner@example.com
+board apikey revoke <id> --by dev@example.com
+```
+
 ## Secrets & sanitization
 
 Two checks run before anything leaves your machine. Details are in
@@ -1271,7 +1303,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 |---|---|
 | `docs/contract.md` | Binding data contract: local files, db collections, lifecycle stages & gates, relay formats, degraded mode |
 | `hooks/board-hook.sh` | Lifecycle hook: writes `state/<session_id>.json`, appends `events.jsonl`, always exits 0 |
-| `bin/board` | CLI: `ls`, `snapshot`, `ask`, `task new/stage/ls/show/set/dep/pr`, `decisions`, `answer`, `mark`, `resolve`, `limit`, `resources`, `pomodoro`, `schedule`, `press`, `notify`, `mute`, `unmute`, `notify-level`, `notify-presence`, `rc`, `session`, `away`, `consensus`, `message`, `guard`, `doctor`. Exit codes: 2 = usage (also `answer --option` mismatch), 3 = press refused, 4 = answer / vote refused, 5 = press partial (keys sent, Enter not pressed), 6 = refused by the secret guard, 7 = press refused (prompt off screen) |
+| `bin/board` | CLI: `ls`, `snapshot`, `ask`, `task new/stage/ls/show/set/dep/pr`, `decisions`, `answer`, `mark`, `resolve`, `limit`, `resources`, `pomodoro`, `schedule`, `press`, `notify`, `mute`, `unmute`, `notify-level`, `notify-presence`, `rc`, `session`, `away`, `consensus`, `message`, `apikey`, `guard`, `doctor`. Exit codes: 2 = usage (also `answer --option` mismatch), 3 = press refused, 4 = answer / vote refused, 5 = press partial (keys sent, Enter not pressed), 6 = refused by the secret guard, 7 = press refused (prompt off screen) |
 | `bin/board-collect` | Zero-token collector: snapshot, diff, runs `board-notify` each loop; `--baseline` on first install |
 | `bin/board-notify`, `lib/notify.py` | Alerting: `send`, `ack`, `tick`, `test`, `status`, `gate`. Adapters (slack, desktop, email, line, sns, webhook), levels, escalation, ack, quiet hours, dedupe |
 | `lib/prefs.py` | Notification controls: mutes, min levels, presence (`board mute`, `notify-level`, `notify-presence`) and the delivery rule `lib/notify.py` applies |
@@ -1292,14 +1324,15 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `.github/workflows/ci.yml` | CI: gitleaks, shellcheck, tests, readme-sync |
 | `.github/workflows/pages.yml` | Builds and deploys the static demo site to GitHub Pages (on push to main) |
 | `docs/assets/screenshots/` | Screenshots for the README and the Pages site (`scripts/screenshots.py`) |
-| `.gitleaks.toml` | gitleaks default rules plus a narrow allowlist for test fixtures |
+| `.gitleaks.toml` | gitleaks default rules, a rule for board API keys, and a narrow allowlist for test fixtures |
+| `lib/apikeys.py` | API keys: the store (peppered hashes, 0600), who may issue, approve, rotate and revoke them, and the check `/api/v1` will use (`board apikey`) |
 | `lib/away.py` | Reads owner-away mode and consensus items for the snapshot and `board-serve` |
 | `lib/guard.py`, `lib/messages.py` | Secret guardrails: the outbound scrubber and the inbound secret-request screen; board messages and replies through them (held, release, reply) |
 | `lib/cards.py` | Card extras for board-serve (`cards.json`): teammates and their tasks, the session meter, recent tool calls, the last message and prompt (approvers only), ahead/behind, time in state |
 | `lib/pomodoro.py` | Pomodoro timer and daily tallies (`pomodoro.json`) for the board and `board pomodoro` |
 | `lib/resources.py` | Resources sampler (memory, disks, OOM, per-session processes and teammates) for `resources.json`, the snapshot digest and `board resources` |
 | `docs/design/` | Design notes, e.g. `resources-and-scheduling.md` (resources, scheduler, lessons) |
-| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), the resources sampler (`test_resources.py`, fixture `/proc`), the secret guardrails (`test_guard.py`), the card extras (`test_cards.py`), Remote Control (`test_rc.py`, scripted tmux in `fake_tmux.py`), the pomodoro timer (`test_pomodoro.py`), and the optional headless checks of the page's alert links, notifications control, profile menu and theme, home-screen app, session cards, usage popover, header popovers, language toggle, Deck panel and pomodoro (`test_page_links.py`, `test_page_notify.py`, `test_page_profile.py`, `test_page_pwa.py`, `test_page_cards.py`, `test_page_guard.py` (held-message cards), `test_page_usage.py`, `test_page_header_tips.py`, `test_page_i18n.py`, `test_page_deck.py`, `test_page_rc.py` (Remote Control chip and switches), `test_page_pomodoro.py`, plus `test_site.py` for the screenshots and the Pages site: need python playwright, skip without it; not run in CI) |
+| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), the resources sampler (`test_resources.py`, fixture `/proc`), the secret guardrails (`test_guard.py`), API keys (`test_apikeys.py`), the card extras (`test_cards.py`), Remote Control (`test_rc.py`, scripted tmux in `fake_tmux.py`), the pomodoro timer (`test_pomodoro.py`), and the optional headless checks of the page's alert links, notifications control, profile menu and theme, home-screen app, session cards, usage popover, header popovers, language toggle, Deck panel and pomodoro (`test_page_links.py`, `test_page_notify.py`, `test_page_profile.py`, `test_page_pwa.py`, `test_page_cards.py`, `test_page_guard.py` (held-message cards), `test_page_usage.py`, `test_page_header_tips.py`, `test_page_i18n.py`, `test_page_deck.py`, `test_page_rc.py` (Remote Control chip and switches), `test_page_pomodoro.py`, plus `test_site.py` for the screenshots and the Pages site: need python playwright, skip without it; not run in CI) |
 | `CONTRIBUTING.md` | Dev setup, tests, and the rule for keeping `README.zh-TW.md` in sync |
 | `fleet.example.yaml`, `.env.example` | Example config |
 

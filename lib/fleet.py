@@ -25,6 +25,7 @@ DEFAULTS = {
     "resume_fallback_seconds": 15,
     "approvers": [],
     "release_managers": [],
+    "owners": [],
     "serve": {
         "enabled": False,
         "port": 39410,
