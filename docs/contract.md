@@ -815,7 +815,10 @@ relays `board message show <msgId>` (section "Relay message formats") and marks 
   current task is one shows the key as `task`, and a `kind: "ticket"` message keeps `ticket:
   {provider, key}` (its `body` never had the title). The code is `lib/tickets/viewer.py`
   (`tasks_for`, `ticket_text_for`). The operator mirrors tasks to the Artifact db from
-  `board task ls --json --viewer`, the same filter, never from the raw files.
+  `board task ls --json --viewer`, the same filter, never from the raw files. `/api/v1` applies it
+  to every API key (a key is never an approver or release manager): `/state`, `/events`,
+  `/sessions[/{code}]`, `/tasks`, `/tasks/{id}` (read from the file, then filtered) and
+  `/messages/{id}`.
 - **Release** (`POST /api/tickets/<ref>/release`, `board ticket release`): the active link becomes
   `released` (`released_by`, `released_at`, `release_msg_id`) and a `kind: "ticket"`, `event:
   "released"` message goes to the session (`--watch`: `ticket <KEY> released <msgId>`). No active
@@ -1006,7 +1009,9 @@ generated from it (a test checks that the two are equal). Writes, tickets and MC
 **Identity: a board API key, always.** `Authorization: Bearer asb_live_…` (see "API keys"). The
 local listener's `local` and a tunnel email never count on their own: without a key every route
 but `openapi.json` answers 401. A key is attribution only; the state it reads is the **viewer's**
-view (no private card text, no account, `writable: false`).
+view (no private card text, no account, `writable: false`, and no ticket text: owner decision Q3,
+see "Tickets": a task taken from a ticket has its key as its title on every route, `/tasks/{id}`
+and `/messages/{id}` included).
 
 | Route (GET; HEAD too, except events) | Scope | |
 |---|---|---|

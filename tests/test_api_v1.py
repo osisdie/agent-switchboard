@@ -524,6 +524,78 @@ class Local(Fresh):
         self.assertEqual(buf.count(b"event: state"), 1)
 
 
+class TicketText(Fresh):
+    """Owner decision Q3 on /api/v1: an API key is never an approver or release manager, so ticket
+    text (a take's task title, ticket.title/url, the session's task title, a ticket relay message's
+    ticket) never reaches it, through any route or the event stream."""
+
+    TITLE = J(["TKT-", "SENTINEL-", "9v2"]) + " tracker title"
+
+    def setUp(self):
+        super().setUp()
+        self.snap = os.path.join(HOME, "snapshot.json")
+        with open(self.snap, encoding="utf-8") as fh:
+            self.snap_doc = json.load(fh)
+        snap = json.loads(json.dumps(self.snap_doc))
+        for s_ in snap["sessions"]:
+            if s_["code"] == "WEB":
+                s_["task_id"] = "t-9"
+        wj(self.snap, snap)
+        wj(os.path.join(HOME, "tasks", "t-9.json"), {
+            "id": "t-9", "title": "WEB-9: " + self.TITLE, "owner": "WEB", "stage": "plan", "artifacts": {}, "gates": [],
+            "updated_at": NOW + 5, "ticket": {"provider": "tracker", "key": "WEB-9", "title_at_take": self.TITLE,
+                                              "url": "https://tracker.example.com/p/WEB-9"}})
+        wj(os.path.join(HOME, "messages", "m-9-t.json"), {
+            "id": "m-9-t", "kind": "ticket", "event": "taken", "to": "WEB", "by": BOSS, "status": "new", "task_id": "t-9",
+            "ticket": {"provider": "tracker", "key": "WEB-9", "title": self.TITLE, "url": "https://tracker.example.com/p/WEB-9"},
+            "body": "ticket WEB-9 taken for WEB (task t-9)", "created_at": NOW + 5})
+        time.sleep(1.5)     # the hub picks the files up
+
+    def tearDown(self):
+        wj(self.snap, self.snap_doc)
+        for f in (os.path.join(HOME, "tasks", "t-9.json"), os.path.join(HOME, "messages", "m-9-t.json")):
+            os.remove(f)
+        time.sleep(1.2)
+
+    def assertClean(self, text, where):
+        self.assertNotIn("SENTINEL", text, where)
+        self.assertNotIn("tracker.example.com/p/", text, where)
+
+    def test_no_ticket_text_to_a_key(self):
+        paths = {example_path(r) for r in ROUTES} | {"/api/v1/tasks/t-9", "/api/v1/messages/m-9-t", "/api/v1/sessions/WEB"}
+        for path in sorted(paths):
+            with self.subTest(path=path):
+                st, _, js = self.req(path, self.all)
+                self.assertEqual(st, 200, (path, js))
+                self.assertClean(json.dumps(js, ensure_ascii=False), path)
+        st, _, js = self.req("/api/v1/tasks/t-9", self.all)
+        self.assertEqual((js["title"], js["ticket"]), ("WEB-9", {"provider": "tracker", "key": "WEB-9"}))
+        st, _, js = self.req("/api/v1/sessions/WEB", self.all)
+        self.assertEqual(js["task"], "WEB-9")
+        st, _, js = self.req("/api/v1/messages/m-9-t", self.all)
+        self.assertEqual(js["ticket"], {"provider": "tracker", "key": "WEB-9"})
+        st, _, js = self.req("/api/v1/state", self.all)
+        self.assertIn("t-9", [t["id"] for t in js["tasks"]], "the ticket task is there, without its text")
+        # The event stream's first frame.
+        s_ = socket.create_connection(("127.0.0.1", PORT), timeout=10)
+        s_.sendall(("GET /api/v1/events HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nAuthorization: Bearer %s\r\n\r\n"
+                    % (PORT, self.all)).encode())
+        buf = b""
+        while b"event: state" not in buf or not buf.split(b"event: state", 1)[1].count(b"\n\n"):
+            c = s_.recv(65536)
+            if not c:
+                break
+            buf += c
+        s_.close()
+        frame = buf.decode("utf-8", "replace")
+        self.assertIn("event: state", frame)
+        self.assertIn("WEB-9", frame)
+        self.assertClean(frame, "/api/v1/events")
+        # Only the views are filtered: the file on disk keeps the text.
+        with open(os.path.join(HOME, "tasks", "t-9.json"), encoding="utf-8") as fh:
+            self.assertIn("SENTINEL", fh.read())
+
+
 class Unit(unittest.TestCase):
     def test_limiter_tables_are_pruned(self):
         serve_api.reset_limits()

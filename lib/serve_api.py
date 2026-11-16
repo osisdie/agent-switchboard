@@ -307,7 +307,9 @@ class Api:
             st = dict(h.server.hub.state or {})
         st["sessions"] = S.cards_for(st.get("sessions"), False)
         st.update({"mode": "api", "me": None, "writable": False, "can_message": False, "account": None})
-        return st
+        # Q3: an API key is never an approver or release manager, so no ticket text (task titles,
+        # sessions' task, ticket relay messages) reaches it: /state, /events, /sessions, /tasks.
+        return S.ticket_text_for(st, False)
 
     def state(self):
         return self.ok(self._st(kick=True))
@@ -355,7 +357,7 @@ class Api:
         t = self.S.read_json(os.path.join(self.h.server.home, "tasks", tid + ".json"))
         if not isinstance(t, dict) or t.get("id") != tid:
             raise ApiError(404, "not_found", "no such task")
-        return self.ok(self.S.guard.scrub_tree(t))
+        return self.ok(self.S.guard.scrub_tree(self.S.tasks_for([t], False)[0]))   # Q3: the file is read raw
 
     def schedule(self):
         return self.ok(self._st().get("scheduler") or {})
@@ -386,6 +388,8 @@ class Api:
                 r.setdefault("id", os.path.basename(f)[:-5])
                 replies.append(r)
         replies.sort(key=lambda r: S.as_int(r.get("created_at")))
+        if m.get("kind") == "ticket" and isinstance(m.get("ticket"), dict):     # Q3: no tracker title or url
+            m = dict(m, ticket={k: m["ticket"].get(k) for k in ("provider", "key")})
         return self.ok(S.guard.scrub_tree(dict(m, replies=replies[:50])))
 
     def events(self):
