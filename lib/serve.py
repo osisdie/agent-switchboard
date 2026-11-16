@@ -53,7 +53,7 @@ listeners (docs/contract.md, "Local adapter API"):
                                        (else 403 csrf), the same viewer filter as /api/state
   GET  /api/pomodoro/day?d=YYYY-MM-DD one kept day's per-stream pomodoro breakdown (read-only,
                                        on demand; the pushed view has daily totals only)
-  GET  /api/v1/...                     the public read-only API (lib/serve_api.py, routes in
+  GET  /api/v1/... (POST for writes)   the public API (lib/serve_api.py, routes in
                                        lib/api_spec.py, spec at /api/v1/openapi.json): a board API
                                        key (Authorization: Bearer asb_live_…) on either listener;
                                        on the tunnel also an allowed Access service token or email
@@ -674,7 +674,7 @@ HISTORY_MAX = 50
 # operator put in a file stays on disk). The page's own fields, plus the kind / asker / ticket
 # relay ones the contract documents (docs/contract.md "Messages"; ticket text is viewer-scoped).
 MESSAGE_KEYS = ("id", "to", "body", "by", "created_at", "status", "relayed_to", "relayed_at", "held_reason",
-                "held_at", "released_by", "released_at", "kind", "asker", "event", "ticket", "task_id")
+                "held_at", "released_by", "released_at", "kind", "asker", "event", "ticket", "task_id", "api", "via")
 REPLY_KEYS = ("id", "from", "body", "created_at", "redacted")
 CURSOR_RE = re.compile(r"([0-9]{1,16})\.(m-[0-9]+-[a-z0-9]+)")
 
@@ -1526,7 +1526,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not self.framed():       # also resets body_read: one handler serves a kept-alive connection
             return
         if serve_api.is_v1(self.path):
-            return serve_api.handle(self, _SELF)   # read-only: 405, the body drained
+            return serve_api.handle(self, _SELF)   # bearer key, not CSRF: its own checks
         if serve_api.is_mcp(self.path):
             return serve_api.handle_mcp(self, _SELF)
         try:
@@ -2285,7 +2285,12 @@ def actionable(home):
     for path in glob.glob(os.path.join(home, "decisions", "*.json")):
         d = read_json(path)
         # board-serve presses permission prompts and pane questions itself (relay "press").
-        if isinstance(d, dict) and d.get("status") == "answered" and d.get("kind") != "permission" \
+        if isinstance(d, dict) and d.get("status") == "answered" and d.get("kind") == serve_api.TAKE_KIND:
+            # an API take request: never relayed as a [BOARD decision]; the operator runs the take
+            # on approve (prompts/board-operator.md, "Take requests from the API")
+            out.append((as_int(d.get("answered_at")), "take %s answered" % d.get("id"),
+                        ("t", d.get("id"), d.get("answered_at"))))
+        elif isinstance(d, dict) and d.get("status") == "answered" and d.get("kind") != "permission" \
                 and not (d.get("source") == "pane" and d.get("relay") != "operator"):
             out.append((as_int(d.get("answered_at")), "decision %s answered" % d.get("id"),
                         ("d", d.get("id"), d.get("answered_at"))))

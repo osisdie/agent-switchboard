@@ -712,11 +712,15 @@ class EndToEnd(unittest.TestCase):
             "/api/tickets/([^/]+)", "/api/tickets/take", "/api/tickets/([^/]+)/(comment|transition|assign|release)", "/api/reminders", "/api/reminders/([^/]+)"})
         self.assertIn("if path in STATIC:", get_src)
         # /api/v1 goes to lib/serve_api.py, whose routes are the fixed table in lib/api_spec.py
-        # (tests/test_api_v1.py: the spec equals the router; every route is read-only).
+        # (tests/test_api_v1.py: the spec equals the router; writes only change tasks, messages and
+        # pending decisions, never answer one).
         for src_ in (get_src, post_src):
             self.assertIn("if serve_api.is_v1(self.path):\n            return serve_api.handle(self, _SELF)", src_)
         import api_spec
-        self.assertFalse([r for r in api_spec.ROUTES if not r["path"].startswith("/api/v1/") or r["method"] != "GET"])
+        self.assertFalse([r for r in api_spec.ROUTES if not r["path"].startswith("/api/v1/")
+                          or r["method"] not in ("GET", "POST")
+                          or (r["method"] == "POST" and r["scope"] not in ("tasks:write", "write:messages", "tickets:take"))])
+        self.assertFalse([r for r in api_spec.ROUTES if "answer" in r["path"] or "answer" in str(r["scope"])])
         api_src = slurp(os.path.join(REPO, "lib", "serve_api.py"))
         self.assertNotIn("os.environ", api_src)
         self.assertNotIn("os.environ", get_src + post_src)

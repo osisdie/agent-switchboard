@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """serve_api: board-serve's public API, /api/v1 (docs/contract.md "Public API (/api/v1)").
 
-Read-only routes from the table in lib/api_spec.py, authenticated by a board API key
-(lib/apikeys.py): `Authorization: Bearer asb_live_…`. A key is the only identity here: the local
-listener's `local` and a tunnel email never count on their own. A key never carries authority.
+Routes from the table in lib/api_spec.py, authenticated by a board API key (lib/apikeys.py):
+`Authorization: Bearer asb_live_…`. A key is the only identity here: the local listener's `local`
+and a tunnel email never count on their own. A key never carries authority: writes are task
+bookkeeping and messages (relayed as information), and a ticket take only creates a pending board
+decision for an approver.
 
 Order of checks, for every request (after board-serve's framing rules):
   0. a browser's cross-site request: `Sec-Fetch-Site: cross-site|same-site` (403 cross_site), then
      after the Host check an `Origin` that is not this listener's own (403 cross_site). API clients
      send neither, so a hostile page can't make the browser call the API at all;
-  1. method GET/HEAD (405), Host allowlist (421);
+  1. method: the route's own (GET routes take HEAD too), else 405; Host allowlist (421); a POST
+     must be Content-Type application/json (415, before the key);
   2. the listener: local = a direct loopback request (403 otherwise); tunnel = serve.api.remote
      not false (else 403 api_remote_disabled) and a verified Cloudflare Access JWT (401) that is
      either a service token whose common_name is in serve.tunnel.api_service_tokens or an email in
@@ -22,19 +25,23 @@ Order of checks, for every request (after board-serve's framing rules):
      wrong key is 401 invalid_key (403 key_wrong_env for a test key), audited, and counted per kid
      when it has one, else per source (429 past serve.api.auth_fail_per_min). Then the route's
      scope (403 insufficient_scope), the key's rate (rate_per_min, burst 20: 429 with Retry-After);
-  5. the handler. No response ever carries an Access-Control-* header (no CORS).
-Audited in events.jsonl as type "api": every refusal at step 4, and each (key, route) success at
-most once a minute. Never a key.
+  5. the handler; a POST body is at most 16 KiB (413) and must match the route's body schema
+     (400). Free text goes to the CLI only in a 0600 temp file under $BOARD_HOME.
+No response ever carries an Access-Control-* header (no CORS).
+Audited in events.jsonl as type "api": every refusal at step 4 (but a keyless request), every
+write (with its result and the ids it touched), and each (key, read route) success at most once a
+minute. Never a key.
 
 POST /mcp (handle_mcp) is the MCP server's HTTP transport (lib/mcp_tools.py): the same steps 0-4 for
 the key, then each tool call runs as its /api/v1 route here: grant() (scope, rate, audit with
-"mcp": true) and the route's own Api handler.
+"mcp": true) and the route's own Api handler (a write tool: the route's write handler).
 """
 import glob
 import json
 import math
 import os
 import re
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -45,6 +52,8 @@ import fleet
 
 BURST = 20
 AUTH_FAIL_PER_MIN = 10
+TAKE_KIND = "ticket_take_request"   # a decision only an approver answers; never relayed to a session
+MAX_PENDING_TAKES = 3               # per key
 MAX_API_SSE = 8      # per listener, apart from the page's own streams (serve.MAX_SSE)
 AUDIT_EVERY_S = 60
 ROUTES = [dict(r, rx=api_spec.compile_path(r["path"])) for r in api_spec.ROUTES]
@@ -132,20 +141,30 @@ def handle(h, S):
     via = "tunnel" if h.server.kind == "tunnel" else "local"
     try:
         _browser_checks(h, S)
-        if h.command not in ("GET", "HEAD"):
-            raise ApiError(405, "method_not_allowed", "the API is read-only", {"Allow": "GET, HEAD"})
+        if h.command not in ("GET", "HEAD", "POST"):
+            raise ApiError(405, "method_not_allowed", "", {"Allow": "GET, HEAD, POST"})
+        if h.command == "POST" and \
+                (h.headers.get("Content-Type") or "").split(";")[0].strip().lower() != "application/json":
+            raise ApiError(415, "json_only", "Content-Type must be application/json")
         cfg = fleet.load_fleet()
         st = api_settings(cfg)
         if not st["enabled"]:
             raise ApiError(404, "not_found", "the API is off (serve.api.enabled)")
         client = listener_check(h, S, cfg, st)
         split = urllib.parse.urlsplit(h.path)
-        route, params = match(split.path)
+        route, params = match(h.command, split.path)
         query = parse_query(route, split.query)
         rec = None
         if route["scope"] != "public":
             rec = authenticate(h, st, route, via, client)
-        return getattr(Api(h, S, rec, params, query, via), route["handler"])()
+        api = Api(h, S, rec, params, query, via, route)
+        if route["method"] == "GET":
+            return getattr(api, route["handler"])()
+        try:
+            return getattr(api, route["handler"])()
+        except ApiError as exc:
+            api.audit_write(exc.status, error=exc.error)
+            raise
     except ApiError as exc:
         if h.command == "POST" and not getattr(h, "body_read", False):
             h.drain_body()
@@ -187,12 +206,73 @@ def listener_check(h, S, cfg, st):
     raise ApiError(403, "not_allowed", "this Access identity may not use the API (serve.tunnel.api_service_tokens)")
 
 
-def match(path):
+def match(method, path):
+    want = "GET" if method == "HEAD" else method
+    allowed = []
     for r in ROUTES:
         m = r["rx"].fullmatch(path)
         if m:
-            return r, m.groupdict()
+            if r["method"] == want:
+                return r, m.groupdict()
+            allowed.append(r["method"])
+    if allowed:
+        allow = ", ".join(sorted(set(allowed) | ({"HEAD"} if "GET" in allowed else set())))
+        raise ApiError(405, "method_not_allowed", "this route takes %s" % allow, {"Allow": allow})
     raise ApiError(404, "not_found")
+
+
+def check_body(schema, v, where="body"):
+    """The subset of JSON Schema the route table uses; raises ApiError(400) with a short reason."""
+    def bad(msg):
+        raise ApiError(400, "bad_body", "%s: %s" % (where, msg))
+    if "anyOf" in schema:
+        for alt in schema["anyOf"]:
+            try:
+                return check_body(alt, v, where)
+            except ApiError:
+                pass
+        bad("not an accepted value")
+    if "const" in schema and v != schema["const"]:
+        bad("must be %s" % json.dumps(schema["const"]))
+    if "enum" in schema and v not in schema["enum"]:
+        bad("one of %s" % ", ".join(str(x) for x in schema["enum"]))
+    t = schema.get("type")
+    if t == "object":
+        if not isinstance(v, dict):
+            bad("an object")
+        for k in schema.get("required", []):
+            if k not in v:
+                bad("%s is required" % k)
+        if len(v) > schema.get("maxProperties", 64) or len(v) < schema.get("minProperties", 0):
+            bad("%s fields" % ("too many" if len(v) > schema.get("maxProperties", 64) else "too few"))
+        props, extra = schema.get("properties", {}), schema.get("additionalProperties", True)
+        names = schema.get("propertyNames")
+        for k, x in v.items():
+            if names is not None:
+                check_body(names, k, where + " key")
+            if k in props:
+                check_body(props[k], x, "%s.%s" % (where, k))
+            elif extra is False:
+                bad("unknown field %s" % str(k)[:40])
+            elif isinstance(extra, dict):
+                check_body(extra, x, "%s.%s" % (where, str(k)[:40]))
+    elif t == "string":
+        if not isinstance(v, str):
+            bad("a string")
+        if not schema.get("minLength", 0) <= len(v) <= schema.get("maxLength", 10 ** 6):
+            bad("length %d to %d" % (schema.get("minLength", 0), schema.get("maxLength", 10 ** 6)))
+        pat = schema.get("pattern")
+        # an anchored pattern must match the whole value: in Python "$" also matches before a
+        # trailing newline, so ^...$ is checked with fullmatch
+        if pat and not (re.fullmatch(pat[1:-1], v) if pat.startswith("^") and pat.endswith("$") else re.search(pat, v)):
+            bad("does not match %s" % pat)
+    elif t == "integer":
+        if not isinstance(v, int) or isinstance(v, bool) or not schema.get("minimum", -2 ** 63) <= v \
+                <= schema.get("maximum", 2 ** 63):
+            bad("an integer from %s to %s" % (schema.get("minimum"), schema.get("maximum")))
+    elif t == "boolean" and not isinstance(v, bool):
+        bad("true or false")
+    return v
 
 
 def parse_query(route, raw):
@@ -310,6 +390,9 @@ def grant(h, rec, route, via, client, now, mcp=False):
     if not ok:
         raise ApiError(429, "rate_limited", "over %d requests a minute" % rate, {"Retry-After": str(wait)})
     apikeys.mark_used(rec["id"], h.server.home)
+    rec["_audit"] = who
+    if route.get("method", "GET") != "GET":
+        return                                       # writes: one audit row each, by the handler
     mark = (rec["id"], route["handler"], mcp)
     with _lock:
         last = _audited.get(mark)
@@ -369,7 +452,7 @@ class _McpBackend:
     def get(self, path):
         split = urllib.parse.urlsplit(path)
         try:
-            route, params = match(split.path)
+            route, params = match("GET", split.path)
             if route["method"] != "GET" or route["handler"] == "events":
                 raise ApiError(404, "not_found")
             query = parse_query(route, split.query)
@@ -382,6 +465,34 @@ class _McpBackend:
             if exc.headers.get("Retry-After"):
                 detail = "%s (retry after %s s)" % (detail, exc.headers["Retry-After"])
             return exc.status, {"error": exc.error, "detail": detail}
+
+
+def _mcp_post(self, path, body):
+    """A write tool: the /api/v1 POST route itself (match, scope, rate, the route's body schema and
+    handler, one audit row with "mcp": true), its body being the tool's arguments."""
+    split = urllib.parse.urlsplit(path)
+    try:
+        route, params = match("POST", split.path)
+        if split.query:
+            raise ApiError(400, "bad_request", "query: none accepted")
+        grant(self.h, self.rec, route, self.via, self.client, time.monotonic(), mcp=True)
+        cap = _Capture(self.h)
+        api = Api(cap, self.S, self.rec, params, {}, self.via, route)
+        api.given_body = body if isinstance(body, dict) else {}
+        try:
+            getattr(api, route["handler"])()
+        except ApiError as exc:
+            api.audit_write(exc.status, error=exc.error)
+            raise
+        return cap.out or (500, {"error": "internal"})
+    except ApiError as exc:
+        detail = exc.detail
+        if exc.headers.get("Retry-After"):
+            detail = "%s (retry after %s s)" % (detail, exc.headers["Retry-After"])
+        return exc.status, {"error": exc.error, "detail": detail}
+
+
+_McpBackend.post = _mcp_post
 
 
 def _read_mcp_body(h, S):
@@ -451,8 +562,10 @@ def handle_mcp(h, S):
 
 # ------------------------------------------------------------------ handlers
 class Api:
-    def __init__(self, h, S, rec, params, query, via):
+    def __init__(self, h, S, rec, params, query, via, route=None):
         self.h, self.S, self.rec, self.params, self.query, self.via = h, S, rec, params, query, via
+        self.route = route or {}
+        self.given_body = None
 
     def ok(self, obj):
         """Every read is masked: a key is never an owner, so other people's emails become role
@@ -610,3 +723,197 @@ class Api:
             with srv.sse_lock:
                 srv.api_sse_count -= 1
 
+    # ------------------------------------------------------------------ writes
+    def audit_write(self, result, **kw):
+        _audit(self.h, dict(self.rec["_audit"], action=self.route["handler"], result=result, **kw))
+
+    def body(self):
+        if self.given_body is not None:          # an MCP tool call: the JSON-RPC arguments, parsed
+            return check_body(self.route["body"], self.given_body)
+        try:
+            b = self.h.read_body()
+        except self.S.Refused as exc:
+            raise ApiError(exc.status, exc.error, exc.detail) from None
+        return check_body(self.route["body"], b)
+
+    def text(self, v, name):
+        """One line of free text from a key: tabs and newlines become spaces, other control or
+        invisible characters are refused, then the secret guard scrubs it and "[BOARD" is defanged,
+        so it never passes for a relay line."""
+        v = re.sub(r"[\r\n\t]+", " ", v).strip()
+        if not v or self.S.FREE_TEXT_STRIP_RE.search(v):
+            raise ApiError(400, "bad_body", "%s: printable text only" % name)
+        return self.S.messages.defang(self.S.guard.scrub(v))
+
+    def run(self, args, files=()):
+        """bin/board with these arguments (free text only in the 0600 temp files given as
+        (option, text) pairs), under the server's write lock. Returns stdout."""
+        home, paths, argv = self.h.server.home, [], list(args)
+        try:
+            for opt, txt in files:
+                fd, path = tempfile.mkstemp(prefix=".api.", dir=home)   # 0600
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write(txt)
+                paths.append(path)
+                argv += [opt, path]
+            with self.h.server.write_lock:
+                rc, out, err = self.h.board(*argv)
+        finally:
+            for path in paths:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+        self.h.hub_kick()
+        if rc == 8:
+            raise ApiError(409, "busy", "the task or store is busy; try again")
+        if rc != 0:
+            line = (err or out or "failed").strip().splitlines()[-1]
+            line = re.sub(r"^board(?: [a-z]+)?: ", "", line)
+            raise ApiError(400 if rc in (1, 2) else 500, "refused", self.S.guard.scrub(line)[:200])
+        return out
+
+    def known_session(self, code):
+        if not self.h.known_code(code):
+            raise ApiError(400, "unknown_session", "no session %s on this board" % code)
+
+    def the_task(self):
+        tid = self.params["task_id"]
+        t = self.S.read_json(os.path.join(self.h.server.home, "tasks", tid + ".json"))
+        if tid in (".", "..") or not isinstance(t, dict) or t.get("id") != tid:
+            raise ApiError(404, "not_found", "no such task")
+        return tid
+
+    def needs_person(self, stage):
+        if stage not in api_spec.API_STAGES:
+            raise ApiError(403, "needs_approver", "a key may not move a task to %s; that needs a person" % stage)
+
+    def task_new(self):
+        b = self.body()
+        self.known_session(b["owner"])
+        stage = b.get("stage", "plan")
+        self.needs_person(stage)
+        out = self.run(["task", "new", "--owner", b["owner"], "--stage", stage],
+                       [("--title-file", self.text(b["title"], "title"))])
+        tid = out.strip().splitlines()[-1]
+        self.audit_write(201, task_id=tid, stage=stage)
+        return self.h.send_json(201, {"id": tid, "stage": stage})
+
+    def task_stage(self):
+        tid, b = self.the_task(), self.body()
+        self.needs_person(b["stage"])
+        args = ["task", "stage", tid, b["stage"]]
+        for k, v in sorted((b.get("artifacts") or {}).items()):
+            if not re.fullmatch(r"[^\s\x00-\x1f\x7f]{1,200}", v) or apikeys.invisible(v) \
+                    or self.S.guard.changed(v)[1]:
+                raise ApiError(400, "bad_body", "artifacts.%s: a ref (no spaces, no secrets)" % k)
+            args += ["--artifact", "%s=%s" % (k, v)]
+        self.run(args)
+        self.audit_write(200, task_id=tid, stage=b["stage"])
+        return self.ok({"id": tid, "stage": b["stage"]})
+
+    def task_set(self):
+        tid, b = self.the_task(), self.body()
+        args = ["task", "set", tid]
+        for k in ("repo", "branch", "base", "size", "heavy", "priority"):
+            if k in b:
+                v = b[k]
+                args += ["--" + k, ("yes" if v else "no") if k == "heavy" else str(v)]
+        self.run(args)
+        self.audit_write(200, task_id=tid, fields=sorted(b))
+        return self.ok({"id": tid, "set": sorted(b)})
+
+    def task_progress(self):
+        tid = self.the_task()
+        self.body()
+        self.run(["task", "progress", tid])
+        self.audit_write(200, task_id=tid)
+        return self.ok({"id": tid, "progress": True})
+
+    def task_pr(self):
+        tid, b = self.the_task(), self.body()
+        args = ["task", "pr", tid, "--url", b["url"], "--state", b["state"]]
+        for k in ("head", "method"):
+            if k in b:
+                args += ["--" + k, b[k]]
+        if self.S.guard.changed(b["url"])[1]:
+            raise ApiError(400, "bad_body", "url: looks like it carries a secret")
+        self.run(args)
+        self.audit_write(200, task_id=tid, state=b["state"])
+        return self.ok({"id": tid, "pr": b["state"]})
+
+    def message_new(self):
+        b = self.body()
+        if b["to"] != "all":
+            self.known_session(b["to"])
+        if not b["body"].strip():
+            raise ApiError(400, "bad_body", "body: empty")
+        out = self.run(["message", "send", "--to", b["to"], "--api-key", self.rec["id"]], [("--file", b["body"])])
+        mid, status = (out.strip().splitlines()[-1].split() + ["", ""])[:2]
+        res = {"id": mid, "status": status}
+        if status == "held":
+            rec = self.S.messages.read(self.h.server.home, mid) or {}
+            res["reason"] = rec.get("held_reason")
+        self.audit_write(201, message_id=mid, to=b["to"], status=status)
+        return self.h.send_json(201, res)
+
+    def ticket_take(self):
+        """Never runs a take: it asks. A pending board decision of its own kind,
+        TAKE_KIND, from "api" (never from a session, so it is never relayed to one as a
+        [BOARD decision]), written with its `request` in one atomic write. Only an approver answers
+        it on the board; on approve the operator runs the take itself (`board ticket take ... --by
+        <answered_by>`), which produces the verified [BOARD ticket] relay. A key can never answer it."""
+        # the path segment is decoded once (a "#" arrives as %23), then routed: T1's KEY_RE fullmatch
+        S, raw_ref, b = self.S, urllib.parse.unquote(self.params["ref"]), self.body()
+        code = b["session"]
+        self.known_session(code)
+        # the ref must name a configured tracker's ticket (T1 routing): unknown -> 400, ambiguous -> 409;
+        # stored as provider:KEY, the form `board ticket take` takes
+        try:
+            prov, key = S.tickets.load().route(raw_ref)
+        except S.tickets.TicketError as exc:
+            raise ApiError(exc.status, exc.code, exc.detail + (
+                " (one of %s)" % ", ".join(exc.candidates) if exc.candidates else "")) from None
+        ref = "%s:%s" % (prov.name, key)
+        note = self.text(b["note"], "note") if b.get("note", "").strip() else ""
+        home, kid = self.h.server.home, self.rec["id"]
+        mine = 0
+        for path in glob.glob(os.path.join(home, "decisions", "*.json")):
+            d = S.read_json(path)
+            req = d.get("request") if isinstance(d, dict) else None
+            if not isinstance(req, dict) or d.get("kind") != TAKE_KIND or d.get("status") != "pending":
+                continue
+            if req.get("ref") == ref:
+                raise ApiError(409, "already_requested", "a take of %s is already pending: %s" % (ref, d.get("id")))
+            mine += req.get("key_id") == kid
+        if mine >= MAX_PENDING_TAKES:
+            raise ApiError(429, "too_many_requests", "this key has %d take requests waiting for an approver" % mine)
+        name = S.messages.defang(S.guard.scrub(str(self.rec.get("name") or "")))
+        owner = str(self.rec.get("owner") or "")
+        now = S.now_ms()
+        did = "d-%d-%s" % (now // 1000, os.urandom(4).hex())
+        dec = S.guard.scrub_tree({
+            "id": did, "kind": TAKE_KIND, "from": "api",
+            "question": "Start ticket %s in %s?" % (ref, code), "options": ["approve", "decline"],
+            "context": ('Requested through the API by key "%s" (%s).%s Approving runs the take for %s; '
+                        'an API key cannot answer this.' % (name, owner, (" Note: " + note) if note else "", code)),
+            "status": "pending", "answer": None, "answered_by": None, "answered_at": None, "relayed_at": None,
+            "created_at": now,
+            "request": {"kind": "ticket_take", "ref": ref, "session": code, "via": "api", "key_id": kid,
+                        "key_name": name, "owner": owner, "at": now}})
+        path = os.path.join(home, "decisions", did + ".json")
+        with self.h.server.write_lock:
+            os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+            tmp = "%s.tmp.%d" % (path, os.getpid())
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(dec, fh, ensure_ascii=False, indent=1)
+                fh.write("\n")
+            if os.path.exists(path):          # a 1-in-4-billion clash within a second: never overwrite
+                os.unlink(tmp)
+                raise ApiError(409, "busy", "try again")
+            os.replace(tmp, path)
+            _audit(self.h, {"type": "ask", "id": did, "from": "api", "kind": TAKE_KIND})
+        self.h.hub_kick()
+        self.audit_write(202, decision_id=did, ref=ref, session=code)
+        return self.h.send_json(202, {"decision_id": did, "status": "pending"})

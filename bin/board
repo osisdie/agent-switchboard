@@ -22,7 +22,7 @@
 #                                              close a board ask that was answered in the pane
 #                                              (status answered_in_pane): the asking session
 #                                              itself, or an approver
-#   board task new --owner CODE "title" [--stage S] [--ticket TRACKER:KEY [--ticket-url URL]]
+#   board task new --owner CODE "title"|--title-file PATH [--stage S] [--ticket TRACKER:KEY [--ticket-url URL]]
 #                                              create a task, print its id
 #   board task stage ID STAGE [--artifact key=ref]... move a task to a stage
 #   board task ls [--json] | board task show ID
@@ -325,7 +325,7 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
         echo "  board task pr ID --url URL --state open|merged|closed [--head SHA] [--method squash|merge|rebase]"
         echo "  board task done|pause|resume|drop|block|progress ID"
         echo "  stages: $STAGES; artifact keys: $ARTIFACT_KEYS" ;;
-    "task new") echo "usage: board task new --owner CODE \"title\" [--stage S] [--ticket TRACKER:KEY [--ticket-url URL]]   (prints the task id)"
+    "task new") echo "usage: board task new --owner CODE \"title\"|--title-file PATH [--stage S] [--ticket TRACKER:KEY [--ticket-url URL]]   (prints the task id)"
         echo "  --ticket links the task to a tracker ticket (board ticket take sets it)" ;;
     "task stage") echo "usage: board task stage ID STAGE [--artifact key=ref]..."
         echo "  stages: $STAGES; artifact keys: $ARTIFACT_KEYS" ;;
@@ -1117,6 +1117,8 @@ task_new() {
       --stage) shift; stage="${1:-}" ;;
       --ticket) shift; ticket="${1:-}" ;;
       --ticket-url) shift; ticket_url="${1:-}" ;;
+      --title-file) shift; [ -z "$title" ] || die "task new: only one title"
+                    title="$(from_file --title-file "${1:-}")" || exit 1 ;;
       -*) die "task new: unknown option $1" ;;
       *) [ -z "$title" ] || die "task new: only one title"; title="$1" ;;
     esac

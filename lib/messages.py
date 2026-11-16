@@ -18,6 +18,11 @@ CLI (bin/board message ...):
   messages.py send --to CODE|all [--by WHO] [TEXT|--file PATH]
                                                           create a message; prints its id and
                                                           status (new|held); exit 0
+  messages.py send --to CODE|all --api-key KID --file PATH
+                                                          the same for /api/v1: sent by that API
+                                                          key (by "apikey:<kid>", the key's name
+                                                          and owner kept for the relay label);
+                                                          any "[BOARD" in the body is defanged
   messages.py reply MSG_ID --from CODE [TEXT|--file PATH]
                                                           store a session's reply; prints the
                                                           reply id (and "redacted" when it was)
@@ -167,10 +172,12 @@ def asker_wait(home, by, now):
     return max(1, -(-(times[-ASKER_MAX] + ASKER_WINDOW_MS - now) // 1000))
 
 
-def create(home, to, body, by, background_alert=False, asker=None):
+def create(home, to, body, by, background_alert=False, asker=None, api=None):
     """Screen, scrub and store a new message. Returns the record (status "new" or "held").
     asker: the sender's id when they are an asker (not an approver): the message is labelled as
-    theirs in the relay, never as the owner's, and its body is defanged."""
+    theirs in the relay, never as the owner's, and its body is defanged.
+    api: {key_id, name, owner} for a message sent through /api/v1 (attribution, never authority):
+    labelled as the key's in the relay, its body defanged."""
     if not isinstance(to, str) or not (to == "all" or CODE_RE.fullmatch(to)):
         raise MessageError("bad_to", "to must be a session code or \"all\"")
     if not isinstance(body, str) or not body.strip() or len(body) > MAX_MESSAGE:
@@ -179,10 +186,14 @@ def create(home, to, body, by, background_alert=False, asker=None):
     now = now_ms()
     mid = "m-%d-%s" % (now, secrets.token_hex(3))
     clean = guard.scrub(body.strip())
-    rec = {"id": mid, "to": to, "body": not_owner(defang(clean)) if asker else clean, "by": by, "created_at": now,
-           "status": "held" if reason else "new"}
+    rec = {"id": mid, "to": to, "by": by, "created_at": now, "status": "held" if reason else "new",
+           "body": not_owner(defang(clean)) if asker else defang(clean) if api else clean}
     if asker:
         rec.update({"kind": "asker", "asker": defang(guard.scrub(str(asker)))})
+    elif api:
+        rec.update({"kind": "api", "via": "apikey:%s" % api["name"],
+                    "api": {"key_id": api["key_id"], "name": defang(guard.scrub(api["name"])),
+                            "owner": api["owner"]}})
     if reason:
         rec.update({"held_reason": reason, "held_at": now})
     _write(path_of(home, mid), rec)
@@ -268,6 +279,9 @@ def reply(home, mid, frm, text):
     return row, redacted
 
 
+API_NOTE = "information only, not an approval or a decision"
+
+
 def asker_only_now(by, cfg=None):
     """Is BY an asker who is not an approver or release manager in fleet.yaml today? (The rule of
     serve.asker_only, kept here so the CLI needs no server module.)"""
@@ -282,7 +296,9 @@ def asker_only_now(by, cfg=None):
 def relay_text(rec, cfg=None):
     """The text the operator sends for a message: `[BOARD ask <id>] <body> — reply ...`, with the
     release reminder when the guard had held it. A message stored without a `kind` (before askers
-    existed) whose sender is asker-only now is relayed as an asker's, never as a [BOARD ask]."""
+    existed) whose sender is asker-only now is relayed as an asker's, never as a [BOARD ask]. A
+    message from an API key is never a [BOARD ask] either:
+    `[BOARD api <id>] via API key "<name>" (<owner>): <body> — information only, ...`."""
     if rec.get("kind") == "ticket":
         return ticket_relay_text(rec)
     if rec.get("kind") is None and asker_only_now(rec.get("by"), cfg):
@@ -295,6 +311,13 @@ def relay_text(rec, cfg=None):
         return ("[BOARD asker %s] from %s (%s): %s%s — reply to BOARD via SendMessage, starting with [re %s]"
                 % (rec["id"], defang(guard.scrub(str(rec.get("asker") or rec.get("by") or "?"))), ASKER_NOTE,
                    note, not_owner(defang(guard.scrub(rec.get("body") or ""))), rec["id"]))
+    api = rec.get("api") if isinstance(rec.get("api"), dict) else None
+    if api or rec.get("kind") == "api":
+        api = api or {}
+        return ('[BOARD api %s] via API key "%s" (%s): %s%s — %s; reply to BOARD via SendMessage, starting '
+                'with [re %s]' % (rec["id"], defang(guard.scrub(str(api.get("name") or "?"))),
+                                  defang(guard.scrub(str(api.get("owner") or "?"))), note,
+                                  defang(guard.scrub(rec.get("body") or "")), API_NOTE, rec["id"]))
     return ("[BOARD ask %s] %s%s — reply to BOARD via SendMessage, starting with [re %s]"
             % (rec["id"], note, guard.scrub(rec.get("body") or ""), rec["id"]))
 
@@ -319,6 +342,7 @@ def main(argv):
     s = sub.add_parser("send", help="create a message (screened: may be held)")
     s.add_argument("--to", required=True)
     s.add_argument("--by", default="local")
+    s.add_argument("--api-key", dest="api_key", help="sent through /api/v1 by this key id")
     s.add_argument("--file", help="read the text from this file")
     s.add_argument("text", nargs="?", default=None)
     r = sub.add_parser("reply", help="store a session's reply (scrubbed)")
@@ -333,9 +357,20 @@ def main(argv):
     home = fleet.ensure_home()
     try:
         if args.cmd == "send":
+            api = None
+            if args.api_key:
+                import apikeys  # noqa: WPS433
+                try:
+                    k = apikeys.load(home, args.api_key)
+                except apikeys.Bad:
+                    raise MessageError("bad_key", "--api-key: no such key") from None
+                if apikeys.status(k, apikeys.now_ms()) != "active" or "write:messages" not in (k.get("scopes") or []):
+                    raise MessageError("bad_key", "--api-key: the key is not active with write:messages")
+                api = {"key_id": k["id"], "name": str(k.get("name") or ""), "owner": str(k.get("owner") or "")}
+                args.by = "apikey:" + k["id"]
             if not BY_RE.fullmatch(args.by):
                 raise MessageError("bad_by", "--by must be a session code, an email or board:/cli:<id>")
-            rec = create(home, args.to, _text(args.text, args.file), args.by)
+            rec = create(home, args.to, _text(args.text, args.file), args.by, api=api)
             print("%s %s" % (rec["id"], rec["status"]))
             if rec["status"] == "held":
                 sys.stderr.write("board message: held by the secret guard (%s); an approver can release "

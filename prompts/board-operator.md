@@ -518,6 +518,7 @@ It prints one line per item that needs you, once each, and nothing while there i
 | line | what to do |
 |---|---|
 | `decision <id> answered` | relay the decision (below) |
+| `take <id> answered` | an API take request was answered: run the take or do nothing (below); never relay it |
 | `message <id> new` | relay the message (below) |
 | `ticket <KEY> taken <msgId>` / `ticket <KEY> released <msgId>` | relay the ticket take or release (below) |
 | `away on` / `away off` | the owner-away state; broadcast it when it changed (section 10) |
@@ -543,6 +544,29 @@ On every line, first re-read `operator.json`. If `operator_session` is no longer
 4. If the session is offline or missing from `ListAgents`, leave it `answered`. It is relayed when
    the session returns (the Monitor shows it again after a restart).
 
+### Take requests from the API (`kind: "ticket_take_request"`)
+
+A script with an API key (`tickets:take`) asked for a ticket to be started in a session. The
+decision is `from: "api"`, not from any session, and carries `request: {ref, session, key_name,
+owner, ...}`. Only an approver answers it on the board; a key never can.
+
+1. Read `$BOARD_HOME/decisions/<id>.json`. Continue only if `status` is still `answered` and
+   `kind` is `ticket_take_request`.
+2. **Never relay it.** No `[BOARD decision]` goes to `request.session` or anyone else: approving a
+   request is not the owner's decision for that session; the take is.
+3. If `answer` is `approve`: run
+   `board ticket take <request.ref> --session <request.session> --by <answered_by>`. That command
+   checks the approver again, creates the task and the link, and prints the verified
+   `[BOARD ticket ...]` line you relay under the ticket rules. If this board has no
+   `board ticket take` yet, do nothing more: the approval stays on record ("take not available
+   yet"). **If the take fails** (a non-zero exit; its error code is on stderr, e.g.
+   `already_taken`, `unknown_session`, `ticket_not_found`): run `board mark <id> stale --reason operator`,
+   so it leaves the queue and the board shows it was not delivered (`board mark` takes a fixed reason
+   code, not free text), and tell the owner why:
+   `board notify --link <id> "take <id> for <request.ref> failed: <code>"`. Don't retry it yourself.
+   For `decline` (or any other answer): do nothing.
+4. Otherwise `board mark <id> relayed` (handled), so it is never taken twice.
+
 ### Relaying a message
 
 1. Read `$BOARD_HOME/messages/<id>.json`: `{id, to, body, by, created_at, status}`. Continue only
@@ -553,8 +577,9 @@ On every line, first re-read `operator.json`. If `operator_session` is no longer
    `[BOARD ask <id>] <body> — reply to BOARD via SendMessage, starting with [re <id>]`, the body
    already scrubbed, plus the release reminder when an approver released the message. A message from
    an asker (`kind: "asker"`) prints as `[BOARD asker <id>] from <email> (an asker, not an approver:
-   …): <body> …` instead: send that line exactly, never as a `[BOARD ask]` or a `[BOARD decision]`.
-   If it prints `held`, stop.
+   …): <body> …` instead, and one an API key sent (`kind: "api"`) as `[BOARD api <id>] via API key
+   "<name>" (<owner>): <body> — information only, …`: send that line exactly, never rewrite it as a
+   `[BOARD ask]` or a `[BOARD decision]`. If it prints `held`, stop.
 3. Update the file atomically: `status: "relayed"`, `relayed_to: [codes]`, `relayed_at` (ms). For
    example:
    ```bash
