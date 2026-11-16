@@ -525,7 +525,7 @@ tr.sub td { background: var(--code-bg); }
         : 'Request a key for yourself. You see it once, now; it starts working when an owner approves it (an owner may narrow its scopes). A request lapses after 14 days.';
     $('#k-submit').textContent = create ? 'Create key' : 'Request key';
     $('#k-owner-l').hidden = !create;
-    $('#k-owner-h').textContent = me.key_owner ? 'An email listed on this board, or local.' : 'Yourself, or the email of a person listed on this board.';
+    $('#k-owner-h').textContent = me.key_owner ? 'An email listed on this board, or local.' : 'Yourself, or the email of a person listed on this board. You do not see that list: ask an owner for the address.';
     if (create && !$('#k-owner').value) $('#k-owner').value = str(me.identity);
     const dl = $('#k-listed');
     dl.textContent = '';
@@ -554,6 +554,8 @@ tr.sub td { background: var(--code-bg); }
     }
   });
   $('#once-done').addEventListener('click', closeOnce);
+  // Leaving the page (or the back/forward cache keeping it) drops the key too.
+  window.addEventListener('pagehide', () => { $('#once-key').textContent = ''; $('#once').hidden = true; });
   $('#once').addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); closeOnce(); } });
   $('#keyform').addEventListener('submit', (e) => {
     e.preventDefault();

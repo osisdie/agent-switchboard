@@ -57,7 +57,12 @@ def get(h, S, path, ident, via):
     if path in PAGES:
         return page(h, S)
     if path == INFO:
-        return h.send_json(200, info(h, S, ident, via))
+        try:
+            out = info(h, S, ident, via)
+        except Exception as exc:  # noqa: BLE001 - answer with JSON, never drop the connection
+            S.log("GET %s failed: %r" % (INFO, exc))
+            return h.send_json(500, {"error": "internal"})
+        return h.send_json(200, out)
     return keys_list(h, S, ident, via)
 
 
@@ -127,13 +132,20 @@ def snippets(base, tunnel, board_mcp, protocol):
     cf = ['CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID', 'CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET'] \
         if tunnel else []
     hdrs = ['Authorization: Bearer $BOARD_API_KEY'] + cf
+    # curl reads the headers from a file (-H @file, curl 7.55+) that a bash function writes with the
+    # printf builtin: the key and the Access secret never appear in any process's argv
+    hfn = "hdrs() { printf '%s\\n' " + " ".join('"%s"' % x for x in hdrs) + "; }"
+    store = ("claude mcp add keeps the key in your own Claude Code config (~/.claude.json). Never add "
+             "--scope project: that writes it into .mcp.json, inside the repository.")
     out = []
     out.append({"id": "claude-code-http", "title": "Claude Code (HTTP)", "lang": "bash", "text": "\n".join(
         ["claude mcp add --transport http board %s/mcp \\" % base]
-        + ['  --header "%s"%s' % (x, " \\" if i < len(hdrs) - 1 else "") for i, x in enumerate(cf + hdrs[:1])])})
+        + ['  --header "%s"%s' % (x, " \\" if i < len(hdrs) - 1 else "") for i, x in enumerate(cf + hdrs[:1])]),
+        "note": store})
     if board_mcp:
         out.append({"id": "claude-code-stdio", "title": "Claude Code (stdio, on this machine)", "lang": "bash",
-                    "text": 'claude mcp add board -e BOARD_API_KEY="$BOARD_API_KEY" -- "%s"' % board_mcp})
+                    "text": 'claude mcp add board -e BOARD_API_KEY="$BOARD_API_KEY" -- "%s"' % board_mcp,
+                    "note": store})
     env = {"BOARD_API_URL": base, "BOARD_API_KEY": "<BOARD_API_KEY>"}
     if tunnel:
         env.update({"CF_ACCESS_CLIENT_ID": "<CF_ACCESS_CLIENT_ID>", "CF_ACCESS_CLIENT_SECRET": "<CF_ACCESS_CLIENT_SECRET>"})
@@ -142,28 +154,29 @@ def snippets(base, tunnel, board_mcp, protocol):
                 "text": json.dumps(desktop, indent=2),
                 "note": "Claude Desktop does not expand variables here: replace each <...> with your own value, "
                         "in your local config only."})
-    out.append({"id": "curl", "title": "curl", "lang": "bash", "text": "\n".join(
-        ["curl -s \\"] + ['  -H "%s" \\' % x for x in hdrs] + ['  "%s/api/v1/whoami"' % base])})
+    out.append({"id": "curl", "title": "curl (bash)", "lang": "bash", "text": "\n".join(
+        [hfn, 'curl -s -H @<(hdrs) "%s/api/v1/whoami"' % base])})
     init = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
         "protocolVersion": protocol, "capabilities": {}, "clientInfo": {"name": "curl", "version": "1"}}},
         separators=(",", ":"))
     lst = json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, separators=(",", ":"))
     call = json.dumps({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
                        "params": {"name": "list_sessions", "arguments": {}}}, separators=(",", ":"))
-    health = ["# Health check: needs bash, curl and jq. The key (and the Access secrets) come from your",
-              "# environment; the output is names and codes only.",
+    health = ["# Health check: needs bash, curl (7.55+) and jq. The key (and the Access secrets) come from",
+              "# your environment and reach curl through a file, never its command line; the output is",
+              "# names and codes only.",
               "B=%s" % base,
-              "H=(" + "\n   ".join('-H "%s"' % x for x in hdrs) + ")",
+              hfn,
               "J=(-H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream')",
               "# 1. whoami: the key's name and scopes",
-              "curl -s \"${H[@]}\" \"$B/api/v1/whoami\" | jq -c '{name, scopes, error}'",
+              "curl -s -H @<(hdrs) \"$B/api/v1/whoami\" | jq -c '{name, scopes, error}'",
               "# 2. MCP initialize",
-              "curl -s \"${H[@]}\" \"${J[@]}\" -d '%s' \"$B/mcp\" \\" % init,
+              "curl -s -H @<(hdrs) \"${J[@]}\" -d '%s' \"$B/mcp\" \\" % init,
               "  | jq -c '{server: .result.serverInfo.name, protocol: .result.protocolVersion, error}'",
               "# 3. tools/list: the tools this key's scopes allow",
-              "curl -s \"${H[@]}\" \"${J[@]}\" -d '%s' \"$B/mcp\" | jq -c '[.result.tools[]?.name]'" % lst,
+              "curl -s -H @<(hdrs) \"${J[@]}\" -d '%s' \"$B/mcp\" | jq -c '[.result.tools[]?.name]'" % lst,
               "# 4. one read tool (needs read:state)",
-              "curl -s \"${H[@]}\" \"${J[@]}\" -d '%s' \"$B/mcp\" \\" % call,
+              "curl -s -H @<(hdrs) \"${J[@]}\" -d '%s' \"$B/mcp\" \\" % call,
               "  | jq -c '{isError: .result.isError, sessions: [.result.structuredContent.sessions[]?.code], error}'"]
     out.append({"id": "health", "title": "Health check", "lang": "bash", "text": "\n".join(health)})
     return out
@@ -255,6 +268,10 @@ def _str(body, name, required=False, limit=200):
         return None
     if not isinstance(v, str) or not v.strip() or len(v) > limit:
         raise Bad("%s must be a string of 1 to %d characters" % (name, limit))
+    if v.strip().startswith("-"):
+        # it reaches the CLI as an option value; a leading "-" reads like an option (once as --help),
+        # and no name or identity needs one
+        raise Bad("%s must not start with -" % name)
     return v.strip()
 
 

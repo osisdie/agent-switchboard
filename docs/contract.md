@@ -1173,7 +1173,8 @@ atomically (a fresh 0600 temp file, then rename) under `apikeys.lock`:
 - A listed person is anyone in `owners`, `approvers`, `release_managers` or
   `serve.tunnel.allowed_emails`.
 - Someone else's key is "no such key" (exit 1) to a non-owner's `show` and `revoke`, exactly as an
-  unknown id: not even its existence.
+  unknown id: not even its existence. A non-owner's `approve` is refused (exit 4) before the id is
+  looked up, so it answers the same for a real id and an unknown one.
 - `approve` prints and audits the scopes it grants (and the requested ones when narrowed) and the
   request's age.
 - Names and identities refuse control characters and Unicode format or separator characters
@@ -1215,7 +1216,7 @@ cannot reach it).
   `bad_request`, 1 → 404 `not_found` ("no such key") or 409 `refused` (a key in the wrong state), 8 →
   409 `busy`; `detail` is the CLI's reason, scrubbed and masked. A body the routes do not accept
   (an unknown field or action, a scope that does not exist, an expiry that is not `Nd` or
-  `YYYY-MM-DD`) → 400 `bad_body`. Rotate, expire and scopes stay on the CLI.
+  `YYYY-MM-DD`, a name or owner that starts with `-`) → 400 `bad_body`. Rotate, expire and scopes stay on the CLI.
 - **The key is shown once.** `create` and `request` return it in that 201 response only
   (`no-store`); no later route returns it (`GET /api/apikeys`, `/api/me` and the rest show id,
   name, scopes, times and status). board-serve never logs, stores or audits it; the page shows it
@@ -1232,8 +1233,12 @@ cannot reach it).
 - **Snippets** carry this board's URL and only placeholders for secrets: `$BOARD_API_KEY`, and the
   Cloudflare Access headers (`$CF_ACCESS_CLIENT_ID`, `$CF_ACCESS_CLIENT_SECRET`) only when the page
   was reached through the tunnel. Claude Desktop's JSON config uses `<BOARD_API_KEY>`-style
-  placeholders, because it does not expand variables. The health check (whoami, MCP `initialize`,
-  `tools/list`, one read tool) prints names and codes only.
+  placeholders, because it does not expand variables. The curl and health-check snippets hand
+  curl its headers through a file (`-H @<(hdrs)`, a bash function using the `printf` builtin), so
+  the key and the Access secret never appear in a process's argv. The Claude Code snippets note
+  that `claude mcp add` keeps the key in the user's own config and must never use `--scope
+  project`. The health check (whoami, MCP `initialize`, `tools/list`, one read tool) prints names
+  and codes only.
 
 ## Public API (`/api/v1`)
 

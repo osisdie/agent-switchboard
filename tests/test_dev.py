@@ -318,13 +318,25 @@ class Info(Base):
             self.assertNotIn("CF_ACCESS", text, sid)
             self.assertNotIn("CF-Access", text, sid)
         self.assertIn("claude-code-stdio", lsn)
-        self.assertIn('\nH=(-H "Authorization: Bearer $BOARD_API_KEY")\n', lsn["health"])   # the key only
+        self.assertIn('''\nhdrs() { printf '%s\\n' "Authorization: Bearer $BOARD_API_KEY"; }\n''', lsn["health"])
         for snips in (tsn, lsn):
             for sid, text in snips.items():
                 self.assertNotRegex(text, apikeys.KEY_RE, sid)
                 self.assertTrue("$BOARD_API_KEY" in text or "<BOARD_API_KEY>" in text, sid)
         h = tsn["health"]
-        self.assertEqual(len(re.findall(r'-H "(Authorization|CF-Access-Client-Id|CF-Access-Client-Secret):', h)), 3)
+        self.assertIn('''hdrs() { printf '%s\\n' "Authorization: Bearer $BOARD_API_KEY" "CF-Access-Client-Id: '''
+                      '''$CF_ACCESS_CLIENT_ID" "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET"; }''', h)
+        # the secrets reach curl through a file (-H @<(hdrs)), never as an argument
+        for sid in ("curl", "health"):
+            for snips in (tsn, lsn):
+                for line in snips[sid].splitlines():
+                    if line.startswith("curl"):
+                        self.assertNotIn("$BOARD_API_KEY", line, sid)
+                        self.assertNotIn("$CF_ACCESS_CLIENT_SECRET", line, sid)
+                        self.assertIn("-H @<(hdrs)", line, sid)
+        notes = {s["id"]: s.get("note") or "" for s in loc["snippets"]}
+        for sid in ("claude-code-http", "claude-code-stdio"):
+            self.assertIn("Never add --scope project", notes[sid], sid)
         self.assertIn("Accept: application/json, text/event-stream", h)
         for m in ("initialize", "tools/list", "tools/call", "/api/v1/whoami"):
             self.assertIn(m, h)
@@ -336,6 +348,30 @@ class Info(Base):
             for p in others:
                 self.assertNotIn(p, raw, (who, p))
             self.assertEqual(js["me"]["identity"], who)
+
+
+class InfoFails(unittest.TestCase):
+    def test_an_exception_is_a_json_500(self):
+        import serve_dev
+        sent, logged = [], []
+
+        class H:
+            def send_json(self, status, obj, extra=None):
+                sent.append((status, obj))
+
+        class S:
+            log = logged.append
+
+        def boom(*_a):
+            raise RuntimeError("broken spec")
+        real = serve_dev.info
+        serve_dev.info = boom
+        try:
+            serve_dev.get(H(), S, "/api/dev", "local", "loopback")
+        finally:
+            serve_dev.info = real
+        self.assertEqual(sent, [(500, {"error": "internal"})])
+        self.assertEqual(len(logged), 1)
 
 
 class Keys(Base):
@@ -429,8 +465,12 @@ class Keys(Base):
         for who in (VIEWER, BOSS):
             st, js, _, _ = call("POST", "/api/apikeys/" + kid, who, {"action": "approve"})
             self.assertEqual((st, js["error"]), (403, "not_authorized"), (who, js))
+        # an unknown id gets the very same answer: approve does not reveal which ids exist
+        st, js, _, _ = call("POST", "/api/apikeys/" + kid, BOSS, {"action": "approve"})
+        st2, js2, _, _ = call("POST", "/api/apikeys/zzzzzzzzzzzz", BOSS, {"action": "approve"})
+        self.assertEqual((st, js), (st2, js2))
         refused = [e for e in events() if e.get("action") == "approve" and e.get("key_id") == kid]
-        self.assertEqual([e["result"] for e in refused], ["refused", "refused"])
+        self.assertEqual([e["result"] for e in refused], ["refused"] * 3)
         # wider than requested: refused
         st, js, _, _ = call("POST", "/api/apikeys/" + kid, OWN, {"action": "approve",
                                                                  "scopes": ["read:state", "tasks:write"]})
@@ -497,6 +537,9 @@ class Keys(Base):
                      {"action": "request", "name": "x", "owner": OWN},
                      {"action": "create", "name": "", "owner": OWN},
                      {"action": "rotate"},
+                     {"action": "create", "name": "--help", "owner": OWN},
+                     {"action": "create", "name": "x", "owner": "-h"},
+                     {"action": "request", "name": " -x"},
                      {"action": "create", "name": "x", "owner": OWN, "test": True}):
             st, js, _, _ = call("POST", "/api/apikeys", OWN, body)
             self.assertEqual((st, js["error"]), (400, "bad_body"), body)
