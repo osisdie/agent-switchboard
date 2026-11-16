@@ -41,6 +41,13 @@ except ImportError:
 passed = failed = 0
 
 
+def same_champ_box(c):
+    """A past day's champion box is spaced like today's: the lines sit a grid gap apart (no <p> margins)."""
+    t, d = c.get("today"), c.get("day")
+    return bool(t and d and t["lines"] == d["lines"] == 2 and d["gap"] == t["gap"] and 0 <= d["gap"] <= 4
+                and d["margins"] == t["margins"] == ["0px", "0px"] and d["pad"] == t["pad"])
+
+
 def check(name, cond, detail=None):
     global passed, failed
     if cond:
@@ -74,6 +81,12 @@ PANEL_JS = """() => { const d = document.getElementById('pomo'), r = d.getBoundi
     scrollW: document.scrollingElement.scrollWidth }; }"""
 NAMES_JS = """() => [...document.querySelectorAll('#pomo .pm-list .pm-code')].map((e) => ({ text: e.textContent, title: e.title,
   clip: e.classList.contains('clip'), tab: e.getAttribute('tabindex'), cut: e.scrollWidth > e.clientWidth + 1 }))"""
+# The champion box in today's summary and in a picked past day's panel: the same box, the same
+# spacing (the gap between the Champion and Runner-up lines, their margins, the padding).
+CHAMP_JS = """() => { const m = (c) => { if (!c) return null; const ps = [...c.querySelectorAll(':scope > p')], r = ps.map((e) => e.getBoundingClientRect()), cs = getComputedStyle(c);
+    return { lines: ps.length, gap: ps.length > 1 ? Math.round(r[1].top - r[0].bottom) : null, margins: ps.map((e) => getComputedStyle(e).margin),
+      pad: cs.padding, rowGap: cs.rowGap, h: Math.round(c.getBoundingClientRect().height) }; };
+  return { today: m(document.querySelector('#pomo .pm-sum .pm-champ')), day: m(document.querySelector('#pomo-day-panel .pm-champ')) }; }"""
 SUM_JS = """() => { const s = document.querySelector('#pomo .pm-sum'); if (!s) return null; const c = s.querySelector('.pm-champ');
   return { text: s.innerText.replace(/\\s+/g, ' ').trim(), champ: c && c.dataset.champ, runner: (s.querySelector('[data-runner]') || { dataset: {} }).dataset.runner,
     lead: (s.querySelector('[data-lead]') || { dataset: {} }).dataset.lead, none: !!s.querySelector('.pm-none') }; }"""
@@ -266,6 +279,8 @@ def main():
             check("a click picks a past day", dv["sel"][9] == "true" and dv["sel"].count("true") == 1 and dv["tabidx"][9] == "0" and dv["focus"] == day9, dv["sel"])
             check("  its total and focus", ("on %s" % day9) in dv["panel"]["text"].lower() and "AI fleet: 16 🍅 · 7h 12m focus" in dv["panel"]["text"], dv["panel"]["text"][:160])
             check("  its champion", dv["panel"]["champ"] and "🏆 Champion" in dv["panel"]["text"], dv["panel"])
+            c = pg.evaluate(CHAMP_JS)
+            check("  its champion box is spaced like today's (Champion and Runner-up a grid gap apart)", same_champ_box(c), c)
             check("  its sessions, teammates folded under them, adding up to the day", sum(counts) == 16 and len(counts) >= 2
                   and all("/" not in r for r in dv["panel"]["rows"]), dv["panel"]["rows"])
             first_rows = dv["panel"]["rows"]
@@ -316,6 +331,8 @@ def main():
             pg.emulate_media(color_scheme="dark")
             st = pg.evaluate(SEL_STYLE_JS)
             check("dark: the picked day is marked", st["on"] != st["off"] and st["dOn"] != st["dOff"], st)
+            c = pg.evaluate(CHAMP_JS)
+            check("dark: the champion box is spaced like today's", same_champ_box(c), c)
             pg.close()
 
             print("reduced motion")
@@ -346,6 +363,8 @@ def main():
             pg.clock.run_for(50)
             dv = pg.evaluate(DAY_JS)
             check("  a tap picks a past day", dv["sel"][5] == "true" and "AI fleet: 11 🍅" in dv["panel"]["text"] and dv["panel"]["rows"], dv["panel"])
+            c = pg.evaluate(CHAMP_JS)
+            check("  its champion box is spaced like today's at 390 px", same_champ_box(c), c)
             pn = pg.evaluate(PANEL_JS)
             check("  no horizontal scroll with a past day shown", pn["scrollW"] <= pn["vw"]
                   and pg.evaluate("() => { const d = document.getElementById('pomo'); return d.scrollWidth <= d.clientWidth; }"), pn)
