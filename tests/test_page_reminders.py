@@ -144,6 +144,18 @@ def main():
             check("demo: banner with a countdown", len(v["banner"]) == 1 and "Design review" in v["banner"][0]
                   and "in 3:" in v["banner"][0] and "Ack" in v["banner"][0] and "Snooze 5 min" in v["banner"][0], v["banner"])
             check("no AudioContext before a gesture", v["audio"] == 0, v["audio"])
+            a11y = page.evaluate("""() => { const b = document.getElementById('rm-banner');
+              return { live: [b, ...b.querySelectorAll('*')].filter((e) => e.hasAttribute('aria-live')).length,
+                       alerts: b.querySelectorAll('[role=alert], [role=status]').length,
+                       ticking: [...b.querySelectorAll('[data-rm-left]')].map((e) => e.getAttribute('aria-hidden')),
+                       sr: [...b.querySelectorAll('.sr-only')].map((e) => e.textContent) }; }""")
+            check("banner: one live region, no per-row alert, the ticking countdown aria-hidden, the time once in words",
+                  a11y["live"] == 1 and a11y["alerts"] == 0 and a11y["ticking"] == ["true"]
+                  and len(a11y["sr"]) == 1 and a11y["sr"][0].startswith("in ") and a11y["sr"][0].endswith(" minutes"), a11y)
+            sr0 = a11y["sr"]
+            page.wait_for_timeout(2100)
+            check("banner: the spoken part does not change every second",
+                  page.evaluate("() => [...document.querySelectorAll('#rm-banner .sr-only')].map((e) => e.textContent)") == sr0)
             page.evaluate("window.scrollTo({top: document.getElementById('approvals').offsetTop, behavior: 'instant'})")
             page.wait_for_timeout(300)
             check("banner stays at the top while scrolled (sticky)", (view()["bannerTop"] or 999) < 200, view()["bannerTop"])

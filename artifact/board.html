@@ -194,6 +194,7 @@ time { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .rm-banner { display: grid; gap: 6px; padding: 0 16px 8px; }
 .rmb { max-width: 1360px; width: 100%; margin-inline: auto; box-sizing: border-box; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 8px 12px; border-radius: var(--r); border: 1px solid color-mix(in srgb, var(--lamp) 50%, var(--rule)); background: var(--lamp-soft); color: var(--lamp-ink); min-width: 0; }
 .rmb-ic { font-size: 18px; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 .rmb-t { overflow-wrap: anywhere; min-width: 0; flex: 1 1 160px; }
 .rmb-left { font-weight: 700; font-variant-numeric: tabular-nums; }
 .rmb-acts { display: inline-flex; flex-wrap: wrap; gap: 6px; }
@@ -3172,11 +3173,15 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     box.dataset.sig = sig; box.textContent = '';
     for (const r of hot) {
       const id = str(r.id), busy = RM.busy.has(id);
-      box.append(h('div', { class: 'rmb', role: 'alert' },
+      // #rm-banner is the one live region: a row is announced once when it appears (its time in
+      // words, set once); the per-second countdown is aria-hidden, so it is never re-read.
+      const left = r.next_at - now;
+      box.append(h('div', { class: 'rmb' },
         h('span', { class: 'rmb-ic', 'aria-hidden': 'true', text: '⏰' }),
         h('strong', { class: 'rmb-t', text: str(r.title) }),
         h('span', { class: 'mono', text: str(r.at) }),
-        h('span', { class: 'rmb-left mono', dataset: { rmLeft: String(r.next_at) }, text: r.next_at > now ? tr('in {t}', { t: mmss(r.next_at - now) }) : tr('now') }),
+        h('span', { class: 'sr-only', text: left > 0 ? tr('in {n} minutes', { n: Math.max(1, Math.round(left / 60000)) }) : tr('now') }),
+        h('span', { class: 'rmb-left mono', 'aria-hidden': 'true', dataset: { rmLeft: String(r.next_at) }, text: left > 0 ? tr('in {t}', { t: mmss(left) }) : tr('now') }),
         h('span', { class: 'rmb-acts' },
           h('button', { class: 'btn allow solid', type: 'button', disabled: busy, onclick: () => rmDo(id, 'ack'), text: tr('Ack') }),
           h('button', { class: 'btn', type: 'button', disabled: busy, onclick: () => rmDo(id, 'snooze'), text: tr('Snooze 5 min') }))));
@@ -6566,6 +6571,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "Minutes early: 0 to 1440.": "提前分鐘數：0 到 1440。",
       "Reminder set. {note}": "提醒已設定。{note}",
       "Reminder set.": "提醒已設定。",
+      "in {n} minutes": "還有 {n} 分鐘",
       "Reminders": "提醒",
       "Your own alarms: a notice a few minutes early and one on time, to your notification channels. Only you see them.": "你自己的鬧鐘：提前幾分鐘通知一次、準時再通知一次，送到你的通知管道。只有你看得到。",
       "Time": "時間",

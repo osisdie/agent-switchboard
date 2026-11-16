@@ -1142,6 +1142,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                     "board:%s" % by)
         except reminders.Bad as exc:
             raise Refused(400, "bad_reminder", str(exc)) from exc
+        except reminders.Busy as exc:
+            raise Refused(409, "busy", str(exc)) from exc
         self.audit(ident, via, "reminder-add", id=r["id"], result="ok")
         return self.send_json(201, {"reminder": guard.scrub_tree(reminders.view(r, reminders.now_ms())), "note": note})
 
@@ -1162,6 +1164,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             raise Refused(404, "not_found", "no such reminder") from exc
         except reminders.Bad as exc:
             raise Refused(409, "bad_state", str(exc)) from exc
+        except reminders.Busy as exc:
+            raise Refused(409, "busy", str(exc)) from exc
         self.audit(ident, via, "reminder-" + action, id=rid, result="ok")
         return self.send_json(200, {"status": "ok", "action": action,
                                     "reminder": guard.scrub_tree(reminders.view(r, reminders.now_ms())) if r else None})

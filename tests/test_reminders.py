@@ -246,6 +246,44 @@ class FiringTests(unittest.TestCase):
         self.assertEqual((s.calls[0]["breakthrough"], s.calls[0]["level"]), (False, "info"))
 
 
+class LockTests(unittest.TestCase):
+    def test_bounded_wait(self):
+        reset()
+        R.add(HOME, "Meeting", "15:00", now=MON_14)
+        import fcntl
+        fd = os.open(os.path.join(HOME, "reminders.lock"), os.O_WRONLY | os.O_CREAT, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            t0 = time.time()
+            with self.assertRaises(R.Busy):
+                with R.locked(HOME, wait_s=0.3):
+                    pass
+            self.assertLess(time.time() - t0, 2)
+            self.assertEqual(R.tick(HOME, now=at(2026, 11, 16, 14, 55), send=Stub()), [], "the collector skips a busy tick")
+            rc, _, err = run("add", "x", "--at", "16:00", now=MON_14)
+            self.assertEqual(rc, 8, err)
+            self.assertIn("busy", err)
+        finally:
+            os.close(fd)
+        s = Stub()
+        R.tick(HOME, now=at(2026, 11, 16, 14, 55), send=s)
+        self.assertEqual(len(s.calls), 1, "and fires on the next one")
+
+
+class DoctorTests(unittest.TestCase):
+    def test_unknown_timezone_warned(self):
+        try:
+            with open(os.path.join(CFG, "fleet.yaml"), "w", encoding="utf-8") as fh:
+                fh.write("reminders:\n  timezone: Mars/Phobos\n")
+            p = subprocess.run([os.path.join(REPO, "bin", "board"), "doctor"], capture_output=True, text=True, timeout=60)
+            self.assertIn("warn  reminders.timezone Mars/Phobos is not a known time zone", p.stdout)
+            write_fleet()
+            p = subprocess.run([os.path.join(REPO, "bin", "board"), "doctor"], capture_output=True, text=True, timeout=60)
+            self.assertIn("ok    reminders.timezone Asia/Taipei", p.stdout)
+        finally:
+            write_fleet()
+
+
 class BreakthroughTests(unittest.TestCase):
     """notify.send(..., breakthrough=True): urgent's rule for mutes, at any level."""
 

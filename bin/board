@@ -103,6 +103,7 @@
 #                                              peppered hash kept; owners administer every key,
 #                                              approvers issue to listed people, anyone requests
 #   board remind add "title" --at 15:00|3pm [--date YYYY-MM-DD] [--lead 5] [--level info|warn|high|urgent]
+#                (--at is 24-hour unless it ends in am/pm; 123 is 01:23)
 #                [--repeat once|daily|weekdays] [--no-breakthrough]
 #   board remind ls [--json] | rm ID | snooze ID [5m] | ack ID
 #                                              the owner's reminders (lib/reminders.py): a notice at
@@ -2367,6 +2368,15 @@ cmd_doctor() {
   else
     warn "askers not in serve.tunnel.allowed_emails (it is set, so it wins; they cannot reach the board through the tunnel): $(printf '%s' "$miss" | paste -sd, - | sed 's/,/, /g')"
   fi
+
+  local rtz
+  rtz="$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import reminders
+tz = reminders.settings()["timezone"]
+print(("ok " if reminders.tzinfo(tz) else "bad ") + tz if tz else "")' "$REPO/lib" 2>/dev/null)"
+  case "$rtz" in
+    "ok "*) ok "reminders.timezone ${rtz#ok }" ;;
+    "bad "*) warn "reminders.timezone ${rtz#bad } is not a known time zone — reminders use this machine's local time" ;;
+  esac
 
   echo "install:"
   local settings="${CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"

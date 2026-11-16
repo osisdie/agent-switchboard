@@ -30,7 +30,8 @@ CLI (bin/board remind ...):
                          [--repeat once|daily|weekdays] [--no-breakthrough] [--by WHO] [--json]
   reminders.py ls [--json] | rm ID | snooze ID 5m|1h | ack ID   [--by WHO]
   reminders.py tick [--json]                   one firing pass (what the collector runs)
-Exit codes: 0 ok, 1 error, 2 usage or a bad value, 3 no such reminder.
+--at is 24-hour unless it ends in am/pm: 15:00, 9:30, 1530, 3pm, 3:30 pm (so 123 is 01:23).
+Exit codes: 0 ok, 1 error, 2 usage or a bad value, 3 no such reminder, 8 busy (try again).
 Test hooks: BOARD_NOW_MS (fake clock, epoch ms).
 """
 import contextlib
@@ -70,6 +71,10 @@ class Bad(Exception):
 
 class NotFound(Exception):
     pass
+
+
+class Busy(Exception):
+    """reminders.lock stayed taken: try again (CLI exit 8, route 409 busy; the collector skips a tick)."""
 
 
 def now_ms():
@@ -194,12 +199,21 @@ def path(home):
 
 
 @contextlib.contextmanager
-def locked(home):
-    """reminders.json under an exclusive flock (the collector, the CLI and board-serve all write)."""
+def locked(home, wait_s=5.0):
+    """reminders.json under an exclusive flock (the collector, the CLI and board-serve all write).
+    Waits at most wait_s, then raises Busy instead of hanging."""
     os.makedirs(home, exist_ok=True)
     fd = os.open(os.path.join(home, "reminders.lock"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        end = time.monotonic() + wait_s
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= end:
+                    raise Busy("the reminders are busy; try again") from None
+                time.sleep(0.05)
         yield
     finally:
         os.close(fd)
@@ -377,6 +391,50 @@ def message(r, phase, late, now):
     return title, body
 
 
+def _plan(home, now):
+    """Under the lock: advance every reminder and list the notices to send. (out, todo)"""
+    out, todo = [], []
+    doc = load(home)
+    changed = False
+    for r in doc["reminders"]:
+        if r.get("state") != "active" or not isinstance(r.get("occ"), dict):
+            continue
+        occ = r["occ"]
+        phase, late = phase_due(r, now)
+        # The due nudge sent, no snooze pending and LATE_MIN since the last nudge: it is over
+        # (until then the board still offers Ack and Snooze).
+        if phase is None and occ.get("due_sent") and not occ.get("snooze_at") \
+                and now >= int(occ.get("last_sent") or occ["due_sent"]) + LATE_MIN * 60000:
+            _finish(r, "done", now)
+            changed = True
+            phase, late = phase_due(r, now)
+            occ = r["occ"]
+        if phase is None:
+            continue
+        changed = True
+        if phase == "missed":
+            occ["missed"] = True
+            skipped = _finish(r, "missed", now)
+            out.append({"id": r["id"], "phase": "missed", "status": "not sent", "skipped": skipped})
+            continue
+        if phase == "drop-snooze":
+            occ["snooze_at"] = None
+            continue
+        title, body = message(r, phase, late, now)
+        key = "reminder:%s:%d:%s" % (r["id"], occ["at"], phase if phase != "snooze" else "snooze%d" % occ.get("snoozes", 1))
+        if phase == "lead":
+            occ["lead_sent"] = now
+        elif phase == "due":
+            occ["due_sent"], occ["late"] = now, late
+        else:
+            occ["snooze_at"] = None
+        occ["last_sent"] = now
+        todo.append((r, phase, key, title, body))
+    if changed:
+        save(home, doc)
+    return out, todo
+
+
 def tick(home=None, now=None, send=None, cfg=None):
     """One firing pass. Fired times are written before the send, so an occurrence never fires twice
     (a crash between write and send loses that one notice rather than repeating it). Returns a
@@ -385,46 +443,11 @@ def tick(home=None, now=None, send=None, cfg=None):
     if not os.path.exists(path(home)):
         return []
     now = now if now is not None else now_ms()
-    out, todo = [], []
-    with locked(home):
-        doc = load(home)
-        changed = False
-        for r in doc["reminders"]:
-            if r.get("state") != "active" or not isinstance(r.get("occ"), dict):
-                continue
-            occ = r["occ"]
-            phase, late = phase_due(r, now)
-            # The due nudge sent, no snooze pending and LATE_MIN since the last nudge: it is over
-            # (until then the board still offers Ack and Snooze).
-            if phase is None and occ.get("due_sent") and not occ.get("snooze_at") \
-                    and now >= int(occ.get("last_sent") or occ["due_sent"]) + LATE_MIN * 60000:
-                _finish(r, "done", now)
-                changed = True
-                phase, late = phase_due(r, now)
-                occ = r["occ"]
-            if phase is None:
-                continue
-            changed = True
-            if phase == "missed":
-                occ["missed"] = True
-                skipped = _finish(r, "missed", now)
-                out.append({"id": r["id"], "phase": "missed", "status": "not sent", "skipped": skipped})
-                continue
-            if phase == "drop-snooze":
-                occ["snooze_at"] = None
-                continue
-            title, body = message(r, phase, late, now)
-            key = "reminder:%s:%d:%s" % (r["id"], occ["at"], phase if phase != "snooze" else "snooze%d" % occ.get("snoozes", 1))
-            if phase == "lead":
-                occ["lead_sent"] = now
-            elif phase == "due":
-                occ["due_sent"], occ["late"] = now, late
-            else:
-                occ["snooze_at"] = None
-            occ["last_sent"] = now
-            todo.append((r, phase, key, title, body))
-        if changed:
-            save(home, doc)
+    try:
+        with locked(home, wait_s=1.0):
+            out, todo = _plan(home, now)
+    except Busy:
+        return []          # a CLI or board write holds it: the next collector run fires
     for r, phase, key, title, body in todo:
         res = (send or _send)(r["level"], key, title, body, bool(r.get("breakthrough")), now, cfg)
         status = res.get("status") if isinstance(res, dict) else None
@@ -480,7 +503,7 @@ def main(argv):
     sub = ap.add_subparsers(dest="cmd", required=True)
     a = sub.add_parser("add")
     a.add_argument("title")
-    a.add_argument("--at", required=True)
+    a.add_argument("--at", required=True, help="24-hour unless it ends in am/pm: 15:00, 9:30, 1530, 3pm (123 is 01:23)")
     a.add_argument("--date")
     a.add_argument("--lead")
     a.add_argument("--level", choices=LEVELS)
@@ -536,6 +559,9 @@ def main(argv):
     except NotFound as exc:
         sys.stderr.write("board remind: %s\n" % exc)
         return 3
+    except Busy as exc:
+        sys.stderr.write("board remind: %s\n" % exc)
+        return 8
 
 
 if __name__ == "__main__":

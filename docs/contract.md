@@ -679,8 +679,9 @@ replies, and keeps `operator.json.heartbeat_at` fresh. Permission decisions are 
 
 The owner's own alarms (`lib/reminders.py`, `board remind`, the board's ⏰ Reminders panel).
 
-`$BOARD_HOME/reminders.json` (0600, atomic writes, `flock` on `reminders.lock`; the collector, the
-CLI and board-serve all write it):
+`$BOARD_HOME/reminders.json` (0600, atomic writes, `flock` on `reminders.lock`, waited for at most
+5 s, then "busy": CLI exit 8, route 409 `busy`, and the collector just skips that run; the
+collector, the CLI and board-serve all write it):
 
 ```json
 { "version": 1, "reminders": [ {
@@ -694,8 +695,9 @@ CLI and board-serve all write it):
 ```
 
 - **Title**: control characters become spaces, the secret guard scrubs it, 1–200 characters.
-- **Time**: `--at` takes `15:00`, `9:30`, `1530`, `3pm`, `3:30 pm`, `12am`; wall time in
-  `reminders.timezone` (an IANA name), else this machine's local time (`tz: ""`). Without `--date`, a
+- **Time**: `--at` takes `15:00`, `9:30`, `1530`, `3pm`, `3:30 pm`, `12am`: 24-hour unless it ends
+  in am/pm (so `123` is 01:23); wall time in `reminders.timezone` (an IANA name), else this
+  machine's local time (`tz: ""`; an unknown name falls back to it, and `board doctor` warns). Without `--date`, a
   time already past today means the next day it occurs (the CLI says so; the route returns it as
   `note`); with `--date`, a past date and time is refused. `weekdays` skips Saturday and Sunday.
   `lead_min` 0–1440 (default `reminders.default_lead_min`, 5), `level` info|warn|high|urgent
@@ -717,7 +719,7 @@ CLI and board-serve all write it):
   follow `ALERT_DESKTOP` like every alert.
 - **CLI**: `board remind add TITLE --at T [--date D] [--lead N] [--level L] [--repeat R]
   [--no-breakthrough] [--json]`, `ls [--json]`, `rm ID`, `snooze ID [5m|1h]` (only once the lead
-  window has started), `ack ID`. Exit 0 ok, 2 a bad value, 3 no such reminder.
+  window has started), `ack ID`. Exit 0 ok, 2 a bad value, 3 no such reminder, 8 busy.
 - **Routes** (owner only: `owners` in fleet.yaml, else `approvers`; empty → 403 `no_owners`, anyone
   else → 403 `not_owner`, audited, nothing written; reminders are never in `/api/state`, SSE or
   `/api/v1`, so other viewers see nothing, not even a count):
@@ -728,12 +730,15 @@ CLI and board-serve all write it):
   - `POST /api/reminders` `{title, at, date?, lead_min?, level?, repeat?, breakthrough?}` → 201
     `{reminder, note}`; a bad value → 400 `bad_reminder`, a wrong type → 400 `bad_body`;
   - `POST /api/reminders/<id>` `{action: "ack"|"snooze"|"delete", minutes?}` (`minutes` 1–720,
-    default 5) → 200; unknown id → 404; not active, or nothing to snooze yet → 409 `bad_state`.
+    default 5) → 200; unknown id → 404; not active, or nothing to snooze yet → 409 `bad_state`;
+    the store busy → 409 `busy`.
   POSTs have the usual `X-Board` and `Origin` checks. Audited as `type: "serve"`, `action:
   "reminder-add|ack|snooze|delete"`.
 - **Page**: the panel (add: time, title, minutes early, level, repeat; the list with a live
   countdown; Ack and Snooze 5 min inside the window; Delete with a confirm step) and a sticky banner
-  in the section nav while a reminder is in its lead window or due (until acked or closed). It
+  in the section nav while a reminder is in its lead window or due (until acked or closed). The
+  banner is the page's one live region for reminders: a row is announced once when it appears, with
+  its time in words set once; the per-second countdown is `aria-hidden`. It
   reloads every 30 s while visible. A two-note chime plays once at T − lead, only after a click or
   key on the page (no AudioContext before that). Demo mode has three sample reminders.
 
