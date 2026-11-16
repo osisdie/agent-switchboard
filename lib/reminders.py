@@ -100,8 +100,7 @@ def settings(cfg=None):
 def owners(cfg=None):
     """Who owns reminders on the board: fleet.yaml `owners`, else `approvers` (the owners ->
     approvers fallback). One helper, so the rule moves with the role model."""
-    cfg = cfg if cfg is not None else fleet.load_fleet()
-    return fleet.id_list(cfg, "owners") or fleet.id_list(cfg, "approvers")
+    return fleet.owner_ids(cfg if cfg is not None else fleet.load_fleet())
 
 
 def owner_of(ident, cfg=None):

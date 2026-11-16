@@ -311,7 +311,7 @@ def owner_ids(cfg):
     """Who owns the board: fleet.yaml `owners`, else `approvers` (a single-user setup keeps
     working). For the board's own owner-only surfaces; API key administration never falls back
     (lib/apikeys.py fails closed with empty owners)."""
-    return fleet.id_list(cfg, "owners") or fleet.id_list(cfg, "approvers")
+    return fleet.owner_ids(cfg)
 
 
 def is_owner(cfg, ident):
