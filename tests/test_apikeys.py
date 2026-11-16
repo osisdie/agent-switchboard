@@ -486,6 +486,33 @@ class Review(Base):
             self.assertEqual(r.returncode, 2, repr(who))
             self.assertEqual(board("request", "--name", "x", "--by", who).returncode, 2)
 
+    def test_more_refusals_audited(self):
+        req = self.request(VIEWER, NOW, "--scopes", "read:state")
+        self.assertEqual(board("approve", req["id"], "--by", OWNER, "--scopes", "read:state,read:tasks").returncode, 2)
+        self.assertEqual(board("expire", req["id"], "--expires", "5d", "--by", OWNER, now=NOW + 15 * DAY).returncode, 1)
+        ev = [(e["action"], e["result"], e["reason"]) for e in events() if e["result"] == "refused"]
+        self.assertEqual(ev, [("approve", "refused", "wider_scopes"), ("expire", "refused", "lapsed")])
+
+    def test_pepper_without_hard_links(self):
+        import errno
+        real = os.link
+
+        def no_link(*_a, **_k):
+            raise OSError(errno.EPERM, "hard links not supported")
+        os.link = no_link
+        try:
+            pep = apikeys.pepper(home(), create=True)
+        finally:
+            os.link = real
+        self.assertEqual(len(pep), 32)
+        self.assertEqual(os.listdir(os.path.join(home(), "secrets")), ["apikey.pepper"])
+        self.assertEqual(apikeys.pepper(home()), pep)
+
+    def test_verify_takes_the_ttl(self):
+        req = self.request()
+        self.assertEqual(apikeys.verify(req["key"], now=NOW + DAY, ttl_ms=DAY), (None, "expired"))
+        self.assertEqual(apikeys.verify(req["key"], now=NOW + DAY, ttl_ms=2 * DAY), (None, "pending"))
+
     def test_refused_show_is_audited(self):
         theirs, _ = create(RM)
         self.assertEqual(board("show", theirs, "--by", VIEWER).returncode, 1)

@@ -228,6 +228,11 @@ def pepper(home, create=False):
                 os.link(tmp, path)          # fails if another writer won: theirs is kept
             except FileExistsError:
                 pass
+            except OSError:
+                # a filesystem without hard links: rename instead. Every creator holds
+                # apikeys.lock, so nobody can slip in between the check and the rename.
+                if not os.path.lexists(path):
+                    os.rename(tmp, path)
         finally:
             with contextlib.suppress(OSError):
                 os.unlink(tmp)
@@ -444,9 +449,10 @@ def _record(home, pep, *, name, owner, kind, scopes, by, now, expires_at, rate, 
     return rec, key
 
 
-def verify(key, kind="live", home=None, now=None):
+def verify(key, kind="live", home=None, now=None, ttl_ms=None):
     """(record, None) for a usable key, else (None, reason): malformed, wrong_env, unknown,
-    mismatch, pending, revoked, expired. Constant-time on the secret part."""
+    mismatch, pending, revoked, expired. Constant-time on the secret part. ttl_ms: the request
+    TTL (request_ttl_ms(cfg)), so a caller that has the config loaded does not reload it."""
     home = home or fleet.board_home()
     now = now_ms() if now is None else now
     m = KEY_RE.fullmatch(key or "") if isinstance(key, str) else None
@@ -463,7 +469,7 @@ def verify(key, kind="live", home=None, now=None):
         return None, "unknown"
     if not hmac.compare_digest(rec["hash"], key_hash(pep, key)) or rec.get("kind") != kind:
         return None, "mismatch"
-    st = status(rec, now)
+    st = status(rec, now, ttl_ms)
     if st != "active":
         return None, st
     return rec, None
@@ -585,6 +591,9 @@ def cmd_approve(home, argv):
             scopes = parse_scopes(o["scopes"])
             wider = [x for x in scopes if x not in requested]
             if wider:
+                audit(home, {"action": "approve", "by": by, "via": via, "key_id": kid, "owner": rec.get("owner"),
+                             "result": "refused", "reason": "wider_scopes", "scopes": scopes,
+                             "requested_scopes": requested})
                 raise Bad("--scopes may only narrow the request (%s); not requested: %s"
                           % (",".join(requested), ",".join(wider)))
         ttl_key = rec.get("requested_ttl_ms") if isinstance(rec.get("requested_ttl_ms"), int) else DEFAULT_DAYS * DAY_MS
@@ -684,6 +693,8 @@ def cmd_expire(home, argv):
         if st == "revoked":
             raise Bad("key %s is revoked" % kid, 1)
         if lapsed(rec, now):
+            audit(home, {"action": "expire", "by": by, "via": via, "key_id": kid, "owner": rec.get("owner"),
+                         "result": "refused", "reason": "lapsed"})
             raise Bad("request expired; ask again", 1)
         before = rec.get("expires_at")
         if st == "pending":
