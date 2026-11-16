@@ -37,7 +37,7 @@ FONT_LINES = re.compile(r'^<link rel="(?:preconnect|stylesheet)" href="https://f
 
 
 def shots():
-    """[(name, alt)] in gallery order, from scripts/screenshots.py."""
+    """[(name, alt)] in gallery order (one per row, full width), from scripts/screenshots.py."""
     import importlib.util
     spec = importlib.util.spec_from_file_location("screenshots", os.path.join(REPO, "scripts", "screenshots.py"))
     mod = importlib.util.module_from_spec(spec)
@@ -103,10 +103,10 @@ h1 { margin: 0; font-size: clamp(32px, 6vw, 48px); line-height: 1.05; letter-spa
 .points li { padding: 14px 16px; border: 1px solid var(--rule); border-radius: 8px; background: var(--panel); }
 .points b { display: block; margin-bottom: 2px; }
 h2 { font-size: 24px; margin: 36px 0 12px; }
-.gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%%, 340px), 1fr)); gap: 16px; }
+.gallery { display: grid; gap: 24px; }
 figure { margin: 0; border: 1px solid var(--rule); border-radius: 8px; background: var(--panel); overflow: hidden; }
-figure a { display: block; aspect-ratio: 16 / 10; background: var(--paper); }
-figure img { display: block; width: 100%%; height: 100%%; object-fit: cover; object-position: top; }
+figure a { display: block; background: #0f141a; }
+figure img { display: block; width: 100%%; height: auto; }
 figcaption { padding: 10px 12px; font-size: 14px; color: var(--muted); }
 footer { margin-top: 40px; font-size: 14px; color: var(--muted); }
 a { color: var(--cord); }
@@ -124,11 +124,11 @@ a { color: var(--cord); }
 <a href="%(repo)s/blob/main/docs/contract.md">Contract</a>
 </div>
 <ul class="points">
+<li><b>Pomodoro</b>Each session and teammate runs a 25-minute focus tally; Today adds up the fleet in person-hours.</li>
 <li><b>Decisions</b>Questions, permission prompts and lifecycle gates, answered on the board and relayed to the session.</li>
 <li><b>Sessions</b>One card per session: state, task title, repo and branch, what it is running now.</li>
 <li><b>Alerts</b>Slack, desktop, email and LINE with escalation, mutes and quiet hours.</li>
 <li><b>Owner away</b>Sessions settle cross-session questions by explicit consensus; red lines wait for you.</li>
-<li><b>Pomodoro</b>Each session and teammate runs a 25-minute focus tally; Today adds them up.</li>
 </ul>
 <h2>Screenshots</h2>
 <div class="gallery">
