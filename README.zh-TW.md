@@ -1230,7 +1230,7 @@ board apikey revoke <id> --by dev@example.com
   機密，沒有驗證過的請求碰不到 board-serve。設定 `serve.api.remote: false` 就只在本機 listener 提供 API。
 - **每個 service token 都綁定到它的使用者**。把每個 token 對應到可以搭配它使用金鑰的人；這樣外洩的
   token 加上別人的有效金鑰會被拒絕（403 `token_key_mismatch`）。每個人各用自己的 token，撤銷一個不會
-  影響其他人。舊的清單寫法仍然可用，但沒有綁定，`board doctor` 會提出警告：
+  影響其他人。用個人 Access 登入時，只能搭配自己的金鑰（否則 403 `identity_key_mismatch`）。舊的清單寫法仍然可用，但沒有綁定，`board doctor` 會提出警告：
 
   ```yaml
   serve:

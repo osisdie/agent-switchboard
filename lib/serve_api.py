@@ -14,7 +14,8 @@ Order of checks, for every request (after board-serve's framing rules):
      not false (else 403 api_remote_disabled) and a verified Cloudflare Access JWT (401) that is
      either a service token whose common_name is in serve.tunnel.api_service_tokens or an email in
      the tunnel's allowed emails (else 403); a token bound to people ({cn: owner(s)}) also needs
-     the key's owner among them (step 4, after the key: 403 token_key_mismatch);
+     the key's owner among them (step 4, after the key: 403 token_key_mismatch), and an email login
+     only carries keys owned by that email (step 4: 403 identity_key_mismatch);
   3. the route (404), its query parameters (400);
   4. the key: no Authorization header is 401 unauthenticated at once (not counted, not audited:
      a page firing keyless requests can't burn anyone's budget or flood the audit). A malformed or
@@ -274,6 +275,14 @@ def authenticate(h, st, route, via, client):
                 fail(403, "token_key_mismatch", "this key's owner is not bound to this Access service token "
                      "(serve.tunnel.api_service_tokens)", "token_key_mismatch")
             rec["_token_owner_ok"] = True   # in memory only: grant() audits it
+    # A person's own Access login (an email JWT) carries only that person's keys: the key's owner
+    # must be that email (case-insensitive). A stolen key used from someone else's login, or a key
+    # owned by `local`, is refused. Same place and same fail() path as the token binding above.
+    elif client.startswith("email:"):
+        if str(rec.get("owner") or "").strip().lower() != client[len("email:"):]:
+            fail(403, "identity_key_mismatch", "this key is not issued to the Access identity that uses it",
+                 "identity_key_mismatch")
+        rec["_identity_owner_ok"] = True    # in memory only: grant() audits it
     grant(h, rec, route, via, client, now)
     rec["_key"] = key  # for the SSE stream's re-check; never written or logged
     rec["_ttl"] = st["request_ttl_ms"]
@@ -290,6 +299,8 @@ def grant(h, rec, route, via, client, now, mcp=False):
         who["mcp"] = True
     if rec.get("_token_owner_ok"):
         who["token_owner_ok"] = True
+    if rec.get("_identity_owner_ok"):
+        who["identity_owner_ok"] = True
     scope = route["scope"]
     if scope not in (None, "public") and scope not in (rec.get("scopes") or []):
         _audit(h, dict(who, action=route["handler"], result=403, reason="insufficient_scope"))

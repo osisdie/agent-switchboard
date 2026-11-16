@@ -1244,8 +1244,12 @@ Transfer-Encoding, a body on a GET dropped and the connection closed):
    The limiter tables live in memory and drop entries idle for a minute. Then, on the tunnel, a
    **bound service token** (see "Exposure"): the key's `owner` must be one of the token's people
    (case-insensitive), else 403 `token_key_mismatch`, counted and audited like a failed key
-   (`reason: token_key_mismatch`, `token: <common_name>`, `key_id`). It comes after the key check,
-   so a bad key is still 401. Then the route's scope (403 `insufficient_scope`), then the key's rate: a
+   (`reason: token_key_mismatch`, `token: <common_name>`, `key_id`). On the tunnel, a person's own
+   **email login** (`client: email:<email>`) carries only that person's keys: the key's `owner`
+   must be that email (case-insensitive), else 403 `identity_key_mismatch`, counted per kid and
+   audited the same way (`reason: identity_key_mismatch`, `key_id`, `client`). A key owned by
+   `local` is therefore never usable over an email login. Both bindings come after the key check,
+   so a bad key is still 401; the local listener is not affected. Then the route's scope (403 `insufficient_scope`), then the key's rate: a
    token bucket of `rate_per_min` with a burst of 20 (429 `rate_limited`, `Retry-After`).
    `last_used_at` is recorded (at most once a minute). The Access cookie (`CF_Authorization`) and
    `local` are never credentials here.
@@ -1278,7 +1282,8 @@ string) of common names, still works but is **unbound**: any valid key passes wi
 the list next to old names (`[<cn>, {<cn2>: alice@example.com}]`); a name both bound and unbound
 counts as bound. Prefer **one service token per person**: revoking it in Access (or removing its
 entry) affects nobody else. `board-serve --check` lists each token as bound or unbound.
-`email:` access (a person's own Access login) is not affected. The binding is checked when a request
+`email:` access (a person's own Access login) is bound by itself: only keys whose `owner` is that
+email (403 `identity_key_mismatch` otherwise; see step 4). The bindings are checked when a request
 is authenticated: an open `/api/v1/events` stream re-checks its key before every frame but the
 binding only when it reconnects, so after changing a token's people, a stream already open keeps
 running until it reconnects (restart board-serve to cut it at once). `POST /mcp` is checked on
@@ -1291,9 +1296,10 @@ never reaches board-serve unauthenticated. There is no Access bypass for the API
 
 **Audit** (`events.jsonl`, type `api`): every refused key check (`action: "auth_fail"`, `key_id`
 when the key had the right shape, `reason`, `route`, `via`, `client`, `result`), every
-`insufficient_scope`, every `token_key_mismatch` (with `token`), and each key's successful use of a
-route at most once a minute per board-serve process (`action` = the route's handler, with `owner`
-and `name`, and `token_owner_ok: true` when a bound service token's binding was checked). `client` is `loopback`,
+`insufficient_scope`, every `token_key_mismatch` (with `token`) and `identity_key_mismatch`, and each
+key's successful use of a route at most once a minute per board-serve process (`action` = the
+route's handler, with `owner` and `name`, `token_owner_ok: true` when a bound service token's
+binding was checked, and `identity_owner_ok: true` when an email login's was). `client` is `loopback`,
 `service:<common_name>` or `email:<email>`. Never a key.
 
 ## MCP

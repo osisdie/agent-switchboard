@@ -157,6 +157,7 @@ def make_jwts():
             "svc_nobody": tok(dict(svc, common_name=SVC_NOBODY)),
             "svc_badsig": tok(svc, other), "svc_expired": tok(dict(svc, exp=now - 3600)),
             "email": tok(dict(base, email=BOSS)), "email_other": tok(dict(base, email="intruder@example.com")),
+            "email_upper": tok(dict(base, email=BOSS.upper())),
             "neither": tok(base)}
 
 
@@ -717,8 +718,41 @@ class Tunnel(Fresh):
     def test_email_jwt(self):
         st, _, js = self.t("/api/v1/whoami", "email")
         self.assertEqual((st, js["error"]), (401, "unauthenticated"))          # an email JWT without a key
-        self.assertEqual(self.t("/api/v1/whoami", "email", self.all)[0], 200)
-        self.assertEqual(self.t("/api/v1/whoami", "email_other", self.all)[0], 403)
+        own = mkkey(",".join(apikeys.SCOPES), BOSS, "--rate", "600")[1]
+        self.assertEqual(self.t("/api/v1/whoami", "email", own)[0], 200)
+        self.assertEqual(self.t("/api/v1/whoami", "email_other", own)[0], 403)   # not an allowed email
+
+    def test_email_jwt_carries_only_its_owners_keys(self):
+        """A person's own Access login (client email:<addr>) works only with keys whose owner is that
+        email: someone else's key, or a local-owned one, is 403 identity_key_mismatch (counted and
+        audited like a failed key, never the key); a bad key is still 401 first."""
+        own_kid, own = mkkey(",".join(apikeys.SCOPES), BOSS, "--rate", "600")
+        st, _, js = self.t("/api/v1/whoami", "email", own)
+        self.assertEqual((st, js["key_id"], js["owner"]), (200, own_kid, BOSS))
+        st, _, js = self.t("/api/v1/whoami", "email_upper", own)                 # the email's case
+        self.assertEqual(st, 200, js)
+        upper_kid, upper = mkkey("read:state", BOSS.upper(), "--rate", "600")    # the owner's case
+        self.assertEqual(self.t("/api/v1/whoami", "email", upper)[0], 200)
+        dev_kid, dev = mkkey("read:state", DEV, "--rate", "600")
+        local_kid, local = mkkey("read:state", "local", "--rate", "600")
+        for kid, key in ((dev_kid, dev), (local_kid, local)):
+            with self.subTest(owner=apikeys.load(HOME, kid)["owner"]):
+                st, _, js = self.t("/api/v1/state", "email", key)
+                self.assertEqual((st, js["error"]), (403, "identity_key_mismatch"))
+                rows = [e for e in events() if e.get("reason") == "identity_key_mismatch" and e.get("key_id") == kid]
+                self.assertEqual([(e["route"], e["client"], e["result"]) for e in rows],
+                                 [("/api/v1/state", "email:" + BOSS, 403)])
+                with open(os.path.join(HOME, "events.jsonl"), encoding="utf-8") as fh:
+                    self.assertNotIn(key, fh.read())
+        st, _, js = self.t("/api/v1/whoami", "email", "asb_live_" + "a" * 12 + "_" + "b" * 43)
+        self.assertEqual((st, js["error"]), (401, "invalid_key"))                # a bad key: 401 first
+        # the success audit says the binding was checked; the service-token path is unchanged
+        self.t("/api/v1/state", "email", own)
+        ok = [e for e in events() if e.get("key_id") == own_kid and e.get("result") == 200 and e.get("via") == "tunnel"]
+        self.assertTrue(ok and all(e.get("identity_owner_ok") is True for e in ok), ok)
+        self.assertEqual(self.t("/api/v1/whoami", "svc", dev)[0], 200)
+        # the local listener is not affected: a local-owned key works there
+        self.assertEqual(self.req("/api/v1/whoami", local)[0], 200)
 
     def test_service_token_is_not_a_person(self):
         """On the board's own routes a service token is no identity: they still need an email."""
