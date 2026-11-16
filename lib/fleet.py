@@ -10,6 +10,9 @@ CLI (used by the bash scripts):
   fleet.py board-url-check         print the board URL, or why it is rejected (exit 1)
   fleet.py askers-check            for `board doctor`: askers missing from an explicit
                                    serve.tunnel.allowed_emails (one per line; exit 1 when any)
+  fleet.py service-tokens-check    for `board doctor`: "unbound <cn>" / "nobody <cn>" per
+                                   serve.tunnel.api_service_tokens entry not bound to a person
+                                   (exit 1 when any)
 """
 import json
 import os
@@ -134,6 +137,35 @@ def owner_ids(cfg):
     rule for the board's owner-only surfaces (board-serve, reminders); API key administration never
     falls back (lib/apikeys.py)."""
     return id_list(cfg, "owners") or id_list(cfg, "approvers")
+
+
+def service_tokens(cfg):
+    """serve.tunnel.api_service_tokens -> {common_name: owners}, names and owners lowercased.
+
+    owners is a frozenset of the people (emails, or "local") the token is bound to, or None for an
+    unbound token. Forms: a mapping {cn: owner | [owners]} (bound), a list or a single string of
+    common names (unbound, the old form), or a list mixing names and one-entry mappings. A mapped
+    token with no owners is bound to nobody: every call through it is refused (fail closed). A
+    name both bound and unbound counts as bound."""
+    serve = cfg.get("serve") if isinstance(cfg.get("serve"), dict) else {}
+    tun = serve.get("tunnel") if isinstance(serve.get("tunnel"), dict) else {}
+    raw = tun.get("api_service_tokens")
+    items = [raw] if isinstance(raw, (str, dict)) else raw if isinstance(raw, list) else []
+    out = {}
+
+    def norm(v):
+        return str(v or "").strip().lower()
+    for it in items:
+        if isinstance(it, dict):
+            for cn, who in it.items():
+                if not norm(cn):
+                    continue
+                who = [who] if not isinstance(who, list) else who
+                prev = out.get(norm(cn)) or frozenset()
+                out[norm(cn)] = prev | frozenset(norm(w) for w in who if norm(w))
+        elif norm(it) and norm(it) not in out:
+            out[norm(it)] = None
+    return out
 
 
 def board_home():
@@ -404,6 +436,16 @@ def main(argv):
         for a in missing:
             print(a)
         return 1 if missing else 0
+    elif cmd == "service-tokens-check":
+        bad = 0
+        for cn, owners in sorted(service_tokens(load_fleet()).items()):
+            if owners is None:
+                print("unbound %s" % cn)
+                bad = 1
+            elif not owners:
+                print("nobody %s" % cn)
+                bad = 1
+        return bad
     elif cmd == "sessions":
         for s in load_fleet()["sessions"]:
             if s.get("listed", True):

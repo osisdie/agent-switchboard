@@ -52,6 +52,7 @@ except ImportError:  # pragma: no cover - CI installs python3-cryptography
 J = "".join
 OWNER, DEV = "owner@example.com", "dev@example.com"
 SVC = "0a1b2c3d4e5f.access"
+SVC_BOUND = "b0b0b0b0b0b0.access"       # bound to DEV: only DEV's keys may come with it
 HOSTNAME = "board.example.com"
 MCP = os.path.join(REPO, "bin", "board-mcp")
 NOW = int(time.time() * 1000)
@@ -91,8 +92,8 @@ serve:
     aud: AUD123
     certs_url: file://%s/certs.json
     allowed_emails: [%s]
-    api_service_tokens: [%s]
-""" % (OWNER, OWNER, PORT, "true" if HAVE_CRYPTO else "false", TPORT, HOSTNAME, TMP, OWNER, SVC))
+    api_service_tokens: [%s, {%s: %s}]
+""" % (OWNER, OWNER, PORT, "true" if HAVE_CRYPTO else "false", TPORT, HOSTNAME, TMP, OWNER, SVC, SVC_BOUND, DEV))
 
 
 def wj(path, obj):
@@ -125,9 +126,9 @@ def fixtures():
                                                                           "created_at": NOW})
 
 
-def mkkey(scopes, *extra):
+def mkkey(scopes, *extra, owner=DEV):
     r = subprocess.run([os.path.join(REPO, "bin", "board"), "apikey", "create", "--name", "mcp " + scopes[:40],
-                        "--owner", DEV, "--by", OWNER, "--scopes", scopes, "--json"] + list(extra),
+                        "--owner", owner, "--by", OWNER, "--scopes", scopes, "--json"] + list(extra),
                        capture_output=True, text=True, check=True)
     d = json.loads(r.stdout)
     return d["id"], d["key"]
@@ -151,7 +152,8 @@ def make_jwts():
     now = int(time.time())
     base = {"aud": ["AUD123"], "iss": "https://team.example.com", "exp": now + 3600, "iat": now}
     return {"svc": tok(dict(base, common_name=SVC, sub="", type="app")),
-            "svc_other": tok(dict(base, common_name="ffffeeee0000.access", sub="", type="app"))}
+            "svc_other": tok(dict(base, common_name="ffffeeee0000.access", sub="", type="app")),
+            "svc_bound": tok(dict(base, common_name=SVC_BOUND, sub="", type="app"))}
 
 
 def events_text():
@@ -702,6 +704,19 @@ class HttpMcpTest(FreshKeys):
         st, _, js, _ = post_mcp(rpc(2, "tools/list"), key, port=TPORT, host=host,
                                 headers={"Cf-Access-Jwt-Assertion": JWT["svc"], "Origin": "http://127.0.0.1:%d" % PORT})
         self.assertEqual((st, js["error"]), (403, "cross_site"))
+        # a service token bound to a person carries only their keys, on /mcp as on /api/v1
+        bound = {"Cf-Access-Jwt-Assertion": JWT["svc_bound"]}
+        st, _, js, _ = post_mcp(rpc(2, "tools/list"), key, port=TPORT, host=host, headers=bound)
+        self.assertEqual(st, 200)                                          # DEV's key: the bound owner
+        other_kid, other = mkkey("read:state", "--rate", "600", owner=OWNER)
+        st, _, js, raw = post_mcp(rpc(2, "tools/list"), other, port=TPORT, host=host, headers=bound)
+        self.assertEqual((st, js["error"]), (403, "token_key_mismatch"))
+        self.assertNotIn(other.encode(), raw)
+        rows = [e for e in events() if e.get("reason") == "token_key_mismatch" and e.get("key_id") == other_kid]
+        self.assertEqual([(e["route"], e["token"]) for e in rows], [("/mcp", SVC_BOUND)])
+        self.assertNotIn(other, events_text())
+        st, _, js, _ = post_mcp(rpc(2, "tools/list"), BAD_KEY, port=TPORT, host=host, headers=bound)
+        self.assertEqual((st, js["error"]), (401, "invalid_key"))          # a bad key: 401 first
 
 
 if __name__ == "__main__":

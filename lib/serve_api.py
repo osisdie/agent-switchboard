@@ -13,7 +13,8 @@ Order of checks, for every request (after board-serve's framing rules):
   2. the listener: local = a direct loopback request (403 otherwise); tunnel = serve.api.remote
      not false (else 403 api_remote_disabled) and a verified Cloudflare Access JWT (401) that is
      either a service token whose common_name is in serve.tunnel.api_service_tokens or an email in
-     the tunnel's allowed emails (else 403);
+     the tunnel's allowed emails (else 403); a token bound to people ({cn: owner(s)}) also needs
+     the key's owner among them (step 4, after the key: 403 token_key_mismatch);
   3. the route (404), its query parameters (400);
   4. the key: no Authorization header is 401 unauthenticated at once (not counted, not audited:
      a page firing keyless requests can't burn anyone's budget or flood the audit). A malformed or
@@ -69,14 +70,11 @@ def is_v1(raw_path):
 def api_settings(cfg):
     s = cfg.get("serve") if isinstance(cfg.get("serve"), dict) else {}
     a = s.get("api") if isinstance(s.get("api"), dict) else {}
-    t = s.get("tunnel") if isinstance(s.get("tunnel"), dict) else {}
-    toks = t.get("api_service_tokens")
-    toks = [toks] if isinstance(toks, str) else toks if isinstance(toks, list) else []
     fails = a.get("auth_fail_per_min", AUTH_FAIL_PER_MIN)
     if not isinstance(fails, int) or isinstance(fails, bool) or not 1 <= fails <= 10000:
         fails = AUTH_FAIL_PER_MIN
     return {"enabled": a.get("enabled") is not False, "remote": a.get("remote") is not False,
-            "service_tokens": {str(x).strip().lower() for x in toks if str(x or "").strip()},
+            "service_tokens": fleet.service_tokens(cfg),     # {cn: frozenset(owners) | None (unbound)}
             "auth_fail_per_min": fails, "request_ttl_ms": apikeys.request_ttl_ms(cfg)}
 
 
@@ -263,6 +261,19 @@ def authenticate(h, st, route, via, client):
         if reason == "wrong_env":
             fail(403, "key_wrong_env", "a test key works only on the mock board", reason)
         fail(401, "invalid_key", "the key is not valid", reason)
+    # A service token bound to people (serve.tunnel.api_service_tokens {cn: owner(s)}) carries only
+    # their keys: a leaked token plus someone else's valid key is refused. Checked after the key, so
+    # a bad key is still 401 first, and before grant(); counted and audited like a failed key (cn
+    # and kid, never a key). /mcp authenticates here too, so its tool calls inherit the check.
+    if client.startswith("service:"):
+        cn = client[len("service:"):]
+        owners = st["service_tokens"].get(cn)
+        if owners is not None:
+            if str(rec.get("owner") or "").strip().lower() not in owners:
+                base["token"] = cn
+                fail(403, "token_key_mismatch", "this key's owner is not bound to this Access service token "
+                     "(serve.tunnel.api_service_tokens)", "token_key_mismatch")
+            rec["_token_owner_ok"] = True   # in memory only: grant() audits it
     grant(h, rec, route, via, client, now)
     rec["_key"] = key  # for the SSE stream's re-check; never written or logged
     rec["_ttl"] = st["request_ttl_ms"]
@@ -277,6 +288,8 @@ def grant(h, rec, route, via, client, now, mcp=False):
            "via": via, "client": client}
     if mcp:
         who["mcp"] = True
+    if rec.get("_token_owner_ok"):
+        who["token_owner_ok"] = True
     scope = route["scope"]
     if scope not in (None, "public") and scope not in (rec.get("scopes") or []):
         _audit(h, dict(who, action=route["handler"], result=403, reason="insufficient_scope"))

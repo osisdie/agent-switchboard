@@ -48,6 +48,11 @@ except ImportError:  # pragma: no cover - CI installs python3-cryptography
 J = "".join
 OWNER, BOSS, DEV = "owner@example.com", "boss@example.com", "dev@example.com"
 SVC, SVC_OTHER = "0a1b2c3d4e5f.access", "ffffeeee0000.access"
+SVC_BOUND, SVC_MULTI, SVC_NOBODY = "b0b0b0b0b0b0.access", "m1m1m1m1m1m1.access", "n0n0n0n0n0n0.access"
+TOKENS_UNBOUND = "[%s]" % SVC.upper()
+# the mapping form, mixed with the old list form; names and owners in odd case on purpose
+TOKENS_BOUND = "[%s, {%s: DEV@Example.COM}, {%s: [%s, %s]}, {%s: []}]" % (
+    SVC.upper(), SVC_BOUND.upper(), SVC_MULTI, BOSS, DEV.upper(), SVC_NOBODY)
 HOSTNAME = "board.example.com"
 
 
@@ -62,7 +67,7 @@ def free_port():
 PORT, TPORT = free_port(), free_port()
 
 
-def write_fleet(remote=True, fail_per_min=1000):
+def write_fleet(remote=True, fail_per_min=1000, tokens=None):
     with open(os.path.join(CFG, "fleet.yaml"), "w") as fh:
         fh.write("""owners: [%s]
 approvers: [%s]
@@ -79,8 +84,9 @@ serve:
     aud: AUD123
     certs_url: file://%s/certs.json
     allowed_emails: [%s]
-    api_service_tokens: [%s]
-""" % (OWNER, BOSS, PORT, "true" if remote else "false", fail_per_min, TPORT, HOSTNAME, TMP, BOSS, SVC.upper()))
+    api_service_tokens: %s
+""" % (OWNER, BOSS, PORT, "true" if remote else "false", fail_per_min, TPORT, HOSTNAME, TMP, BOSS,
+       tokens or TOKENS_UNBOUND))
 
 
 def wj(path, obj):
@@ -147,6 +153,8 @@ def make_jwts():
     base = {"aud": ["AUD123"], "iss": "https://team.example.com", "exp": now + 3600, "iat": now}
     svc = dict(base, common_name=SVC, sub="", type="app")
     return {"svc": tok(svc), "svc_other": tok(dict(svc, common_name=SVC_OTHER)),
+            "svc_bound": tok(dict(svc, common_name=SVC_BOUND)), "svc_multi": tok(dict(svc, common_name=SVC_MULTI)),
+            "svc_nobody": tok(dict(svc, common_name=SVC_NOBODY)),
             "svc_badsig": tok(svc, other), "svc_expired": tok(dict(svc, exp=now - 3600)),
             "email": tok(dict(base, email=BOSS)), "email_other": tok(dict(base, email="intruder@example.com")),
             "neither": tok(base)}
@@ -740,6 +748,92 @@ class Tunnel(Fresh):
             self.assertEqual(self.t("/api/v1/whoami", "svc", self.all, ip="198.51.100.9")[0], 200)
         finally:
             write_fleet()
+
+    def test_bound_service_tokens(self):
+        """A token bound to people ({cn: owner(s)}) carries only their keys: a leaked token plus
+        someone else's valid key is 403 token_key_mismatch, audited by cn and kid, never the key."""
+        write_fleet(tokens=TOKENS_BOUND)
+        try:
+            dev = self.all                                                   # owner: dev@example.com
+            boss_kid, boss = mkkey("read:state", BOSS, "--rate", "600")
+            owner_kid, owner = mkkey("read:state", OWNER, "--rate", "600")
+            st, _, js = self.t("/api/v1/whoami", "svc_bound", dev)
+            self.assertEqual(st, 200, js)                                    # the bound owner, any case
+            row = [e for e in events() if e.get("type") == "api" and e.get("client") == "service:" + SVC_BOUND
+                   and e.get("result") == 200]
+            self.assertTrue(row and row[-1].get("token_owner_ok") is True)
+            st, _, js = self.t("/api/v1/whoami", "svc_bound", boss)
+            self.assertEqual((st, js["error"]), (403, "token_key_mismatch"))
+            rows = [e for e in events() if e.get("reason") == "token_key_mismatch" and e.get("key_id") == boss_kid]
+            self.assertEqual(len(rows), 1)
+            self.assertEqual((rows[0]["token"], rows[0]["result"], rows[0]["client"]),
+                             (SVC_BOUND, 403, "service:" + SVC_BOUND))
+            with open(os.path.join(HOME, "events.jsonl"), encoding="utf-8") as fh:
+                self.assertNotIn(boss, fh.read())
+            self.assertEqual(self.t("/api/v1/state", "svc_bound", boss)[0], 403)
+            # a bad key is still 401 first, before the binding
+            st, _, js = self.t("/api/v1/whoami", "svc_bound", boss[:-1] + ("A" if boss[-1] != "A" else "B"))
+            self.assertEqual((st, js["error"]), (401, "invalid_key"))
+            st, _, js = self.t("/api/v1/whoami", "svc_bound")
+            self.assertEqual((st, js["error"]), (401, "unauthenticated"))
+            # several owners
+            self.assertEqual(self.t("/api/v1/whoami", "svc_multi", dev)[0], 200)
+            self.assertEqual(self.t("/api/v1/whoami", "svc_multi", boss)[0], 200)
+            st, _, js = self.t("/api/v1/whoami", "svc_multi", owner)
+            self.assertEqual((st, js["error"]), (403, "token_key_mismatch"))
+            # mapped to nobody: fails closed
+            st, _, js = self.t("/api/v1/whoami", "svc_nobody", dev)
+            self.assertEqual((st, js["error"]), (403, "token_key_mismatch"))
+            # the old list form, next to them, stays unbound
+            for k in (dev, boss, owner):
+                self.assertEqual(self.t("/api/v1/whoami", "svc", k)[0], 200)
+            ok = [e for e in events() if e.get("client") == "service:" + SVC and e.get("result") == 200]
+            self.assertFalse([e for e in ok if "token_owner_ok" in e])
+            # the local listener and email JWTs are unchanged
+            self.assertEqual(self.req("/api/v1/whoami", boss)[0], 200)
+            self.assertEqual(self.t("/api/v1/whoami", "email", boss)[0], 200)
+            self.assertEqual(self.t("/api/v1/whoami", "svc_other", dev)[0], 403)
+        finally:
+            write_fleet()
+
+    def test_doctor_warns_unbound(self):
+        fleet_py = os.path.join(REPO, "lib", "fleet.py")
+        r = subprocess.run([sys.executable, fleet_py, "service-tokens-check"], capture_output=True, text=True)
+        self.assertEqual((r.returncode, r.stdout), (1, "unbound %s\n" % SVC))
+        write_fleet(tokens=TOKENS_BOUND)
+        try:
+            r = subprocess.run([sys.executable, fleet_py, "service-tokens-check"], capture_output=True, text=True)
+            self.assertEqual((r.returncode, r.stdout.splitlines()), (1, ["unbound " + SVC, "nobody " + SVC_NOBODY]))
+            out = subprocess.run([os.path.join(REPO, "bin", "board"), "doctor"], capture_output=True, text=True,
+                                 timeout=120).stdout
+            self.assertIn("unbound service token %s: map it to its user" % SVC, out)
+            self.assertIn("service token %s is mapped to no one" % SVC_NOBODY, out)
+            self.assertNotIn(SVC_BOUND, out)
+            write_fleet(tokens="{%s: %s}" % (SVC, DEV))
+            r = subprocess.run([sys.executable, fleet_py, "service-tokens-check"], capture_output=True, text=True)
+            self.assertEqual((r.returncode, r.stdout), (0, ""))
+        finally:
+            write_fleet()
+
+
+class ServiceTokenForms(unittest.TestCase):
+    def test_parse(self):
+        import fleet
+
+        def parse(raw):
+            return fleet.service_tokens({"serve": {"tunnel": {"api_service_tokens": raw}}})
+        self.assertEqual(parse("A.access"), {"a.access": None})
+        self.assertEqual(parse(["A.access", " b.access ", ""]), {"a.access": None, "b.access": None})
+        self.assertEqual(parse({"A.access": "Dev@Example.com", "b.access": ["x@example.com", "Y@example.com"]}),
+                         {"a.access": frozenset({"dev@example.com"}),
+                          "b.access": frozenset({"x@example.com", "y@example.com"})})
+        self.assertEqual(parse({"a.access": None, "b.access": []}), {"a.access": frozenset(), "b.access": frozenset()})
+        bound = {"a.access": frozenset({"dev@example.com"})}
+        self.assertEqual(parse(["a.access", {"a.access": "dev@example.com"}]), bound)    # bound wins
+        self.assertEqual(parse([{"a.access": "dev@example.com"}, "a.access"]), bound)
+        self.assertEqual(parse(None), {})
+        self.assertEqual(parse(7), {})
+        self.assertEqual(fleet.service_tokens({}), {})
 
 
 if __name__ == "__main__":
