@@ -1192,11 +1192,21 @@ TV="$(tall_vis)"
 FAKE_TMUX_HISTORY="$TALL_HIST" FAKE_TMUX_SCREEN="${TV/  2. Blue/  2. Teal}" press CP answer --expect tu_tall10
 eq "...a label missing after the start -> exit 3, nothing sent" "$?/$(sent_keys)" "3/0"
 qdone tu_tall10
-# The screen changed between the two captures (the scrollback capture no longer ends with it).
+# The screen changed between the two captures (the scrollback capture no longer ends with it):
+# nothing pressed, pending again (exit 7, counted), so the board can try again.
 d="$(askq tu_tall11 "$LONGQ")"; "$B" answer "$d" "Blue" --by user-1 >/dev/null
 FAKE_TMUX_HISTORY="$TALL_HIST" seqpress tu_tall11 "$(tall_vis)" "$(tall_vis | sed 's/2\. Blue/2. Blue (now)/')"
-eq "...screen changed between the captures -> exit 3, nothing sent" "$?/$(keys_sent)" "3/"
+eq "...screen changed between the captures -> exit 7, nothing sent" "$?/$(keys_sent)" "7/"
+eq "...pending again, not_visible, counted" "$(dj "$d" '"\(.status)/\(.press_note_code)/\(.press_not_visible)"')" "pending/not_visible/1"
 qdone tu_tall11
+# press.turn_regex empty: the scrollback cannot be checked for another turn, so it is refused.
+d="$(askq tu_tall12 "$LONGQ")"; "$B" answer "$d" "Blue" --by user-1 >/dev/null
+printf 'press:\n  turn_regex: ""\n' >> "$BOARD_CONFIG_DIR/fleet.yaml"
+: > "$FAKE_TMUX_LOG"
+FAKE_TMUX_HISTORY="$TALL_HIST" FAKE_TMUX_SCREEN="$(tall_vis)" press CP answer --expect tu_tall12
+eq "...press.turn_regex empty -> exit 3, nothing sent, stale" "$?/$(sent_keys)/$(dj "$d" .status)" "3/0/stale"
+sed -i '/^press:$/,$d' "$BOARD_CONFIG_DIR/fleet.yaml"
+qdone tu_tall12
 # A header cut short is tracked apart: the question is not "shortened", the card stays pressable.
 HDRQ="$(jq -cn --arg h "Header $(printf 'h%.0s' $(seq 1 60))" '[{question: "Which color?", header: $h, options: [{label: "Red", description: ""}, {label: "Blue", description: ""}], multiSelect: false}]')"
 d="$(askq tu_q12 "$HDRQ")"

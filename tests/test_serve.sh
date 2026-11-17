@@ -860,8 +860,13 @@ eq "  the page gets it" "$(req GET /api/state >/dev/null; body '.decisions[] | s
 eq "resolve it again: 409 gone" "$(post /api/decisions/d-1-r1/resolve '{"confirm":"resolve"}')" "409"
 eq "  error gone" "$(body .error)" "gone"
 ls "$BOARD_HOME"/.note.* >/dev/null 2>&1 && bad "  no note temp file left" || ok "  no note temp file left"
-# A pane question whose picker never shows: the owner closes it from the board.
+# A pane question whose picker never shows: the owner closes it from the board; an approver who
+# is not an owner may not (board resolve exit 4 -> 403 not_approver, untouched).
 dec d-1-pq1 question '{"source":"pane","tool_use_id":"tu_pq1","tool_name":"AskUserQuestion"}'
+write_cfg "owners: [boss@example.com]"
+eq "resolve a pending pane question by an approver who is not an owner: 403" "$(post /api/decisions/d-1-pq1/resolve '{"confirm":"resolve"}')" "403"
+eq "  error not_approver, still pending" "$(body .error)/$(jq -r .status "$BOARD_HOME/decisions/d-1-pq1.json")" "not_approver/pending"
+write_cfg ""
 eq "resolve a pending pane question (owner): 200" "$(post /api/decisions/d-1-pq1/resolve '{"confirm":"resolve"}')" "200"
 eq "  answered_in_pane" "$(jq -r .status "$BOARD_HOME/decisions/d-1-pq1.json")" "answered_in_pane"
 

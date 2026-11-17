@@ -5432,7 +5432,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     if (code === 'bad_duration' || code === 'bad_level' || code === 'bad_channel' || code === 'bad_op') { toast(tr('Not saved: {why}', { why: e.message || tr('the board server refused that setting.') }), true); return; }
     if (code === 'not_held' || code === 'confirm_required') { toast(tr('Not released: {why}', { why: e.message || tr('the message is not held.') }), true); return; }
     if (code === 'stale') { toast(tr('That prompt is no longer showing, so nothing was pressed. Handle it in the session.'), true); return; }
-    if (code === 'not_a_board_ask') { toast(tr('Only a question asked with board ask can be closed this way.'), true); return; }
+    if (code === 'not_a_board_ask') { toast(tr('Only a board ask or a question in the session can be closed this way.'), true); return; }
     if (code === 'screen_not_ready') {
       const b = (e && e.body) || {};
       toast(b.scrolled === true ? tr('The session\'s screen is scrolled, so nothing was pressed. Try again, or answer in the session.')
@@ -6539,7 +6539,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "Mark answered in session": "標記為已在 session 中回答",
       "Closed as answered in the session.": "已標記為在 session 中回答並關閉。",
       "answered in session": "已在 session 中回答",
-      "Only a question asked with board ask can be closed this way.": "只有用 board ask 提出的問題可以這樣關閉。",
+      "Only a board ask or a question in the session can be closed this way.": "只有用 board ask 提出的問題，或 session 裡的提問，可以這樣關閉。",
       "{tool} permission": "{tool} 權限",
       "{stage} gate": "{stage}關卡",
       "Questions and permission prompts that sessions are waiting on. Your answer is relayed to the session.": "session 正在等待的問題和權限提示。你的回答會轉達給 session。",

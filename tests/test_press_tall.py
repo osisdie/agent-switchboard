@@ -39,16 +39,21 @@ SOCKDIR = os.path.join(TMP, "s") if len(TMP) < 60 else tempfile.mkdtemp(prefix="
 os.makedirs(SOCKDIR, mode=0o700, exist_ok=True)
 if TMUX_REAL:
     with open(os.path.join(BIN, "tmux"), "w") as fh:
-        fh.write('#!/bin/sh\nunset TMUX TMUX_PANE\nTMUX_TMPDIR=%s\nexport TMUX_TMPDIR\nexec %s -L press-tall-test -f /dev/null "$@"\n'
+        fh.write('#!/bin/sh\nunset TMUX TMUX_PANE\nTMUX_TMPDIR=%s\nexport TMUX_TMPDIR\nexec %s -u -L press-tall-test -f /dev/null "$@"\n'
                  % (SOCKDIR, TMUX_REAL))
     os.chmod(os.path.join(BIN, "tmux"), 0o755)
 os.environ["PATH"] = BIN + os.pathsep + os.environ["PATH"]
 BOARD = os.path.join(REPO, "bin", "board")
 HOOK = os.path.join(REPO, "hooks", "board-hook.sh")
 QUESTION = "Which color do you prefer for the test? " + "context " * 60
-QS = [{"question": QUESTION.strip(), "header": "Color", "multiSelect": False,
-       "options": [{"label": "Red", "description": "warm"}, {"label": "Blue", "description": "cool"},
-                   {"label": "Green", "description": "natural"}]}]
+sys.path.insert(0, os.path.join(REPO, "tests"))
+from fake_claude_tui import QUESTION_CJK  # noqa: E402
+
+
+def questions(text):
+    return [{"question": text.strip(), "header": "Color", "multiSelect": False,
+             "options": [{"label": "Red", "description": "warm"}, {"label": "Blue", "description": "cool"},
+                         {"label": "Green", "description": "natural"}]}]
 
 
 def tmux(*args):
@@ -102,7 +107,7 @@ class TallQuestion(unittest.TestCase):
                        "procStart": proc_start(pid), "name": "CP", "tmux": "CP:@1.%s" % pane, "status": "waiting"}, fh)
         for ev in ({"hook_event_name": "PreToolUse", "tool_use_id": "tu_tall"}, {"hook_event_name": "PermissionRequest"}):
             ev.update({"session_id": sid, "permission_mode": "default", "tool_name": "AskUserQuestion",
-                       "tool_input": {"questions": QS}})
+                       "tool_input": {"questions": questions(QUESTION_CJK if state == "question-cjk" else QUESTION)}})
             subprocess.run([HOOK], input=json.dumps(ev), text=True, capture_output=True, check=True,
                            env=dict(os.environ, TMUX_PANE=pane))
         decs = []
@@ -133,6 +138,20 @@ class TallQuestion(unittest.TestCase):
         self.assertIn("Which color", tmux("capture-pane", "-p", "-t", "CP", "-S", "-200"), "...and in the history")
         rc, out = board("press", "CP", "answer", "--expect", "tu_tall")
         self.assertEqual(rc, 0, out + visible)
+        for _ in range(40):
+            if self.keys(d):
+                break
+            time.sleep(0.05)
+        self.assertEqual(self.keys(d), ["2"])
+        self.assertEqual(self.status(did), "relayed")
+
+    def test_cjk_full_width_space(self):
+        # The start holds a full-width space (U+3000): the scrollback text is stripped like the
+        # question (ASCII whitespace only), so it is found.
+        d, did = self.start("question-cjk")
+        self.assertNotIn("請選擇", tmux("capture-pane", "-p", "-t", "CP"), "the start is off the screen")
+        rc, out = board("press", "CP", "answer", "--expect", "tu_tall")
+        self.assertEqual(rc, 0, out)
         for _ in range(40):
             if self.keys(d):
                 break

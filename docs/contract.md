@@ -328,8 +328,8 @@ multiSelect, options: [{label, description}]}]}` on `PreToolUse` (with `tool_use
   the box glyph `│`. **A clipped question taller than the pane**: when its start is not on the
   visible screen and `press.scrollback_lines` (default 200) is above 0, press captures that many
   lines of scrollback plus the screen (`capture-pane -p -S -N`) and takes the start's LAST
-  occurrence there. It passes only when that capture ends with the visible capture (else exit 3:
-  the screen changed), the picker footer (`press.question_regex`) is on one of the last 3 non-blank
+  occurrence there (whitespace stripped byte-wise, ASCII only, as on the screen). It passes only when that capture ends with the visible capture (else exit 7,
+  pending again and counted, as below: the screen changed meanwhile), the picker footer (`press.question_regex`) is on one of the last 3 non-blank
   lines of the visible screen, no line from the one holding the start to the end matches
   `press.turn_regex` (default `^[[:space:]]*(●|⏺|❯)`: another turn; a focused picker row,
   `press.focus_regex` then a number, is not one), and every label follows the start in order;

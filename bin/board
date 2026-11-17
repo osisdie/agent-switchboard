@@ -1547,8 +1547,12 @@ cmd_press() {
       local sb_n; sb_n="$(cfg_get press.scrollback_lines 200)"
       case "$sb_n" in ''|*[!0-9]*) sb_n=200 ;; esac
       if [ "$sb_n" -gt 0 ]; then
-        press_scrollback "$pane" "$full" "$bind" "$regex" "$(cfg_get press.turn_regex)" "$(cfg_get press.focus_regex)" "$sb_n" \
-          || refuse "the start of the question ('${bind}') is not visible in pane $pane: $PRESS_WHY" "$pane"
+        local sb_rc=0
+        press_scrollback "$pane" "$full" "$bind" "$regex" "$(cfg_get press.turn_regex)" "$(cfg_get press.focus_regex)" "$sb_n" || sb_rc=$?
+        # The screen moved between the captures: nothing pressed, pending again (exit 7), so the
+        # board can try again; any other mismatch is a refusal (exit 3, stale).
+        [ "$sb_rc" = 2 ] && refuse_screen "the start of the question ('${bind}') was not checked in pane $pane: $PRESS_WHY" "$pane"
+        [ "$sb_rc" = 0 ] || refuse "the start of the question ('${bind}') is not visible in pane $pane: $PRESS_WHY" "$pane"
         qflat="$PRESS_REST"; prefix_seen=1
       fi
     fi
@@ -1664,7 +1668,7 @@ press_free_text() {
 # the pane (its start is above the visible screen). Captures the last N lines of scrollback plus
 # the screen (capture-pane -S -N) and, on success, sets PRESS_REST to the text (whitespace and "│"
 # removed) from the LAST occurrence of BIND down to the picker footer; else sets PRESS_WHY and
-# returns 1. Checks: the capture ends with VISIBLE (the screen did not change in between); the
+# returns 1, or 2 when the screen changed between the two captures (worth another try). Checks: the capture ends with VISIBLE (the screen did not change in between); the
 # footer (FOOTER_RE) is on one of the last 3 non-blank lines of the screen (the picker is at the
 # bottom, nothing drawn after it); no line from the one holding BIND to the end matches TURN_RE
 # (another turn: Claude's "●" bullet, the "❯" prompt), except a picker row ("❯ 2. …", FOCUS_RE
@@ -1676,12 +1680,14 @@ press_scrollback() {
   long="$(sed -e :a -e '/^[[:space:]]*$/{$d;N;ba' -e '}' <<<"$long")"
   vis="$(sed -e :a -e '/^[[:space:]]*$/{$d;N;ba' -e '}' <<<"$vis")"
   if [ -z "$vis" ] || { [ "$long" != "$vis" ] && [[ $long != *$'\n'"$vis" ]]; }; then
-    PRESS_WHY="the screen changed while checking"; return 1
+    PRESS_WHY="the screen changed while checking"; return 2
   fi
   grep -v '^[[:space:]]*$' <<<"$vis" | tail -n 3 | grep -Eq -- "$footer" \
     || { PRESS_WHY="the picker is not at the bottom of the screen"; return 1; }
   [ -n "$turn" ] || { PRESS_WHY="press.turn_regex is not configured"; return 1; }
-  out="$(SB_BIND="$bind" SB_FOOTER="$footer" SB_TURN="$turn" SB_ROW="^[[:space:]]*(${focus:-❯})[[:space:]]*[0-9]+\\." awk '
+  # LC_ALL=C: byte-wise, so [[:space:]] is ASCII whitespace only, as `tr -d '[:space:]'` strips
+  # the question and the labels (gawk in a UTF-8 locale would also strip U+3000 and the like).
+  out="$(SB_BIND="$bind" SB_FOOTER="$footer" SB_TURN="$turn" SB_ROW="^[[:space:]]*(${focus:-❯})[[:space:]]*[0-9]+\\." LC_ALL=C awk '
     { line[NR] = $0 }
     END {
       bind = ENVIRON["SB_BIND"]
