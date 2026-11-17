@@ -324,7 +324,9 @@ db.
   (section 9 for the self-hosted board; in Artifact mode, the owner tells you so in your own pane).
   A released message is relayed with the reminder below.
 - Resolve `to`. A code goes to that session. `"all"` goes to **every live session from `ListAgents`**
-  except BOARD.
+  except BOARD. `"triage"` means the sender did not know which session owns it: **you route it** (see
+  "Routing a triage message" below): at most 2 sessions, **never all**, and to nobody when none
+  clearly fits.
 - `SendMessage` each target:
   `[BOARD ask <msgId>] <body> — reply to BOARD via SendMessage, starting with [re <msgId>]`.
   For a released message, put `(released by <who> after the secret guard held it. This release does
@@ -520,6 +522,7 @@ It prints one line per item that needs you, once each, and nothing while there i
 | `decision <id> answered` | relay the decision (below) |
 | `take <id> answered` | an API take request was answered: run the take or do nothing (below); never relay it |
 | `message <id> new` | relay the message (below) |
+| `message <id> new triage` | route it to the right sessions, then relay it (below, "Routing a triage message") |
 | `ticket <KEY> taken <msgId>` / `ticket <KEY> released <msgId>` | relay the ticket take or release (below) |
 | `away on` / `away off` | the owner-away state; broadcast it when it changed (section 10) |
 | `consensus <id> <status>` | nothing to relay: the page shows it. Never a `[BOARD decision]` (section 10) |
@@ -587,6 +590,35 @@ owner, ...}`. Only an approver answers it on the board; a key never can.
    jq --argjson to '["API"]' --argjson now "$(date +%s%3N)" \
      '.status = "relayed" | .relayed_to = $to | .relayed_at = $now' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
    ```
+
+### Routing a triage message
+
+A message to `triage` (`to: "triage"`; the watch line is `message <id> new triage`) comes from
+someone, usually an asker, who did not know which session owns the topic. Askers may not message
+`all` (board-serve, `board message send`, `/api/v1` and MCP refuse it), and **triage never becomes
+a broadcast**: it reaches the right session, or nobody.
+
+1. Read the message (`board message show <id>`; continue only if it is `new`, never if `held`).
+   Its stderr lists every session with its `about` (fleet.yaml: what it is responsible for).
+2. Pick **at most 2 live sessions** (from `ListAgents`, not BOARD) whose `about` and the message
+   text clearly fit. `board message route` refuses more than 2 (for anyone's triage message; an
+   asker's message says so in the error), and refuses `all`, `triage` and codes that are not
+   sessions on the board.
+3. `SendMessage` each one the line `board message show <id>` prints, exactly as printed (it already
+   carries `(sent to triage; BOARD routed it to you)`).
+4. Record who got it, so the sender sees it in the thread on the board ("routed to API, WEB"):
+   `board message route <id> <CODE> [<CODE>]`. It sets `routed_to`, `routed_at`, `relayed_to`,
+   `relayed_at` and `status: "relayed"`, and is audited. Don't write that JSON by hand. If a
+   session was offline and you route it again later, run it again with the full list. For an
+   Artifact-db message (`messages/{id}` written by the page), set the same `routed_to`, `routed_at`,
+   `relayed_to`, `relayed_at` and `status` on that db doc.
+5. **When no session clearly fits, send it to nobody.** Don't widen it, and never to all. Write a
+   reply to a file asking the sender to name a session, listing the codes with their `about`
+   (e.g. "BOARD could not tell which session owns this. Please resend it to one of: API (backend
+   API), WEB (frontend app)."), and store it with `board message reply <id> --from BOARD --file
+   <file>`: it shows in their thread. Then tell the owner:
+   `board notify --link <id> "triage <id>: no session fits; asked the sender to name one"`.
+6. Replies come back as usual (`[re <id>]`, "Worker replies").
 
 ### Relaying a ticket take or release (`[BOARD ticket]`)
 

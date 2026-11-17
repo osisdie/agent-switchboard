@@ -28,8 +28,9 @@ listeners (docs/contract.md, "Local adapter API"):
   POST /api/decisions/<id>/answer      {"answer": "..."}   (via `board answer` / `board press`)
   POST /api/decisions/<id>/resolve     {"confirm": "resolve", "note": "..."}  (approvers only: a
                                        board ask answered in the session; `board resolve --in-pane`)
-  POST /api/messages                   {"to": "CODE"|"all", "body": "..."}  (screened by the secret
-                                       guard: a secret request is stored "held", never relayed)
+  POST /api/messages                   {"to": "CODE"|"triage"|"all", "body": "..."}  (screened by the
+                                       secret guard: a secret request is stored "held", never relayed;
+                                       "triage": BOARD routes it; an asker may not send to "all")
   POST /api/messages/<id>/release      {"confirm": "release"}  (owners only: release a held
                                        message after a false positive; audited)
   POST /api/away                       {"state": "on"|"off", "said": "..."}   (owners only;
@@ -531,6 +532,7 @@ class StateBuilder:
         paths.append(self.p("pomodoro.json"))   # pomodoro tallies (lib/pomodoro.py)
         paths.append(self.p(lessons.FILE))      # lessons (lib/lessons.py), append-only
         paths.append(self.p("scheduler.json"))  # rewritten only when the decision changes
+        paths.append(os.path.join(fleet.config_dir(), "fleet.yaml"))   # sessions' `about`, approver lists
         for sub in ("decisions", "tasks", "consensus"):
             paths.append(self.p(sub))
             paths.extend(glob.glob(self.p(sub, "*.json")))
@@ -600,11 +602,15 @@ class StateBuilder:
         cards = read_json(self.p("cards.json"))
         cards = cards.get("sessions") if isinstance(cards, dict) and isinstance(cards.get("sessions"), dict) else {}
         sessions = []
+        # what each session is responsible for (fleet.yaml `about`, already one clean capped line);
+        # a second instance ("API/name") is the same session's
+        abouts = {f["code"]: f.get("about") or "" for f in cfg.get("sessions") or []}
         for s in snap.get("sessions") or []:
             if not isinstance(s, dict) or not s.get("code"):
                 continue
             row = {k: s.get(k) for k in SESSION_KEYS}
             row["task"] = titles.get(s.get("task_id")) or ""
+            row["about"] = abouts.get(s["code"]) or abouts.get(str(s["code"]).split("/")[0]) or ""
             card = cards.get(s["code"])
             row["card"] = {k: card.get(k) for k in CARD_KEYS if k in card} if isinstance(card, dict) else None
             sessions.append(row)
@@ -702,7 +708,8 @@ HISTORY_MAX = 50
 # operator put in a file stays on disk). The page's own fields, plus the kind / asker / ticket
 # relay ones the contract documents (docs/contract.md "Messages"; ticket text is viewer-scoped).
 MESSAGE_KEYS = ("id", "to", "body", "by", "created_at", "status", "relayed_to", "relayed_at", "held_reason",
-                "held_at", "released_by", "released_at", "kind", "asker", "event", "ticket", "task_id", "api", "via")
+                "held_at", "released_by", "released_at", "kind", "asker", "event", "ticket", "task_id", "api", "via",
+                "routed_to", "routed_at")
 REPLY_KEYS = ("id", "from", "body", "created_at", "redacted")
 CURSOR_RE = re.compile(r"([0-9]{1,16})\.(m-[0-9]+-[a-z0-9]+)")
 
@@ -754,6 +761,18 @@ def thread_replies(home, mid):
     return rs[-REPLIES_PER_THREAD:]
 
 
+def thread_sessions(home, m):
+    """The sessions a thread involves (the page's session filter means the same): its `to`, the
+    sessions it was relayed or routed to, and every session that replied."""
+    out = {str(m.get("to") or "")}
+    for k in ("relayed_to", "routed_to"):
+        if isinstance(m.get(k), list):
+            out |= {str(x) for x in m[k]}
+    out |= {str(r.get("from") or "") for r in thread_replies(home, m["id"])}
+    out.discard("")
+    return out
+
+
 def message_cursor(t):
     return "%d.%s" % (t["at"], t["m"]["id"])
 
@@ -761,7 +780,8 @@ def message_cursor(t):
 def message_page(home, before=None, limit=HISTORY_LIMIT, to=None, q=None, view=None):
     """One page of the message history (GET /api/messages, /api/v1/messages): threads strictly
     older than the cursor `before` ("<activity ms>.<message id>", from a thread's
-    last_activity_at and id), optionally only those to session `to` (or "all"), and only those
+    last_activity_at and id), optionally only those involving session `to` (sent, relayed or
+    routed to it, or replied by it; or to "all" / "triage"), and only those
     whose text matches `q` (case-insensitive, also in the replies). `view(state) -> state` is the
     viewer's filter; the search runs on what it returns (scrubbed, viewer-scoped), so a search can
     never find text the viewer would not see. Returns {messages, replies, next}: `next` is the
@@ -771,7 +791,7 @@ def message_page(home, before=None, limit=HISTORY_LIMIT, to=None, q=None, view=N
         at, mid = before
         threads = [t for t in threads if (t["at"], t["m"]["id"]) < (at, mid)]
     if to:
-        threads = [t for t in threads if str(t["m"].get("to") or "") == to]
+        threads = [t for t in threads if to in thread_sessions(home, t["m"])]
     q = (q or "").strip().lower()
     out, reps, more = [], {}, False
     for t in threads:
@@ -1889,8 +1909,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def message(self, body, ident, via):
         to, text = body.get("to"), body.get("body")
-        if not isinstance(to, str) or not (to == "all" or CODE_RE.fullmatch(to)):
-            raise Refused(400, "bad_to", "to must be a session code or \"all\"")
+        if not messages.valid_to(to):     # "ALL", "Triage" ...: refused, never a session code
+            raise Refused(400, "bad_to", "to must be a session code, \"triage\" or \"all\" (lowercase)")
         if not isinstance(text, str) or not text.strip() or len(text) > MAX_MESSAGE:
             raise Refused(400, "bad_body", "body must be a non-empty string (max %d chars)" % MAX_MESSAGE)
         cfg = fleet.load_fleet()
@@ -1898,6 +1918,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.audit(ident, via, "message", result="refused", reason="not an approver or asker")
             raise Refused(403, "not_approver", "only approvers, release managers and askers send messages")
         asker = match_id(ident, askers(cfg)) if asker_only(cfg, ident) else None
+        if asker is not None and to == "all":
+            # an asker interrupts no one wholesale: "triage" lets BOARD pick the sessions
+            self.audit(ident, via, "message", to=to, result="refused", reason="asker_no_all", asker=True)
+            raise Refused(403, "asker_no_all", messages.ASKER_NO_ALL)
+        if to not in ("all", messages.TRIAGE) and not self.known_code(to):
+            # like /api/v1: a message to nobody would sit "new" forever (after the identity check,
+            # so an outsider learns nothing about the session codes)
+            raise Refused(400, "unknown_session", "no session %s on this board" % to)
         # lib/messages.py: scrubbed before it is stored; a secret request is stored "held" (never
         # relayed), audited and alerted without echoing the text.
         with self.server.write_lock:
@@ -2207,10 +2235,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def known_code(self, code):
         if not isinstance(code, str) or not CODE_RE.fullmatch(code):
             return False
-        snap = read_json(os.path.join(self.server.home, "snapshot.json")) or {}
-        known = {str(s.get("code")) for s in snap.get("sessions") or [] if isinstance(s, dict)}
-        known |= {s["code"] for s in fleet.load_fleet()["sessions"]}
-        return code in known
+        return code in fleet.known_codes(self.server.home)
 
     @staticmethod
     def _audit_str(v):
@@ -2382,7 +2407,10 @@ def actionable(home):
                 out.append((as_int(m.get("created_at")), "ticket %s %s %s" % (tk["key"], m["event"], m.get("id")),
                             ("m", m.get("id"))))
             else:
-                out.append((as_int(m.get("created_at")), "message %s new" % m.get("id"), ("m", m.get("id"))))
+                # "triage": the operator picks the sessions (prompts/board-operator.md), then records
+                # them with `board message route`
+                out.append((as_int(m.get("created_at")), "message %s new%s" % (
+                    m.get("id"), " triage" if m.get("to") == messages.TRIAGE else ""), ("m", m.get("id"))))
     for r in lessons.board_view(home, 10 ** 6):   # a new auto lesson waits for the operator's note
         if r.get("status") == "candidate" and r.get("source") == "auto" and not r.get("cause") and not r.get("resolution"):
             out.append((as_int(r.get("first_seen")), "lesson %s candidate" % r["id"], ("l", r["id"])))

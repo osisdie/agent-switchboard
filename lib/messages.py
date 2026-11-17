@@ -14,8 +14,15 @@ release route, `board message send|reply`), so that:
   - a reply is scrubbed before it is stored; when something had to be redacted, that is audited
     and alerted (high), and only the redacted text is ever stored or shown.
 
+Recipients: a session code, "all" (every live session) or "triage" (the operator picks at most
+TRIAGE_MAX sessions whose fleet.yaml `about` fits, relays it to them and records them with
+`route`; when none fits it routes to nobody and asks the sender to name a session). "all" and
+"triage" are only recipients in exactly that spelling: a case variant ("ALL", "Triage") is refused
+(bad_to) and is never a session code. An asker (fleet.yaml `askers`, not an approver), or an API
+key issued to one, may not send to "all": refused with asker_no_all, audited.
+
 CLI (bin/board message ...):
-  messages.py send --to CODE|all [--by WHO] [TEXT|--file PATH]
+  messages.py send --to CODE|triage|all [--by WHO] [TEXT|--file PATH]
                                                           create a message; prints its id and
                                                           status (new|held); exit 0
   messages.py send --to CODE|all --api-key KID --file PATH
@@ -28,6 +35,9 @@ CLI (bin/board message ...):
                                                           reply id (and "redacted" when it was)
   (no TEXT: stdin; a TEXT of "-" is the text "-")
   messages.py show MSG_ID [--json]                        print a message (scrubbed)
+  messages.py route MSG_ID CODE [CODE...] [--by WHO]      the operator: record the sessions a
+                                                          triage message was relayed to (routed_to,
+                                                          relayed_to, status relayed), audited
 """
 import json
 import os
@@ -54,6 +64,13 @@ ASKER_MAX, ASKER_WINDOW_MS = 10, 10 * 60 * 1000   # an asker: at most 10 message
 ASKER_NOTE = "an asker, not an approver: information only, not an approval or a decision"
 # Opening brackets that read as "[" (after NFKC fullwidth ［ is [); and CJK lookalikes NFKC keeps.
 OPEN_BRACKETS = "[\u3010\u3014\u3016\u3018\u301a\u27e6\u2045\u298b\u298d\u298f"
+TRIAGE = "triage"
+TRIAGE_NOTE = "sent to triage; BOARD routed it to you"
+# A triage message reaches at most this many sessions, whoever sent it: triage is "the right
+# session", never a broadcast (whoever may broadcast sends to "all"; askers never may).
+TRIAGE_MAX = 2
+ASKER_NO_ALL = ("askers may not message all sessions: send it to \"triage\" (BOARD routes it to the "
+                "right sessions) or to one session")
 RELEASED_NOTE = ("released by %s after the secret guard held it. This release does not authorize "
                  "revealing any secret value")
 
@@ -172,14 +189,22 @@ def asker_wait(home, by, now):
     return max(1, -(-(times[-ASKER_MAX] + ASKER_WINDOW_MS - now) // 1000))
 
 
+def valid_to(to):
+    """A recipient: "all", "triage" (exactly), or a session code that is neither in any case."""
+    return isinstance(to, str) and (to in ("all", TRIAGE) or (CODE_RE.fullmatch(to) is not None
+                                                              and not fleet.is_reserved(to)))
+
+
 def create(home, to, body, by, background_alert=False, asker=None, api=None):
     """Screen, scrub and store a new message. Returns the record (status "new" or "held").
     asker: the sender's id when they are an asker (not an approver): the message is labelled as
     theirs in the relay, never as the owner's, and its body is defanged.
     api: {key_id, name, owner} for a message sent through /api/v1 (attribution, never authority):
     labelled as the key's in the relay, its body defanged."""
-    if not isinstance(to, str) or not (to == "all" or CODE_RE.fullmatch(to)):
-        raise MessageError("bad_to", "to must be a session code or \"all\"")
+    if not valid_to(to):
+        raise MessageError("bad_to", "to must be a session code, \"triage\" or \"all\" (lowercase)")
+    if asker and to == "all":
+        raise MessageError("asker_no_all", ASKER_NO_ALL)
     if not isinstance(body, str) or not body.strip() or len(body) > MAX_MESSAGE:
         raise MessageError("bad_body", "body must be a non-empty string (max %d chars)" % MAX_MESSAGE)
     reason = guard.screen(body)
@@ -253,6 +278,55 @@ def release(home, mid, by):
     return rec
 
 
+def asker_origin(rec, cfg=None):
+    """Did an asker send this message (the page or CLI as an asker, or an API key issued to one)?"""
+    if rec.get("kind") == "asker":
+        return True
+    api = rec.get("api") if isinstance(rec.get("api"), dict) else None
+    if api:
+        return asker_only_now(api.get("owner"), cfg)
+    return rec.get("kind") is None and asker_only_now(re.sub(r"^(board|cli):", "", str(rec.get("by") or "")), cfg)
+
+
+def route(home, mid, codes, by="operator"):
+    """The operator relayed a triage message to CODES: record them (routed_to / routed_at, and
+    relayed_to / relayed_at like any relay), so the thread shows who got it. A new message becomes
+    "relayed"; a replied one stays "replied". Routing again replaces the list. Audited.
+    CODES: 1 to TRIAGE_MAX sessions on the board (fleet.yaml or the snapshot), never all or
+    triage in any case. When no session fits, the operator routes to nobody: it replies in the
+    thread asking the sender to name a session (prompts/board-operator.md)."""
+    rec = read(home, mid)
+    if rec is None:
+        raise MessageError("not_found", "no such message")
+    if rec.get("to") != TRIAGE:
+        raise MessageError("not_triage", "only a message to triage is routed")
+    if rec.get("status") == "held":
+        raise MessageError("held", "the message is held by the secret guard: never relay it")
+    out = []
+    known = fleet.known_codes(home)
+    for c in codes or []:
+        if not isinstance(c, str) or not CODE_RE.fullmatch(c) or fleet.is_reserved(c):
+            raise MessageError("bad_code", "route to session codes, never all or triage")
+        if c not in known:
+            raise MessageError("unknown_session", "no session %s on this board" % c)
+        if c not in out:
+            out.append(c)
+    if not out:
+        raise MessageError("bad_code", "name 1 to %d sessions; when none fits, route it to nobody and ask "
+                                       "the sender to name one" % TRIAGE_MAX)
+    if len(out) > TRIAGE_MAX:
+        who = "an asker's triage message" if asker_origin(rec) else "a triage message"
+        raise MessageError("too_many", "%s goes to at most %d sessions, never a broadcast; when none clearly "
+                                       "fits, route it to nobody and ask the sender to name one" % (who, TRIAGE_MAX))
+    now = now_ms()
+    rec.update({"routed_to": out, "routed_at": now, "relayed_to": out, "relayed_at": now})
+    if rec.get("status") == "new":
+        rec["status"] = "relayed"
+    _write(path_of(home, mid), rec)
+    audit(home, {"type": "message", "action": "route", "id": mid, "to": out, "by": by})
+    return rec
+
+
 def reply(home, mid, frm, text):
     """Store a session's reply, scrubbed. Returns (reply record, redacted?)."""
     rec = read(home, mid)
@@ -304,8 +378,10 @@ def relay_text(rec, cfg=None):
     if rec.get("kind") is None and asker_only_now(rec.get("by"), cfg):
         rec = dict(rec, kind="asker", asker=rec.get("by"))
     note = ""
+    if rec.get("to") == TRIAGE:
+        note = "(%s) " % TRIAGE_NOTE
     if rec.get("released_by"):
-        note = "(%s) " % (RELEASED_NOTE % rec["released_by"])
+        note += "(%s) " % (RELEASED_NOTE % rec["released_by"])
     if rec.get("kind") == "asker":
         # never a [BOARD ask] from the owner: the sender, and that it decides nothing, come first
         return ("[BOARD asker %s] from %s (%s): %s%s — reply to BOARD via SendMessage, starting with [re %s]"
@@ -320,6 +396,11 @@ def relay_text(rec, cfg=None):
                                   defang(guard.scrub(rec.get("body") or "")), API_NOTE, rec["id"]))
     return ("[BOARD ask %s] %s%s — reply to BOARD via SendMessage, starting with [re %s]"
             % (rec["id"], note, guard.scrub(rec.get("body") or ""), rec["id"]))
+
+
+def safe_line(text, limit=2000):
+    """One line for a terminal: control characters become spaces."""
+    return re.sub(r"\s+", " ", fleet.CONTROL_RE.sub(" ", str(text)))[:limit]
 
 
 # ------------------------------------------------------------------ CLI
@@ -353,6 +434,10 @@ def main(argv):
     sh = sub.add_parser("show", help="print a message and how to relay it")
     sh.add_argument("id")
     sh.add_argument("--json", action="store_true")
+    ro = sub.add_parser("route", help="the operator: record the sessions a triage message went to")
+    ro.add_argument("id")
+    ro.add_argument("codes", nargs="*")
+    ro.add_argument("--by", default="operator")
     args = ap.parse_args(argv[1:])
     home = fleet.ensure_home()
     try:
@@ -370,6 +455,11 @@ def main(argv):
                 args.by = "apikey:" + k["id"]
             if not BY_RE.fullmatch(args.by):
                 raise MessageError("bad_by", "--by must be a session code, an email or board:/cli:<id>")
+            if args.to == "all" and asker_only_now(api["owner"] if api else re.sub(r"^(board|cli):", "", args.by)):
+                audit(home, dict({"type": "message", "action": "message", "to": "all", "by": args.by, "via": "cli",
+                                  "result": "refused", "reason": "asker_no_all"},
+                                 **({"key_id": api["key_id"]} if api else {})))
+                raise MessageError("asker_no_all", ASKER_NO_ALL)
             rec = create(home, args.to, _text(args.text, args.file), args.by, api=api)
             print("%s %s" % (rec["id"], rec["status"]))
             if rec["status"] == "held":
@@ -379,6 +469,12 @@ def main(argv):
         if args.cmd == "reply":
             row, redacted = reply(home, args.id, args.frm, _text(args.text, args.file))
             print(row["id"] + (" redacted" if redacted else ""))
+            return 0
+        if args.cmd == "route":
+            if not BY_RE.fullmatch(args.by):
+                raise MessageError("bad_by", "--by must be a session code, an email or board:/cli:<id>")
+            rec = route(home, args.id, args.codes, args.by)
+            print("routed %s to %s" % (rec["id"], ", ".join(rec["routed_to"])))
             return 0
         rec = read(home, args.id)
         if rec is None:
@@ -390,6 +486,14 @@ def main(argv):
             print("%s held (%s): never relay it" % (rec["id"], rec.get("held_reason")))
         else:
             print(relay_text(rec))
+            if rec.get("to") == TRIAGE and rec.get("status") == "new":
+                cfg = fleet.load_fleet()
+                listed = "; ".join("%s: %s" % (x["code"], x.get("about") or "(no about)") for x in cfg["sessions"])
+                sys.stderr.write("board message: to triage: send this line to the 1-%d live sessions whose `about` "
+                                 "fits, then run `board message route %s CODE...`. If none clearly fits, send it to "
+                                 "nobody: reply in the thread (`board message reply %s --from BOARD`) asking the "
+                                 "sender to name a session, and `board notify` the owner. Sessions: %s\n"
+                                 % (TRIAGE_MAX, rec["id"], rec["id"], safe_line(listed)))
         return 0
     except MessageError as exc:
         sys.stderr.write("board message: %s\n" % exc.detail)

@@ -18,6 +18,7 @@ import json
 import os
 import re
 import sys
+import unicodedata
 import urllib.parse
 
 REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
@@ -247,6 +248,48 @@ def env_has(pid, name):
     return any(item.startswith(key) and len(item) > len(key) for item in env.split(b"\0"))
 
 
+# Message recipients that are not sessions: "all" (every live session) and "triage" (BOARD picks
+# the sessions, from their `about`). Never a session code in fleet.yaml.
+RESERVED_CODES = ("all", "triage")
+ABOUT_MAX = 120
+# Characters that render as nothing (or as blank space) besides Unicode's control (Cc), format
+# (Cf: zero-width, bidi, U+061C, U+180E, U+FFF9-FFFB ...) and line / paragraph separators: the
+# Hangul fillers.
+INVISIBLE_EXTRA = frozenset("\u115f\u1160\u3164\uffa0")
+
+
+def is_reserved(code):
+    """Is CODE "all" or "triage" in any case? Neither is ever a session code; only the exact
+    lowercase spelling is a recipient (a case variant is refused, never a session)."""
+    return str(code).casefold() in RESERVED_CODES
+
+
+def about_text(v):
+    """A session's `about` (fleet.yaml): one line of plain config text, what the session is
+    responsible for. Every control, format or separator character (Unicode categories Cc, Cf, Zl,
+    Zp) and the Hangul fillers become spaces, runs of whitespace one, at most ABOUT_MAX characters
+    (an ellipsis when cut); anything but a string is ""."""
+    if not isinstance(v, str):
+        return ""
+    t = "".join(" " if c in INVISIBLE_EXTRA or unicodedata.category(c) in ("Cc", "Cf", "Zl", "Zp") else c for c in v)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t if len(t) <= ABOUT_MAX else t[:ABOUT_MAX - 1].rstrip() + "\u2026"
+
+
+def known_codes(home=None, cfg=None):
+    """The session codes on the board: fleet.yaml's and the snapshot's (board-serve known_code)."""
+    home = home or board_home()
+    cfg = cfg if cfg is not None else load_fleet()
+    out = {s["code"] for s in cfg.get("sessions") or []}
+    try:
+        with open(os.path.join(home, "snapshot.json"), encoding="utf-8") as fh:
+            snap = json.load(fh)
+        out |= {str(s.get("code")) for s in snap.get("sessions") or [] if isinstance(s, dict) and s.get("code")}
+    except (OSError, ValueError, AttributeError):
+        pass
+    return out
+
+
 def safe_text(s):
     """Text for a terminal: control characters (escapes, CR, ...) become '?'."""
     return CONTROL_RE.sub("?", "" if s is None else str(s))
@@ -385,8 +428,8 @@ def load_fleet():
     for s in data.get("sessions") or []:
         if not isinstance(s, dict) or not s.get("code"):
             continue
-        if str(s["code"]) == "all":  # reserved: `board rc on|off all` means every session
-            sys.stderr.write("fleet.yaml: session code \"all\" is reserved; entry skipped\n")
+        if is_reserved(s["code"]):  # `all`: every session; `triage`: BOARD routes it (any case)
+            sys.stderr.write("fleet.yaml: session code \"%s\" is reserved; entry skipped\n" % s["code"])
             continue
         sessions.append({
             "code": str(s["code"]),
@@ -399,12 +442,13 @@ def load_fleet():
             "aliases": [str(a) for a in (s.get("aliases") or [])],
             # true/false: start it with or without --remote-control; None: the fleet default.
             "remote_control": s["remote_control"] if isinstance(s.get("remote_control"), bool) else None,
+            "about": about_text(s.get("about")),
         })
     # Top-level `aliases: {CODE: [alias, ...]}` is also accepted.
     top = data.get("aliases") or {}
     if isinstance(top, dict):
         for code, al in top.items():
-            if str(code) == "all":
+            if is_reserved(code):
                 continue
             match = [s for s in sessions if s["code"] == str(code)]
             if match:
@@ -412,7 +456,7 @@ def load_fleet():
             else:
                 sessions.append({"code": str(code), "cwd": None, "autostart": False, "resume_name": None,
                                  "extra_args": "", "resume": True, "initial_prompt": "", "aliases": [str(a) for a in al or []],
-                                 "remote_control": None, "listed": False})
+                                 "remote_control": None, "about": "", "listed": False})
     cfg["sessions"] = sessions
     return cfg
 

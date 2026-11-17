@@ -164,7 +164,7 @@ def main():
             check("  the session filter lists all, then each code, @all last", opts[0] == "" and "API" in opts and opts[-1] == "all", opts)
             pg.select_option("#msg-hist-to", "API")
             v = pg.evaluate(VIEW_JS)
-            check("  filter @API: only API threads", v["hist"] == ["m-97-old"], v)
+            check("  filter @API: threads sent, relayed or routed to API, or that API replied to (an @all relayed to API too)", v["hist"] == ["m-96-old", "m-97-old"], v)
             pg.select_option("#msg-hist-to", "")
             pg.fill("#msg-hist-q", "BACKFILL")
             pg.wait_for_timeout(100)
@@ -178,9 +178,9 @@ def main():
             pg.click("#msg-hist-btn")
             check("  and closes again", pg.evaluate(VIEW_JS)["expanded"] == "false" and pg.evaluate("() => document.getElementById('msg-hist-panel').hidden"))
             pg.evaluate("() => document.getElementById('h-messages').scrollIntoView({ behavior: 'instant' })")
-            r = pg.evaluate("""() => { const c = document.getElementById('composer').getBoundingClientRect(), t = document.getElementById('threads').getBoundingClientRect();
+            r = pg.evaluate("""() => { const c = document.getElementById('composer').getBoundingClientRect(), t = document.getElementById('msg-tools').getBoundingClientRect();
               return { top: Math.abs(c.top - t.top) < 4, h: c.height }; }""")
-            check("the composer sits at the top of the section", r["top"] and r["h"] > 0, r)
+            check("the composer sits at the top of the section (beside the message tools)", r["top"] and r["h"] > 0, r)
             pg.evaluate("() => document.getElementById('msg-hist-btn').scrollIntoView({ block: 'end', behavior: 'instant' })")
             r = pg.evaluate("() => { const c = document.getElementById('composer').getBoundingClientRect(); return { top: c.top, bottom: c.bottom, vh: innerHeight }; }")
             check("  and stays in view while the threads scroll by (wide screen)", r["top"] >= 0 and r["bottom"] <= r["vh"], r)

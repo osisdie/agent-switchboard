@@ -83,8 +83,8 @@ hooks ──▶ zero-token collector ──▶ LLM operator session ──▶ in
    database. It relays your answers back to the sessions.
 4. The **board page** shows tasks moving through lifecycle stages (Plan → Design → Build → Test →
    Deploy → **production gate** → Maintain), session columns per state, decision and gate cards with
-   option buttons, permission cards with Allow/Deny, and a message bar that supports `@CODE` and
-   `@all`.
+   option buttons, permission cards with Allow/Deny, and a message bar that supports `@CODE`,
+   `@triage` (the operator picks the session) and `@all`.
 
 ## Architecture
 
@@ -515,12 +515,33 @@ Workers reply with `[re <msgId>] …`, and replies thread under the message. **M
 information, never approvals.** A message that asks a session for a secret value is held, not
 relayed (see [Secret guardrails](#secret-guardrails)).
 
+**Who owns what.** Give each session a one-line `about:` in `fleet.yaml` (`about: "frontend app"`,
+`about: "infrastructure / gitops"`; plain text, at most 120 characters). The `@` list in the
+composer shows it next to each code. Not sure which session owns a question? Send it to
+**`@triage`**: the operator picks at most 2 live sessions whose `about` fits, relays it to them, and
+records them with `board message route <id> <CODE>…` (which refuses more than 2), so the thread
+shows **Routed by BOARD to API, WEB**. Triage is never a broadcast: when no session clearly fits,
+the operator sends it to nobody, replies in the thread asking you to name a session (with the
+codes and their `about`), and tells the owner. `all` and `triage` are recipients only in lowercase
+(`ALL` or `Triage` is refused, never a session code), and a message to a code that is not a
+session on the board is refused (400 `unknown_session`).
+**`@all` interrupts every live session**: the page asks first ("this interrupts all N live
+sessions"), and askers can't use it at all: their messages default to triage, and board-serve,
+`board message send`, `/api/v1` and MCP refuse `all` for them (403 `asker_no_all`, audited).
+
 The section shows the 5 threads with the latest activity (a new reply brings a thread back up).
 Held messages and threads with replies you have not marked read stay pinned on top; **Mark read**
-is kept in your browser. **History (N older)** opens the rest, 20 at a time, with a session filter
-and a search. Long messages and replies show their first lines (**Show more**), and a thread shows
-its latest 3 replies. On the self-hosted board the state carries the latest 20 threads (plus every
-held one) and `GET /api/messages` pages the history; nothing is deleted on disk.
+is kept in your browser. **History (N older)** opens the rest, 20 at a time (**Load more**), with a
+session filter and a search. Long messages and replies show their first 4 lines (**Show more**), and
+a thread shows its latest 3 replies. On the self-hosted board the state carries the latest 20
+threads (plus every held one) and `GET /api/messages` pages the history; nothing is deleted on disk.
+
+Above the threads, a search box (text, session code, sender), a session picker and filter chips
+(**Unread**, **Awaiting reply**, **Held**) list every loaded thread that matches, not just the
+latest 5; the same search and session also drive History, which searches the older threads page
+by page. Each thread collapses to one line (▾ / ▸), with **Collapse all** and **Expand all**; what
+you collapsed is kept in your browser. The sticky section nav at the top jumps to each section
+(Messages included) and marks the one you are in.
 
 ### Reminders
 
@@ -1224,7 +1245,8 @@ The tunnel listener **refuses to start** without `hostname`, `team_domain`, `aud
 - **Askers** (`askers` in `fleet.yaml`) see the board as a viewer does, and the only thing they
   may write is a message to sessions: no answers, no settings, no tickets. Their messages reach sessions as
   `[BOARD asker <id>] from <email> (an asker, not an approver: information only, …)`, never as the
-  owner's, at most 10 per 10 minutes. Use it for someone who needs to talk to sessions, instead of
+  owner's, at most 10 per 10 minutes. They send to one session or to `@triage` (the default: the
+  operator routes it), never to `@all`. Use it for someone who needs to talk to sessions, instead of
   making them an approver.
 - On the tunnel, a verified email must also be in `serve.tunnel.allowed_emails` (default: the
   emails in `approvers` ∪ `release_managers` ∪ `askers`). Everyone else gets 403, even for
@@ -1595,7 +1617,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `lib/pomodoro.py` | Pomodoro timer and daily tallies (`pomodoro.json`) for the board and `board pomodoro` |
 | `lib/resources.py` | Resources sampler (memory, disks, OOM, per-session processes and teammates) for `resources.json`, the snapshot digest and `board resources` |
 | `docs/design/` | Design notes, e.g. `resources-and-scheduling.md` (resources, scheduler, lessons) |
-| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), the resources sampler (`test_resources.py`, fixture `/proc`), the secret guardrails (`test_guard.py`), API keys (`test_apikeys.py`), the public API and its tunnel exposure (`test_api_v1.py`), the MCP server (`test_mcp.py`), askers (`test_askers.py`), who may do what per role (`test_roles.py`), who sees whose email (`test_pii.py`), the developer portal and key page (`test_dev.py`), the card extras (`test_cards.py`), Remote Control (`test_rc.py`, scripted tmux in `fake_tmux.py`), resuming after a usage limit (`test_resume.py`: scripted tmux, plus a fake Claude screen in `fake_claude_tui.py` on a private tmux server), the pomodoro timer (`test_pomodoro.py`), and the optional headless checks of the page's alert links, notifications control, profile menu and theme, home-screen app, session cards, usage popover, header popovers, language toggle, Deck panel and pomodoro (`test_page_links.py`, `test_page_notify.py`, `test_page_profile.py`, `test_page_pwa.py`, `test_page_cards.py`, `test_page_guard.py` (held-message cards), `test_page_askers.py` (the asker's composer), `test_page_messages.py` (recent threads and history), `test_page_roles.py` (controls per role), `test_page_usage.py`, `test_page_header_tips.py`, `test_page_i18n.py`, `test_page_deck.py`, `test_page_rc.py` (Remote Control chip and switches), `test_page_resume.py` (the usage-limit chip, Resume and Resume all), `test_page_pomodoro.py`, `test_page_dev.py` (the developer portal and key page), plus `test_site.py` for the screenshots and the Pages site: need python playwright, skip without it; not run in CI) |
+| `tests/` | Tests for the hook, collector and CLI (`run.sh`), alerting (`test_notify.sh`), notification controls (`test_notify_controls.sh`), board-serve (`test_serve.sh`), owner away & consensus (`test_away.sh`), the resources sampler (`test_resources.py`, fixture `/proc`), the secret guardrails (`test_guard.py`), API keys (`test_apikeys.py`), the public API and its tunnel exposure (`test_api_v1.py`), the MCP server (`test_mcp.py`), askers (`test_askers.py`), `about`, triage and routing, askers never messaging all (`test_routing.py`), who may do what per role (`test_roles.py`), who sees whose email (`test_pii.py`), the developer portal and key page (`test_dev.py`), the card extras (`test_cards.py`), Remote Control (`test_rc.py`, scripted tmux in `fake_tmux.py`), resuming after a usage limit (`test_resume.py`: scripted tmux, plus a fake Claude screen in `fake_claude_tui.py` on a private tmux server), the pomodoro timer (`test_pomodoro.py`), and the optional headless checks of the page's alert links, notifications control, profile menu and theme, home-screen app, session cards, usage popover, header popovers, language toggle, Deck panel and pomodoro (`test_page_links.py`, `test_page_notify.py`, `test_page_profile.py`, `test_page_pwa.py`, `test_page_cards.py`, `test_page_guard.py` (held-message cards), `test_page_askers.py` (the asker's composer), `test_page_messages.py` (recent threads and history), `test_page_routing.py` (section nav, message search, filters and collapsing, `@triage` and the `@all` confirm), `test_page_roles.py` (controls per role), `test_page_usage.py`, `test_page_header_tips.py`, `test_page_i18n.py`, `test_page_deck.py`, `test_page_rc.py` (Remote Control chip and switches), `test_page_resume.py` (the usage-limit chip, Resume and Resume all), `test_page_pomodoro.py`, `test_page_dev.py` (the developer portal and key page), plus `test_site.py` for the screenshots and the Pages site: need python playwright, skip without it; not run in CI) |
 | `CONTRIBUTING.md` | Dev setup, tests, and the rule for keeping `README.zh-TW.md` in sync |
 | `fleet.example.yaml`, `.env.example` | Example config |
 
