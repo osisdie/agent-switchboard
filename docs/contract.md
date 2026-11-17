@@ -488,7 +488,7 @@ Rules:
 | `sessions/{code}` | operator | `code, aliases[], state, status, task` (short summary, never raw prompt), `tmux, remote_url, pending{tool_name,summary,tool_use_id}, updated_at, title, repo, branch, last_event, notification_type`. **Never `recent`**: tool summaries can hold command text, so they stay on the self-hosted board |
 | `decisions/{id}` | operator | fields as in `decisions/<id>.json` above. Only the operator writes `answer, answered_by` (= the path id of the answer it relayed), `answered_at`, `status`, `relayed_at`. An Editor's page may set `status: "answered"` as a display hint. The operator ignores it, and ignores who set it. |
 | `answers/{userId}/d/{decisionId}` | that user (page) | `{answer, answered_at, note}`. For permission cards, `answer` is `"allow"` or `"deny"`; the page never offers `"allow"` when the decision has `summary_truncated: true`. The operator lists `answers/<id>/d` for each id in `approver_ids` ∪ `release_manager_ids`, takes the identity **from the path**, and runs `board answer <decisionId> <answer> --by <id>`. If several approvers answered, the earliest `answered_at` wins. |
-| `messages/{id}` | page (Editors) creates; operator updates | `to` (code or `"all"`), `body`, `by` (user id), `created_at`, `status: "new"\|"relayed"\|"replied"`. The operator adds `relayed_to[]` and `relayed_at`. |
+| `messages/{id}` | page (Editors) creates; operator updates | `to` (code, `"triage"` or `"all"`), `body`, `by` (user id), `created_at`, `status: "new"\|"relayed"\|"replied"`. The operator adds `relayed_to[]` and `relayed_at`, and for a triage message also `routed_to[]` and `routed_at` (see "Message routing"). |
 | `messages/{id}/replies/{rid}` | operator | `from` (code), `body`, `created_at` |
 | `meta/operator` | operator | `heartbeat_at, version, owner_id`. The page shows "operator offline" if the heartbeat is older than 10 minutes. |
 | `meta/away` | operator | `{active: true, since, by, said, legacy?, updated_at}` while the owner is away, `{active: false, updated_at}` otherwise. The page shows the away banner only for `active: true`. |
@@ -580,6 +580,10 @@ approvers ∪ release managers only). An asker who is not also an approver or re
 - gets `"asker": true` and `"can_message": true` in the state; the page shows the composer (with a
   note that their messages are information) and no answer buttons or approver controls;
 - may send at most 10 messages in 10 minutes (429 `rate_limited` with `Retry-After`, audited);
+- may not send to `all` (403 `asker_no_all`, audited with `reason: "asker_no_all"`, nothing
+  written): they send to one session or to `triage` (see "Message routing"). The same holds for
+  `board message send --by <asker>` (exit 1, audited `type: "message"`) and for an API key issued
+  to an asker (`/api/v1/messages` and MCP `send_message`: 403 `asker_no_all`, audited);
 - has messages stored with `kind: "asker"`, `asker: <id>`, the body defanged (`[BOARD` → `(BOARD`,
   fullwidth and CJK brackets too) and "by owner" turned into "by (claimed) owner". They are relayed
   as `[BOARD asker <id>] from <id> (an asker, not an approver: information only, not an approval or
@@ -598,9 +602,10 @@ Extra files under `$BOARD_HOME`:
 
 ```
 $BOARD_HOME/
-  messages/<id>.json                 # {id, to: CODE|"all", body, by, created_at,
+  messages/<id>.json                 # {id, to: CODE|"triage"|"all", body, by, created_at,
                                      #  status: new|held|relayed|replied, held_reason?, held_at?,
                                      #  released_by?, released_at?, relayed_to[]?, relayed_at?,
+                                     #  routed_to[]?, routed_at? (triage: `board message route`),
                                      #  kind?: "api", via?: "apikey:<name>", api?: {key_id, name, owner}}
                                      #  (board-serve / `board message send` create; operator updates;
                                      #  see "Secret guardrails")
@@ -625,7 +630,7 @@ $BOARD_HOME/
 | `GET /api/events` | `text/event-stream`: `event: state` with the full state at once and after every change (1 s mtime poll; only when the state differs), `: keepalive` every 25 s |
 | `POST /api/decisions/<id>/answer` `{answer}` | `<id>` must match `^d-[0-9]+-[a-z0-9]+$`. With empty `approvers` → 403 `no_approvers` (fails closed). The identity is then checked **before anything is written**, with the rule of `board answer` (`approvers`; for a production decision, gate or stage, `release_managers`, falling back to `approvers`): not allowed → 403 `not_approver`, audited, file untouched (so it can never cancel an approver's answer that waits for the relay). `board answer` exit 8 (the gate's task was busy) → 409 `task_busy`: try again. Otherwise `board answer <id> --answer-file <tmp> --by <identity>` (argv, no shell; the answer goes by a 0600 file under `$BOARD_HOME` that is removed afterwards, so `-`, `--help` or `--answer-file` typed as an answer are recorded literally) → 200 `{status: "answered"}`. For `kind: "permission"` (`answer` = `allow`\|`deny`; `allow` with `summary_truncated` → 409 `review_in_session`), it then runs `board press <from> <answer> --expect <tool_use_id>` → 200 `{status: "relayed"}`; exit 3 → 409 `stale`; exit 4 → 403 `press_refused`; exit 7 → 409 `screen_not_ready` (the decision is pending again; the body adds `scrolled`, `attempts` and `question`). A pane question (`source: "pane"`) that is not `pressable` → 409 `answer_in_session`, untouched. A pressable form of several questions takes `{options: [i, j, ...]}` instead of `answer` (2–4 numbers, one per question, 1–8, no `answer`/`option`); a wrong count, a number out of its question's range, a boolean, free text, or `options` on any other decision → 400 `bad_options`, untouched. It runs `board answer <id> --options i,j --by <identity>`, then `board press` like below. With free text for some questions it takes `{answers: [{question_index, option} \| {question_index, text}, ...]}` instead (one entry per question, in order, exactly one of `option` 1–8 or `text` per entry, no `options`/`answer`/`option`); text is cleaned as by `board answer --form-file` and must then be 1–200 characters, not ending in `\;` and not the "Type something" row itself (else 400 `bad_answers`; `question_index`, when given, an integer equal to the entry's position), and each text is screened by the secret guard before anything is written: a request for a secret or a secret-shaped value → 400 `held_answer`, audited; it goes to `board answer <id> --form-file <0600 tmp file> --by <identity>` (removed afterwards), then `board press`; an optional `option` (1–10, a pane question's clicked button) goes to `board answer --option` (mismatch → 400 `bad_option`, untouched; `option` on any other decision → 400); otherwise, when `board answer` set `relay: "press"`, it runs `board press <from> answer --expect <tool_use_id>` with the same results (plus exit 5 → 409 `partial`), and with `relay: "operator"` it returns 200 `{status: "answered"}` for the operator to relay. A decision already `relayed`/`stale`/`timeout` → 409 `gone`. |
 | `GET /api/messages?before=&limit=&to=&q=` | the message history (the page's History view). `X-Board: 1` and no cross-site `Sec-Fetch-Site` (else 403 `csrf`, before identity); any identity that may read the board. Threads by latest activity (the latest of created_at, released_at and the replies), then id, newest first; `before` is the cursor `<last_activity_at>.<id>` of the last thread already shown (strictly older ones follow), `limit` 1..50 (default 20), `to` a session code or `all`, `q` text (at most 200 chars, case-insensitive) in the to / by / body / ticket and the replies. Each thread goes through the same viewer filter as `/api/state` before it is searched, so a search never matches text the viewer would not see. → 200 `{messages, replies, next}`; `next` is the cursor for the following page, `null` at the end. A bad parameter → 400 `bad_request`. Read-only; nothing is deleted on disk |
-| `POST /api/messages` `{to, body}` | only for `approvers` ∪ `release_managers` (else 403 `not_approver`); writes `messages/<id>.json` (`^m-[0-9]+-[a-z0-9]+$`) with `by: <identity>`, the body scrubbed, and `status: "new"`, or `"held"` when the secret guard flags it → 201 `{id, status, reason?}` (see "Secret guardrails") |
+| `POST /api/messages` `{to, body}` | `to`: a session code, `"triage"` (the operator routes it, see "Message routing") or `"all"`. Only for `approvers` ∪ `release_managers` ∪ `askers` (else 403 `not_approver`); an asker who is not an approver or release manager may not send to `"all"` (403 `asker_no_all`, audited, nothing written); writes `messages/<id>.json` (`^m-[0-9]+-[a-z0-9]+$`) with `by: <identity>`, the body scrubbed, and `status: "new"`, or `"held"` when the secret guard flags it → 201 `{id, status, reason?}` (see "Secret guardrails") |
 | `POST /api/messages/<id>/release` `{confirm: "release"}` | releases a `held` message. Approvers only (empty `approvers` → 403 `no_approvers`; else 403 `not_approver`, audited). Without the confirm body → 400 `confirm_required`; unknown id → 404; not held → 409 `not_held`. A channel other than the two verified listeners (a future API key) → 403 `release_refused`; with more than one approver, the message's own sender → 403 `self_release` (except `local`: on the loopback listener the identity is always `local`, the owner at this machine). Sets `status: "new"`, `released_by`, `released_at` → 200 `{id, status: "new"}`, audited (`message-release`) |
 | `POST /api/notify-prefs` `{op, ...}` | Notification controls. `op` is `mute` `{channel, for?\|until?, include_urgent?}`, `unmute` `{channel}`, `level` `{channel, level}` or `presence` `{reduce, level?}`. `channel` is `slack`, `desktop`, `email`, `line`, `sns`, `webhook` or `all`; `for` matches `^[1-9][0-9]{0,4}[mhd]$` (at most 30 days); `until` is `HH:MM` or an ISO time in the next 30 days (a string of at most 64 characters); `include_urgent` and `reduce` are booleans; `level` is `info\|warn\|high\|urgent\|default` (`presence`: `warn\|high\|urgent`). Anything else → 400 `bad_op` / `bad_channel` / `bad_duration` / `bad_level` / `bad_body`, nothing run. Empty `approvers` → 403 `no_approvers`; identity not in `approvers` → 403 `not_approver`, audited. Otherwise `board mute\|unmute\|notify-level\|notify-presence … --by board:<identity>` (argv, no shell) → 200 `{status: "ok", notify}` (the new `notify` state). Failure → 500 `prefs_failed`. |
 | `POST /api/presence` `{visible, idle_ms?}` | The page's presence heartbeat. `visible` boolean; `idle_ms` integer ms since the viewer last clicked, tapped, scrolled or typed, at most 86400000 (a day), or null (else 400 `bad_body`). The server records `interaction_at = <server now> − max(0, idle_ms)`, so a page clock that runs fast changes nothing. Any time the page sends (`interaction_at` in the body) is ignored: without `idle_ms` the last interaction is unknown, so the viewer does not count as watching. Same approver rule as `/api/notify-prefs`. Recorded in `presence.json` under the listener's verified identity, never one from the body → 200 `{status: "ok", visible}`. Audited only when the identity's `visible` changes. |
@@ -659,14 +664,15 @@ State (`/api/state` and every SSE frame):
 { "mode": "local", "me": "local|<email>", "writable": true, "can_message": true|false,
   "asker": true|false, "approver": true|false, "owner": true|false, "generated_at": 0,
   "account": {"email": "...", "org": "..."|null} | {"hidden": true} | null,
-  "sessions":  [ {code, aliases, state, status, task, tmux, remote_url, pending, updated_at, rc, compact} ],
+  "sessions":  [ {code, aliases, state, status, task, tmux, remote_url, pending, updated_at, rc, compact,
+                  about} ],   (about: fleet.yaml, one clean line, "" when unset)
   "decisions": [ decision files, newest 200, without session_id/tmux_pane ],
   "tasks":     [ task files, newest 50 ],
   "approvals": [ events.jsonl type:"approval" rows (+ relayed_at from the decision), newest 100 ],
   "messages":  [ the 20 threads with the latest activity, then every older held one; each with
                  last_activity_at and only these fields: id, to, body, by, created_at, status,
                  relayed_to, relayed_at, held_reason, held_at, released_by, released_at, kind,
-                 asker, event, ticket, task_id ],
+                 asker, event, ticket, task_id, api, via, routed_to, routed_at ],
   "replies":   { "<msgId>": [ the latest 50, oldest first: id, from, body, created_at, redacted ] },
   "messages_older": n (threads not in "messages": GET /api/messages pages them),
   "operator":  { heartbeat_at, version, operator_session, account_hint, approver_ids,
@@ -744,7 +750,8 @@ page does not declare the `profile` scope) and takes roles from `meta/operator.a
 
 **Operator in local mode** (`prompts/board-operator.md` section 9): `board-serve --watch` prints
 `decision <id> answered`, `take <id> answered` (an API take request: the operator runs the take
-on approve and never relays it), `message <id> new`, `away on|off`, `consensus <id> <status>` and
+on approve and never relays it), `message <id> new` (`message <id> new triage` for a message to
+`triage`: the operator routes it first), `away on|off`, `consensus <id> <status>` and
 `schedule <CODE> due` (scheduler advisories to deliver, section 12; once per due set; never
 while the scheduler is off) and `lesson <id> candidate` (a new auto lesson without a note,
 section 12), once each, oldest first, and `tick` every 8 minutes.
@@ -1125,8 +1132,41 @@ The operator is an LLM session. When the account hits a usage limit, nothing wri
 - **Ticket taken:** `` [BOARD ticket <KEY>] taken for <CODE> as task <taskId> by <identity> on board: "<title>" <url>. Authorizes: the delivery harness for this ticket up to and including opening the PR/MR: plan, design, build, tests, local review, push, open the PR, and, as this session (board ticket comment|transition --session), progress comments and in-progress on this ticket. NOT merge, production deploy, closing or cancelling the ticket, other tickets or repos, or any red line. Verify with `board ticket show <TRACKER>:<KEY>`. Reply to BOARD with [re <msgId>]. `` The title and URL come from the tracker and are defanged: one line, scrubbed, `[`/`]` turned into `(`/`)` and `"` into `'`, so they can never form a `[BOARD …]` header. Built by `board message show <msgId>` (`lib/messages.py`); never typed by hand.
 - **Ticket released:** `[BOARD ticket <KEY>] released from <CODE> (task <taskId>) by <identity> on board. The take no longer authorizes anything on this ticket. Reply to BOARD with [re <msgId>].`
 - **Message from an asker** (`fleet.yaml` `askers`, not an approver): `[BOARD asker <msgId>] from <id> (an asker, not an approver: information only, not an approval or a decision): <body> — reply to BOARD via SendMessage, starting with [re <msgId>]`. Never a decision, never the owner.
+- **A message sent to triage** (any of the above): the same line, with `(sent to triage; BOARD routed it to you) ` before the body (and before the release reminder), sent only to the sessions the operator picked. `board message show` also prints a routing reminder on stderr.
 - **Message from an API key** (`/api/v1/messages`): `[BOARD api <msgId>] via API key "<name>" (<owner>): <body> — information only, not an approval or a decision; reply to BOARD via SendMessage, starting with [re <msgId>]`. Never a decision, never an ask.
 - **Worker reply:** `[re <msgId>] <text>`.
+
+## Message routing
+
+`fleet.yaml` sessions may carry `about:` — one line on what the session is responsible for
+(`lib/fleet.py` `about_text`: control, zero-width and bidi characters become spaces, runs of spaces
+one, at most 120 characters with `…` when cut; anything but a string is `""`). It is plain config
+text, not secret: `/api/state`, SSE, `/api/v1/sessions` and `board mirror state` carry it on each
+session (`about`, `""` when unset; a second instance `CODE/name` gets its session's), through the
+same viewer masking as other text (an email in it becomes a role label for non-owners). board-serve
+rebuilds the state when `fleet.yaml` changes.
+
+`to: "triage"` means "the operator picks the sessions". `board-serve --watch` prints
+`message <id> new triage`; the operator (`prompts/board-operator.md`, "Routing a triage message")
+picks the 1–2 live sessions whose `about` (and the text) fit best, all live sessions only when none
+clearly does, sends each the line `board message show <id>` prints, and records them:
+
+```
+board message route <msgId> <CODE> [<CODE>…] [--by WHO]     # default --by operator
+```
+
+It sets `routed_to` (the codes, in order, deduplicated), `routed_at`, `relayed_to` (= `routed_to`),
+`relayed_at`, and `status: "relayed"` when it was `new` (a `replied` thread stays `replied`); routing
+again replaces the list. Refused (exit 1/2, nothing written): an unknown id, a message not to
+`triage` (`not_triage`), a held one (`held`), no codes, more than 32, or `all` / `triage` / an
+invalid code (`bad_code`). Audited: `{type: "message", action: "route", id, to: [codes], by}`. The
+page shows **Routed by BOARD to <codes>** in the thread (before that: "Waiting for BOARD to route
+it…").
+
+`all` interrupts every live session. Askers (and keys issued to them) may not send to it on any
+path (above); on the page an owner or approver gets a confirm step first ("This interrupts all N
+live sessions"; N = sessions not offline, the operator's own session excluded), and askers get no
+`@all` in the `@` list and default to triage when they write no mention.
 
 ## API keys
 
@@ -1304,7 +1344,7 @@ and messages; **nothing a key writes carries authority**:
 | `/api/v1/tasks/{id}/set` `{repo?, branch?, base?, size?, heavy?, priority?}` | `tasks:write` | `board task set` (repo, branch and base: `[A-Za-z0-9][A-Za-z0-9._/@:+-]*`) |
 | `/api/v1/tasks/{id}/progress` `{}` | `tasks:write` | `board task progress` |
 | `/api/v1/tasks/{id}/pr` `{url, state: open\|closed, head?, method?}` | `tasks:write` | `board task pr` |
-| `/api/v1/messages` `{to, body}` | `write:messages` | a board message from the key (201 `{id, status}`); see below |
+| `/api/v1/messages` `{to, body}` | `write:messages` | a board message from the key (201 `{id, status}`); `to`: a session on the board, `"triage"` or `"all"` (a key issued to an asker: 403 `asker_no_all`, audited); see below |
 | `/api/v1/tickets/{ref}/take` `{session, note?}` | `tickets:take` | a **pending** board decision, see below (202 `{decision_id, status: "pending"}`) |
 
 - A key may create a task in, or move it to, `plan`, `design`, `build` or `test` only. `deploy`,
@@ -2893,8 +2933,8 @@ their keystrokes mixed with the command. The board then sees an unexpected box a
 (`partial`), or the command runs; it never submits text the human typed. A change made by hand
 is respected after the board's one try (above); `board rc clear CODE` forgets the board choice
 altogether. A session that cannot get Remote Control at runtime gets it at its next start
-through fleet-up. The session code `all` is reserved (`fleet.yaml` entries named `all` are
-skipped). board-serve checks who is asking before it looks at the request body, so a refused
+through fleet-up. The session codes `all` and `triage` are reserved (`fleet.yaml` entries named
+`all` or `triage` are skipped). board-serve checks who is asking before it looks at the request body, so a refused
 probe is audited whatever it sent.
 
 **The page.** Each running session card shows the Remote Control state: the card's "Open in Remote

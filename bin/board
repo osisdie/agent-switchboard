@@ -93,12 +93,16 @@
 #                                              prompt typed (fleet.yaml limit_resume); nothing sent
 #                                              when the screen is no known limit state
 #   board resume --scan [--json]               the limit state of every running pane (read-only)
-#   board message send --to CODE|all [--by WHO] "text"|-
+#   board message send --to CODE|triage|all [--by WHO] "text"|-
 #                                              create a board message (screened by the secret
-#                                              guard: a secret request is held, not relayed)
+#                                              guard: a secret request is held, not relayed;
+#                                              triage: BOARD routes it; askers: never all)
 #   board message reply MSG_ID --from CODE "text"|-
 #                                              store a session's reply (secrets redacted)
 #   board message show MSG_ID [--json]         the relay text, or "held" (never relay it)
+#   board message route MSG_ID CODE... [--by WHO]
+#                                              the operator: record the sessions a triage
+#                                              message went to (shown in the thread)
 #   board apikey create --name N --owner WHO --by WHO [--scopes a,b] [--expires 90d|DATE]
 #                       [--rate N] [--test] [--json]
 #   board apikey request --name N --by WHO [--scopes a,b] [--expires 90d|DATE] [--json]

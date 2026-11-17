@@ -43,7 +43,7 @@ QUERY = {
     "d": (r"[0-9]{4}-[0-9]{2}-[0-9]{2}", "A day (YYYY-MM-DD) within the 14 kept days."),
     "before": (r"[0-9]{1,16}\.m-[0-9]+-[a-z0-9]+", "A cursor: `next` from the previous page."),
     "limit": (r"[1-9]|[1-4][0-9]|50", "Threads per page, 1..50 (default 20)."),
-    "to": (r"all|[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", "Only messages to this session code (or to all)."),
+    "to": (r"all|[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", "Only messages to this session code (or to triage, or to all)."),
     "q": (r"[^\x00-\x1f\x7f]{1,200}", "Text to look for (case-insensitive) in the messages and their replies."),
 }
 
@@ -135,11 +135,12 @@ ROUTES = [
      "schema": _OBJ},
     {"method": "POST", "path": "/api/v1/messages", "scope": "write:messages", "handler": "message_new",
      "tag": "messages", "ok": 201,
-     "summary": "Post a message to a session (or all). Screened by the secret guard (a secret request is held, "
-                "never relayed); relayed as `[BOARD api <id>] via API key \"<name>\" (<owner>): …`, "
-                "information only, never a [BOARD ask] or a decision.",
+     "summary": "Post a message to a session, to \"triage\" (the board's operator routes it to the sessions "
+                "whose `about` fits) or to all (not with a key issued to an asker: 403 asker_no_all). Screened "
+                "by the secret guard (a secret request is held, never relayed); relayed as `[BOARD api <id>] "
+                "via API key \"<name>\" (<owner>): …`, information only, never a [BOARD ask] or a decision.",
      "body": {"type": "object", "required": ["to", "body"], "additionalProperties": False,
-              "properties": {"to": {"anyOf": [_CODE, {"const": "all"}]},
+              "properties": {"to": {"anyOf": [_CODE, {"const": "triage"}, {"const": "all"}]},
                              "body": {"type": "string", "minLength": 1, "maxLength": 4000}}},
      "schema": {"type": "object", "properties": {"id": {"type": "string"}, "status": {"enum": ["new", "held"]}}}},
     {"method": "POST", "path": "/api/v1/tickets/{ref}/take", "scope": "tickets:take", "handler": "ticket_take",

@@ -141,7 +141,10 @@ def _write_tool(name, title, path, description):
 # The writes (A3). Never a decision answer, a press or an approval (owner decision Q1).
 WRITE_TOOLS = [
     _write_tool("send_message", "Send a message to a session", "/api/v1/messages",
-                "Post a message to one session (`to`: its code) or all. It reaches the session as "
+                "Post a message to one session (`to`: its code; list_sessions shows each one's `about`), "
+                "to \"triage\" when you don't know which session owns it (the board's operator routes it "
+                "and the thread then shows routed_to), or to all (refused for a key issued to an asker: "
+                "use triage). It reaches the session as "
                 "`[BOARD api <id>] via API key \"<name>\" (<owner>): …`, information only, never an "
                 "approval or a decision. A message asking for a secret value is held, never relayed."),
     _write_tool("ticket_take_request", "Ask to start a ticket", "/api/v1/tickets/{ref}/take",

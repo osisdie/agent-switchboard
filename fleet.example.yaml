@@ -43,9 +43,10 @@ resume_fallback_seconds: 15   # fleet-up: start fresh only if `claude -r NAME` e
 approvers: []
 release_managers: []
 # Askers (self-hosted board): people who see the board as a viewer does and may only send messages
-# to sessions (@CODE / @all). They answer nothing, release nothing, change no settings and read no tickets. Their
-# messages reach sessions labelled as theirs ([BOARD asker <id>] from <email>), information only,
-# at most 10 per 10 minutes. Emails (and "local"), matched like approvers.
+# to sessions (@CODE, or @triage: the operator routes it to the sessions whose `about` fits; never
+# @all, which interrupts every session). They answer nothing, release nothing, change no settings
+# and read no tickets. Their messages reach sessions labelled as theirs ([BOARD asker <id>] from
+# <email>), information only, at most 10 per 10 minutes. Emails (and "local"), matched like approvers.
 askers: []
 # askers: [teammate@example.com]
 # The board's owners. On the self-hosted board only an owner (who is also an approver) answers
@@ -180,9 +181,13 @@ press:
 
 # One entry per Claude Code session. `code` is the tmux session name and the session's
 # short name on the board.
+# `about`: one line on what the session is responsible for (at most 120 characters, plain text).
+# The board shows it next to the session in the message composer, and the operator uses it to route
+# a message sent to "triage". The codes "all" and "triage" are reserved.
 sessions:
   - code: BOARD
     cwd: ~/work
+    about: "the board operator: relays answers and messages"
     autostart: true
     resume: false             # always start fresh (default true: `claude -r resume_name` first)
     extra_args: "--verbose"
@@ -190,11 +195,13 @@ sessions:
     initial_prompt: "You are the BOARD operator. Read prompts/board-operator.md and start the operator loop."
   - code: API
     cwd: ~/work/api
+    about: "backend API and database migrations"
     autostart: false
     resume_name: API          # `claude -r API`; fresh only if that exits within resume_fallback_seconds
     aliases: [api-main]       # registry names that also mean this session
   - code: WEB
     cwd: ~/work/web
+    about: "frontend app"
     autostart: false
     remote_control: false     # fleet-up starts it without --remote-control
 

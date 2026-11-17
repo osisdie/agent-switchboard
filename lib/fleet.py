@@ -247,6 +247,24 @@ def env_has(pid, name):
     return any(item.startswith(key) and len(item) > len(key) for item in env.split(b"\0"))
 
 
+# Message recipients that are not sessions: "all" (every live session) and "triage" (BOARD picks
+# the sessions, from their `about`). Never a session code in fleet.yaml.
+RESERVED_CODES = ("all", "triage")
+ABOUT_MAX = 120
+# What `about` loses: control, zero-width and bidi characters (they could hide or reorder text).
+ABOUT_STRIP_RE = re.compile("[\x00-\x1f\x7f-\x9f\u2028\u2029\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]+")
+
+
+def about_text(v):
+    """A session's `about` (fleet.yaml): one line of plain config text, what the session is
+    responsible for. Control and invisible characters become spaces, runs of spaces one, at most
+    ABOUT_MAX characters (an ellipsis when cut); anything but a string is ""."""
+    if not isinstance(v, str):
+        return ""
+    t = re.sub(r"\s+", " ", ABOUT_STRIP_RE.sub(" ", v)).strip()
+    return t if len(t) <= ABOUT_MAX else t[:ABOUT_MAX - 1].rstrip() + "\u2026"
+
+
 def safe_text(s):
     """Text for a terminal: control characters (escapes, CR, ...) become '?'."""
     return CONTROL_RE.sub("?", "" if s is None else str(s))
@@ -385,8 +403,8 @@ def load_fleet():
     for s in data.get("sessions") or []:
         if not isinstance(s, dict) or not s.get("code"):
             continue
-        if str(s["code"]) == "all":  # reserved: `board rc on|off all` means every session
-            sys.stderr.write("fleet.yaml: session code \"all\" is reserved; entry skipped\n")
+        if str(s["code"]) in RESERVED_CODES:  # `all`: every session; `triage`: BOARD routes it
+            sys.stderr.write("fleet.yaml: session code \"%s\" is reserved; entry skipped\n" % s["code"])
             continue
         sessions.append({
             "code": str(s["code"]),
@@ -399,12 +417,13 @@ def load_fleet():
             "aliases": [str(a) for a in (s.get("aliases") or [])],
             # true/false: start it with or without --remote-control; None: the fleet default.
             "remote_control": s["remote_control"] if isinstance(s.get("remote_control"), bool) else None,
+            "about": about_text(s.get("about")),
         })
     # Top-level `aliases: {CODE: [alias, ...]}` is also accepted.
     top = data.get("aliases") or {}
     if isinstance(top, dict):
         for code, al in top.items():
-            if str(code) == "all":
+            if str(code) in RESERVED_CODES:
                 continue
             match = [s for s in sessions if s["code"] == str(code)]
             if match:
@@ -412,7 +431,7 @@ def load_fleet():
             else:
                 sessions.append({"code": str(code), "cwd": None, "autostart": False, "resume_name": None,
                                  "extra_args": "", "resume": True, "initial_prompt": "", "aliases": [str(a) for a in al or []],
-                                 "remote_control": None, "listed": False})
+                                 "remote_control": None, "about": "", "listed": False})
     cfg["sessions"] = sessions
     return cfg
 

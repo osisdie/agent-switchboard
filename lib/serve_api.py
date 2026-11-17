@@ -844,8 +844,12 @@ class Api:
 
     def message_new(self):
         b = self.body()
-        if b["to"] != "all":
+        if b["to"] not in ("all", self.S.messages.TRIAGE):
             self.known_session(b["to"])
+        if b["to"] == "all" and self.S.messages.asker_only_now(self.rec.get("owner")):
+            # a key acts for its owner: an asker's key never messages every session (lib/messages.py)
+            self.audit_write(403, reason="asker_no_all", to="all")
+            raise ApiError(403, "asker_no_all", self.S.messages.ASKER_NO_ALL)
         if not b["body"].strip():
             raise ApiError(400, "bad_body", "body: empty")
         out = self.run(["message", "send", "--to", b["to"], "--api-key", self.rec["id"]], [("--file", b["body"])])
