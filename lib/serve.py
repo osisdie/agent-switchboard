@@ -761,6 +761,18 @@ def thread_replies(home, mid):
     return rs[-REPLIES_PER_THREAD:]
 
 
+def thread_sessions(home, m):
+    """The sessions a thread involves (the page's session filter means the same): its `to`, the
+    sessions it was relayed or routed to, and every session that replied."""
+    out = {str(m.get("to") or "")}
+    for k in ("relayed_to", "routed_to"):
+        if isinstance(m.get(k), list):
+            out |= {str(x) for x in m[k]}
+    out |= {str(r.get("from") or "") for r in thread_replies(home, m["id"])}
+    out.discard("")
+    return out
+
+
 def message_cursor(t):
     return "%d.%s" % (t["at"], t["m"]["id"])
 
@@ -768,7 +780,8 @@ def message_cursor(t):
 def message_page(home, before=None, limit=HISTORY_LIMIT, to=None, q=None, view=None):
     """One page of the message history (GET /api/messages, /api/v1/messages): threads strictly
     older than the cursor `before` ("<activity ms>.<message id>", from a thread's
-    last_activity_at and id), optionally only those to session `to` (or "all"), and only those
+    last_activity_at and id), optionally only those involving session `to` (sent, relayed or
+    routed to it, or replied by it; or to "all" / "triage"), and only those
     whose text matches `q` (case-insensitive, also in the replies). `view(state) -> state` is the
     viewer's filter; the search runs on what it returns (scrubbed, viewer-scoped), so a search can
     never find text the viewer would not see. Returns {messages, replies, next}: `next` is the
@@ -778,7 +791,7 @@ def message_page(home, before=None, limit=HISTORY_LIMIT, to=None, q=None, view=N
         at, mid = before
         threads = [t for t in threads if (t["at"], t["m"]["id"]) < (at, mid)]
     if to:
-        threads = [t for t in threads if str(t["m"].get("to") or "") == to]
+        threads = [t for t in threads if to in thread_sessions(home, t["m"])]
     q = (q or "").strip().lower()
     out, reps, more = [], {}, False
     for t in threads:
@@ -1896,8 +1909,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def message(self, body, ident, via):
         to, text = body.get("to"), body.get("body")
-        if not isinstance(to, str) or not (to == "all" or CODE_RE.fullmatch(to)):
-            raise Refused(400, "bad_to", "to must be a session code, \"triage\" or \"all\"")
+        if not messages.valid_to(to):     # "ALL", "Triage" ...: refused, never a session code
+            raise Refused(400, "bad_to", "to must be a session code, \"triage\" or \"all\" (lowercase)")
         if not isinstance(text, str) or not text.strip() or len(text) > MAX_MESSAGE:
             raise Refused(400, "bad_body", "body must be a non-empty string (max %d chars)" % MAX_MESSAGE)
         cfg = fleet.load_fleet()
@@ -1909,6 +1922,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # an asker interrupts no one wholesale: "triage" lets BOARD pick the sessions
             self.audit(ident, via, "message", to=to, result="refused", reason="asker_no_all", asker=True)
             raise Refused(403, "asker_no_all", messages.ASKER_NO_ALL)
+        if to not in ("all", messages.TRIAGE) and not self.known_code(to):
+            # like /api/v1: a message to nobody would sit "new" forever (after the identity check,
+            # so an outsider learns nothing about the session codes)
+            raise Refused(400, "unknown_session", "no session %s on this board" % to)
         # lib/messages.py: scrubbed before it is stored; a secret request is stored "held" (never
         # relayed), audited and alerted without echoing the text.
         with self.server.write_lock:
@@ -2218,10 +2235,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def known_code(self, code):
         if not isinstance(code, str) or not CODE_RE.fullmatch(code):
             return False
-        snap = read_json(os.path.join(self.server.home, "snapshot.json")) or {}
-        known = {str(s.get("code")) for s in snap.get("sessions") or [] if isinstance(s, dict)}
-        known |= {s["code"] for s in fleet.load_fleet()["sessions"]}
-        return code in known
+        return code in fleet.known_codes(self.server.home)
 
     @staticmethod
     def _audit_str(v):

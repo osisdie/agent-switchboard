@@ -518,9 +518,13 @@ relayed (see [Secret guardrails](#secret-guardrails)).
 **Who owns what.** Give each session a one-line `about:` in `fleet.yaml` (`about: "frontend app"`,
 `about: "infrastructure / gitops"`; plain text, at most 120 characters). The `@` list in the
 composer shows it next to each code. Not sure which session owns a question? Send it to
-**`@triage`**: the operator picks the 1–2 live sessions whose `about` fits (all live sessions only
-when none clearly does), relays it to them, and records them with
-`board message route <id> <CODE>…`, so the thread shows **Routed by BOARD to API, WEB**.
+**`@triage`**: the operator picks at most 2 live sessions whose `about` fits, relays it to them, and
+records them with `board message route <id> <CODE>…` (which refuses more than 2), so the thread
+shows **Routed by BOARD to API, WEB**. Triage is never a broadcast: when no session clearly fits,
+the operator sends it to nobody, replies in the thread asking you to name a session (with the
+codes and their `about`), and tells the owner. `all` and `triage` are recipients only in lowercase
+(`ALL` or `Triage` is refused, never a session code), and a message to a code that is not a
+session on the board is refused (400 `unknown_session`).
 **`@all` interrupts every live session**: the page asks first ("this interrupts all N live
 sessions"), and askers can't use it at all: their messages default to triage, and board-serve,
 `board message send`, `/api/v1` and MCP refuse `all` for them (403 `asker_no_all`, audited).

@@ -473,9 +473,12 @@ pane 標題裡的任務、執行中或閒置、記憶體用量）、已用的 co
 
 **誰負責什麼。** 在 `fleet.yaml` 給每個 session 一行 `about:`（`about: "frontend app"`、
 `about: "infrastructure / gitops"`；純文字，最多 120 個字元）。訊息輸入框的 `@` 清單會在代號旁邊顯示它。
-不確定問題該找哪個 session？傳給 **`@triage`**：operator 依 `about` 挑出最相關的 1–2 個存活 session
-（沒有明顯適合的才送給所有存活 session），轉送給它們，並用 `board message route <id> <CODE>…` 記下來，
-對話串就會顯示 **BOARD 已轉給 API, WEB**。**`@all` 會打斷每個存活的 session**：頁面會先確認
+不確定問題該找哪個 session？傳給 **`@triage`**：operator 依 `about` 挑出最多 2 個最相關的存活 session，
+轉送給它們，並用 `board message route <id> <CODE>…` 記下來（超過 2 個會被拒絕），對話串就會顯示
+**BOARD 已轉給 API, WEB**。triage 絕不會變成廣播：沒有明顯適合的 session 時，operator 不轉給任何人，
+而是在對話串回覆請你指定 session（附上各代號和它的 `about`），並通知主人。`all` 和 `triage`
+只有小寫才是收件對象（`ALL`、`Triage` 會被拒絕，也不能當 session 代號），傳給看板上不存在的 session
+也會被拒絕（400 `unknown_session`）。**`@all` 會打斷每個存活的 session**：頁面會先確認
 （「這會打斷全部 N 個線上 session」），提問者則完全不能用：他們的訊息預設送到 triage，board-serve、
 `board message send`、`/api/v1` 和 MCP 都會拒絕提問者傳給 `all`（403 `asker_no_all`，並記錄稽核）。
 

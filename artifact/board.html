@@ -4266,7 +4266,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     if (an) an.hidden = !(ok && S.askerOnly);
   }
   function histMatch(m, to, q) {
-    if (to && str(m.to) !== to) return false;
+    if (to && !sessionsOf(m).includes(to)) return false;   // the same rule as the top picker and board-serve
     if (!q) return true;
     return [m.to, m.by, m.body].concat(threadReplies(str(m.id)).flatMap((r) => [r.from, r.body])).some((x) => lc(x).includes(q));
   }

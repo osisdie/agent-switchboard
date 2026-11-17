@@ -164,7 +164,7 @@ def main():
             check("  the session filter lists all, then each code, @all last", opts[0] == "" and "API" in opts and opts[-1] == "all", opts)
             pg.select_option("#msg-hist-to", "API")
             v = pg.evaluate(VIEW_JS)
-            check("  filter @API: only API threads", v["hist"] == ["m-97-old"], v)
+            check("  filter @API: threads sent, relayed or routed to API, or that API replied to (an @all relayed to API too)", v["hist"] == ["m-96-old", "m-97-old"], v)
             pg.select_option("#msg-hist-to", "")
             pg.fill("#msg-hist-q", "BACKFILL")
             pg.wait_for_timeout(100)

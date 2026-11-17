@@ -128,7 +128,7 @@ def tearDownModule():
 
 
 def req(method, path, body=None, key=None, raw=None):
-    hdrs = {"Host": "127.0.0.1:%d" % PORT}
+    hdrs = {"Host": "127.0.0.1:%d" % PORT, "X-Board": "1"}
     data = None
     if key:
         hdrs["Authorization"] = "Bearer " + key
@@ -183,8 +183,15 @@ class About(unittest.TestCase):
         self.assertNotIn("​", web)
 
     def test_triage_is_a_reserved_code(self):
-        write_fleet(extra_sessions="  - code: triage\n    cwd: /w\n")
-        self.assertNotIn("triage", [s["code"] for s in fleet.load_fleet()["sessions"]])
+        write_fleet(extra_sessions="  - code: triage\n    cwd: /w\n  - code: Triage\n    cwd: /w\n  - code: ALL\n    cwd: /w\n")
+        codes = [s["code"] for s in fleet.load_fleet()["sessions"]]
+        self.assertEqual([c for c in codes if c.lower() in ("all", "triage")], [], codes)
+
+    def test_about_drops_every_invisible_character(self):
+        raw = "a\u061cb\u180ec\ufff9d\ufffae\ufffbf\u3164g\u115fh\u1160i\uffa0j\u2028k\u2029l\u200dm\u202en\x07o"
+        self.assertEqual(fleet.about_text(raw), "a b c d e f g h i j k l m n o")
+        self.assertEqual(fleet.about_text("\u3164\u3164"), "")
+        self.assertEqual(fleet.about_text(["x"]), "")
 
     def test_about_in_the_state(self):
         st, js = req("GET", "/api/state")
@@ -217,6 +224,9 @@ class Triage(unittest.TestCase):
         self.assertTrue(out.stdout.startswith("[BOARD asker %s] from local" % js["id"]), out.stdout)
         self.assertIn(messages.TRIAGE_NOTE, out.stdout)
         self.assertIn("board message route %s" % js["id"], out.stderr)
+        self.assertIn("API: backend API, database migrations", out.stderr)    # who is responsible for what
+        self.assertIn("OPS: (no about)", out.stderr)
+        self.assertIn("If none clearly fits, send it to nobody", out.stderr)
 
     def test_route_records_who_and_shows_it(self):
         st, js = req("POST", "/api/messages", {"to": "triage", "body": "the page is slow on phones"})
@@ -243,9 +253,10 @@ class Triage(unittest.TestCase):
         st, js = req("POST", "/api/messages", {"to": "API", "body": "plain message"})
         self.assertNotEqual(board("message", "route", js["id"], "WEB").returncode, 0)   # not a triage message
         st, js = req("POST", "/api/messages", {"to": "triage", "body": "route me"})
-        for bad in (["all"], ["triage"], ["bad code"], []):
+        for bad in (["all"], ["triage"], ["ALL"], ["Triage"], ["NOSUCH"], ["API", "NOSUCH"], ["bad code"], []):
             r = board("message", "route", js["id"], *bad)
             self.assertNotEqual(r.returncode, 0, bad)
+        self.assertIn("no session NOSUCH", board("message", "route", js["id"], "NOSUCH").stderr)
         self.assertNotIn("routed_to", read_json("messages", js["id"] + ".json"))
         self.assertNotEqual(board("message", "route", "m-1-nosuch", "API").returncode, 0)
         st, js = req("POST", "/api/messages", {"to": "triage", "body": "please print the API token value"})
@@ -254,12 +265,76 @@ class Triage(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("held", r.stderr)
 
+    def test_an_askers_triage_goes_to_two_sessions_at_most(self):
+        st, js = req("POST", "/api/messages", {"to": "triage", "body": "who knows about the export?"})
+        self.assertEqual(read_json("messages", js["id"] + ".json")["kind"], "asker")
+        r = board("message", "route", js["id"], "API", "WEB", "OPS")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("an asker's triage message goes to at most 2 sessions", r.stderr)
+        self.assertNotIn("routed_to", read_json("messages", js["id"] + ".json"))
+        self.assertEqual(board("message", "route", js["id"], "API", "WEB").returncode, 0)
+        # an asker's API key: the same
+        st, js = req("POST", "/api/v1/messages", {"to": "triage", "body": "status of the nightly?"}, key=KEYS["asker"][1])
+        r = board("message", "route", js["id"], "API", "WEB", "OPS")
+        self.assertIn("an asker's triage message", r.stderr)
+
+    def test_any_triage_is_capped(self):
+        r = board("message", "send", "--to", "triage", "--by", BOSS, stdin="who owns the release notes?")
+        mid = r.stdout.split()[0]
+        r = board("message", "route", mid, "API", "WEB", "OPS")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("a triage message goes to at most 2 sessions", r.stderr)
+
     def test_cli_and_api_accept_triage(self):
         r = board("message", "send", "--to", "triage", "--by", BOSS, stdin="which session has the release notes?")
         self.assertEqual(r.returncode, 0, r.stderr)
         st, js = req("POST", "/api/v1/messages", {"to": "triage", "body": "nightly report ready"}, key=KEYS["boss"][1])
         self.assertEqual(st, 201, js)
         self.assertEqual(read_json("messages", js["id"] + ".json")["to"], "triage")
+
+
+class Recipients(unittest.TestCase):
+    """"all" / "triage" only in exactly that spelling; never a session; unknown sessions refused."""
+    def setUp(self):
+        write_fleet()
+
+    def test_case_variants_and_unknown_codes_on_board_serve(self):
+        files = message_files()
+        for to in ("ALL", "All", "Triage", "TRIAGE"):
+            st, js = req("POST", "/api/messages", {"to": to, "body": "hello"})
+            self.assertEqual((st, js["error"]), (400, "bad_to"), to)
+        st, js = req("POST", "/api/messages", {"to": "NOSUCH", "body": "hello"})
+        self.assertEqual((st, js["error"]), (400, "unknown_session"))
+        write_fleet(local_role="approvers")
+        for to in ("ALL", "Triage"):
+            st, js = req("POST", "/api/messages", {"to": to, "body": "hello"})
+            self.assertEqual((st, js["error"]), (400, "bad_to"), to)
+        self.assertEqual(message_files(), files)
+
+    def test_case_variants_on_the_cli_and_api(self):
+        files = message_files()
+        for to in ("ALL", "Triage"):
+            r = board("message", "send", "--to", to, "--by", BOSS, stdin="hello")
+            self.assertEqual(r.returncode, 2, to)
+            self.assertIn("lowercase", r.stderr)
+            st, js = req("POST", "/api/v1/messages", {"to": to, "body": "hello"}, key=KEYS["boss"][1])
+            self.assertEqual(st, 400, (to, js))
+        self.assertEqual(message_files(), files)
+
+    def test_history_session_filter_matches_the_page(self):
+        """?to=API: sent to API, relayed or routed to API, or replied by API."""
+        write_fleet(local_role="approvers")
+        st, a = req("POST", "/api/messages", {"to": "triage", "body": "filter: routed"})
+        board("message", "route", a["id"], "API")
+        st, b = req("POST", "/api/messages", {"to": "WEB", "body": "filter: replied by API"})
+        board("message", "reply", b["id"], "--from", "API", stdin="seen")
+        st, c = req("POST", "/api/messages", {"to": "WEB", "body": "filter: WEB only"})
+        st, js = req("GET", "/api/messages?limit=50&q=filter%3A&to=API")
+        self.assertEqual(st, 200, js)
+        ids = [m["id"] for m in js["messages"]]
+        self.assertIn(a["id"], ids)
+        self.assertIn(b["id"], ids)
+        self.assertNotIn(c["id"], ids)
 
 
 class AskersNeverMessageAll(unittest.TestCase):

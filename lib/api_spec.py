@@ -43,7 +43,7 @@ QUERY = {
     "d": (r"[0-9]{4}-[0-9]{2}-[0-9]{2}", "A day (YYYY-MM-DD) within the 14 kept days."),
     "before": (r"[0-9]{1,16}\.m-[0-9]+-[a-z0-9]+", "A cursor: `next` from the previous page."),
     "limit": (r"[1-9]|[1-4][0-9]|50", "Threads per page, 1..50 (default 20)."),
-    "to": (r"all|[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", "Only messages to this session code (or to triage, or to all)."),
+    "to": (r"all|[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", "Only threads involving this session code: sent, relayed or routed to it, or replied by it (or sent to triage, or to all)."),
     "q": (r"[^\x00-\x1f\x7f]{1,200}", "Text to look for (case-insensitive) in the messages and their replies."),
 }
 
