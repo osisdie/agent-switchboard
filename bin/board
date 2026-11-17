@@ -152,7 +152,10 @@
 set -u
 
 REPO="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
-PRESS_SCREEN_NOTE="The session's screen is scrolled or covered; try again, or answer in the session."
+# board press exit 7: the note stored on the decision (press_note), with a fixed code (press_note_code).
+# "scrolled" only when the TUI's "N new messages (ctrl+End)" line was still on screen.
+PRESS_SCROLLED_NOTE="The session's screen is scrolled; nothing was pressed. Try again, or answer in the session."
+PRESS_NOT_VISIBLE_NOTE="The prompt is not visible on the session's screen (scrolled, covered or not redrawn yet); nothing was pressed. Answer in the session, or try again later."
 BOARD_HOME="${BOARD_HOME:-$HOME/.agent-switchboard}"
 export BOARD_HOME
 # Set only inline by board press (relayed over stale, see mark_status); never from the environment.
@@ -301,8 +304,9 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
         echo "  CODE (why an answer was not delivered, shown on the board): screen, partial, moved_on,"
         echo "  timeout, not_approver, unknown_session, operator, config" ;;
     resolve) echo "usage: board resolve ID --in-pane --from CODE|--by WHO [--note-file F]"
-        echo "  close a board ask (kind question, not a pane question, not a gate) that was answered in"
-        echo "  the session's pane or another session: status answered_in_pane (final). --from: the"
+        echo "  close a board ask (kind question, not a gate) that was answered in the session's pane or"
+        echo "  another session: status answered_in_pane (final). A pane question (an AskUserQuestion"
+        echo "  picker, pending) is closed only by an owner with --by; nothing is sent. --from: the"
         echo "  asking session itself: must equal the ask's from, and this command must run inside that"
         echo "  session (its registered Claude process is an ancestor; fails closed). This guards against"
         echo "  honest mistakes, not a security boundary (same-user trust); where it cannot tell (no /proc,"
@@ -320,11 +324,15 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
         echo "  approver. An option label sends its number key; other text (one line, <= $FREE_TEXT_MAX"
         echo "  chars) picks \"Type something\", types it literally and presses Enter. The pane must show"
         echo "  the picker (press.question_regex) with the start of the question (or every option label)."
+        echo "  A shortened question taller than the pane: its start may be in the last"
+        echo "  press.scrollback_lines (200; 0 = off) of scrollback, with every label after it, the picker"
+        echo "  at the bottom of the screen and nothing like another turn (press.turn_regex) in between."
         echo "  Exit 5: free text stopped part-way (keys sent, Enter not pressed; finish in the session)."
         echo "  A pane scrolled up (a last-2-line match of press.scrolled_regex) gets press.scroll_key (C-End)"
         echo "  once, then is checked again. Exit 7 (nothing sent but that key): the state still shows the"
         echo "  prompt waiting but the pane shows no prompt / picker; the decision is pending again, with a"
-        echo "  press_note (a prompt about other input on screen is still exit 3, stale)." ;;
+        echo "  press_note, press_note_code (scrolled | not_visible) and press_not_visible (a count; a"
+        echo "  prompt about other input on screen is still exit 3, stale)." ;;
     task) echo "usage: board task new|stage|ls|show|set|dep|pr|done|pause|resume|drop|block|progress ..."
         echo "  board task new --owner CODE \"title\" [--stage S]"
         echo "  board task stage ID STAGE [--artifact key=ref]..."
@@ -897,7 +905,7 @@ cmd_answer() {
     fi
   fi
   update_decision "$id" '.status = "answered" | .answer = $a | .answered_by = $by | .answered_at = $now | .updated_at = $now
-      | del(.press_note, .press_note_at, .status_reason)' \
+      | del(.press_note, .press_note_at, .press_note_code, .status_reason)' \
     --arg a "$answer" --arg by "$by" --argjson now "$now"
   log_event "$(jq -cn --arg id "$id" --arg by "$by" --argjson now "$now" '{ts: $now, type: "answer", id: $id, by: $by}')"
 
@@ -1042,11 +1050,18 @@ cmd_resolve() {
       '{ts: $now, type: "resolve", id: $id, result: $r} + (if $from == "" then {by: $by, via: "approver"} else {by: $from, via: "session"} end)
        + (if $why == "" then {} else {reason: $why} end)')"
   }
-  # Only a plain board ask: a permission or a pane question closes with its prompt (collector), and
-  # a gate is approved by an answer, never closed from the pane.
-  if [ "$(jq -r '(.kind == "question") and ((.source // "") != "pane") and ((.gate // "") == "") and ((.task_id // "") == "")' "$f")" != true ]; then
+  # A plain board ask, or a pane question (an AskUserQuestion picker) closed by an owner with --by
+  # (its prompt may never show on screen for board press; the collector also closes it with its
+  # prompt). A permission closes with its prompt, and a gate is approved by an answer: never here.
+  local is_pane; is_pane="$(jq -r '(.kind == "question") and ((.source // "") == "pane")' "$f")"
+  if [ "$is_pane" != true ] && [ "$(jq -r '(.kind == "question") and ((.source // "") != "pane") and ((.gate // "") == "") and ((.task_id // "") == "")' "$f")" != true ]; then
     audit_resolve refused "not a plain board ask"
-    echo "board resolve: refused — $id is not a plain board ask (a permission, pane question or gate); nothing changed" >&2
+    echo "board resolve: refused — $id is not a plain board ask or a pane question (a permission or gate); nothing changed" >&2
+    exit 2
+  fi
+  if [ "$is_pane" = true ] && [ -n "$from" ]; then
+    audit_resolve refused "a pane question is closed by an owner (--by)"
+    echo "board resolve: refused — $id is a pane question: an owner closes it with --by" >&2
     exit 2
   fi
   # Only an ask nobody has answered on the board: an approver's answer that waits for its relay
@@ -1080,6 +1095,10 @@ cmd_resolve() {
   elif ! allowed_by "$f" "$by"; then
     audit_resolve refused "not an approver"
     echo "board resolve: refused — $by is not an approver" >&2
+    exit 4
+  elif [ "$is_pane" = true ] && ! is_owner "$by"; then
+    audit_resolve refused "not an owner"
+    echo "board resolve: refused — $by is not an owner: only an owner closes a pane question" >&2
     exit 4
   fi
   if [ -n "$note" ]; then
@@ -1321,11 +1340,17 @@ cmd_press() {
     fi
     echo "board press: refused — $1; the prompt still waits: answer it again or in the session" >&2
     attempt not_visible "$1" "${2:-}"
-    local n; n="$(now_ms)"
+    # The note says "scrolled" only when the TUI's scrolled line is on the last screen captured;
+    # otherwise the prompt is just not visible (covered, or the TUI has not redrawn it yet).
+    # press_not_visible counts these presses for the decision (board answer keeps it), so the
+    # board can stop offering a retry that keeps failing.
+    local n code note; n="$(now_ms)"
+    if [ "${press_scrolled:-0}" = 1 ]; then code=scrolled; note="$PRESS_SCROLLED_NOTE"; else code=not_visible; note="$PRESS_NOT_VISIBLE_NOTE"; fi
     update_decision "$dec_id" '.status = "pending" | .answer = null | .answered_by = null | .answered_at = null
         | .answer_index = null | .answer_options = null | .answer_texts = null | .relay = null | .press_note = $note | .press_note_at = $now
+        | .press_note_code = $code | .press_not_visible = ((.press_not_visible // 0) + 1)
         | .updated_at = $now | del(.status_reason)' \
-      --arg note "$PRESS_SCREEN_NOTE" --argjson now "$n" >/dev/null 2>&1
+      --arg note "$note" --arg code "$code" --argjson now "$n" >/dev/null 2>&1
     log_event "$(jq -cn --arg id "$dec_id" --arg r "$1" --argjson now "$n" \
       '{ts: $now, type: "mark", id: $id, status: "pending", reason: ("press not visible: " + $r)}')"
     exit 7
@@ -1461,17 +1486,22 @@ cmd_press() {
   # lines is the whole-line press.scrolled_regex ("4 new messages (ctrl+End) ↓") instead of the
   # prompt. Send the one key that scrolls to the bottom (press.scroll_key, C-End: never submits
   # anything in Claude Code's TUI), once, then look again. Every check below runs on the new capture.
+  local press_scrolled=0
   if ! grep -Eq -- "$regex" <<<"$screen"; then
     local scrolled_re scroll_key
     scrolled_re="$(cfg_get press.scrolled_regex)"
     scroll_key="$(cfg_get press.scroll_key)"
-    if [ -n "$scrolled_re" ] && [ -n "$scroll_key" ] \
-       && tail -n 2 <<<"$screen" | grep -Eq -- "$scrolled_re"; then
-      attempt scroll "pane scrolled up: sent $scroll_key" "$pane"
-      tmux send-keys -t "$pane" "$scroll_key" || refuse "send-keys failed (scroll key)" "$pane"
-      sleep "${BOARD_PRESS_SETTLE:-0.3}"
-      full="$(tmux capture-pane -p -t "$pane" 2>/dev/null)" || refuse "capture-pane failed for $pane" "$pane"
-      screen="$(sed -e :a -e '/^[[:space:]]*$/{$d;N;ba' -e '}' <<<"$full" | tail -n "$lines")"
+    if [ -n "$scrolled_re" ] && tail -n 2 <<<"$screen" | grep -Eq -- "$scrolled_re"; then
+      press_scrolled=1
+      if [ -n "$scroll_key" ]; then
+        attempt scroll "pane scrolled up: sent $scroll_key" "$pane"
+        tmux send-keys -t "$pane" "$scroll_key" || refuse "send-keys failed (scroll key)" "$pane"
+        sleep "${BOARD_PRESS_SETTLE:-0.3}"
+        full="$(tmux capture-pane -p -t "$pane" 2>/dev/null)" || refuse "capture-pane failed for $pane" "$pane"
+        screen="$(sed -e :a -e '/^[[:space:]]*$/{$d;N;ba' -e '}' <<<"$full" | tail -n "$lines")"
+        # Still scrolled after the key? (Only then does an exit 7 say "scrolled".)
+        tail -n 2 <<<"$screen" | grep -Eq -- "$scrolled_re" || press_scrolled=0
+      fi
     fi
   fi
   local ft_label=""
@@ -1491,32 +1521,54 @@ cmd_press() {
   # 4. The prompt on screen must be about this input: the start of the summary (whitespace
   #    removed, up to 40 characters, before any [REDACTED]) must be visible in the pane.
   #    (A form of several questions is checked question by question in press_multi.)
+  #    Whitespace and the box glyph "│" (a question drawn in a box) are ignored on both sides.
   local summ bind flat
   if [ "$multi" = 0 ]; then
   summ="$(jq -r '.pending.summary // ""' "$sf")"
   bind="${summ%%\[REDACTED*}"
   bind="$(tr -d '[:space:]' <<<"$bind")"
+  bind="${bind//│/}"
   bind="${bind:0:40}"
   flat="$(tr -d '[:space:]' <<<"$full")"
+  flat="${flat//│/}"
   local seen=0
   if [ "$action" = answer ]; then
     # The question (start of it, as for a permission summary), or else every option label in order.
     # A question that was clipped needs both: its start (never the clipped tail) and every label.
-    local q_clip prefix_seen=0
+    local q_clip prefix_seen=0 qflat="$flat"
     q_clip="$(jq -r '.questions_clipped // false' "$df")"
     [ ${#bind} -ge 8 ] && [[ $flat == *"$bind"* ]] && prefix_seen=1
+    # A question taller than the pane: its start is above the visible screen. Look for it in a
+    # bounded scrollback capture (press.scrollback_lines; 0 = never), from its LAST occurrence
+    # down to the picker at the bottom of the screen, with nothing in between that looks like
+    # another turn (press.turn_regex). Every label must then follow it, in order (below).
+    # (Only a clipped question needs its start; any other passes on its labels alone, as before.)
+    if [ "$q_clip" = true ] && [ "$prefix_seen" = 0 ] && [ ${#bind} -ge 8 ]; then
+      local sb_n; sb_n="$(cfg_get press.scrollback_lines 200)"
+      case "$sb_n" in ''|*[!0-9]*) sb_n=200 ;; esac
+      if [ "$sb_n" -gt 0 ]; then
+        local sb_rc=0
+        press_scrollback "$pane" "$full" "$bind" "$regex" "$(cfg_get press.turn_regex)" "$(cfg_get press.focus_regex)" "$sb_n" || sb_rc=$?
+        # The screen moved between the captures: nothing pressed, pending again (exit 7), so the
+        # board can try again; any other mismatch is a refusal (exit 3, stale).
+        [ "$sb_rc" = 2 ] && refuse_screen "the start of the question ('${bind}') was not checked in pane $pane: $PRESS_WHY" "$pane"
+        [ "$sb_rc" = 0 ] || refuse "the start of the question ('${bind}') is not visible in pane $pane: $PRESS_WHY" "$pane"
+        qflat="$PRESS_REST"; prefix_seen=1
+      fi
+    fi
     seen=$prefix_seen
     if [ "$q_clip" = true ]; then
       [ "$prefix_seen" = 1 ] || refuse "the start of the shortened question ('${bind}') is not visible in pane $pane" "$pane"
       seen=0
     fi
     if [ "$seen" = 0 ]; then
-      # For a clipped question the labels must come after its start: labels only in the
-      # scrollback above the question do not count.
-      local lab rest="$flat" all=1 nl=0
-      [ "$q_clip" = true ] && rest="${flat#*"$bind"}"
+      # For a clipped question the labels must come after its start (its last occurrence, when
+      # found in the scrollback): labels only in the scrollback above the question do not count.
+      local lab rest="$qflat" all=1 nl=0
+      [ "$q_clip" = true ] && rest="${qflat##*"$bind"}"
       while IFS= read -r lab; do
         lab="$(tr -d '[:space:]' <<<"$lab")"
+        lab="${lab//│/}"
         [ -n "$lab" ] || continue
         nl=$((nl + 1))
         if [[ $rest == *"$lab"* ]]; then rest="${rest#*"$lab"}"; else all=0; break; fi
@@ -1610,6 +1662,48 @@ press_free_text() {
   [ "$ok" = 1 ] || partial "the focused row $key does not show the typed text" "$pane"
   same_prompt || partial "pending prompt changed while typing" "$pane" moved_on
   tmux send-keys -t "$pane" Enter || partial "send-keys failed (Enter)" "$pane"
+}
+
+# press_scrollback PANE VISIBLE BIND FOOTER_RE TURN_RE FOCUS_RE N — a clipped question taller than
+# the pane (its start is above the visible screen). Captures the last N lines of scrollback plus
+# the screen (capture-pane -S -N) and, on success, sets PRESS_REST to the text (whitespace and "│"
+# removed) from the LAST occurrence of BIND down to the picker footer; else sets PRESS_WHY and
+# returns 1, or 2 when the screen changed between the two captures (worth another try). Checks: the capture ends with VISIBLE (the screen did not change in between); the
+# footer (FOOTER_RE) is on one of the last 3 non-blank lines of the screen (the picker is at the
+# bottom, nothing drawn after it); no line from the one holding BIND to the end matches TURN_RE
+# (another turn: Claude's "●" bullet, the "❯" prompt), except a picker row ("❯ 2. …", FOCUS_RE
+# then a number). Never sends a key.
+press_scrollback() {
+  local pane="$1" vis="$2" bind="$3" footer="$4" turn="$5" focus="$6" n="$7" long out
+  PRESS_REST="" PRESS_WHY=""
+  long="$(tmux capture-pane -p -t "$pane" -S "-$n" 2>/dev/null)" || { PRESS_WHY="capture-pane of the scrollback failed"; return 1; }
+  long="$(sed -e :a -e '/^[[:space:]]*$/{$d;N;ba' -e '}' <<<"$long")"
+  vis="$(sed -e :a -e '/^[[:space:]]*$/{$d;N;ba' -e '}' <<<"$vis")"
+  if [ -z "$vis" ] || { [ "$long" != "$vis" ] && [[ $long != *$'\n'"$vis" ]]; }; then
+    PRESS_WHY="the screen changed while checking"; return 2
+  fi
+  grep -v '^[[:space:]]*$' <<<"$vis" | tail -n 3 | grep -Eq -- "$footer" \
+    || { PRESS_WHY="the picker is not at the bottom of the screen"; return 1; }
+  [ -n "$turn" ] || { PRESS_WHY="press.turn_regex is not configured"; return 1; }
+  # LC_ALL=C: byte-wise, so [[:space:]] is ASCII whitespace only, as `tr -d '[:space:]'` strips
+  # the question and the labels (gawk in a UTF-8 locale would also strip U+3000 and the like).
+  out="$(SB_BIND="$bind" SB_FOOTER="$footer" SB_TURN="$turn" SB_ROW="^[[:space:]]*(${focus:-❯})[[:space:]]*[0-9]+\\." LC_ALL=C awk '
+    { line[NR] = $0 }
+    END {
+      bind = ENVIRON["SB_BIND"]
+      for (f = NR; f >= 1; f--) if (line[f] ~ ENVIRON["SB_FOOTER"]) break
+      if (f < 1) { print "no picker footer"; exit 1 }
+      cat = ""
+      for (i = 1; i < f; i++) { x = line[i]; gsub(/[[:space:]]/, "", x); gsub(/│/, "", x); st[i] = length(cat) + 1; cat = cat x }
+      p = 0; rest = cat; off = 0
+      while ((k = index(rest, bind)) > 0) { p = off + k; off = p; rest = substr(cat, p + 1) }
+      if (!p) { print "not in the last lines of scrollback"; exit 1 }
+      for (s = f - 1; s >= 1; s--) if (st[s] <= p) break
+      for (i = s; i <= NR; i++)
+        if (line[i] ~ ENVIRON["SB_TURN"] && line[i] !~ ENVIRON["SB_ROW"]) { print "another turn is drawn between it and the picker"; exit 1 }
+      print substr(cat, p)
+    }' <<<"$long")" || { PRESS_WHY="$out"; return 1; }
+  PRESS_REST="$out"
 }
 
 # press_multi PANE STATE_FILE DECISION SHA LINES — runs inside cmd_press (uses its refuse/partial).

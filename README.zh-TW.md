@@ -186,7 +186,7 @@ scripts/setup-dev.sh           # only if you'll commit to this repo: pre-commit 
   | `remote_url_prefix` | `https://claude.ai/code/` | 每個 session 的 Remote Control 連結前綴 |
   | `serve.enabled`、`serve.port` | `false`、`39410` | 自架看板：由 `fleet-up` 啟動 `board-serve`；本機監聽器（身分為 `local`） |
   | `serve.tunnel.*` | 關閉 | `enabled`、`port`（port + 1）、`hostname`、`team_domain`、`aud`：cloudflared 指向的監聽器；身分 = 經過驗證的 Cloudflare Access token 裡的 email |
-  | `press.prompt_regex`、`press.question_regex`、`press.free_text_label`、`press.tabbar_regex`、`press.review_regex`、`press.submit_label`、`press.focus_regex`、`press.lines`、`press.allow_keys`、`press.deny_keys` | 見範例 | `board press` 用的畫面檢查與按鍵（`question_regex`：AskUserQuestion 選單；`tabbar_regex`、`review_regex`、`submit_label`：多題表單） |
+  | `press.prompt_regex`、`press.question_regex`、`press.free_text_label`、`press.tabbar_regex`、`press.review_regex`、`press.submit_label`、`press.focus_regex`、`press.lines`、`press.allow_keys`、`press.deny_keys`、`press.scrollback_lines`、`press.turn_regex` | 見範例 | `board press` 用的畫面檢查與按鍵（`question_regex`：AskUserQuestion 選單；`tabbar_regex`、`review_regex`、`submit_label`：多題表單；`scrollback_lines`（200，0 = 關閉）、`turn_regex`：比 pane 還高的截短問題，到哪裡找它的開頭） |
 
 - `.env`：告警管道（Slack、email、LINE、SNS、webhook，全部選用，見
   [告警與升級](#alerting--escalation)）。從 `.env.example` 開始改。
@@ -430,7 +430,10 @@ pane 標題裡的任務、執行中或閒置、記憶體用量）、已用的 co
   一次 `press.scroll_key`（`C-End`，只會捲到最底，在 Claude Code 的 TUI 裡絕不會送出任何內容），再用新的
   畫面跑完所有檢查。如果這樣
   仍看不到提示，而 hook 狀態仍顯示同一個提示在等待，就以 exit 7 結束：只送出了那一個鍵，決策會回到
-  **pending** 並附上說明，你可以在看板上再回答一次。只有 session 已經往下走了，決策才會變成 stale。提示
+  **pending** 並附上說明，你可以在看板上再回答一次。只有捲動提示那一行仍在畫面上時，說明才會寫「已捲動」；
+  否則會寫畫面上看不到這個提示（可能捲動、被蓋住或尚未重繪：hook 可能比 TUI 先回報提示）。同一張卡片連續
+  第 2 次這樣按不下去之後，卡片不再把「再試一次」放在最前面：改成顯示 **請在 session 中回答** 和該 session 的
+  tmux 位置，問題卡片並提供 **標記為已在 session 中回答**（在那之前卡片維持 pending）。只有 session 已經往下走了，決策才會變成 stale。提示
   仍在等待、但決策已經 stale 的 session 卡片，會顯示「請在 session 中回答」，而不是指向失效卡片的連結。
   在「最近的決策」裡，已記錄但從未送達的回答（按鍵被拒、做到一半、session 已經往下走）會有紅色的
   「未送達」標籤，並寫成「未送達：<原因> → <回答>」，不會看起來像已轉達。
@@ -441,7 +444,11 @@ pane 標題裡的任務、執行中或閒置、記憶體用量）、已用的 co
 - **pane 裡的問題（AskUserQuestion）**：session 用 Claude Code 的提問選單問你時，卡片會寫「`<CODE>` asks:」
   加上問題，每個選項一個按鈕（標籤與說明），還有一個 **Type something** 欄位，不再是沒有意義的 Allow/Deny。
   hook 會保留問題與選項（遮蔽機密、截短：問題 300、標籤 80、說明 160 字元）。問題被截短時會照存下的內容顯示並標上
-  **（已截短）**；只要每個選項標籤都完整，按鈕仍然可用，按下時會檢查畫面上的問題開頭和每一個標籤。只有一題且是單選時，點按鈕會執行
+  **（已截短）**；只要每個選項標籤都完整，按鈕仍然可用，按下時會檢查畫面上的問題開頭和每一個標籤。
+  問題比 pane 還高時，開頭已經在畫面上方：這時會到最後 `press.scrollback_lines` 行捲動紀錄裡找（預設 200；0 = 關閉），
+  以最後一次出現的位置為準，之後要依序看到每一個標籤、選單的頁尾要在畫面最底，而且中間不能有別的回合
+  （`press.turn_regex`：Claude 的「●」／「⏺」項目符號或「❯」提示；選單裡被選取的「❯ 2.」那一列不算）。
+  按鍵仍然要等可見畫面上的檢查全部通過才會送出。只有一題且是單選時，點按鈕會執行
   `board answer`（把標籤對應到選項編號）和 `board press <CODE> answer --expect <tool_use_id>`，檢查與
   permission 按鍵相同：approver 的回答、同一個 pending `tool_use_id` 與雜湊、畫面上有選單
   （`press.question_regex`）而且看得到問題開頭（或每一個選項標籤）。選項會送出它的數字鍵，立即選定。

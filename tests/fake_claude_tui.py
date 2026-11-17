@@ -11,6 +11,13 @@ Writes DIR/pid (its pid) and appends every key to DIR/keys (one JSON line {key, 
   idle    typing goes into the box; Enter with text -> working
   ready   Enter -> working (submits the prefilled "continue")
   Two Escapes less than a second apart on an input box open a rewind picker (as Claude does).
+
+  STATE question: an AskUserQuestion picker whose question is taller than the pane (tests/
+  test_press_tall.py): the question in a box ("│ ..."), its options and the picker footer, written
+  once without clearing the screen, so the start of the question scrolls into tmux's history.
+  question-turn: the same, with another turn ("● ...") drawn between the question and its options.
+  question-cjk: the same, the question in Chinese with a full-width space (U+3000) in its start.
+  Keys are only recorded there.
 """
 import json
 import os
@@ -21,6 +28,9 @@ import time
 import tty
 
 RULE = "─" * 60
+# The question of state question-cjk (tests/test_press_tall.py asks the same one): a full-width
+# space (U+3000) within its first 40 characters, and long enough to be clipped by the hook.
+QUESTION_CJK = "請選擇\u3000這次測試要用的顏色：" + "背景說明" * 90
 NB = "\u00a0"
 
 
@@ -57,7 +67,33 @@ class Tui:
         return head + ["❯ " + (self.echo or ""), "✻ Thinking… (3s · esc to interrupt)"] + self.box(
             ["  ⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt"])
 
+    def question(self):
+        if self.state == "question-cjk":  # full-width characters: 30 per box line (60 columns)
+            text = QUESTION_CJK
+            box = ["│ " + text[i:i + 30] for i in range(0, len(text), 30)]
+        else:
+            words = ("Which color do you prefer for the test? " + "context " * 60).split()
+            box, cur = [], ""
+            for w in words:
+                if len(cur) + len(w) + 1 > 40:
+                    box.append("│ " + cur)
+                    cur = w
+                else:
+                    cur = (cur + " " + w).strip()
+            box.append("│ " + cur)
+        turn = ["", "● Meanwhile: the release notes are written."] if self.state == "question-turn" else []
+        return (["Claude Code v2", "", "❯ pick a color for the test", "● I need one decision.", "", " ☐ Color", ""]
+                + box + turn + ["", "❯ 1. Red", "     warm", "  2. Blue", "     cool", "  3. Green", "     natural",
+                                "  4. Type something.", "───", "  5. Chat about this", "",
+                                "Enter to select · ↑/↓ to navigate · Esc to cancel"])
+
     def draw(self):
+        if self.state.startswith("question"):
+            if not getattr(self, "drawn", False):  # once, no clear: the top scrolls into history
+                self.drawn = True
+                sys.stdout.write("\r\n".join(self.question()))
+                sys.stdout.flush()
+            return
         sys.stdout.write("\x1b[H\x1b[2J" + "\r\n".join(self.lines()))
         sys.stdout.flush()
 
@@ -68,6 +104,8 @@ class Tui:
     def key(self, k):
         self.log(k)
         st = self.state
+        if st.startswith("question"):
+            return
         if k == "Escape":
             quick = time.time() - self.last_esc < 1.0
             self.last_esc = time.time()

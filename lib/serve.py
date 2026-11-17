@@ -200,7 +200,8 @@ DECISION_KEYS = ("id", "kind", "from", "question", "options", "context", "tool_u
                  "hint", "hint_at", "resolved_by", "resolved_via", "resolved_at", "resolve_note",
                  "created_at", "updated_at", "task_id", "stage", "gate", "artifact_ref",
                  "escalation_level", "notified_via", "summary_truncated",
-                 "labels_clipped", "answer_options", "press_note", "status_reason",
+                 "labels_clipped", "answer_options", "press_note", "press_note_code", "press_not_visible",
+                 "status_reason",
                  # pane questions (an AskUserQuestion picker): source "pane"
                  "source", "questions", "questions_clipped", "pressable", "answer_index", "relay")
 OPERATOR_KEYS = ("heartbeat_at", "version", "operator_session", "account_hint")
@@ -999,9 +1000,10 @@ def csp(nonce):
 
 # ------------------------------------------------------------------------- HTTP
 class Refused(Exception):
-    def __init__(self, status, error, detail="", headers=None):
+    def __init__(self, status, error, detail="", headers=None, extra=None):
         super().__init__(error)
         self.status, self.error, self.detail, self.headers = status, error, detail, headers or {}
+        self.extra = extra or {}  # more fields of the JSON body (fixed keys, never free text)
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -1038,7 +1040,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def refuse(self, exc):
         if self.command == "POST" and not getattr(self, "body_read", False):
             self.drain_body()
-        self.send_json(exc.status, {"error": exc.error, "detail": exc.detail}, getattr(exc, "headers", None) or None)
+        body = dict(getattr(exc, "extra", None) or {})
+        body.update({"error": exc.error, "detail": exc.detail})
+        self.send_json(exc.status, body, getattr(exc, "headers", None) or None)
 
     def drain_body(self):
         """A POST refused before its body was read (too large, wrong type, CSRF ...): drop up to
@@ -1853,11 +1857,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if rc == 3:
                 self.audit(ident, via, "press", id=did, code=code, key=answer, result="stale")
                 raise Refused(409, "stale", "the prompt is no longer showing; answer it in the session")
-            if rc == 7:  # the prompt still waits but is not on screen (scrolled): pending again
+            if rc == 7:  # the prompt still waits but is not on screen: pending again
                 self.audit(ident, via, "press", id=did, code=code, key=answer, result="not_visible")
+                # board press wrote press_note_code ("scrolled" only when the TUI's scrolled line
+                # was still on screen) and press_not_visible (how many presses found it not visible).
+                after = read_json(os.path.join(self.server.home, "decisions", did + ".json"))
+                after = after if isinstance(after, dict) else {}
+                scrolled = after.get("press_note_code") == "scrolled"
+                n = after.get("press_not_visible")
+                n = n if isinstance(n, int) and not isinstance(n, bool) and n > 0 else 1
                 raise Refused(409, "screen_not_ready",
-                              "the session's screen is scrolled or covered, so the prompt is not visible; "
-                              "try again, or answer in the session")
+                              "the session's screen is scrolled, so the prompt is not visible; try again, or answer in the session"
+                              if scrolled else
+                              "the prompt is not visible on the session's screen (scrolled, covered or not redrawn yet); "
+                              "nothing was pressed: answer in the session, or try again later",
+                              extra={"scrolled": scrolled, "attempts": n, "question": bool(pane_q)})
             if rc == 5:  # free text typed into the picker, Enter not pressed
                 self.audit(ident, via, "press", id=did, code=code, key=answer, result="partial")
                 raise Refused(409, "partial", "keys were sent but Enter was not pressed; finish in the session")
@@ -1972,7 +1986,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         log("board resolve %s (rc %d): %s %s" % (did, rc, err, out))
         self.audit(ident, via, "resolve", id=did, result="refused", rc=rc)
         if rc == 2:
-            raise Refused(409, "not_a_board_ask", "only a question asked with board ask can be closed this way")
+            raise Refused(409, "not_a_board_ask", "only a board ask or a pane question can be closed this way")
         if rc == 4:
             raise Refused(403, "not_approver", "you may not close this decision")
         if rc == 6:

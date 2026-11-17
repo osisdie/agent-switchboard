@@ -814,6 +814,7 @@ dec d-1-permb permission "{\"from\":null,\"session_id\":\"$SID\",\"tool_use_id\"
 echo '$ just a shell' > "$FAKE_TMUX_SCREEN"
 eq "prompt not on screen while the state still waits on it: 409" "$(post /api/decisions/d-1-permb/answer '{"answer":"allow"}')" "409"
 eq "  error screen_not_ready (not stale)" "$(body .error)" "screen_not_ready"
+eq "  no scrolled line on screen: scrolled false, attempt 1" "$(body '"\(.scrolled)/\(.attempts)"')" "false/1"
 grep -qE 'pane|%4|board press|tmux' "$T/body" && bad "  no board/tmux internals in the error" "$(cat "$T/body")" || ok "  no board/tmux internals in the error"
 grep -q 'board press d-1-permb' "$T/serve.err" && ok "  details logged on stderr" || bad "  details logged on stderr"
 grep -q 'send-keys' "$FAKE_TMUX_LOG" && bad "  no keys sent" "$(cat "$FAKE_TMUX_LOG")" || ok "  no keys sent"
@@ -824,6 +825,8 @@ printf 'older output\n  4 new messages (ctrl+End) ↓\n' > "$FAKE_TMUX_SCREEN"
 : > "$FAKE_TMUX_LOG"
 eq "scrolled pane, still no prompt after the scroll key: 409" "$(post /api/decisions/d-1-permb/answer '{"answer":"allow"}')" "409"
 eq "  error screen_not_ready" "$(body .error)" "screen_not_ready"
+eq "  still scrolled after the key: scrolled true, attempt 2" "$(body '"\(.scrolled)/\(.attempts)"')" "true/2"
+eq "  the page gets press_note_code and press_not_visible" "$(req GET /api/state >/dev/null; body '.decisions[] | select(.id=="d-1-permb") | "\(.press_note_code)/\(.press_not_visible)"')" "scrolled/2"
 eq "  only the scroll key was sent" "$(grep '^send-keys' "$FAKE_TMUX_LOG" | tr '\n' '|')" "send-keys -t %42 C-End|"
 # The session moved on: the collector marks it stale.
 jq '.pending.tool_use_id = "tu_3" | .pending.summary_sha256 = "sha-3"' "$BOARD_HOME/state/$SID.json" > "$T/st" && mv "$T/st" "$BOARD_HOME/state/$SID.json"
@@ -857,6 +860,15 @@ eq "  the page gets it" "$(req GET /api/state >/dev/null; body '.decisions[] | s
 eq "resolve it again: 409 gone" "$(post /api/decisions/d-1-r1/resolve '{"confirm":"resolve"}')" "409"
 eq "  error gone" "$(body .error)" "gone"
 ls "$BOARD_HOME"/.note.* >/dev/null 2>&1 && bad "  no note temp file left" || ok "  no note temp file left"
+# A pane question whose picker never shows: the owner closes it from the board; an approver who
+# is not an owner may not (board resolve exit 4 -> 403 not_approver, untouched).
+dec d-1-pq1 question '{"source":"pane","tool_use_id":"tu_pq1","tool_name":"AskUserQuestion"}'
+write_cfg "owners: [boss@example.com]"
+eq "resolve a pending pane question by an approver who is not an owner: 403" "$(post /api/decisions/d-1-pq1/resolve '{"confirm":"resolve"}')" "403"
+eq "  error not_approver, still pending" "$(body .error)/$(jq -r .status "$BOARD_HOME/decisions/d-1-pq1.json")" "not_approver/pending"
+write_cfg ""
+eq "resolve a pending pane question (owner): 200" "$(post /api/decisions/d-1-pq1/resolve '{"confirm":"resolve"}')" "200"
+eq "  answered_in_pane" "$(jq -r .status "$BOARD_HOME/decisions/d-1-pq1.json")" "answered_in_pane"
 
 # ---------------------------------------------------------------- pane question -> board press
 echo "pane question:"

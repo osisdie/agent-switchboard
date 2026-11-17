@@ -188,7 +188,7 @@ your `statusLine` and removes the symlinks.
   | `remote_url_prefix` | `https://claude.ai/code/` | prefix for each session's Remote Control link |
   | `serve.enabled`, `serve.port` | `false`, `39410` | self-hosted board: `fleet-up` starts `board-serve`; the local listener (identity `local`) |
   | `serve.tunnel.*` | off | `enabled`, `port` (port + 1), `hostname`, `team_domain`, `aud`: the listener cloudflared points at; identity = the email of a verified Cloudflare Access token |
-  | `press.prompt_regex`, `press.question_regex`, `press.free_text_label`, `press.tabbar_regex`, `press.review_regex`, `press.submit_label`, `press.focus_regex`, `press.lines`, `press.allow_keys`, `press.deny_keys` | see example | the screen checks and keys used by `board press` (`question_regex`: the AskUserQuestion picker; `tabbar_regex`, `review_regex`, `submit_label`: a form of several questions) |
+  | `press.prompt_regex`, `press.question_regex`, `press.free_text_label`, `press.tabbar_regex`, `press.review_regex`, `press.submit_label`, `press.focus_regex`, `press.lines`, `press.allow_keys`, `press.deny_keys`, `press.scrollback_lines`, `press.turn_regex` | see example | the screen checks and keys used by `board press` (`question_regex`: the AskUserQuestion picker; `tabbar_regex`, `review_regex`, `submit_label`: a form of several questions; `scrollback_lines` (200, 0 = off), `turn_regex`: where the start of a shortened question taller than the pane may be found) |
 
 - `.env`: alert channels (Slack, email, LINE, SNS, webhook; all optional, see
   [Alerting & escalation](#alerting--escalation)). Start from `.env.example`.
@@ -461,7 +461,12 @@ to the Artifact or put in an alert. Turn the prompt off with `cards: {show_promp
   submits in Claude Code's TUI) once, then runs every check on a fresh capture. If no
   prompt is visible even then, while the hook state still shows the same prompt waiting, it exits 7:
   only that key was sent, and the decision goes back to **pending** with a note, so you can answer it
-  again from the board. It becomes stale only once the session has moved on. A session card whose
+  again from the board. The note says "scrolled" only when the scrolled line was still on screen;
+  otherwise it says the prompt is not visible (scrolled, covered, or not redrawn yet: the hook can
+  report a prompt before the TUI draws it). After the 2nd such press in a row for the same card, the
+  card stops offering a retry first: it says **Answer in the session**, with the session's tmux
+  target, and a question card offers **Mark answered in session** (the card stays pending until
+  then). It becomes stale only once the session has moved on. A session card whose
   prompt still waits but whose decision went stale says "Answer in the session" instead of linking
   to a dead card. In Recent decisions, an answer that was recorded but never delivered (refused at
   the press, stopped part-way, the session moved on) gets a red "not delivered" chip and reads
@@ -477,7 +482,12 @@ to the Artifact or put in an alert. Turn the prompt off with `cards: {show_promp
   questions and options (redacted, clipped: question 300, label 80, description 160 characters).
   A question cut short is shown as stored, marked **(shortened)**, and its buttons still work as
   long as every option label is whole; the press then checks the start of the question and every
-  label on screen.
+  label on screen. A question taller than the pane has its start above the screen: the press then
+  looks for it in the last `press.scrollback_lines` lines of scrollback (default 200; 0 = off),
+  from its last occurrence, with every label after it in order, the picker footer at the bottom of
+  the screen, and no other turn in between (`press.turn_regex`: Claude's "●"/"⏺" bullet or the "❯"
+  prompt; a focused "❯ 2." picker row is not one). The keys still go only after every check on the
+  visible screen passes.
   For one single-select question, a click runs `board answer` (which maps the label to the option
   number) and `board press <CODE> answer --expect <tool_use_id>`, with the same checks as a
   permission press: an approver's answer, the same pending `tool_use_id` and hash, and the picker

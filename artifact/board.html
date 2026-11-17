@@ -302,6 +302,10 @@ dialog.notif { width: min(720px, calc(100vw - 24px)); }
 .dcard h3 { font-size: 18px; font-weight: 650; font-stretch: 92%; line-height: 1.3; overflow-wrap: anywhere; }
 .dcard .ctx { margin: 0; color: var(--muted); font-size: 14px; overflow-wrap: anywhere; }
 .dcard .ctx.press-note { color: var(--lamp-ink); }
+.dcard .press-stuck { border: 1px solid var(--lamp-ink); border-radius: 8px; padding: 8px 12px; margin: 8px 0; }
+.dcard .press-stuck p { margin: 4px 0; overflow-wrap: anywhere; }
+.dcard .press-stuck .ps-head { font-weight: 600; color: var(--lamp-ink); }
+.dcard .press-stuck .resolve-row { justify-content: flex-start; }
 .sdetail .note.in-session { color: var(--lamp-ink); }
 .cmd { margin: 0; font-family: var(--f-mono); font-size: 13px; line-height: 1.45; padding: 10px 12px; border-radius: 5px; background: var(--paper); border: 1px solid var(--rule); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; }
 .cmd b { color: var(--cord); font-weight: 600; }
@@ -2115,7 +2119,21 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     const shortNote = (q) => (shortened(q) ? h('span', { class: 'pq-short', text: ' ' + tr('(shortened)') }) : null);
     card.append(h('h3', null, h('span', { class: 'pq-asks', text: tr('{who} asks:', { who }) }), list.length === 1 ? str(list[0].question) : tr('{n} questions', { n: list.length }),
       list.length === 1 ? shortNote(list[0]) : null));
-    if (d.status === 'pending' && d.press_note) card.append(pressNote());
+    if (d.status === 'pending' && d.press_note) card.append(pressNote(d));
+    // Closing it as answered in the session: the owner, on the self-hosted board, with a confirm
+    // step (board resolve --by); nothing is sent to the session.
+    const conf = S.confirm && S.confirm.id === d.id ? S.confirm.choice : null;
+    const canResolve = d.status === 'pending' && !busy && canAnswer() && promptAnswerer() && isLocal() && appr !== false
+      && typeof adapter.resolveDecision === 'function';
+    const resolveRow = () => (conf === RESOLVE
+      ? h('div', { class: 'confirm-row' },
+        h('span', { class: 'q', text: tr('Close this question as answered in the session? Nothing is sent to {who}.', { who }) }),
+        h('button', { class: 'btn solid allow', type: 'button', dataset: { focus: 'confirm' }, onclick: () => resolveDecision(d), text: tr('Yes, close it') }),
+        h('button', { class: 'btn', type: 'button', onclick: () => { S.confirm = null; renderDecisions(); }, text: tr('Cancel') }))
+      : h('div', { class: 'resolve-row' }, h('button', { class: 'btn ' + (stuck ? 'solid' : 'linkish'), type: 'button',
+        onclick: () => askConfirm(d.id, RESOLVE), text: tr('Mark answered in session') })));
+    const stuck = pressStuck(d);
+    if (stuck) card.append(pressStuckBox(d, canResolve ? resolveRow() : null));
     list.forEach((q, qi) => {
       const opts = (Array.isArray(q.options) ? q.options : []).map((o) => (o && typeof o === 'object' ? o : { label: str(o) }));
       const box = h('section', { class: 'pq-q', 'aria-label': tr('Question {n}', { n: qi + 1 }) });
@@ -2200,8 +2218,9 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       input.addEventListener('input', () => { S.drafts[d.id] = input.value; });
       const submit = () => { const v = input.value.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim(); if (!v) { input.focus(); return; } answerDecision(d, v); };
       input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } });
-      card.append(h('div', { class: 'free' }, input, h('button', { class: 'btn primary', type: 'button', onclick: submit, text: tr('Send') })));
+      card.append(h('div', { class: 'free' }, input, h('button', { class: 'btn' + (stuck ? '' : ' primary'), type: 'button', onclick: submit, text: tr('Send') })));
     }
+    if (canResolve && !stuck) card.append(resolveRow());
     const sess = findSession(d.from);
     const link = sessionLink(d.from, tr(pressable || multi ? 'Open session' : 'Answer in session'));
     const tmux = !link && sess && sess.tmux ? h('span', { class: 'mono', text: 'tmux ' + str(sess.tmux) }) : null;
@@ -2241,7 +2260,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     card.append(h('h3', { text: title }));
     if (d.context) card.append(h('p', { class: 'ctx', text: str(d.context) }));
     // The last press found the session's screen scrolled: nothing was pressed, it can be answered again.
-    if (d.status === 'pending' && d.press_note) card.append(pressNote());
+    if (d.status === 'pending' && d.press_note) card.append(pressNote(d));
+    if (pressStuck(d)) card.append(pressStuckBox(d));
     if (isPerm) {
       card.append(h('pre', { class: 'cmd' }, h('b', { text: str(d.tool_name) || 'tool' }), d.summary ? '\n' + str(d.summary) : ''));
     }
@@ -2667,14 +2687,16 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       const inSession = waitDec && col === 'needs' && waitDec.status !== 'pending' && waitDec.status !== 'answered'
         ? h('span', { class: 'note in-session', text: notDelivered(waitDec)
             ? tr('Your answer was not delivered ({why}). Answer in the session.', { why: reasonText(waitDec) })
-            : waitDec.press_note ? tr('Answer in the session (screen scrolled)') : tr('Answer in the session: the board can no longer press this prompt') }) : null;
+            : waitDec.press_note ? tr(pressScrolled(waitDec) ? 'Answer in the session (screen scrolled)' : 'Answer in the session (not visible on its screen)')
+              : tr('Answer in the session: the board can no longer press this prompt') }) : null;
       if (decs.length || inSession) {
         const pe = section('Pending', 'pending');
         if (decs.length) {
           const nq = decs.filter((d) => d.kind !== 'permission').length;
           pe.row('Waiting', tr('{d} decisions, {q} questions', { d: decs.length - nq, q: nq }));
           pe.row('Open', h('ul', null, decs.map((d) => h('li', null, h('a', { href: '#dec-' + str(d.id), text: d.kind === 'permission' ? tr('Permission: {tool}', { tool: str(d.tool_name) || tr('a tool') }) : clip(d.question, 100) || tr('A question') }),
-            d.press_note ? h('span', { class: 'note', text: ' · ' + tr('screen was scrolled; try again') }) : null))));
+            d.press_note ? h('span', { class: 'note', text: ' · ' + tr(pressStuck(d) ? 'not visible on its screen; answer in the session'
+              : pressScrolled(d) ? 'screen was scrolled; try again' : 'not visible on its screen; try again later') }) : null))));
         }
         if (inSession) pe.row('In session', inSession);
         pe.add();
@@ -5376,8 +5398,28 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     toast(okText + ' · ' + (operatorOffline() ? tr('queued until the operator returns.') : sent ? tr('Sent to operator.') : queuedText()));
     return true;
   }
-  // The last press found the session's screen scrolled: nothing was pressed, it can be answered again.
-  const pressNote = () => h('p', { class: 'ctx press-note', text: tr('The session\'s screen was scrolled, so nothing was pressed. Try again, or answer in the session.') });
+  // The last press found nothing to press on the session's screen: nothing was pressed, it can be
+  // answered again. "Scrolled" only when board press saw the TUI's scrolled line (press_note_code);
+  // otherwise the prompt was just not visible (covered, or not redrawn yet).
+  const pressScrolled = (d) => d.press_note_code === 'scrolled';
+  const pressNote = (d) => h('p', { class: 'ctx press-note', text: pressScrolled(d)
+    ? tr('The session\'s screen was scrolled, so nothing was pressed. Try again, or answer in the session.')
+    : d.kind === 'permission'
+      ? tr('The prompt isn\'t visible on the session\'s screen (scrolled, covered or not redrawn yet); nothing was pressed. Answer in the session, or try again later.')
+      : tr('The question isn\'t visible on the session\'s screen (scrolled, covered or not redrawn yet); nothing was pressed. Answer in the session, or try again later.') });
+  // After the 2nd press in a row that found nothing on screen, a retry is no longer offered first:
+  // the card says to answer in the session, with its tmux target (the decision stays pending).
+  const PRESS_STUCK_AFTER = 2;
+  const pressStuck = (d) => d.status === 'pending' && Number.isInteger(d.press_not_visible) && d.press_not_visible >= PRESS_STUCK_AFTER;
+  function pressStuckBox(d, extra) {
+    const sess = findSession(d.from);
+    const where = sess && sess.tmux ? str(sess.tmux) : str(d.from);
+    return h('div', { class: 'press-stuck', role: 'note' },
+      h('p', { class: 'ps-head', text: tr('Answer in the session') }),
+      h('p', { text: tr('The board tried {n} times and could not see this on {who}\'s screen, so nothing was pressed.', { n: d.press_not_visible, who: str(d.from) || tr('the session') }) }),
+      where ? h('p', null, tr('Go to') + ' ', h('code', { class: 'mono', text: (sess && sess.tmux ? 'tmux ' : '') + where })) : null,
+      extra || null);
+  }
   function handleWriteError(e, gone) {
     const code = e && e.code;
     // Local adapter (board-serve) answers; never produced by the claude.ai db.
@@ -5390,8 +5432,17 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     if (code === 'bad_duration' || code === 'bad_level' || code === 'bad_channel' || code === 'bad_op') { toast(tr('Not saved: {why}', { why: e.message || tr('the board server refused that setting.') }), true); return; }
     if (code === 'not_held' || code === 'confirm_required') { toast(tr('Not released: {why}', { why: e.message || tr('the message is not held.') }), true); return; }
     if (code === 'stale') { toast(tr('That prompt is no longer showing, so nothing was pressed. Handle it in the session.'), true); return; }
-    if (code === 'not_a_board_ask') { toast(tr('Only a question asked with board ask can be closed this way.'), true); return; }
-    if (code === 'screen_not_ready') { toast(tr('The session\'s screen is scrolled, so nothing was pressed. Try again, or answer in the session.'), true); return; }
+    if (code === 'not_a_board_ask') { toast(tr('Only a board ask or a question in the session can be closed this way.'), true); return; }
+    if (code === 'screen_not_ready') {
+      const b = (e && e.body) || {};
+      toast(b.scrolled === true ? tr('The session\'s screen is scrolled, so nothing was pressed. Try again, or answer in the session.')
+        : Number.isInteger(b.attempts) && b.attempts >= PRESS_STUCK_AFTER
+          ? tr('Still not visible on the session\'s screen; nothing was pressed. Answer it in the session.')
+          : b.question === true
+            ? tr('The question isn\'t visible on the session\'s screen (scrolled, covered or not redrawn yet); nothing was pressed. Answer in the session, or try again later.')
+            : tr('The prompt isn\'t visible on the session\'s screen (scrolled, covered or not redrawn yet); nothing was pressed. Answer in the session, or try again later.'), true);
+      return;
+    }
     if (code === 'partial') { toast(tr('Your text was typed into the question but Enter was not pressed. Finish it in the session.'), true); return; }
     if (code === 'answer_in_session') { toast(tr('This question can only be answered in the session.'), true); return; }
     if (code === 'bad_option') { toast(tr('Not sent: that option no longer matches the question. Reload and try again.'), true); return; }
@@ -6488,7 +6539,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "Mark answered in session": "標記為已在 session 中回答",
       "Closed as answered in the session.": "已標記為在 session 中回答並關閉。",
       "answered in session": "已在 session 中回答",
-      "Only a question asked with board ask can be closed this way.": "只有用 board ask 提出的問題可以這樣關閉。",
+      "Only a board ask or a question in the session can be closed this way.": "只有用 board ask 提出的問題，或 session 裡的提問，可以這樣關閉。",
       "{tool} permission": "{tool} 權限",
       "{stage} gate": "{stage}關卡",
       "Questions and permission prompts that sessions are waiting on. Your answer is relayed to the session.": "session 正在等待的問題和權限提示。你的回答會轉達給 session。",
@@ -7087,6 +7138,15 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "reason not recorded": "沒有記錄原因",
       "Answer in the session: the board can no longer press this prompt": "請在 session 中回答：看板已無法替這個提示按鍵",
       "screen was scrolled; try again": "畫面曾捲動，請再試一次",
+      "not visible on its screen; try again later": "畫面上看不到，請稍後再試",
+      "not visible on its screen; answer in the session": "畫面上看不到，請在 session 中回答",
+      "Answer in the session (not visible on its screen)": "請在 session 中回答（畫面上看不到）",
+      "The question isn't visible on the session's screen (scrolled, covered or not redrawn yet); nothing was pressed. Answer in the session, or try again later.": "session 畫面上看不到這個問題（可能捲動、被蓋住或尚未重繪），沒有按下任何鍵。請到 session 中回答，或稍後再試。",
+      "The prompt isn't visible on the session's screen (scrolled, covered or not redrawn yet); nothing was pressed. Answer in the session, or try again later.": "session 畫面上看不到這個提示（可能捲動、被蓋住或尚未重繪），沒有按下任何鍵。請到 session 中回答，或稍後再試。",
+      "Still not visible on the session's screen; nothing was pressed. Answer it in the session.": "session 畫面上仍然看不到，沒有按下任何鍵。請到 session 中回答。",
+      "Answer in the session": "請在 session 中回答",
+      "The board tried {n} times and could not see this on {who}'s screen, so nothing was pressed.": "看板試了 {n} 次，都在 {who} 的畫面上看不到它，所以沒有按下任何鍵。",
+      "Go to": "前往",
       "The session's screen was scrolled, so nothing was pressed. Try again, or answer in the session.": "session 的畫面曾捲動，所以沒有按下任何鍵。請再試一次，或在 session 中回答。",
       "The session's screen is scrolled, so nothing was pressed. Try again, or answer in the session.": "session 的畫面已捲動，所以沒有按下任何鍵。請再試一次，或在 session 中回答。",
       "due": "已到",

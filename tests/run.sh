@@ -463,6 +463,8 @@ case "$1" in
     if [ -n "${FAKE_TMUX_MUTATE:-}" ] && { [ -z "${FAKE_TMUX_MUTATE_AT:-}" ] || [ "$n" = "$FAKE_TMUX_MUTATE_AT" ]; }; then
       jq '.pending.tool_use_id = "tu_other"' "$FAKE_TMUX_MUTATE" > "$FAKE_TMUX_MUTATE.x" && mv "$FAKE_TMUX_MUTATE.x" "$FAKE_TMUX_MUTATE"
     fi
+    # FAKE_TMUX_HISTORY: the scrollback above the screen, printed first by a capture with -S.
+    case " $* " in *" -S "*) [ -n "${FAKE_TMUX_HISTORY:-}" ] && printf '%s\n' "$FAKE_TMUX_HISTORY" ;; esac
     if [ -n "${FAKE_TMUX_SEQ:-}" ]; then
       f="$FAKE_TMUX_SEQ/$n"; [ -f "$f" ] || f="$(find "$FAKE_TMUX_SEQ" -name '[0-9]*' | sort -n | tail -1)"
       cat "$f"
@@ -855,9 +857,25 @@ g1="$("$B" ask --from CP --task "$tk" --stage plan --gate owner "Plan ok?")"
 "$B" resolve "$g1" --in-pane --by user-1 >/dev/null 2>&1
 eq "a gate is never resolved from the pane -> exit 2" "$?/$(dj "$g1" .status)" "2/pending"
 rm -f "$BOARD_HOME/tasks/$tk.json" "$BOARD_HOME/decisions/$g1.json"  # later checks count tasks
-pq="$(jq -rs '[.[] | select(.source == "pane")] | first | .id' "$BOARD_HOME"/decisions/*.json)"
+pq="$(jq -rs '[.[] | select(.source == "pane" and .status != "pending")] | first | .id' "$BOARD_HOME"/decisions/*.json)"
+pqs="$(dj "$pq" .status)"
 "$B" resolve "$pq" --in-pane --by user-1 >/dev/null 2>&1
-eq "a pane question is not a board ask -> exit 2" "$?" "2"
+eq "a pane question already closed -> refused, untouched" "$?/$(dj "$pq" .status)" "1/$pqs"
+# A pending pane question (its picker may never show for board press): an owner closes it with --by.
+pq="$(askq tu_rs1 "$Q1")"
+"$B" resolve "$pq" --in-pane --from CP >/dev/null 2>&1
+eq "a pane question with --from -> exit 2, untouched" "$?/$(dj "$pq" .status)" "2/pending"
+"$B" resolve "$pq" --in-pane --by intruder >/dev/null 2>&1
+eq "a pane question by a non-approver -> exit 4, untouched" "$?/$(dj "$pq" .status)" "4/pending"
+cp "$BOARD_CONFIG_DIR/fleet.yaml" "$T/fleet.yaml.rs"
+printf 'owners: [someone-else]\n' >> "$BOARD_CONFIG_DIR/fleet.yaml"
+"$B" resolve "$pq" --in-pane --by user-1 >/dev/null 2>&1
+eq "a pane question by an approver who is not an owner -> exit 4, untouched" "$?/$(dj "$pq" .status)" "4/pending"
+cp "$T/fleet.yaml.rs" "$BOARD_CONFIG_DIR/fleet.yaml"
+: > "$FAKE_TMUX_LOG"
+"$B" resolve "$pq" --in-pane --by user-1 >/dev/null 2>&1
+eq "a pane question by an owner -> answered_in_pane, nothing sent" "$?/$(dj "$pq" '.status + "/" + .resolved_via')/$(grep -c '^send-keys' "$FAKE_TMUX_LOG")" "0/answered_in_pane/approver/0"
+qdone tu_rs1
 # The collector's hint: a new prompt after the ask, then a finished turn.
 a3="$(ask_id)"
 c3="$(dj "$a3" .created_at)"
@@ -929,10 +947,30 @@ d="$(askq tu_s2 "$Q1")"; "$B" answer "$d" "Blue" --by user-1 >/dev/null
 seqpress tu_s2 "$SCR" "$SCR"
 eq "still scrolled after C-End -> exit 7, only the scroll key sent" "$?/$(keys_sent)" "7/send-keys -t %42 C-End|"
 eq "...not stale: pending, answer cleared, note says scrolled" "$(dj "$d" '"\(.status)/\(.answer)/\(.press_note | test("scrolled"))"')" "pending/null/true"
+eq "...still scrolled after the key -> press_note_code scrolled, 1 attempt" "$(dj "$d" '"\(.press_note_code)/\(.press_not_visible)"')" "scrolled/1"
 eq "...the collector keeps it pending while the session waits" "$(PATH="$T/bin:$PATH" "$REPO/bin/board-collect" --once --no-notify >/dev/null 2>&1; dj "$d" .status)" "pending"
 qdone tu_s2
 eq "...stale once the session moved on (PostToolUse)" "$(PATH="$T/bin:$PATH" "$REPO/bin/board-collect" --once --no-notify >/dev/null 2>&1; dj "$d" .status)" "stale"
 eq "...stale once the session moved on, status_reason moved_on" "$(dj "$d" .status_reason)" "moved_on"
+# Scrolled, the scroll key sent, then no picker and no scrolled line: not "scrolled" any more.
+d="$(askq tu_s2b "$Q1")"; "$B" answer "$d" "Blue" --by user-1 >/dev/null
+seqpress tu_s2b "$SCR" "$(junk)"
+eq "scrolled, after the key neither picker nor scrolled line -> exit 7, code not_visible" "$?/$(dj "$d" .press_note_code)" "7/not_visible"
+qdone tu_s2b
+# The hook says the picker waits but the pane never drew it (no scrolled line): each press is
+# exit 7, the note says it is not visible (never just "scrolled"), and the attempts are counted
+# across answers, so the board can stop offering a retry that keeps failing.
+d="$(askq tu_nv "$Q1")"; "$B" answer "$d" "Blue" --by user-1 >/dev/null
+seqpress tu_nv "$(junk)"
+eq "no picker, no scrolled line -> exit 7, nothing sent" "$?/$(keys_sent)" "7/"
+eq "...pending, code not_visible, 1 attempt" "$(dj "$d" '"\(.status)/\(.press_note_code)/\(.press_not_visible)"')" "pending/not_visible/1"
+eq "...the note says not visible, not just scrolled" "$(dj "$d" '.press_note | test("not visible") and (test("^The session.s screen is scrolled") | not)')" "true"
+"$B" answer "$d" "Blue" --by user-1 >/dev/null
+eq "...answering again clears the note, keeps the count" "$(dj "$d" '"\(has("press_note"))/\(has("press_note_code"))/\(.press_not_visible)"')" "false/false/1"
+seqpress tu_nv "$(junk)"
+eq "...the second press -> exit 7, 2 attempts" "$?/$(dj "$d" '"\(.status)/\(.press_note_code)/\(.press_not_visible)"')" "7/pending/not_visible/2"
+eq "...each logged not_visible" "$(jq -s --arg d "$d" '[.[] | select(.type=="press" and .decision==$d and .result=="not_visible")] | length' "$BOARD_HOME/events.jsonl")" "2"
+qdone tu_nv
 d="$(askq tu_s3 "$Q1")"; "$B" answer "$d" "Blue" --by user-1 >/dev/null
 FAKE_TMUX_MUTATE_AT=2 FAKE_TMUX_MUTATE="$BOARD_HOME/state/$SID.json" seqpress tu_s3 "$SCR" "$SCR"
 eq "scrolled, and the state moved on meanwhile -> exit 3, stale" "$?/$(dj "$d" .status)" "3/stale"
@@ -1080,6 +1118,95 @@ d="$(askq tu_q10c "$LONGQ")"; "$B" answer "$d" "Blue" --by user-1 >/dev/null
 FAKE_TMUX_SCREEN="${LSCREEN/  2. Blue/  2. Teal}" press CP answer --expect tu_q10c
 eq "...a label missing on screen -> exit 3, nothing sent" "$?/$(sent_keys)" "3/0"
 qdone tu_q10c
+# A shortened question taller than the pane: the picker draws it in a box ("│ ..."), its start is
+# above the visible screen. press looks for it in a bounded scrollback capture (press.scrollback_lines):
+# its LAST occurrence, every label after it, the picker footer at the bottom of the screen, and no
+# other turn ("●" bullet, "❯" prompt) in between.
+tall_body() { printf '│ context context context context context\n%.0s' $(seq 1 30); }
+tall_vis() { tall_body; qscreen | sed -n '/1\. Red/,$p'; }
+TALL_HIST="$(printf '● I need one decision before the release.\n\n ☐ Color\n\n│ Which color do you prefer for the test? context context\n')"
+d="$(askq tu_tall1 "$LONGQ")"; "$B" answer "$d" "Blue" --by user-1 >/dev/null
+: > "$FAKE_TMUX_LOG"
+FAKE_TMUX_HISTORY="$TALL_HIST" FAKE_TMUX_SCREEN="$(tall_vis)" press CP answer --expect tu_tall1
+eq "tall clipped question, start only in the scrollback -> press ok" "$?/$(dj "$d" .status)" "0/relayed"
+eq "...sends the option's number key" "$(grep '^send-keys' "$FAKE_TMUX_LOG" | tr '\n' '|')" "send-keys -t %42 2|"
+grep -q '^capture-pane -p -t %42 -S -200$' "$FAKE_TMUX_LOG" && ok "...scrollback capture bounded by press.scrollback_lines (200)" \
+  || bad "...scrollback capture bounded by press.scrollback_lines (200)" "$(cat "$FAKE_TMUX_LOG")"
+qdone tu_tall1
+d="$(askq tu_tall2 "$LONGQ")"; "$B" answer "$d" "Blue" --by user-1 >/dev/null
+printf 'press:\n  scrollback_lines: 0\n' >> "$BOARD_CONFIG_DIR/fleet.yaml"
+: > "$FAKE_TMUX_LOG"
+FAKE_TMUX_HISTORY="$TALL_HIST" FAKE_TMUX_SCREEN="$(tall_vis)" press CP answer --expect tu_tall2
+eq "...press.scrollback_lines 0 -> exit 3, nothing sent, no scrollback read" "$?/$(sent_keys)/$(grep -c -- ' -S ' "$FAKE_TMUX_LOG")" "3/0/0"
+sed -i '/^press:$/,$d' "$BOARD_CONFIG_DIR/fleet.yaml"
+qdone tu_tall2
+# Another turn between the start and the picker: a "●" bullet, or the "❯" prompt with text.
+tn=2
+for between in "● Done: the release notes are written." "❯ please also check the logs" "⏺ Done."; do
+  tn=$((tn + 1))
+  d="$(askq "tu_tall$tn" "$LONGQ")"; "$B" answer "$d" "Blue" --by user-1 >/dev/null
+  : > "$FAKE_TMUX_LOG"
+  FAKE_TMUX_HISTORY="$TALL_HIST
+$between" FAKE_TMUX_SCREEN="$(tall_vis)" press CP answer --expect "tu_tall$tn"
+  eq "...'$between' between the start and the picker -> exit 3, nothing sent, stale" "$?/$(sent_keys)/$(dj "$d" .status)" "3/0/stale"
+  qdone "tu_tall$tn"
+done
+# The start only on a turn line (Claude repeating the question in its message), not in the picker.
+d="$(askq tu_tall6 "$LONGQ")"; "$B" answer "$d" "Blue" --by user-1 >/dev/null
+: > "$FAKE_TMUX_LOG"
+FAKE_TMUX_HISTORY="● Which color do you prefer for the test? context context" FAKE_TMUX_SCREEN="$(tall_vis)" press CP answer --expect tu_tall6
+eq "...start only on Claude's own '●' line -> exit 3, nothing sent" "$?/$(sent_keys)" "3/0"
+qdone tu_tall6
+# An older copy of the question (an earlier picker, its labels, a turn after it) and the current
+# one: the last occurrence counts, so the current picker passes.
+d="$(askq tu_tall7 "$LONGQ")"; "$B" answer "$d" "Blue" --by user-1 >/dev/null
+: > "$FAKE_TMUX_LOG"
+FAKE_TMUX_HISTORY="$TALL_HIST
+❯ 1. Red
+  2. Blue
+  3. Green
+● Asking again.
+$TALL_HIST" FAKE_TMUX_SCREEN="$(tall_vis)" press CP answer --expect tu_tall7
+eq "...an older copy above, the last occurrence is the picker's -> press ok" "$?/$(sent_keys)" "0/1"
+qdone tu_tall7
+# The last occurrence is an old picker's, the current one's start is beyond the scrollback.
+d="$(askq tu_tall8 "$LONGQ")"; "$B" answer "$d" "Blue" --by user-1 >/dev/null
+: > "$FAKE_TMUX_LOG"
+FAKE_TMUX_HISTORY="$TALL_HIST
+$(qscreen | sed -n '/1\. Red/,$p')
+● Asking again.
+│ context context" FAKE_TMUX_SCREEN="$(tall_vis)" press CP answer --expect tu_tall8
+eq "...last occurrence belongs to an older picker -> exit 3, nothing sent" "$?/$(sent_keys)" "3/0"
+qdone tu_tall8
+# The picker is not at the bottom of the screen: output drawn after its footer.
+d="$(askq tu_tall9 "$LONGQ")"; "$B" answer "$d" "Blue" --by user-1 >/dev/null
+: > "$FAKE_TMUX_LOG"
+FAKE_TMUX_HISTORY="$TALL_HIST" FAKE_TMUX_SCREEN="$(tall_vis)
+$(printf 'later output %s\n' 1 2 3 4)" press CP answer --expect tu_tall9
+eq "...picker footer not at the bottom -> exit 3, nothing sent" "$?/$(sent_keys)" "3/0"
+qdone tu_tall9
+# A label missing after the start.
+d="$(askq tu_tall10 "$LONGQ")"; "$B" answer "$d" "Blue" --by user-1 >/dev/null
+: > "$FAKE_TMUX_LOG"
+TV="$(tall_vis)"
+FAKE_TMUX_HISTORY="$TALL_HIST" FAKE_TMUX_SCREEN="${TV/  2. Blue/  2. Teal}" press CP answer --expect tu_tall10
+eq "...a label missing after the start -> exit 3, nothing sent" "$?/$(sent_keys)" "3/0"
+qdone tu_tall10
+# The screen changed between the two captures (the scrollback capture no longer ends with it):
+# nothing pressed, pending again (exit 7, counted), so the board can try again.
+d="$(askq tu_tall11 "$LONGQ")"; "$B" answer "$d" "Blue" --by user-1 >/dev/null
+FAKE_TMUX_HISTORY="$TALL_HIST" seqpress tu_tall11 "$(tall_vis)" "$(tall_vis | sed 's/2\. Blue/2. Blue (now)/')"
+eq "...screen changed between the captures -> exit 7, nothing sent" "$?/$(keys_sent)" "7/"
+eq "...pending again, not_visible, counted" "$(dj "$d" '"\(.status)/\(.press_note_code)/\(.press_not_visible)"')" "pending/not_visible/1"
+qdone tu_tall11
+# press.turn_regex empty: the scrollback cannot be checked for another turn, so it is refused.
+d="$(askq tu_tall12 "$LONGQ")"; "$B" answer "$d" "Blue" --by user-1 >/dev/null
+printf 'press:\n  turn_regex: ""\n' >> "$BOARD_CONFIG_DIR/fleet.yaml"
+: > "$FAKE_TMUX_LOG"
+FAKE_TMUX_HISTORY="$TALL_HIST" FAKE_TMUX_SCREEN="$(tall_vis)" press CP answer --expect tu_tall12
+eq "...press.turn_regex empty -> exit 3, nothing sent, stale" "$?/$(sent_keys)/$(dj "$d" .status)" "3/0/stale"
+sed -i '/^press:$/,$d' "$BOARD_CONFIG_DIR/fleet.yaml"
+qdone tu_tall12
 # A header cut short is tracked apart: the question is not "shortened", the card stays pressable.
 HDRQ="$(jq -cn --arg h "Header $(printf 'h%.0s' $(seq 1 60))" '[{question: "Which color?", header: $h, options: [{label: "Red", description: ""}, {label: "Blue", description: ""}], multiSelect: false}]')"
 d="$(askq tu_q12 "$HDRQ")"
