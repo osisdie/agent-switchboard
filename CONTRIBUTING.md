@@ -20,6 +20,7 @@ python3 tests/test_resources.py -v
 python3 tests/test_guard.py -v
 python3 tests/test_cards.py -v
 python3 tests/test_rc.py -v
+python3 tests/test_press_tall.py -v
 python3 tests/test_pomodoro.py -v
 python3 tests/test_scheduler.py -v
 python3 tests/test_tickets.py -v

@@ -89,8 +89,13 @@ def main():
         # INFRA: the press found the screen scrolled, the decision went stale (older board) but the
         # session still waits on that prompt. OPS: pending again after exit 7 (press_note). WEB: stale
         # without a note.
-        dec("d-1-infra", "stale", "tu_i", "s-infra", True)
-        dec("d-2-ops", "pending", "tu_o", "s-ops", True)
+        dec("d-1-infra", "stale", "tu_i", "s-infra", True, press_note_code="scrolled")
+        dec("d-2-ops", "pending", "tu_o", "s-ops", True, press_note_code="scrolled", press_not_visible=1)
+        # NV: the picker was not on screen and no scrolled line either (an older record: no code).
+        # STUCK: the 2nd press in a row found nothing on screen: answer in the session, or close it.
+        dec("d-9-nv", "pending", "tu_nv", "s-nv", True, press_not_visible=1, **{"from": "NV"})
+        dec("d-10-stuck", "pending", "tu_st", "s-stuck", True, press_note_code="not_visible", press_not_visible=2,
+            **{"from": "STUCK"})
         dec("d-3-web", "stale", "tu_w", "s-web", False)
         # Recent decisions: an answer refused at the press (stale + screen), a free text stopped
         # part-way (partial), one relayed, and an old record with no code whose reason is only in
@@ -111,7 +116,8 @@ def main():
                                  "reason": "press refused: no question picker visible in pane %10"}) + "\n")
         snap = {"generated_at": now, "decisions": [], "tasks": [],
                 "sessions": [row("INFRA", "s-infra", "d-1-infra", "tu_i"), row("OPS", "s-ops", "d-2-ops", "tu_o"),
-                             row("WEB", "s-web", "d-3-web", "tu_w"), row("API", "s-api", "d-7-api", "tu_7")]}
+                             row("WEB", "s-web", "d-3-web", "tu_w"), row("API", "s-api", "d-7-api", "tu_7"),
+                             row("NV", "s-nv", "d-9-nv", "tu_nv"), row("STUCK", "s-stuck", "d-10-stuck", "tu_st")]}
         with open(os.path.join(home, "snapshot.json"), "w", encoding="utf-8") as fh:
             json.dump(snap, fh)
         env = dict(os.environ, BOARD_HOME=home, BOARD_CONFIG_DIR=cfg, CLAUDE_SESSIONS_DIR=sess)
@@ -143,7 +149,7 @@ def main():
                 pg.wait_for_timeout(1000)
                 if errors:
                     print("page errors:", errors)
-                for code in ("INFRA", "OPS", "WEB"):
+                for code in ("INFRA", "OPS", "WEB", "NV", "STUCK"):
                     pg.click('article[aria-label="Session %s"] .scard-toggle' % code)
                     pg.wait_for_timeout(100)
 
@@ -166,9 +172,69 @@ def main():
                 dc = pg.evaluate("() => { const d = document.getElementById('dec-d-2-ops'); return d ? [d.textContent, d.querySelectorAll('button').length] : null; }")
                 check("the decision card says the screen was scrolled and keeps its buttons",
                       dc is not None and "screen was scrolled, so nothing was pressed" in dc[0] and dc[1] >= 2, dc)
+                c = card("NV")
+                check("not visible, no scrolled line: never says scrolled, says try again later",
+                      c["links"] == ["#dec-d-9-nv"] and "not visible on its screen; try again later" in c["text"]
+                      and "scrolled" not in c["text"], c)
+                nv = pg.evaluate("() => { const d = document.getElementById('dec-d-9-nv'); return d ? [d.textContent, !!d.querySelector('.press-stuck'), d.querySelectorAll('.pq-opt').length] : null; }")
+                check("its card: the question isn't visible (scrolled, covered or not redrawn yet), options still offered",
+                      nv is not None and "The question isn't visible on the session's screen (scrolled, covered or not redrawn yet)" in nv[0]
+                      and not nv[1] and nv[2] == 2, nv)
+                c = card("STUCK")
+                check("2nd not-visible press: the session card says answer in the session",
+                      "not visible on its screen; answer in the session" in c["text"], c)
+                st = pg.evaluate("""() => { const d = document.getElementById('dec-d-10-stuck'); if (!d) return null;
+                  const b = d.querySelector('.press-stuck');
+                  return { box: b ? b.textContent : null, first: b ? d.firstElementChild !== b && d.querySelector('.press-stuck') === d.querySelector('.press-stuck, .pq-q') : false,
+                           resolve: b ? [...b.querySelectorAll('button')].map((x) => x.textContent) : [] }; }""")
+                check("its card: answer in the session first, with the tmux target and the close button",
+                      st is not None and st["box"] and "Answer in the session" in st["box"] and "tmux STUCK:@1.%1" in st["box"]
+                      and "tried 2 times" in st["box"] and st["first"] and st["resolve"] == ["Mark answered in session"], st)
                 check("no sideways scroll", pg.evaluate("() => document.scrollingElement.scrollWidth <= innerWidth"))
                 pg.close()
                 ctx.close()
+            print("close a stuck pane question:")
+            ctx = browser.new_context(viewport={"width": 1280, "height": 900})
+            ctx.route("https://fonts.googleapis.com/**", lambda r: r.fulfill(status=200, content_type="text/css", body=""))
+            ctx.route("https://fonts.gstatic.com/**", lambda r: r.fulfill(status=404, body=""))
+            pg = ctx.new_page()
+            pg.on("pageerror", lambda e: errors.append(str(e)))
+            pg.goto("http://127.0.0.1:%d/" % port)
+            pg.wait_for_timeout(1000)
+            pg.evaluate("() => { const b = document.querySelector('input[name=\"sb-lang\"][value=\"zh-TW\"]'); if (b) b.click(); }")
+            pg.wait_for_timeout(300)
+            zb = pg.evaluate("() => (document.querySelector('#dec-d-10-stuck .press-stuck') || {}).textContent || null")
+            check("zh-TW: the stuck box is translated", zb and "請在 session 中回答" in zb and "看板試了 2 次" in zb, zb)
+            zn = pg.evaluate("() => (document.querySelector('#dec-d-9-nv .press-note') || {}).textContent || null")
+            check("zh-TW: the not-visible note", zn == "session 畫面上看不到這個問題（可能捲動、被蓋住或尚未重繪），沒有按下任何鍵。請到 session 中回答，或稍後再試。", zn)
+            # The toast of a press that found nothing on screen (board-serve's 409, stubbed here).
+            def nv409(body):
+                return lambda route: route.fulfill(status=409, content_type="application/json", body=json.dumps(body))
+            for body, want in (({"error": "screen_not_ready", "detail": "x", "scrolled": False, "attempts": 1, "question": True},
+                                "session 畫面上看不到這個問題（可能捲動、被蓋住或尚未重繪），沒有按下任何鍵。請到 session 中回答，或稍後再試。"),
+                               ({"error": "screen_not_ready", "detail": "x", "scrolled": True, "attempts": 1, "question": True},
+                                "session 的畫面已捲動，所以沒有按下任何鍵。請再試一次，或在 session 中回答。"),
+                               ({"error": "screen_not_ready", "detail": "x", "scrolled": False, "attempts": 2, "question": True},
+                                "session 畫面上仍然看不到，沒有按下任何鍵。請到 session 中回答。")):
+                pg.route("**/api/decisions/d-9-nv/answer", nv409(body))
+                pg.evaluate("() => document.querySelectorAll('#toasts .toast').forEach((t) => t.remove())")
+                pg.click("#dec-d-9-nv .pq-opt >> nth=0")
+                pg.wait_for_timeout(400)
+                toasts = pg.evaluate("() => [...document.querySelectorAll('#toasts .toast')].map((t) => t.textContent)")
+                check("toast for scrolled=%s attempts=%s" % (body["scrolled"], body["attempts"]), want in toasts, toasts)
+                pg.unroute("**/api/decisions/d-9-nv/answer")
+            pg.click("#dec-d-10-stuck .press-stuck .resolve-row button")
+            pg.wait_for_timeout(200)
+            pg.click("#dec-d-10-stuck .press-stuck .confirm-row button.allow")
+            for _ in range(30):
+                with open(os.path.join(home, "decisions", "d-10-stuck.json"), encoding="utf-8") as fh:
+                    stt = json.load(fh)["status"]
+                if stt != "pending":
+                    break
+                pg.wait_for_timeout(100)
+            check("Mark answered in session, confirmed: answered_in_pane (nothing pressed)", stt == "answered_in_pane", stt)
+            pg.close()
+            ctx.close()
             print("recent decisions log:")
             ctx = browser.new_context(viewport={"width": 390, "height": 900})
             ctx.route("https://fonts.googleapis.com/**", lambda r: r.fulfill(status=200, content_type="text/css", body=""))

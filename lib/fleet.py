@@ -60,6 +60,13 @@ DEFAULTS = {
         # claude.exe, node, or a version number (the native installer's binary is named after its
         # version, X.Y.Z). Empty: not checked.
         "tui_command_regex": r"^(claude(\.exe)?|node|[0-9]+(\.[0-9]+){2})$",
+        # A shortened question taller than the pane: how many lines of scrollback above the screen
+        # board press may search for its start (0 = never: the start must be on screen).
+        "scrollback_lines": 200,
+        # A line that starts another turn (Claude's "●"/"⏺" bullet, the "❯" prompt): none may sit
+        # between a question's start found in the scrollback and its picker. A focused picker row
+        # ("❯ 2. Blue": focus_regex, then a number) is not one.
+        "turn_regex": r"^[[:space:]]*(●|⏺|❯)",
     },
     # Session actions (lib/actions.py): fixed slash commands typed into an idle session's empty
     # prompt box, and what the pane must show before and after (Claude Code's own screens;
