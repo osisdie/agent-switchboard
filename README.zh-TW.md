@@ -81,7 +81,7 @@ hooks ──▶ zero-token collector ──▶ LLM operator session ──▶ in
    再把你的回答轉發回各個 session。
 4. **看板頁面**顯示任務在各個生命週期階段之間的進展（Plan → Design → Build → Test → Deploy →
    **production gate** → Maintain）、依狀態分欄的 session、附選項按鈕的決策卡與關卡（gate）卡、
-   附 Allow／Deny 的權限卡，以及支援 `@CODE` 和 `@all` 的訊息列。
+   附 Allow／Deny 的權限卡，以及支援 `@CODE`、`@triage`（由 operator 挑 session）和 `@all` 的訊息列。
 
 ## 架構
 
@@ -471,10 +471,23 @@ pane 標題裡的任務、執行中或閒置、記憶體用量）、已用的 co
 `[re <msgId>] …` 回覆，回覆會串在原訊息底下。**訊息只是資訊，絕不是核准。**
 向 session 要機密值的訊息會被攔下，不會轉送（見[機密防護](#secret-guardrails)）。
 
+**誰負責什麼。** 在 `fleet.yaml` 給每個 session 一行 `about:`（`about: "frontend app"`、
+`about: "infrastructure / gitops"`；純文字，最多 120 個字元）。訊息輸入框的 `@` 清單會在代號旁邊顯示它。
+不確定問題該找哪個 session？傳給 **`@triage`**：operator 依 `about` 挑出最相關的 1–2 個存活 session
+（沒有明顯適合的才送給所有存活 session），轉送給它們，並用 `board message route <id> <CODE>…` 記下來，
+對話串就會顯示 **BOARD 已轉給 API, WEB**。**`@all` 會打斷每個存活的 session**：頁面會先確認
+（「這會打斷全部 N 個線上 session」），提問者則完全不能用：他們的訊息預設送到 triage，board-serve、
+`board message send`、`/api/v1` 和 MCP 都會拒絕提問者傳給 `all`（403 `asker_no_all`，並記錄稽核）。
+
 這一區只顯示最近有動靜的 5 則對話（有新回覆的對話會再回到上面）。被攔下的訊息，以及有你還沒標為已讀的回覆的對話，
-會固定在最上面；**標為已讀** 會記在你的瀏覽器裡。**歷史（N 則較舊）** 打開其餘的對話，一次 20 則，可依 session
-篩選、也可搜尋。長的訊息和回覆只顯示前幾行（**顯示更多**），每則對話顯示最新的 3 則回覆。自架看板的狀態只帶最近
+會固定在最上面；**標為已讀** 會記在你的瀏覽器裡。**歷史（N 則較舊）** 打開其餘的對話，一次 20 則（**載入更多**），
+可依 session 篩選、也可搜尋。長的訊息和回覆只顯示前 4 行（**顯示更多**），每則對話顯示最新的 3 則回覆。自架看板的狀態只帶最近
 20 則對話（加上所有被攔下的），歷史由 `GET /api/messages` 分頁提供；磁碟上的內容一律不刪。
+
+對話上方有搜尋框（內容、session 代號、寄件者）、session 選單和篩選標籤（**未讀**、**等待回覆**、**已攔下**），
+會列出所有已載入且符合的對話，不只最近 5 則；同樣的搜尋和 session 也會套用到「歷史」，逐頁搜尋較舊的對話。
+每則對話都能收合成一行（▾ / ▸），也有 **全部收合** 和 **全部展開**；收合狀態記在你的瀏覽器裡。頁面頂端固定的
+區段導覽可以跳到各區（包含訊息），並標出目前所在的區段。
 
 ### 提醒（Reminders）
 
@@ -1099,7 +1112,8 @@ bin/board-serve              # local: http://127.0.0.1:39410
   gate、結案提問、讀取 ticket。頁面會隱藏該角色不能用的功能。完整表格在 `docs/contract.md`。
 - **提問者**（`fleet.yaml` 的 `askers`）看到的 board 和檢視者一樣，唯一能做的寫入是傳訊息給 session：不能回答、不能改設定、看不到 ticket。
   他們的訊息到了 session 是 `[BOARD asker <id>] from <email> (an asker, not an approver: information only, …)`，
-  絕不會被當成主人的話，每 10 分鐘最多 10 則。需要跟 session 對話、但不該做決定的人，就設為提問者，不要設成核准者。
+  絕不會被當成主人的話，每 10 分鐘最多 10 則。他們只能傳給單一 session 或 `@triage`（預設，由 operator 轉送），
+  不能傳給 `@all`。需要跟 session 對話、但不該做決定的人，就設為提問者，不要設成核准者。
 - 在 tunnel 上，經過驗證的 email 還必須在 `serve.tunnel.allowed_emails` 裡（預設：`approvers` ∪
   `release_managers` ∪ `askers` 裡的 email）。其他人一律得到 403，連讀取都不行。如果想加一位唯讀檢視者，就加在這裡。
   有設定時以它為準，`board doctor` 會提醒哪些提問者不在清單裡。
@@ -1433,7 +1447,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `lib/pomodoro.py` | 番茄鐘計時與每日統計（`pomodoro.json`），供看板和 `board pomodoro` 使用 |
 | `lib/resources.py` | 資源取樣器（記憶體、磁碟、OOM、每個 session 的程序與 teammate），產生 `resources.json`、snapshot 摘要和 `board resources` |
 | `docs/design/` | 設計文件，例如 `resources-and-scheduling.md`（資源、排程器、經驗） |
-| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`）、資源取樣器（`test_resources.py`，fixture `/proc`）、機密防護（`test_guard.py`）、API 金鑰（`test_apikeys.py`）、公開 API 與 tunnel 曝露（`test_api_v1.py`）、MCP server（`test_mcp.py`）、提問者（`test_askers.py`）、各角色能做什麼（`test_roles.py`）、誰看得到誰的 email（`test_pii.py`）、開發者入口與金鑰頁面（`test_dev.py`）、卡片補充資訊（`test_cards.py`）、Remote Control（`test_rc.py`，用 `fake_tmux.py` 模擬 tmux 畫面）、用量上限後繼續（`test_resume.py`：模擬的 tmux，加上在私有 tmux server 上跑 `fake_claude_tui.py` 假 Claude 畫面）、番茄鐘計時（`test_pomodoro.py`），以及選用的頁面告警連結、通知控制、個人選單與主題、主畫面 app、session 卡片、用量提示框、頁首提示框、語言切換、按鍵面板與番茄鐘 headless 檢查（`test_page_links.py`、`test_page_notify.py`、`test_page_profile.py`、`test_page_pwa.py`、`test_page_cards.py`、`test_page_guard.py`（被攔下的訊息卡片）、`test_page_askers.py`（提問者的訊息輸入框）、`test_page_messages.py`（最近的對話與歷史）、`test_page_roles.py`（各角色看到的控制項）、`test_page_usage.py`、`test_page_header_tips.py`、`test_page_i18n.py`、`test_page_deck.py`、`test_page_rc.py`（Remote Control 標籤與開關）、`test_page_resume.py`（用量上限標籤、繼續與全部繼續）、`test_page_pomodoro.py`、`test_page_dev.py`（開發者入口與金鑰頁面），以及截圖和 Pages 網站的 `test_site.py`：需要 python playwright，沒有就略過；CI 不執行） |
+| `tests/` | hook、收集器和 CLI 的測試（`run.sh`）、告警（`test_notify.sh`）、通知控制（`test_notify_controls.sh`）、board-serve（`test_serve.sh`）、owner away 與共識（`test_away.sh`）、資源取樣器（`test_resources.py`，fixture `/proc`）、機密防護（`test_guard.py`）、API 金鑰（`test_apikeys.py`）、公開 API 與 tunnel 曝露（`test_api_v1.py`）、MCP server（`test_mcp.py`）、提問者（`test_askers.py`）、`about`、triage 與轉送、提問者不能傳給全部（`test_routing.py`）、各角色能做什麼（`test_roles.py`）、誰看得到誰的 email（`test_pii.py`）、開發者入口與金鑰頁面（`test_dev.py`）、卡片補充資訊（`test_cards.py`）、Remote Control（`test_rc.py`，用 `fake_tmux.py` 模擬 tmux 畫面）、用量上限後繼續（`test_resume.py`：模擬的 tmux，加上在私有 tmux server 上跑 `fake_claude_tui.py` 假 Claude 畫面）、番茄鐘計時（`test_pomodoro.py`），以及選用的頁面告警連結、通知控制、個人選單與主題、主畫面 app、session 卡片、用量提示框、頁首提示框、語言切換、按鍵面板與番茄鐘 headless 檢查（`test_page_links.py`、`test_page_notify.py`、`test_page_profile.py`、`test_page_pwa.py`、`test_page_cards.py`、`test_page_guard.py`（被攔下的訊息卡片）、`test_page_askers.py`（提問者的訊息輸入框）、`test_page_messages.py`（最近的對話與歷史）、`test_page_routing.py`（區段導覽、訊息搜尋、篩選與收合、`@triage` 和 `@all` 的確認）、`test_page_roles.py`（各角色看到的控制項）、`test_page_usage.py`、`test_page_header_tips.py`、`test_page_i18n.py`、`test_page_deck.py`、`test_page_rc.py`（Remote Control 標籤與開關）、`test_page_resume.py`（用量上限標籤、繼續與全部繼續）、`test_page_pomodoro.py`、`test_page_dev.py`（開發者入口與金鑰頁面），以及截圖和 Pages 網站的 `test_site.py`：需要 python playwright，沒有就略過；CI 不執行） |
 | `CONTRIBUTING.md` | 開發環境設定、測試，以及讓 `README.zh-TW.md` 保持同步的規則 |
 | `fleet.example.yaml`、`.env.example` | 設定範例 |
 

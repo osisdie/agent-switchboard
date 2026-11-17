@@ -178,9 +178,9 @@ def main():
             pg.click("#msg-hist-btn")
             check("  and closes again", pg.evaluate(VIEW_JS)["expanded"] == "false" and pg.evaluate("() => document.getElementById('msg-hist-panel').hidden"))
             pg.evaluate("() => document.getElementById('h-messages').scrollIntoView({ behavior: 'instant' })")
-            r = pg.evaluate("""() => { const c = document.getElementById('composer').getBoundingClientRect(), t = document.getElementById('threads').getBoundingClientRect();
+            r = pg.evaluate("""() => { const c = document.getElementById('composer').getBoundingClientRect(), t = document.getElementById('msg-tools').getBoundingClientRect();
               return { top: Math.abs(c.top - t.top) < 4, h: c.height }; }""")
-            check("the composer sits at the top of the section", r["top"] and r["h"] > 0, r)
+            check("the composer sits at the top of the section (beside the message tools)", r["top"] and r["h"] > 0, r)
             pg.evaluate("() => document.getElementById('msg-hist-btn').scrollIntoView({ block: 'end', behavior: 'instant' })")
             r = pg.evaluate("() => { const c = document.getElementById('composer').getBoundingClientRect(); return { top: c.top, bottom: c.bottom, vh: innerHeight }; }")
             check("  and stays in view while the threads scroll by (wide screen)", r["top"] >= 0 and r["bottom"] <= r["vh"], r)

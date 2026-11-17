@@ -99,7 +99,8 @@
 }
 
 * { box-sizing: border-box; }
-html { scroll-behavior: smooth; scroll-padding-top: calc(env(safe-area-inset-top, 0px) + 64px); }
+/* --secnav-h: the sticky section nav's height, set by the page (it wraps on narrow screens) */
+html { scroll-behavior: smooth; scroll-padding-top: calc(env(safe-area-inset-top, 0px) + var(--secnav-h, 56px) + 8px); }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
 body {
   background: var(--paper);
@@ -168,7 +169,7 @@ time { font-variant-numeric: tabular-nums; white-space: nowrap; }
 /* ---------- section nav ---------- */
 .secnav { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--paper); border-bottom: 1px solid var(--rule); }
 .secnav-in { max-width: 1360px; margin-inline: auto; display: flex; align-items: center; gap: 8px; min-height: 48px; }
-.secnav ul { list-style: none; display: flex; gap: 4px; margin: 0; padding: 0; flex: 1; min-width: 0; }
+.secnav ul { list-style: none; display: flex; gap: 4px; margin: 0; padding: 0; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
 .secnav a { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 5px; color: var(--muted); text-decoration: none; font-weight: 500; font-size: 14px; white-space: nowrap; }
 .secnav a:hover { color: var(--ink); background: var(--panel); }
 .secnav a[aria-current="true"] { color: var(--ink); background: var(--panel); box-shadow: inset 0 -2px 0 var(--cord); }
@@ -455,7 +456,7 @@ dialog.notif { width: min(720px, calc(100vw - 24px)); }
 .thread.unread { box-shadow: inset 3px 0 0 var(--cord); }
 .thread:focus-visible { outline: 2px solid var(--cord); outline-offset: 2px; }
 .thread .new-chip { font-size: 12px; font-weight: 600; padding: 1px 8px; border-radius: 999px; background: var(--cord-soft); color: var(--cord); }
-.thread .clamp { display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden; }
+.thread .clamp { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
 .thread > .btn, .replies .more { justify-self: start; }
 .replies li[hidden] { display: none; }
 .msg-unread { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 0 0 10px; font-size: 13px; color: var(--muted); }
@@ -469,6 +470,31 @@ dialog.notif { width: min(720px, calc(100vw - 24px)); }
 .msg-hist-bar input { flex: 1 1 200px; }
 .msg-hist-bar select { flex: 0 1 auto; max-width: 100%; }
 .msg-hist-status { margin: 0; font-size: 13px; color: var(--muted); }
+/* find messages: search, session, filter chips, collapse / expand all */
+.msg-tools { display: grid; gap: 8px; margin: 0 0 10px; }
+.msg-tools[hidden], .msg-filter-status:empty, .msg-to:empty, .msg-all-confirm[hidden] { display: none; }
+.msg-tools-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-width: 0; }
+.msg-tools input, .msg-tools select { font: inherit; font-size: 14px; min-height: 36px; min-width: 0; padding: 6px 10px; border: 1px solid var(--rule); border-radius: 5px; background: var(--paper); color: var(--ink); }
+.msg-tools input { flex: 1 1 200px; }
+.msg-tools select { flex: 0 1 auto; max-width: 100%; }
+.msg-tools .chips { display: flex; flex-wrap: wrap; gap: 6px; flex: 1 1 auto; min-width: 0; }
+.fchip { font: inherit; font-size: 13px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--rule); background: var(--paper); color: var(--muted); cursor: pointer; white-space: nowrap; }
+.fchip[aria-pressed="true"] { background: var(--cord-soft); color: var(--cord); border-color: color-mix(in srgb, var(--cord) 45%, var(--rule)); font-weight: 600; }
+.msg-fold-btns { display: inline-flex; gap: 4px; margin-left: auto; }
+.msg-filter-status { margin: 0; font-size: 13px; color: var(--muted); }
+/* a collapsed thread: its top line and a one-line preview only */
+.thread-fold { flex: 0 0 auto; width: 26px; height: 26px; padding: 0; border-radius: 13px; border: 1px solid var(--rule); background: var(--paper); color: var(--muted); font: inherit; font-size: 12px; line-height: 1; cursor: pointer; }
+.thread-fold:hover { border-color: var(--cord); color: var(--ink); }
+.thread .preview { display: none; min-width: 0; flex: 1 1 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); }
+.thread.folded { gap: 0; }
+.thread.folded > :not(.thread-top) { display: none; }
+.thread.folded .preview { display: block; }
+.thread .routed { font-size: 12px; color: var(--cord); }
+/* the composer: who it goes to, and the confirm step before @all */
+.msg-to { margin: 0; font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+.msg-all-confirm { display: grid; gap: 8px; padding: 10px 12px; border-radius: 6px; background: var(--lamp-soft); color: var(--lamp-ink); font-size: 14px; }
+.msg-all-confirm p { margin: 0; }
+.mention-list .d { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 70%; }
 .readonly-note { font-size: 14px; color: var(--muted); padding: 12px 14px; border: 1px dashed var(--rule); border-radius: var(--r); }
 
 /* ---------- info dialog ---------- */
@@ -1277,16 +1303,38 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
           <label for="msg-input" data-i18n>New message</label>
           <textarea id="msg-input" placeholder="@API please rebase on main and rerun the tests" data-i18n-attr="placeholder" aria-autocomplete="list" aria-controls="mention-list" aria-expanded="false"></textarea>
           <ul class="mention-list" id="mention-list" role="listbox" aria-label="Sessions" data-i18n-attr="aria-label" hidden></ul>
+          <p class="msg-to" id="msg-to-line" aria-live="polite"></p>
           <p class="err" id="msg-err" role="alert"></p>
+          <div class="msg-all-confirm" id="msg-all-confirm" role="group" aria-labelledby="msg-all-q" hidden>
+            <p id="msg-all-q"></p>
+            <div class="row">
+              <button class="btn" id="msg-all-cancel" type="button" data-i18n>Cancel</button>
+              <button class="btn deny" id="msg-all-yes" type="button" data-i18n>Send to all</button>
+            </div>
+          </div>
           <p class="readonly-note" id="msg-asker-note" hidden data-i18n>You are an asker: your messages reach the session as information from you, never as a decision. You cannot answer decisions.</p>
           <div class="row">
-            <span class="help"><span data-i18n>Type</span> <span class="mono">@</span> <span data-i18n>to pick a session, or</span> <span class="mono">@all</span>. <span data-i18n>Ctrl+Enter sends.</span></span>
+            <span class="help"><span data-i18n>Type</span> <span class="mono">@</span> <span data-i18n>to pick a session,</span> <span class="mono">@triage</span> <span data-i18n>to let BOARD route it</span><span id="msg-help-all"><span data-i18n>, or</span> <span class="mono">@all</span></span>. <span data-i18n>Ctrl+Enter sends.</span></span>
             <button class="btn primary" id="msg-send" type="submit" data-i18n>Send</button>
           </div>
         </form>
         <p class="readonly-note" id="msg-readonly" hidden data-i18n>You can read the threads. Only editors of this board can send messages.</p>
       </div>
       <div>
+        <div class="msg-tools" id="msg-tools" role="search" aria-label="Find messages" data-i18n-attr="aria-label">
+          <div class="msg-tools-row">
+            <input type="search" id="msg-q" maxlength="200" placeholder="Search messages: text, session, sender" aria-label="Search messages" data-i18n-attr="placeholder aria-label">
+            <select id="msg-to" aria-label="Session" data-i18n-attr="aria-label"></select>
+          </div>
+          <div class="msg-tools-row">
+            <div class="chips" id="msg-chips" role="group" aria-label="Show" data-i18n-attr="aria-label"></div>
+            <span class="msg-fold-btns">
+              <button class="btn linkish" id="msg-fold-all" type="button" data-i18n>Collapse all</button>
+              <button class="btn linkish" id="msg-unfold-all" type="button" data-i18n>Expand all</button>
+            </span>
+          </div>
+          <p class="msg-filter-status" id="msg-filter-status" role="status"></p>
+        </div>
         <div class="empty" id="msg-empty"><strong data-i18n>No messages yet.</strong><span data-i18n>Type @ and a session code to send the first one.</span></div>
         <p class="msg-unread" id="msg-unread" hidden></p>
         <ol class="threads" id="threads"></ol>
@@ -1413,6 +1461,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     msgShow: new Set(),          // threads a ?m= link asked for: shown with the recent ones
     msgVisible: new Set(),       // threads on screen (recent and History): the Artifact page follows their replies
     hist: { open: false, to: '', q: '', items: [], replies: new Map(), next: null, loading: false, err: null, count: 20, seq: 0, timer: 0 },
+    msgQ: '', msgTo: '', msgChip: '',  // Messages: search text, session, filter chip ('' | unread | waiting | held)
+    allConfirm: null,            // the composer's pending "send to all" ({raw}) until confirmed or changed
     got: { sessions: false, decisions: false, messages: false, tasks: false, approvals: false, operator: false, consensus: false },
     slow: false, feedError: null, offlineDetail: null,
     me: null, userReady: false, writable: null,   // writable: true | false | null (unknown → let writes decide)
@@ -3248,20 +3298,62 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     });
     return [p, b];
   }
+  // Collapsed threads, per viewer in this browser ({ids: [...]}, newest last, at most MSG_FOLD_MAX):
+  // a collapsed thread shows its top line and a one-line preview. Storage blocked: this page view.
+  const FOLD_KEY = 'switchboard.msgFolded', MSG_FOLD_MAX = 500;
+  const msgFolded = (() => {
+    let v = null;
+    try { v = JSON.parse(localStorage.getItem(FOLD_KEY) || 'null'); } catch (e) { v = null; }
+    return new Set(v && Array.isArray(v.ids) ? v.ids.filter((k) => typeof k === 'string' && /^m-[0-9]+-[a-z0-9]+$/.test(k)).slice(-MSG_FOLD_MAX) : []);
+  })();
+  function saveFolded() {
+    const ids = [...msgFolded].slice(-MSG_FOLD_MAX);
+    try { localStorage.setItem(FOLD_KEY, JSON.stringify({ ids })); } catch (e) { /* this page view only */ }
+  }
+  function setFolded(ids, on) {
+    for (const id of ids) { msgFolded.delete(id); if (on) msgFolded.add(id); }
+    saveFolded();
+  }
+  const isFolded = (m) => msgFolded.has(str(m.id));
+  function foldButton(li, id) {
+    const b = h('button', { type: 'button', class: 'thread-fold', 'data-focus': 'fold' });
+    const sync = () => {
+      const f = msgFolded.has(id);
+      li.classList.toggle('folded', f);
+      b.textContent = f ? '▸' : '▾';
+      b.setAttribute('aria-expanded', f ? 'false' : 'true');
+      b.setAttribute('aria-label', tr(f ? 'Expand thread' : 'Collapse thread'));
+      b.title = b.getAttribute('aria-label');
+    };
+    b.addEventListener('click', () => { setFolded([id], !msgFolded.has(id)); sync(); });
+    return [b, sync];
+  }
+  const listOf = (v) => (Array.isArray(v) ? v.map(str).filter(Boolean) : []);
   function buildThread(m) {
     const id = str(m.id), replies = threadReplies(id);
-    const relayedTo = Array.isArray(m.relayed_to) ? m.relayed_to.map(str).filter(Boolean) : [];
+    const relayedTo = listOf(m.relayed_to), routedTo = listOf(m.routed_to);
     const unread = isUnread(m), held = str(m.status) === 'held';
-    const li = h('li', { id: 'thread-' + id, class: 'thread' + (held || unread ? ' pinned' : '') + (unread ? ' unread' : ''), tabindex: '-1' },
+    const triage = str(m.to) === 'triage';
+    const li = h('li', { id: 'thread-' + id, class: 'thread' + (held || unread ? ' pinned' : '') + (unread ? ' unread' : ''), tabindex: '-1' });
+    const [fold, syncFold] = foldButton(li, id);
+    // routed (a triage message): who BOARD gave it to; else who it was relayed to
+    const relayLine = routedTo.length
+      ? h('span', { class: 'relay routed' }, tr('Routed by BOARD to {who}', { who: routedTo.join(', ') }), m.routed_at ? ' · ' : '', m.routed_at ? timeEl(m.routed_at) : null)
+      : triage && !held && str(m.status) === 'new' ? h('span', { class: 'relay', text: tr('Waiting for BOARD to route it to the right sessions.') })
+      : relayedTo.length || m.relayed_at ? h('span', { class: 'relay' }, relayedTo.length ? tr('Relayed to {who}', { who: relayedTo.join(', ') }) : tr('Relayed'), m.relayed_at ? ' · ' : '', m.relayed_at ? timeEl(m.relayed_at) : null) : null;
+    li.append(...[
       h('div', { class: 'thread-top' },
+        fold,
         h('span', { class: 'to', text: '→ @' + (str(m.to) || '?') }),
         h('span', { class: 'status ' + str(m.status), text: str(m.status) || 'new' }),
         unread ? h('span', { class: 'new-chip', text: tr('New reply') }) : null,
         h('span', { text: tr('from {who}', { who: whoLabel(m.by) }) }),
+        h('span', { class: 'preview', text: str(m.body).replace(/\s+/g, ' ').slice(0, 160) + (replies.length ? ' · ' + tr(replies.length === 1 ? '1 reply' : '{n} replies', { n: replies.length }) : '') }),
         timeEl(m.created_at)),
       clampText(id, str(m.body), 'body'),
       guardNote(m),
-      relayedTo.length || m.relayed_at ? h('span', { class: 'relay' }, relayedTo.length ? tr('Relayed to {who}', { who: relayedTo.join(', ') }) : tr('Relayed'), m.relayed_at ? ' · ' : '', m.relayed_at ? timeEl(m.relayed_at) : null) : null);
+      relayLine].flat().filter(Boolean));
+    syncFold();
     if (replies.length) {
       // Only the latest replies; the earlier ones open in place.
       const hide = replies.length > MSG_REPLIES_SHOWN && !S.msgOpen.has(id + '#r') ? replies.length - MSG_REPLIES_SHOWN : 0;
@@ -4029,7 +4121,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
   // read. The rest is in History: 20 at a time, by session and by text. board-serve pages it
   // (GET /api/messages, the state carries the latest 20 and a count of the older ones); the demo
   // and the Artifact page page what they have. "Read" is this viewer's own, in this browser.
-  const MSG_RECENT = 5, MSG_PAGE = 20, MSG_CLAMP_CHARS = 320, MSG_CLAMP_LINES = 6, MSG_REPLIES_SHOWN = 3;
+  const MSG_RECENT = 5, MSG_PAGE = 20, MSG_CLAMP_CHARS = 280, MSG_CLAMP_LINES = 4, MSG_REPLIES_SHOWN = 3;
   const SEEN_KEY = 'switchboard.msgSeen';
   // {base, t: {id: ms}}: replies up to base (when this browser first opened the board) or up to a
   // thread's own mark are read. Storage blocked: from this page view on.
@@ -4071,13 +4163,78 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     return { all, shown, ids: new Set(shown.map((m) => str(m.id))), older: Math.max(0, total - shown.length), total,
       boundary: all.length >= MSG_RECENT ? all[MSG_RECENT - 1] : null, unread: all.filter(isUnread) };
   }
+  // Find messages: the search, session and chips filter the threads this page has (the state's
+  // latest 20 and every held one; the Artifact page: what the db feed holds). While one is on, every
+  // loaded thread that matches is listed, not just the latest 5; on board-serve the same text and
+  // session go to History, which searches the older threads page by page (GET /api/messages).
+  const MSG_CHIPS = [['unread', 'Unread'], ['waiting', 'Awaiting reply'], ['held', 'Held']];
+  const msgFilterOn = () => !!(S.msgQ.trim() || S.msgTo || S.msgChip);
+  function sessionsOf(m) {
+    return [m.to].concat(listOf(m.relayed_to), listOf(m.routed_to), threadReplies(str(m.id)).map((r) => r.from)).map(str).filter(Boolean);
+  }
+  function chipMatch(m, chip) {
+    const st = str(m.status);
+    if (chip === 'unread') return isUnread(m);
+    if (chip === 'held') return st === 'held';
+    if (chip === 'waiting') return (st === 'new' || st === 'relayed') && !threadReplies(str(m.id)).length;
+    return true;
+  }
+  function msgMatch(m) {
+    if (S.msgTo && !sessionsOf(m).includes(S.msgTo)) return false;
+    if (S.msgChip && !chipMatch(m, S.msgChip)) return false;
+    const q = lc(S.msgQ).trim();
+    if (!q) return true;
+    return [m.to, m.by, whoLabel(m.by), m.asker, m.body].concat(listOf(m.routed_to), listOf(m.relayed_to),
+      threadReplies(str(m.id)).flatMap((r) => [r.from, r.body])).some((x) => lc(x).includes(q));
+  }
+  function sessionOptions(extra) {
+    const about = new Map(S.sessions.map((s) => [str(s.code), str(s.about)]));
+    const codes = new Set(S.sessions.map((s) => str(s.code)).filter(Boolean));
+    for (const c of extra) if (c) codes.add(c);
+    codes.delete('all'); codes.delete('triage');
+    return [['', tr('All sessions')]].concat([...codes].sort((a, b) => a.localeCompare(b))
+      .map((c) => [c, '@' + c + (about.get(c) ? ' — ' + about.get(c) : '')]), [['triage', '@triage'], ['all', '@all']]);
+  }
+  function fillSelect(sel, opts, value) {
+    if (sel.dataset.opts !== JSON.stringify(opts)) {
+      sel.dataset.opts = JSON.stringify(opts); sel.textContent = '';
+      for (const [val, label] of opts) sel.append(h('option', { value: val, text: label }));
+    }
+    sel.value = value;
+  }
+  function renderMsgTools(v, list) {
+    const tools = $('#msg-tools'), on = msgFilterOn();
+    tools.hidden = !v.total && !on;
+    if (tools.hidden) return;
+    fillSelect($('#msg-to'), sessionOptions(v.all.flatMap(sessionsOf)), S.msgTo);
+    const box = $('#msg-chips');
+    if (!box.children.length) {
+      for (const [k] of MSG_CHIPS) {
+        const b = h('button', { type: 'button', class: 'fchip', 'data-chip': k, 'aria-pressed': 'false' });
+        b.addEventListener('click', () => { S.msgChip = S.msgChip === k ? '' : k; renderMessages(); });
+        box.append(b);
+      }
+    }
+    for (const b of box.children) {
+      const k = b.dataset.chip, n = v.all.filter((m) => chipMatch(m, k)).length;
+      b.textContent = tr(MSG_CHIPS.find((c) => c[0] === k)[1]) + ' · ' + n;
+      b.setAttribute('aria-pressed', S.msgChip === k ? 'true' : 'false');
+      b.hidden = k === 'held' && !n && S.msgChip !== k;
+    }
+    $('#msg-filter-status').textContent = !on ? ''
+      : tr('{n} of the {total} loaded threads match.', { n: list.length, total: v.all.length })
+        + (v.older ? ' ' + tr('History searches the older ones.') : '');
+  }
   function renderMessages() {
-    const v = msgViews(), list = v.shown;
+    const v = msgViews(), filtering = msgFilterOn(), list = filtering ? v.all.filter(msgMatch) : v.shown;
     $('#nav-msg').textContent = v.total;
+    $('#nav-msg').classList.toggle('hot', v.unread.length > 0);
+    renderMsgTools(v, list);
     const e = $('#msg-empty');
     e.hidden = list.length > 0;
     e.textContent = '';
-    if (S.mode === 'connecting' || (S.mode === 'live' && !S.got.messages)) e.append(h('strong', { text: tr('Loading messages…') }));
+    if (filtering && v.all.length) e.append(h('strong', { text: tr('No loaded threads match.') }), tr(v.older ? 'Open History to search the older ones.' : 'Clear the search or the filter to see every thread.'));
+    else if (S.mode === 'connecting' || (S.mode === 'live' && !S.got.messages)) e.append(h('strong', { text: tr('Loading messages…') }));
     else if (S.mode === 'offline') e.append(h('strong', { text: tr('No board data.') }), tr('Threads appear here once the page can reach the board.'));
     else e.append(h('strong', { text: tr('No messages yet.') }), tr(canMessage() ? 'Type @ and a session code to send the first one.' : 'Messages that editors send to sessions appear here.'));
     const un = $('#msg-unread');
@@ -4088,13 +4245,20 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       all.addEventListener('click', () => markRead(v.unread));
       un.append(h('span', { text: tr('{n} threads have new replies.', { n: v.unread.length }) }), all);
     }
-    reconcile($('#threads'), list, (m) => m.id, (m) => JSON.stringify(m) + JSON.stringify(threadReplies(str(m.id))) + (S.me || '') + isUnread(m), buildThread);
+    reconcile($('#threads'), list, (m) => m.id, (m) => JSON.stringify(m) + JSON.stringify(threadReplies(str(m.id))) + (S.me || '') + isUnread(m) + isFolded(m), buildThread);
     const was = [...S.msgVisible].join();
     S.msgVisible = new Set(list.map((m) => str(m.id)));
+    // History never repeats a thread listed above (a search lists more than the latest 5)
+    if (filtering) for (const m of list) v.ids.add(str(m.id));
     renderHistory(v);
     if (!isLocal() && !S.demo && [...S.msgVisible].join() !== was) syncReplySubs();
     const ok = canMessage();
     $('#composer').hidden = !ok;
+    // an asker never messages @all: triage (BOARD routes it) is their default recipient
+    $('#msg-help-all').hidden = S.askerOnly;
+    $('#msg-input').placeholder = tr(S.askerOnly ? 'Ask your question. BOARD routes it to the right session, or start with @ and a session code.'
+      : '@API please rebase on main and rerun the tests');
+    renderRecipients();
     $('#msg-readonly').hidden = ok || !(S.mode === 'live' && S.userReady);
     $('#msg-readonly').textContent = tr(isLocal() ? 'You can read the threads. Only approvers, release managers and askers can send messages.'
       : 'You can read the threads. Only editors of this board can send messages.');
@@ -4134,7 +4298,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       : H.loading && !items.length ? tr('Loading…')
       : !items.length ? tr(H.to || H.q.trim() ? 'No older threads match.' : 'No older threads.')
       : tr('Showing {n} older threads.', { n: items.length });
-    reconcile($('#msg-hist-list'), items, (m) => m.id, (m) => JSON.stringify(m) + JSON.stringify(threadReplies(str(m.id))) + (S.me || ''), buildThread);
+    reconcile($('#msg-hist-list'), items, (m) => m.id, (m) => JSON.stringify(m) + JSON.stringify(threadReplies(str(m.id))) + (S.me || '') + isFolded(m), buildThread);
     for (const m of items) S.msgVisible.add(str(m.id));
     const mb = $('#msg-hist-more');
     mb.hidden = !more; mb.disabled = H.loading;
@@ -4175,6 +4339,20 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     S.hist.timer = setTimeout(histReload, isLocal() ? 250 : 0);
   });
   $('#msg-hist-more').addEventListener('click', () => { if (isLocal()) histFetch(true); else { S.hist.count += MSG_PAGE; renderMessages(); } });
+  // the search and the session also drive History, so older threads are searched the same way
+  function msgToHistory() {
+    const H = S.hist;
+    H.q = S.msgQ; H.to = S.msgTo;
+    $('#msg-hist-q').value = H.q;
+    if (H.open) { clearTimeout(H.timer); H.timer = setTimeout(histReload, isLocal() ? 250 : 0); }
+  }
+  $('#msg-q').addEventListener('input', (e) => { S.msgQ = e.target.value.slice(0, 200); msgToHistory(); renderMessages(); });
+  $('#msg-to').addEventListener('change', (e) => { S.msgTo = e.target.value; msgToHistory(); renderMessages(); });
+  $('#msg-fold-all').addEventListener('click', () => {
+    setFolded([...document.querySelectorAll('#threads > li.thread, #msg-hist-list > li.thread')].map((li) => li.id.replace('thread-', '')), true);
+    renderMessages();
+  });
+  $('#msg-unfold-all').addEventListener('click', () => { msgFolded.clear(); saveFolded(); renderMessages(); });
 
   /* ----------------------------------------------------------- consensus */
   const CONS_LABEL = { pending: 'pending', agreed: 'agreed', objected: 'objected · parked for the owner', owner_back: 'back to the owner' };
@@ -5515,21 +5693,50 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
   const ta = $('#msg-input'), mlist = $('#mention-list'), merr = $('#msg-err');
   let mState = null; // { start, items, idx }
 
+  // Recipients: session codes, "triage" (BOARD picks the sessions from their `about`) or "all".
+  // An asker never sends to all, and a message of theirs without a mention goes to triage.
   function parseMentions(raw) {
     const m = raw.match(/^\s*((?:@[A-Za-z0-9_.\-]+[\s,]*)+)/);
-    if (!m) return { error: tr('Start with @ and a session code, or @all.') };
+    if (!m) {
+      if (S.askerOnly && raw.trim()) return { targets: ['triage'], body: raw.trim() };
+      return { error: tr(S.askerOnly ? 'Write your message.' : 'Start with @ and a session code, @triage or @all.') };
+    }
     const names = [...m[1].matchAll(/@([A-Za-z0-9_.\-]+)/g)].map((x) => x[1]);
     const body = raw.slice(m[0].length).trim();
     if (!body) return { error: tr('Add your message after the mention.') };
     const targets = [];
     for (const n of names) {
-      if (lc(n) === 'all') { targets.push('all'); continue; }
+      if (lc(n) === 'all') {
+        if (S.askerOnly) return { error: tr('Askers cannot message @all. Use @triage: BOARD routes it to the right session.') };
+        targets.push('all'); continue;
+      }
+      if (lc(n) === 'triage') { if (!targets.includes('triage')) targets.push('triage'); continue; }
       const s = findSession(n);
       if (!s) return { error: tr('No session called @{name}. Pick one from the list that opens when you type @.', { name: n }) };
       if (!targets.includes(s.code)) targets.push(s.code);
     }
     return { targets: targets.includes('all') ? ['all'] : targets, body };
   }
+  // Live sessions a message to all interrupts: not offline, not the operator itself.
+  function liveSessions() {
+    const op = str(S.operator && S.operator.operator_session);
+    return S.sessions.filter((s) => str(s.state) !== 'offline' && str(s.code) && str(s.code) !== op);
+  }
+  // "To: …" under the text box, from the mentions typed so far (nothing when it cannot tell yet).
+  function renderRecipients() {
+    const line = $('#msg-to-line');
+    if (!line) return;
+    const raw = $('#msg-input').value;
+    const p = raw.trim() ? parseMentions(raw) : (S.askerOnly ? { targets: ['triage'] } : null);
+    line.textContent = '';
+    if (!p || p.error || !p.targets) return;
+    const about = new Map(S.sessions.map((s) => [str(s.code), str(s.about)]));
+    const parts = p.targets.map((t) => t === 'all' ? tr('all {n} live sessions', { n: liveSessions().length })
+      : t === 'triage' ? tr('triage (BOARD routes it to the right session)')
+      : '@' + t + (about.get(t) ? ' (' + about.get(t) + ')' : ''));
+    line.textContent = tr('To: {who}', { who: parts.join(', ') });
+  }
+  function closeAllConfirm() { S.allConfirm = null; $('#msg-all-confirm').hidden = true; }
 
   function mentionContext() {
     const pos = ta.selectionStart;
@@ -5542,12 +5749,16 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     const ctx = mentionContext();
     if (!ctx) return closeMentions();
     const q = lc(ctx.q);
-    const all = [{ code: 'all', desc: tr('every session') }].concat(S.sessions.map((s) => ({
-      code: s.code,
-      desc: [(Array.isArray(s.aliases) ? s.aliases.filter((a) => lc(a) !== lc(s.code)).join(', ') : ''), str(s.state)].filter(Boolean).join(' · '),
-      keys: [s.code].concat(Array.isArray(s.aliases) ? s.aliases : []),
-    })));
-    const items = all.filter((it) => !q || (it.keys || [it.code]).some((k) => lc(k).startsWith(q))).slice(0, 8);
+    // each session with what it is responsible for (fleet.yaml `about`); triage when unsure; never
+    // @all for an asker
+    const all = [{ code: 'triage', desc: tr('not sure? BOARD routes it') }]
+      .concat(S.askerOnly ? [] : [{ code: 'all', desc: tr('every live session') }])
+      .concat(S.sessions.map((s) => ({
+        code: s.code,
+        desc: [str(s.about) || (Array.isArray(s.aliases) ? s.aliases.filter((a) => lc(a) !== lc(s.code)).join(', ') : ''), str(s.state)].filter(Boolean).join(' · '),
+        keys: [s.code].concat(Array.isArray(s.aliases) ? s.aliases : []),
+      })));
+    const items = all.filter((it) => !q || (it.keys || [it.code]).some((k) => lc(k).startsWith(q))).slice(0, 10);
     if (!items.length) return closeMentions();
     mState = { start: ctx.start, end: ctx.end, items, idx: Math.min(mState ? mState.idx : 0, items.length - 1) };
     drawMentions();
@@ -5556,7 +5767,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     mlist.textContent = '';
     mState.items.forEach((it, i) => {
       const li = h('li', { id: 'mopt-' + i, role: 'option', 'aria-selected': i === mState.idx ? 'true' : 'false' },
-        h('span', { class: 'c', text: '@' + it.code }), h('span', { class: 'd', text: it.desc || '' }));
+        h('span', { class: 'c', text: '@' + it.code }), h('span', { class: 'd', text: it.desc || '', title: it.desc || '' }));
       li.addEventListener('mousedown', (e) => { e.preventDefault(); pickMention(i); });
       mlist.append(li);
     });
@@ -5574,8 +5785,9 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     ta.setSelectionRange(pos, pos);
     closeMentions(); ta.focus();
     merr.textContent = '';
+    renderRecipients();
   }
-  ta.addEventListener('input', () => { merr.textContent = ''; updateMentions(); });
+  ta.addEventListener('input', () => { merr.textContent = ''; closeAllConfirm(); updateMentions(); renderRecipients(); });
   ta.addEventListener('click', updateMentions);
   ta.addEventListener('blur', () => setTimeout(closeMentions, 120));
   ta.addEventListener('keydown', (e) => {
@@ -5595,12 +5807,23 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
   $('#ls-filter').addEventListener('change', (e) => { S.lsFilter = e.target.value; renderLessons(); });
   $('#ls-add').addEventListener('click', () => openLessonForm(null));
 
+  // @all interrupts every live session: the first Send asks, the confirm button sends.
+  $('#msg-all-cancel').addEventListener('click', () => { closeAllConfirm(); ta.focus(); });
+  $('#msg-all-yes').addEventListener('click', () => sendMessage(true));
   // Synchronous from the gesture: writes are kicked off, then the fast path is called.
-  function sendMessage() {
+  function sendMessage(allConfirmed) {
     if (!canMessage()) return;
     const raw = ta.value;
     const p = parseMentions(raw);
-    if (p.error) { merr.textContent = p.error; ta.focus(); return; }
+    if (p.error) { merr.textContent = p.error; closeAllConfirm(); ta.focus(); return; }
+    if (p.targets.includes('all') && !(allConfirmed === true && S.allConfirm && S.allConfirm.raw === raw)) {
+      S.allConfirm = { raw };
+      $('#msg-all-q').textContent = tr('This interrupts all {n} live sessions. Send it to all? Not sure who owns it? Use @triage instead.', { n: liveSessions().length });
+      $('#msg-all-confirm').hidden = false;
+      $('#msg-all-yes').focus();
+      return;
+    }
+    closeAllConfirm();
     const now = Date.now();
     const ids = p.targets.map(() => 'm-' + now + '-' + rand());
     if (S.demo) {
@@ -5612,11 +5835,11 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     let writeP;
     try { writeP = adapter.sendMessage(ids, p.targets, p.body, now); } catch (e) { writeP = Promise.reject(e); }
     const sendP = operatorOffline() ? null : adapter.fastPath('message', ids[0], ids.length > 1 ? { also: ids.slice(1) } : null);
-    ta.value = ''; closeMentions();
+    ta.value = ''; closeMentions(); renderRecipients();
     const btn = $('#msg-send'); btn.disabled = true; btn.textContent = tr('Sending…');
     settle(writeP, sendP, ids.length > 1 ? tr('{n} messages saved', { n: ids.length }) : tr('Message saved')).then((ok) => {
       btn.disabled = false; btn.textContent = tr('Send');
-      if (!ok && !ta.value) ta.value = raw;
+      if (!ok && !ta.value) { ta.value = raw; renderRecipients(); }
     });
   }
 
@@ -5686,6 +5909,10 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
   }
   window.addEventListener('scroll', spy, { passive: true });
   window.addEventListener('resize', spy);
+  // a jump to a section lands below the sticky nav, however tall it is (it wraps on narrow screens)
+  const navHeight = () => document.documentElement.style.setProperty('--secnav-h', Math.round(nav.getBoundingClientRect().height) + 'px');
+  navHeight();
+  if (window.ResizeObserver) new ResizeObserver(navHeight).observe(nav); else window.addEventListener('resize', navHeight);
 
   /* ----------------------------------------------------------- live data */
   function docs(snap) { return snap.docs.filter((d) => d.exists).map((d) => Object.assign({ id: d.id }, d.data())); }
@@ -6150,14 +6377,14 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       usage: { five_hour: { pct: frozen ? 100 : 91, resets_at: now + 95 * min }, seven_day: { pct: 63, resets_at: now + (3 * 24 * 60 + 260) * min }, updated_at: now - 1 * min,
         burn: frozen ? { status: 'stale', pct_per_hour: null, hit_at: null, n: 0 } : { status: 'danger', pct_per_hour: 6, hit_at: now + 90 * min, n: 58 } } };
     S.sessions = [
-      { code: 'API', aliases: ['API', 'backend'], state: 'needs-you', status: 'busy', task: 'Adding pagination to the orders endpoint', title: 'Paginate the orders endpoint', repo: 'orders-api', branch: 'feat/pagination', last_event: 'PermissionRequest', notification_type: 'permission_prompt', recent: [{ tool: 'Bash', summary: 'npm run migrate -- --env staging' }], tmux: 'API:@1.%3', remote_url: '#demo-session-api', pending: { tool_name: 'Bash', summary: 'npm run migrate -- --env staging', tool_use_id: 'toolu_demo1', decision_id: 'd-1-demo' }, card: { state_since: now - 4 * min, doing: 'The migration is ready; asking before it runs against staging.', prompt: 'Add cursor pagination to GET /orders', meter: { ctx_pct: 62, cost_usd: 3.41, model: 'Demo Model', at: now - min }, teammates: [], done: [{ tool: 'Bash', summary: 'npm test -- orders', ms: 18400, ok: true, at: now - 6 * min }, { tool: 'Edit', summary: '…/orders.ts', ms: 120, ok: true, at: now - 5 * min }], branch: { base: 'origin/main', ahead: 3, behind: 0, subject: 'feat: cursor pagination for orders' } }, updated_at: now - 4 * min },
-      { code: 'WEB', aliases: ['WEB', 'frontend'], state: 'needs-you', status: 'idle', task: 'Redesigning the settings page layout', title: 'Settings page redesign', repo: 'web-app', branch: 'settings-layout', last_event: 'Stop', notification_type: null, recent: [], tmux: 'WEB:@2.%5', remote_url: '#demo-session-web', pending: null, updated_at: now - 9 * min },
-      { code: 'CP', aliases: ['CP', 'pipeline'], state: 'needs-you', status: 'idle', task: 'Splitting the deploy pipeline into stages', title: 'Deploy pipeline split', repo: 'ci-config', branch: 'split-deploy', last_event: 'PreToolUse', notification_type: null, recent: [], tmux: 'CP:@1.%6', remote_url: '#demo-session-cp', pending: { tool_name: 'ExitPlanMode', summary: 'build first, then staging, then production', tool_use_id: 'toolu_demo11' }, updated_at: now - 1 * min },
-      { code: 'DOCS', aliases: ['DOCS'], state: 'working', status: 'busy', task: 'Writing the upgrade guide for v2', title: 'Upgrade guide for v2', repo: 'docs-site', branch: 'main', last_event: 'PreToolUse', notification_type: null, recent: [{ tool: 'Read', summary: '…/upgrade-v2.md' }, { tool: 'Edit', summary: '…/configuration.md' }], tmux: 'DOCS:@1.%8', remote_url: null, rc: { on: false, want: 'on', source: 'session', pending: true, last: null }, pending: null, card: { state_since: now - 22 * min, doing: 'Two teammates are drafting the configuration and migration chapters; I am merging their notes.', prompt: 'Write the v2 upgrade guide', meter: { ctx_pct: 34, cost_usd: 2.1, model: 'Demo Model', at: now - min }, teammates: [{ name: 'writer', title: 'Draft the configuration chapter', busy: true, idle: false, idle_s: 20, rss_mb: 310 }, { name: 'checker', title: 'Check every code sample builds', busy: false, idle: true, idle_s: 2400, rss_mb: 280 }], done: [{ tool: 'Bash', summary: 'npm run build:docs', ms: 52000, ok: false, at: now - 9 * min }, { tool: 'Read', summary: '…/upgrade-v2.md', ms: 40, ok: true, at: now - 2 * min }], branch: { base: 'origin/main', ahead: 1, behind: 4, subject: 'docs: upgrade guide outline' } }, updated_at: now - 1 * min },
-      { code: 'OPS', aliases: ['OPS', 'infra'], state: 'working', status: 'busy', task: 'Rotating staging certificates', title: 'Rotate staging certificates', repo: 'infra', branch: 'cert-rotation', last_event: 'PreToolUse', notification_type: null, recent: [{ tool: 'Bash', summary: 'kubectl -n staging get certificates' }], tmux: 'OPS:@4.%11', remote_url: '#demo-session-ops', pending: null, card: { state_since: now - 3 * min, doing: 'Listing the certificates that expire this month.', meter: { ctx_pct: 18, cost_usd: 0.42, model: 'Demo Model', at: now - min }, teammates: [], done: [], branch: { base: 'origin/main', ahead: 0, behind: 0, subject: 'chore: bump cert-manager' } }, updated_at: now - 3 * min },
-      { code: 'QA', aliases: ['QA'], state: 'done', status: 'idle', task: 'Flaky test triage finished: 3 fixed, 1 quarantined', title: 'Flaky test triage', repo: 'web-app', branch: 'fix/flaky-upload', last_event: 'Stop', notification_type: 'idle_prompt', recent: [], tmux: 'QA:@1.%2', remote_url: null, compact: { queued: null, last: { result: 'confirmed', at: now - 50 * min }, done_at: now - 50 * min }, pending: null, updated_at: now - 26 * min },
-      { code: 'DATA', aliases: ['DATA'], limit: { state: 'idle', since: now - 12 * min }, state: 'rest', status: 'idle', task: '', title: null, repo: 'warehouse', branch: 'main', last_event: 'SessionStart', notification_type: null, recent: [], tmux: 'DATA:@1.%14', remote_url: null, rc: { on: false, want: 'on', source: 'default', blocked: 'do_not_track', pending: false, last: null }, pending: null, updated_at: now - 70 * min },
-      { code: 'MOBILE', aliases: ['MOBILE', 'app'], state: 'offline', status: 'idle', task: 'Release notes draft', title: null, repo: null, branch: null, last_event: null, notification_type: null, recent: [], tmux: null, remote_url: null, pending: null, updated_at: now - 5 * 60 * min },
+      { code: 'API', about: 'backend API and database migrations', aliases: ['API', 'backend'], state: 'needs-you', status: 'busy', task: 'Adding pagination to the orders endpoint', title: 'Paginate the orders endpoint', repo: 'orders-api', branch: 'feat/pagination', last_event: 'PermissionRequest', notification_type: 'permission_prompt', recent: [{ tool: 'Bash', summary: 'npm run migrate -- --env staging' }], tmux: 'API:@1.%3', remote_url: '#demo-session-api', pending: { tool_name: 'Bash', summary: 'npm run migrate -- --env staging', tool_use_id: 'toolu_demo1', decision_id: 'd-1-demo' }, card: { state_since: now - 4 * min, doing: 'The migration is ready; asking before it runs against staging.', prompt: 'Add cursor pagination to GET /orders', meter: { ctx_pct: 62, cost_usd: 3.41, model: 'Demo Model', at: now - min }, teammates: [], done: [{ tool: 'Bash', summary: 'npm test -- orders', ms: 18400, ok: true, at: now - 6 * min }, { tool: 'Edit', summary: '…/orders.ts', ms: 120, ok: true, at: now - 5 * min }], branch: { base: 'origin/main', ahead: 3, behind: 0, subject: 'feat: cursor pagination for orders' } }, updated_at: now - 4 * min },
+      { code: 'WEB', about: 'frontend app', aliases: ['WEB', 'frontend'], state: 'needs-you', status: 'idle', task: 'Redesigning the settings page layout', title: 'Settings page redesign', repo: 'web-app', branch: 'settings-layout', last_event: 'Stop', notification_type: null, recent: [], tmux: 'WEB:@2.%5', remote_url: '#demo-session-web', pending: null, updated_at: now - 9 * min },
+      { code: 'CP', about: 'build and deploy pipeline', aliases: ['CP', 'pipeline'], state: 'needs-you', status: 'idle', task: 'Splitting the deploy pipeline into stages', title: 'Deploy pipeline split', repo: 'ci-config', branch: 'split-deploy', last_event: 'PreToolUse', notification_type: null, recent: [], tmux: 'CP:@1.%6', remote_url: '#demo-session-cp', pending: { tool_name: 'ExitPlanMode', summary: 'build first, then staging, then production', tool_use_id: 'toolu_demo11' }, updated_at: now - 1 * min },
+      { code: 'DOCS', about: 'user docs and the changelog', aliases: ['DOCS'], state: 'working', status: 'busy', task: 'Writing the upgrade guide for v2', title: 'Upgrade guide for v2', repo: 'docs-site', branch: 'main', last_event: 'PreToolUse', notification_type: null, recent: [{ tool: 'Read', summary: '…/upgrade-v2.md' }, { tool: 'Edit', summary: '…/configuration.md' }], tmux: 'DOCS:@1.%8', remote_url: null, rc: { on: false, want: 'on', source: 'session', pending: true, last: null }, pending: null, card: { state_since: now - 22 * min, doing: 'Two teammates are drafting the configuration and migration chapters; I am merging their notes.', prompt: 'Write the v2 upgrade guide', meter: { ctx_pct: 34, cost_usd: 2.1, model: 'Demo Model', at: now - min }, teammates: [{ name: 'writer', title: 'Draft the configuration chapter', busy: true, idle: false, idle_s: 20, rss_mb: 310 }, { name: 'checker', title: 'Check every code sample builds', busy: false, idle: true, idle_s: 2400, rss_mb: 280 }], done: [{ tool: 'Bash', summary: 'npm run build:docs', ms: 52000, ok: false, at: now - 9 * min }, { tool: 'Read', summary: '…/upgrade-v2.md', ms: 40, ok: true, at: now - 2 * min }], branch: { base: 'origin/main', ahead: 1, behind: 4, subject: 'docs: upgrade guide outline' } }, updated_at: now - 1 * min },
+      { code: 'OPS', about: 'infrastructure / gitops', aliases: ['OPS', 'infra'], state: 'working', status: 'busy', task: 'Rotating staging certificates', title: 'Rotate staging certificates', repo: 'infra', branch: 'cert-rotation', last_event: 'PreToolUse', notification_type: null, recent: [{ tool: 'Bash', summary: 'kubectl -n staging get certificates' }], tmux: 'OPS:@4.%11', remote_url: '#demo-session-ops', pending: null, card: { state_since: now - 3 * min, doing: 'Listing the certificates that expire this month.', meter: { ctx_pct: 18, cost_usd: 0.42, model: 'Demo Model', at: now - min }, teammates: [], done: [], branch: { base: 'origin/main', ahead: 0, behind: 0, subject: 'chore: bump cert-manager' } }, updated_at: now - 3 * min },
+      { code: 'QA', about: 'end-to-end tests and flaky test triage', aliases: ['QA'], state: 'done', status: 'idle', task: 'Flaky test triage finished: 3 fixed, 1 quarantined', title: 'Flaky test triage', repo: 'web-app', branch: 'fix/flaky-upload', last_event: 'Stop', notification_type: 'idle_prompt', recent: [], tmux: 'QA:@1.%2', remote_url: null, compact: { queued: null, last: { result: 'confirmed', at: now - 50 * min }, done_at: now - 50 * min }, pending: null, updated_at: now - 26 * min },
+      { code: 'DATA', about: 'data jobs and reports', aliases: ['DATA'], limit: { state: 'idle', since: now - 12 * min }, state: 'rest', status: 'idle', task: '', title: null, repo: 'warehouse', branch: 'main', last_event: 'SessionStart', notification_type: null, recent: [], tmux: 'DATA:@1.%14', remote_url: null, rc: { on: false, want: 'on', source: 'default', blocked: 'do_not_track', pending: false, last: null }, pending: null, updated_at: now - 70 * min },
+      { code: 'MOBILE', about: 'mobile app', aliases: ['MOBILE', 'app'], state: 'offline', status: 'idle', task: 'Release notes draft', title: null, repo: null, branch: null, last_event: null, notification_type: null, recent: [], tmux: null, remote_url: null, pending: null, updated_at: now - 5 * 60 * min },
     ];
     S.decisions = [
       { id: 'd-9-demo', kind: 'question', source: 'pane', from: 'CP', question: 'Approve running these steps in this order?', options: ['Approve, run in order', 'Only steps 1–3', 'Not yet'], questions: [{ question: 'Approve running these steps in this order?', header: 'Plan', multiSelect: false, options: [{ label: 'Approve, run in order', description: 'Run all steps one after another' }, { label: 'Only steps 1–3', description: 'Stop before the deploy step' }, { label: 'Not yet', description: 'Wait for more review' }] }], pressable: true, tool_use_id: 'toolu_demo9', tool_name: 'AskUserQuestion', status: 'pending', answer: null, created_at: now - 1 * min },
@@ -6801,15 +7028,45 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "Mention a session to send it a note. Replies come back into the thread.": "提及一個 session 就能傳訊息給它。回覆會回到對話串裡。",
       "New message": "新訊息",
       "Type": "輸入",
-      "to pick a session, or": "選擇 session，或",
+      "to pick a session,": "選擇 session，",
+      "to let BOARD route it": "讓 BOARD 幫你轉給對的 session",
+      ", or": "，或",
       "Ctrl+Enter sends.": "Ctrl+Enter 送出。",
       "Send": "送出",
       "Sessions": "Session",
       "@API please rebase on main and rerun the tests": "@API 請 rebase 到 main 並重跑測試",
-      "Start with @ and a session code, or @all.": "請以 @ 加上 session 代號開頭，或用 @all。",
+      "Start with @ and a session code, @triage or @all.": "請以 @ 加上 session 代號開頭，或用 @triage、@all。",
+      "Write your message.": "請輸入訊息內容。",
+      "Askers cannot message @all. Use @triage: BOARD routes it to the right session.": "提問者不能傳給 @all。請用 @triage：BOARD 會轉給對的 session。",
+      "Ask your question. BOARD routes it to the right session, or start with @ and a session code.": "直接寫下你的問題，BOARD 會轉給對的 session；也可以用 @ 加 session 代號開頭。",
+      "not sure? BOARD routes it": "不確定？讓 BOARD 轉",
+      "every live session": "所有線上的 session",
+      "all {n} live sessions": "全部 {n} 個線上 session",
+      "triage (BOARD routes it to the right session)": "triage（BOARD 會轉給對的 session）",
+      "To: {who}": "收件：{who}",
+      "Send to all": "傳給全部",
+      "This interrupts all {n} live sessions. Send it to all? Not sure who owns it? Use @triage instead.": "這會打斷全部 {n} 個線上 session。確定要傳給全部嗎？不確定誰負責的話，請改用 @triage。",
+      "Routed by BOARD to {who}": "BOARD 已轉給 {who}",
+      "Waiting for BOARD to route it to the right sessions.": "等 BOARD 轉給對的 session。",
+      "Expand thread": "展開對話",
+      "Collapse thread": "收合對話",
+      "1 reply": "1 則回覆",
+      "{n} replies": "{n} 則回覆",
+      "Find messages": "尋找訊息",
+      "Search messages: text, session, sender": "搜尋訊息：內容、session、寄件者",
+      "Search messages": "搜尋訊息",
+      "Collapse all": "全部收合",
+      "Expand all": "全部展開",
+      "Unread": "未讀",
+      "Awaiting reply": "等待回覆",
+      "Held": "已攔下",
+      "{n} of the {total} loaded threads match.": "已載入的 {total} 則對話中有 {n} 則符合。",
+      "History searches the older ones.": "較舊的對話請在「歷史」中搜尋。",
+      "No loaded threads match.": "已載入的對話沒有符合的。",
+      "Open History to search the older ones.": "打開「歷史」可以搜尋較舊的對話。",
+      "Clear the search or the filter to see every thread.": "清除搜尋或篩選即可看到所有對話。",
       "Add your message after the mention.": "請在提及之後加上訊息內容。",
       "No session called @{name}. Pick one from the list that opens when you type @.": "沒有叫 @{name} 的 session。輸入 @ 時會出現清單，請從中挑選。",
-      "every session": "所有 session",
       "Demo: message shown on this page only. Nothing was saved or sent.": "示範：訊息只顯示在這個頁面。沒有保存或送出任何東西。",
       "Sending…": "傳送中…",
       "{n} messages saved": "已保存 {n} 則訊息",
