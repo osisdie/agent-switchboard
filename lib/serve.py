@@ -35,6 +35,8 @@ listeners (docs/contract.md, "Local adapter API"):
                                        message after a false positive; audited)
   POST /api/away                       {"state": "on"|"off", "said": "..."}   (owners only;
                                        via `board away on|off --by board:<identity>`)
+  POST /api/dnd                        {"state": "on"|"off"}   (owners only: do not disturb; askers'
+                                       messages are declined with a canned reply, lib/availability.py)
   POST /api/notify-prefs               {"op": "mute"|"unmute"|"level"|"presence", ...}  (approvers
                                        only; via `board mute|unmute|notify-level|notify-presence`)
   POST /api/presence                   {"visible": bool, "idle_ms": ms}  (owners only, else 204 ignored;
@@ -106,6 +108,7 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import availability  # noqa: E402
 import away  # noqa: E402
 import fleet  # noqa: E402
 import guard  # noqa: E402
@@ -527,7 +530,7 @@ class StateBuilder:
         h = hashlib.sha1()
         paths = [self.p(n) for n in ("snapshot.json", "usage.json", "usage-samples.json", "account.json",
                                     "limit.json", "operator.json",
-                                    "ledger.json", "events.jsonl", "owner-away", prefs.PREFS_FILE,
+                                    "ledger.json", "events.jsonl", "owner-away", availability.DND_FILE, prefs.PREFS_FILE,
                                     rc.PREFS_FILE, actions.QUEUE_FILE, actions.LAST_FILE)]
         paths.append(self.p("resources.json"))  # rewritten on a bucketed change, else every 60 s
         paths.append(self.p("cards.json"))      # card extras (lib/cards.py), rewritten when changed
@@ -688,6 +691,8 @@ class StateBuilder:
                 "messages_older": len(threads) - len(window),
                 "operator": operator, "ledger": ledger if isinstance(ledger, dict) else None,
                 "owner_away": away.away_record(self.home),
+                # online / dnd / away; state_for computes it again per viewer (the clock, the dnd record)
+                "availability": availability.view(self.home, cfg),
                 "consensus": away.consensus_items(self.home, now_ms())[-50:],
                 "notify": notify_state(self.home),
                 "rc": rc_state(self.home),
@@ -718,8 +723,8 @@ HISTORY_MAX = 50
 # relay ones the contract documents (docs/contract.md "Messages"; ticket text is viewer-scoped).
 MESSAGE_KEYS = ("id", "to", "body", "by", "created_at", "status", "relayed_to", "relayed_at", "held_reason",
                 "held_at", "released_by", "released_at", "kind", "asker", "event", "ticket", "task_id", "api", "via",
-                "routed_to", "routed_at")
-REPLY_KEYS = ("id", "from", "body", "created_at", "redacted")
+                "routed_to", "routed_at", "declined_reason", "declined_at")
+REPLY_KEYS = ("id", "from", "body", "created_at", "redacted", "canned")
 CURSOR_RE = re.compile(r"([0-9]{1,16})\.(m-[0-9]+-[a-z0-9]+)")
 
 
@@ -1490,6 +1495,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                       "owner": is_owner(cfg, ident) and match_id(ident, fleet.id_list(cfg, "approvers")) is not None,
                       "account": self.account_for(ident, cfg), "page_version": page_version()})
         state["sessions"] = cards_for(state.get("sessions"), match_id(ident, fleet.id_list(cfg, "approvers")) is not None)
+        # online / dnd / away and whether askers are declined now (computed per viewer: the
+        # compute-low check is two small file reads and depends on the clock); the dnd record for
+        # owners only, never a usage number
+        state["availability"] = availability.view(self.server.home, cfg, owner=is_owner(cfg, ident))
         if not is_owner(cfg, ident):
             state["operator"] = owner_only_operator(state.get("operator"))
         return self.viewer_for(state, ident, via, cfg)
@@ -1634,6 +1643,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if path == "/api/away":
                 body = self.read_body()
                 return self.set_away(body, ident, via)
+            if path == "/api/dnd":
+                body = self.read_body()
+                return self.set_dnd(body, ident, via)
             if path == "/api/notify-prefs":
                 body = self.read_body()
                 return self.notify_prefs(body, ident, via)
@@ -1950,13 +1962,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     raise Refused(429, "rate_limited", "at most %d messages in %d minutes; try again in %d s"
                                   % (messages.ASKER_MAX, messages.ASKER_WINDOW_MS // 60000, wait),
                                   headers={"Retry-After": str(wait)})
-            rec = messages.create(self.server.home, to, text, ident, background_alert=True, asker=asker)
+            # the owner's do-not-disturb, or compute is short: an asker's message is declined with a
+            # canned reply (lib/availability.py), never relayed; still rate limited above
+            decline = None
+            if asker is not None:
+                reason = availability.decline_reason(self.server.home, cfg)
+                if reason:
+                    decline = (reason, availability.reply_text(cfg, reason))
+            rec = messages.create(self.server.home, to, text, ident, background_alert=True, asker=asker,
+                                  decline=decline)
             self.audit(ident, via, "message", id=rec["id"], to=to, result=rec["status"],
-                       **({"asker": True} if asker is not None else {}))
+                       **dict({"asker": True} if asker is not None else {},
+                              **({"reason": rec["declined_reason"]} if rec["status"] == "declined" else {})))
         self.hub_kick()
         out = {"id": rec["id"], "status": rec["status"]}
         if rec["status"] == "held":
             out["reason"] = rec["held_reason"]
+        elif rec["status"] == "declined":
+            out.update({"reason": rec["declined_reason"], "reply": decline[1]})
         return self.send_json(201, out)
 
     def release(self, mid, body, ident, via):
@@ -1982,13 +2005,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.audit(ident, via, "message-release", id=mid, result="refused", reason="self-release")
                 raise Refused(403, "self_release", "another owner must release a message you sent")
             try:
-                messages.release(self.server.home, mid, by)
+                rel = messages.release(self.server.home, mid, by)
             except messages.MessageError as exc:
                 self.audit(ident, via, "message-release", id=mid, result=exc.code)
                 raise Refused(404 if exc.code == "not_found" else 409, exc.code, exc.detail) from exc
-            self.audit(ident, via, "message-release", id=mid, result="released")
+            # an asker's message while their requests are declined: released into "declined" (the
+            # canned reply, never relayed), checked now, not when it was sent
+            declined = rel.get("status") == "declined"
+            self.audit(ident, via, "message-release", id=mid, result="declined" if declined else "released",
+                       **({"reason": rel.get("declined_reason")} if declined else {}))
         self.hub_kick()
-        return self.send_json(200, {"id": mid, "status": "new"})
+        out = {"id": mid, "status": rel.get("status")}
+        if declined:
+            out["reason"] = rel.get("declined_reason")
+        return self.send_json(200, out)
 
 
     def resolve(self, did, body, ident, via):
@@ -2082,6 +2112,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.hub_kick()
         return self.send_json(200, {"away": now_away, "status": result})
 
+
+    def set_dnd(self, body, ident, via):
+        """Do not disturb from the board's profile menu: owners only (an owner who is an approver).
+        {"state": "on"|"off"}. The owner stays present (not away): askers are declined with a canned
+        reply while it is on (lib/availability.py). Audited."""
+        state = body.get("state")
+        if state not in ("on", "off"):
+            raise Refused(400, "bad_state", "state must be \"on\" or \"off\"")
+        cfg = fleet.load_fleet()
+        by = match_id(ident, fleet.id_list(cfg, "approvers"))
+        if by is None or not is_owner(cfg, ident):
+            self.audit(ident, via, "dnd", state=state, result="refused", reason="not an owner")
+            raise Refused(403, "not_owner", "only the board's owner changes do not disturb")
+        with self.server.write_lock:
+            changed, _rec = availability.set_dnd(self.server.home, state == "on", "board:%s" % by)
+            self.audit(ident, via, "dnd", state=state, result=state if changed else "unchanged")
+        self.hub_kick()
+        return self.send_json(200, {"dnd": state == "on", "status": state if changed else "unchanged",
+                                    "availability": availability.view(self.server.home, cfg, owner=True)})
 
     def lesson(self, lid, body, ident, via):
         """Add (lid None) or change a lesson. Approvers only; the body goes to `board lesson` by a

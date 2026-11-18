@@ -670,6 +670,7 @@ for non-owners too, and so is every `/api/v1/events` frame.
 | send a message (`/api/messages`) | yes | yes | yes | yes (10 per 10 min) | no |
 | release a held message (`/api/messages/<id>/release`) | if approver | no | no | no | no |
 | owner-away (`/api/away`) | if approver | no | no | no | no |
+| do not disturb (`/api/dnd`) | if approver | no | no | no | no |
 | notification settings (`/api/notify-prefs`), alert ack (`/api/alerts/ack`) | if approver | no | no | no | no |
 | presence heartbeat (`/api/presence`) | counted (if approver) | 204, ignored | 204, ignored | 204, ignored | 204, ignored |
 | Remote Control (`/api/rc`), session actions (`/api/sessions/<code>/action`), resume after a usage limit (`/api/resume`) | if approver | no | no | no | no |
@@ -726,7 +727,8 @@ Extra files under `$BOARD_HOME`:
 ```
 $BOARD_HOME/
   messages/<id>.json                 # {id, to: CODE|"triage"|"all", body, by, created_at,
-                                     #  status: new|held|relayed|replied, held_reason?, held_at?,
+                                     #  status: new|held|declined|relayed|replied, held_reason?, held_at?,
+                                     #  declined_reason?: owner_dnd|compute_low, declined_at?,
                                      #  released_by?, released_at?, relayed_to[]?, relayed_at?,
                                      #  routed_to[]?, routed_at? (triage: `board message route`),
                                      #  kind?: "api", via?: "apikey:<name>", api?: {key_id, name, owner}}
@@ -753,14 +755,15 @@ $BOARD_HOME/
 | `GET /api/events` | `text/event-stream`: `event: state` with the full state at once and after every change (1 s mtime poll; only when the state differs), `: keepalive` every 25 s |
 | `POST /api/decisions/<id>/answer` `{answer}` | `<id>` must match `^d-[0-9]+-[a-z0-9]+$`. With empty `approvers` → 403 `no_approvers` (fails closed). The identity is then checked **before anything is written**, with the rule of `board answer` (`approvers`; for a production decision, gate or stage, `release_managers`, falling back to `approvers`): not allowed → 403 `not_approver`, audited, file untouched (so it can never cancel an approver's answer that waits for the relay). `board answer` exit 8 (the gate's task was busy) → 409 `task_busy`: try again. Otherwise `board answer <id> --answer-file <tmp> --by <identity>` (argv, no shell; the answer goes by a 0600 file under `$BOARD_HOME` that is removed afterwards, so `-`, `--help` or `--answer-file` typed as an answer are recorded literally) → 200 `{status: "answered"}`. For `kind: "permission"` (`answer` = `allow`\|`deny`; `allow` with `summary_truncated` → 409 `review_in_session`), it then runs `board press <from> <answer> --expect <tool_use_id>` → 200 `{status: "relayed"}`; exit 3 → 409 `stale`; exit 4 → 403 `press_refused`; exit 7 → 409 `screen_not_ready` (the decision is pending again; the body adds `scrolled`, `attempts`, `question` and `elsewhere`). A pane question (`source: "pane"`) that is not `pressable` → 409 `answer_in_session`, untouched. A pressable form of several questions takes `{options: [i, j, ...]}` instead of `answer` (2–4 numbers, one per question, 1–8, no `answer`/`option`); a wrong count, a number out of its question's range, a boolean, free text, or `options` on any other decision → 400 `bad_options`, untouched. It runs `board answer <id> --options i,j --by <identity>`, then `board press` like below. With free text for some questions it takes `{answers: [{question_index, option} \| {question_index, text}, ...]}` instead (one entry per question, in order, exactly one of `option` 1–8 or `text` per entry, no `options`/`answer`/`option`); text is cleaned as by `board answer --form-file` and must then be 1–200 characters, not ending in `\;` and not the "Type something" row itself (else 400 `bad_answers`; `question_index`, when given, an integer equal to the entry's position), and each text is screened by the secret guard before anything is written: a request for a secret or a secret-shaped value → 400 `held_answer`, audited; it goes to `board answer <id> --form-file <0600 tmp file> --by <identity>` (removed afterwards), then `board press`; an optional `option` (1–10, a pane question's clicked button) goes to `board answer --option` (mismatch → 400 `bad_option`, untouched; `option` on any other decision → 400); otherwise, when `board answer` set `relay: "press"`, it runs `board press <from> answer --expect <tool_use_id>` with the same results (plus exit 5 → 409 `partial`), and with `relay: "operator"` it returns 200 `{status: "answered"}` for the operator to relay. A decision already `relayed`/`stale`/`timeout` → 409 `gone`. |
 | `GET /api/messages?before=&limit=&to=&q=` | the message history (the page's History view). `X-Board: 1` and no cross-site `Sec-Fetch-Site` (else 403 `csrf`, before identity); any identity that may read the board. Threads by latest activity (the latest of created_at, released_at and the replies), then id, newest first; `before` is the cursor `<last_activity_at>.<id>` of the last thread already shown (strictly older ones follow), `limit` 1..50 (default 20), `to` a session code (threads sent, relayed or routed to it, or that it replied to: the page's session filter means the same), `triage` or `all`, `q` text (at most 200 chars, case-insensitive) in the to / by / body / ticket and the replies. Each thread goes through the same viewer filter as `/api/state` before it is searched, so a search never matches text the viewer would not see. → 200 `{messages, replies, next}`; `next` is the cursor for the following page, `null` at the end. A bad parameter → 400 `bad_request`. Read-only; nothing is deleted on disk |
-| `POST /api/messages` `{to, body}` | `to`: a session code, `"triage"` (the operator routes it, see "Message routing") or `"all"`. Only for `approvers` ∪ `release_managers` ∪ `askers` (else 403 `not_approver`); an asker who is not an approver or release manager may not send to `"all"` (403 `asker_no_all`, audited, nothing written); `all` / `triage` in another case → 400 `bad_to`, a code that is not a session on the board → 400 `unknown_session`; writes `messages/<id>.json` (`^m-[0-9]+-[a-z0-9]+$`) with `by: <identity>`, the body scrubbed, and `status: "new"`, or `"held"` when the secret guard flags it → 201 `{id, status, reason?}` (see "Secret guardrails") |
-| `POST /api/messages/<id>/release` `{confirm: "release"}` | releases a `held` message. Approvers only (empty `approvers` → 403 `no_approvers`; else 403 `not_approver`, audited). Without the confirm body → 400 `confirm_required`; unknown id → 404; not held → 409 `not_held`. A channel other than the two verified listeners (a future API key) → 403 `release_refused`; with more than one approver, the message's own sender → 403 `self_release` (except `local`: on the loopback listener the identity is always `local`, the owner at this machine). Sets `status: "new"`, `released_by`, `released_at` → 200 `{id, status: "new"}`, audited (`message-release`) |
+| `POST /api/messages` `{to, body}` | `to`: a session code, `"triage"` (the operator routes it, see "Message routing") or `"all"`. Only for `approvers` ∪ `release_managers` ∪ `askers` (else 403 `not_approver`); an asker who is not an approver or release manager may not send to `"all"` (403 `asker_no_all`, audited, nothing written); `all` / `triage` in another case → 400 `bad_to`, a code that is not a session on the board → 400 `unknown_session`; writes `messages/<id>.json` (`^m-[0-9]+-[a-z0-9]+$`) with `by: <identity>`, the body scrubbed, and `status: "new"`, or `"held"` when the secret guard flags it → 201 `{id, status, reason?}` (see "Secret guardrails"). From an asker while the owner is on do-not-disturb or compute is short: `status: "declined"`, the canned reply added from BOARD, never relayed → 201 `{id, status: "declined", reason: "owner_dnd"\|"compute_low", reply}` (after the rate limit, which still applies; the secret guard's hold comes first) (see "Owner availability") |
+| `POST /api/messages/<id>/release` `{confirm: "release"}` | releases a `held` message. Approvers only (empty `approvers` → 403 `no_approvers`; else 403 `not_approver`, audited). Without the confirm body → 400 `confirm_required`; unknown id → 404; not held → 409 `not_held`. A channel other than the two verified listeners (a future API key) → 403 `release_refused`; with more than one approver, the message's own sender → 403 `self_release` (except `local`: on the loopback listener the identity is always `local`, the owner at this machine). Sets `status: "new"`, `released_by`, `released_at` → 200 `{id, status: "new"}`, audited (`message-release`). An asker's message (see "Owner availability") released while askers are declined (checked at release time, not when it was sent) becomes `status: "declined"` instead, with the canned reply, never relayed → 200 `{id, status: "declined", reason}`, audited (`result: "declined"`) |
 | `POST /api/notify-prefs` `{op, ...}` | Notification controls. `op` is `mute` `{channel, for?\|until?, include_urgent?}`, `unmute` `{channel}`, `level` `{channel, level}` or `presence` `{reduce, level?}`. `channel` is `slack`, `desktop`, `email`, `line`, `sns`, `webhook` or `all`; `for` matches `^[1-9][0-9]{0,4}[mhd]$` (at most 30 days); `until` is `HH:MM` or an ISO time in the next 30 days (a string of at most 64 characters); `include_urgent` and `reduce` are booleans; `level` is `info\|warn\|high\|urgent\|default` (`presence`: `warn\|high\|urgent`). Anything else → 400 `bad_op` / `bad_channel` / `bad_duration` / `bad_level` / `bad_body`, nothing run. Empty `approvers` → 403 `no_approvers`; identity not in `approvers` → 403 `not_approver`, audited. Otherwise `board mute\|unmute\|notify-level\|notify-presence … --by board:<identity>` (argv, no shell) → 200 `{status: "ok", notify}` (the new `notify` state). Failure → 500 `prefs_failed`. |
 | `POST /api/presence` `{visible, idle_ms?}` | The page's presence heartbeat. `visible` boolean; `idle_ms` integer ms since the viewer last clicked, tapped, scrolled or typed, at most 86400000 (a day), or null (else 400 `bad_body`). The server records `interaction_at = <server now> − max(0, idle_ms)`, so a page clock that runs fast changes nothing. Any time the page sends (`interaction_at` in the body) is ignored: without `idle_ms` the last interaction is unknown, so the viewer does not count as watching. Same approver rule as `/api/notify-prefs`. Recorded in `presence.json` under the listener's verified identity, never one from the body → 200 `{status: "ok", visible}`. Audited only when the identity's `visible` changes. |
 | `POST /api/alerts/ack` `{scope: "all"}` | The Deck panel's "acknowledge all". `scope` other than `"all"` → 400 `bad_scope`. Same approver rule as `/api/notify-prefs` (empty `approvers` → 403 `no_approvers`; not an approver → 403 `not_approver`, audited, nothing acked). Otherwise `board ack --by board:<identity> '*'` (argv, no shell): every unacked key in `alerts.json` gets `acked_at` and `acked_by: board:<identity>`, the same as `board ack '*'` in a terminal → 200 `{status: "ok", acked: <n>}` (`0` when nothing was open). Escalation stops; nothing leaves the board, and a condition that opens again alerts again. Failure → 500 `ack_failed`. |
 | `POST /api/sessions/<code>/action` `{action}` | A session action. `action` other than `compact`, `rc_on`, `rc_off` → 400 `bad_action`; `<code>` not a session in the snapshot or `fleet.yaml` → 404 `not_found`; nothing run. Empty `approvers` → 403 `no_approvers`; identity not in `approvers` → 403 `not_approver`, audited (`session-action`), nothing written. Otherwise `board session <code> compact --by board:<identity> --queue-only`, or `board rc on\|off <code> --by board:<identity> --no-apply` (argv, no shell) → 200 `{status: "ok", action, code, rc}`; then `board session apply <code> --only compact\|rc` starts in the background, and the page follows the result through the snapshot. Failure → 500 `action_failed`. |
 | `POST /api/resume` `{code}` \| `{codes: [...]}` | Resume sessions stuck on a usage limit (see "Resume after a usage limit"), **exactly the codes named**: the page sends the codes it showed the owner (one card, or the banner's list). Who is asking is checked first: empty `approvers` → 403 `no_approvers`; not an approver → 403 `not_approver`; an approver who is not an owner → 403 `not_owner`; each audited (`type: "serve"`, `action: "resume"`, `result: "refused"`), nothing run. Then the input: exactly one of `code` (a string) and `codes` (a list of 1–64 distinct strings), each a session in the snapshot or `fleet.yaml` (`"all"` and anything else → 400 `bad_code`; nothing run). Otherwise `board resume CODE... --by board:<identity>` starts in the background (argv, no shell) → 200 `{status: "started", codes}`, audited `result: "ok"` with `codes`; each session's attempt lands in `events.jsonl` (`type: "resume"`) and the page follows the snapshot (`limit` disappears once the session works again). It cannot start → 500 `resume_failed`. |
 | `POST /api/rc` `{code, state}` | Remote Control. `state` other than `on`/`off` → 400 `bad_state`; `code` not `"all"` and not `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`, or not a session in the snapshot or `fleet.yaml` → 400 `bad_code`; nothing run. Empty `approvers` → 403 `no_approvers`; identity not in `approvers` → 403 `not_approver`, audited, nothing written. Otherwise `board rc on\|off <code> --by board:<identity> --no-apply` (argv, no shell) → 200 `{status: "ok", rc}` (the new `rc` state), then `board rc apply <code>` (`--pending` for `all`) starts in the background: the page follows the result through the snapshot. Failure → 500 `rc_failed`. |
+| `POST /api/dnd` `{state: "on"\|"off"}` | do not disturb (see "Owner availability"). `state` other than `on`/`off` → 400 `bad_state`; an identity that is not an owner who is an approver → 403 `not_owner`, audited, nothing written. Otherwise writes or removes `$BOARD_HOME/owner-dnd` (`by: board:<identity>`) → 200 `{dnd: true\|false, status: "on"\|"off"\|"unchanged", availability}`. Audited (`dnd`); owner-away is not touched. |
 | `POST /api/away` `{state: "on"\|"off", said?}` | `state` other than `on`/`off` → 400 `bad_state`; `said` not a string or over 500 chars → 400 `bad_said`. Empty `approvers` → 403 `no_approvers`; identity not in `approvers` → 403 `not_approver`, audited, nothing written. Otherwise `board away on\|off --by board:<identity> [--said <said>]` (argv, no shell; `on` without `said` records "away (set on the board)") → 200 `{away: true\|false, status: "on"\|"off"\|"unchanged"}`. `on` while already away keeps the existing record (`unchanged`). Failure → 500 `away_failed`. |
 
 Every request: `Host` from the listener's allowlist, else 421. Per listener, at most 64
@@ -778,7 +781,7 @@ Request framing, for every method: `Transfer-Encoding` is not accepted, nor seve
 on a method that takes none (GET, HEAD, PUT, OPTIONS, ...) is dropped the same way and the
 connection closes after the one reply, so it is never read as another request. `OPTIONS` and every other method → 405, and no
 `Access-Control-*` header is ever sent. Every write appends `{type: "serve", action:
-"answer"|"press"|"message"|"message-release"|"away"|"notify-prefs"|"presence"|"alerts-ack"|"rc"|"session-action", by, via: "loopback"|"cf-jwt", id, result}` to
+"answer"|"press"|"message"|"message-release"|"away"|"dnd"|"notify-prefs"|"presence"|"alerts-ack"|"rc"|"session-action", by, via: "loopback"|"cf-jwt", id, result}` to
 `events.jsonl` (`presence` only when visibility changes).
 
 State (`/api/state` and every SSE frame):
@@ -795,14 +798,18 @@ State (`/api/state` and every SSE frame):
   "messages":  [ the 20 threads with the latest activity, then every older held one; each with
                  last_activity_at and only these fields: id, to, body, by, created_at, status,
                  relayed_to, relayed_at, held_reason, held_at, released_by, released_at, kind,
-                 asker, event, ticket, task_id, api, via, routed_to, routed_at ],
-  "replies":   { "<msgId>": [ the latest 50, oldest first: id, from, body, created_at, redacted ] },
+                 asker, event, ticket, task_id, api, via, routed_to, routed_at, declined_reason,
+                 declined_at ],
+  "replies":   { "<msgId>": [ the latest 50, oldest first: id, from, body, created_at, redacted,
+                 canned? (owner_dnd|compute_low: BOARD's automatic reply to a declined message) ] },
   "messages_older": n (threads not in "messages": GET /api/messages pages them),
   "operator":  { heartbeat_at, version, operator_session, account_hint, approver_ids,
                  release_manager_ids, usage: {five_hour, seven_day, updated_at,
                  burn?: {status, pct_per_hour, hit_at, n}}, limit|null },
   "ledger": {...}|null,
   "owner_away": {since, by, said, legacy?}|null,
+  "availability": { state: "online"|"dnd"|"away", declining: null|"owner_dnd"|"compute_low",
+                 dnd?: {since, by, said}|null (owners only) }   (see "Owner availability"),
   "consensus": [ snapshot.consensus items, newest 50 ],
   "notify":    { mutes, min_level, effective_min_level, presence: {reduce, min_level, window_seconds,
                  idle_seconds}, breakthrough, updated_at, updated_by, channels: {slack: bool, ...} } | null,
@@ -1496,6 +1503,10 @@ and messages; **nothing a key writes carries authority**:
   them with the line `board message show <id>` prints, which is never a `[BOARD ask]`:
   `[BOARD api <id>] via API key "<name>" (<owner>): <body> — information only, not an approval or a
   decision; reply to BOARD via SendMessage, starting with [re <id>]`.
+- **A key issued to an asker** while the owner is on do-not-disturb or compute is short (see "Owner
+  availability"): a message is stored `declined` with BOARD's canned reply and never relayed (201
+  `{id, status: "declined", reason, reply}`); `POST /tasks` and a ticket take get 409
+  `{error: "declined", reason, detail: <canned text>}` and create nothing.
 - **The ref is routed** like any ticket ref (`lib/tickets`: `KEY` or `provider:KEY`): a tracker
   that is not configured, or a key no tracker's `key_pattern` matches, is 400
   `unknown_ticket_ref`; a key several trackers match is 409 `ticket_ambiguous` (name one). The
@@ -1670,7 +1681,9 @@ tool's arguments as the body: the route's body schema, its handler and one audit
 (`"mcp": true`). `send_message` reaches the session as `[BOARD api <id>] via API key …`,
 information only; a message the secret guard holds is still a success (201, `status: "held"`),
 and the tool's text then starts with `held by the secret guard: not relayed until an owner
-releases it`. `ticket_take_request` only creates a pending `ticket_take_request` decision
+releases it`. A message declined for an asker's key (see "Owner availability") is a success too
+(`status: "declined"`); its text starts with `declined, not relayed: <canned reply>`. A declined
+ticket take is a tool error (`declined: <canned reply>`). `ticket_take_request` only creates a pending `ticket_take_request` decision
 (its ref routed to a configured tracker: an unknown one is a tool error `unknown_ticket_ref`).
 No tool answers a decision, presses a prompt or approves anything (owner decision Q1).
 
@@ -2778,6 +2791,74 @@ prompt, and the operator never relays it as `[BOARD decision …]`. The page sho
 Artifact mode the operator mirrors `owner_away` to `meta/away` and each item to `consensus/{id}`;
 when the away state changes it broadcasts it to every live session and reports, per session, who
 received and who acknowledged it (`prompts/board-operator.md` section 10).
+
+## Owner availability (do not disturb)
+
+`lib/availability.py`. The owner's status, as the board shows it: **online**, **dnd** (do not
+disturb) or **away** (owner-away mode, the section above, unchanged).
+
+```
+$BOARD_HOME/owner-dnd             # {"since": <ms>, "by": "<session or board:<identity>>", "said"?: "..."}, 0600
+```
+
+- **Do not disturb = the file `$BOARD_HOME/owner-dnd` exists.** The owner is present: it is not
+  away, there is no consensus mode and nothing is broadcast to sessions. `board dnd on|off --by WHO
+  [--said TEXT]` (`--said` screened by the secret guard: exit 6; one line, scrubbed, at most 300
+  characters), `board dnd status [--quiet|--json]` (exit 0 = on, 1 = off, 2 = usage), or the page's
+  profile menu (`POST /api/dnd`, owners only). Audited: `{type: "dnd", action: "on"|"off", by}`.
+  `state` is `away` when owner-away exists (it wins the display), else `dnd`, else `online`. The CLI
+  keeps the two files independent; the page's menu makes the three states exclusive (picking one
+  turns the other mode off, each through its own audited route).
+- **Compute is short** (`compute_low`, automatic): an active usage-limit episode (`limit.json`
+  without `cleared_at`, and `resets_at` unknown or not passed by more than 10 minutes), or
+  `usage.json` updated within the last 15 minutes with `five_hour.pct ≥ five_hour_pct` (default
+  90) or `seven_day.pct ≥ seven_day_pct` (default 95) and that window not reset yet. Two small file
+  reads per check.
+- **Who is declined:** an asker who is not an approver or release manager (the page's asker,
+  `board message send --by <asker>`, an API key whose owner is one). Owners, approvers, release
+  managers, other key owners and sessions are never declined; a session's `board ask` is never
+  touched. `declining` is `owner_dnd` while do-not-disturb is on, else `compute_low` when compute is
+  short, else `null`.
+- **A declined message** is written like any message, then: `status: "declined"`,
+  `declined_reason`, `declined_at`; a reply `{id, from: "BOARD", body: <canned text>, created_at,
+  canned: <reason>}`; `{type: "message", action: "declined", id, to, by, reason[, key_id]}` in
+  `events.jsonl` (plus the route's own audit row: `result: "declined"`, `reason`). It is never
+  relayed: `board-serve --watch` lists only `new` messages, `board message show` prints
+  `<id> declined (<reason>): …never relay it`, `board message route` refuses it, and a later session
+  reply does not change its status. The secret guard comes first: a message it holds is `held`;
+  when an owner releases it, the decline is checked again at that moment, and an asker's message
+  released while askers are declined becomes `declined` (canned reply, audited, never relayed)
+  instead of `new`. The asker rate limit (10 per 10 minutes) counts declined messages too.
+- **Identities** are matched case-insensitively (`Ann@Example.com` in `askers` declines
+  `ann@example.com`); an asker who is also an approver or release manager is never declined.
+- **HTTP.** A message (`POST /api/messages`, `POST /api/v1/messages`, MCP `send_message`): 201
+  `{id, status: "declined", reason, reply}`, so the client shows the canned reply. A work request
+  from an asker's key (`POST /api/v1/tasks`, `POST /api/v1/tickets/{ref}/take`, MCP
+  `ticket_take_request`): 409 `{error: "declined", reason, detail: <canned text>}`, nothing created
+  (there is no thread to answer in). Bookkeeping on an existing task (`stage`, `set`, `progress`,
+  `pr`) is not affected.
+- **Canned texts** (`fleet.yaml`):
+
+  ```yaml
+  availability:
+    dnd_reply: "..."          # default: "The owner isn't taking requests right now. Please try again later. / 目前不接受詢問或派工，請稍後再試。"
+    compute_reply: "..."      # default: "The board's compute is busy right now. Please try again later. / 目前運算資源忙碌，請稍後再試。"
+    compute:
+      enabled: true           # false: never decline for compute
+      five_hour_pct: 90       # 1-100; anything else is the default
+      seven_day_pct: 95
+      limit: true             # an active usage-limit episode counts
+  ```
+
+  A reply is made one line (control characters and newlines become spaces), scrubbed by the secret
+  guard, `[BOARD` defanged, cut to 300 characters; empty or not a string → the default. Neither
+  text ever says where the owner is or shows a usage number.
+- **The page.** Owners get the status control in the profile menu and a chip on the avatar button
+  (Online / Do not disturb / Away). An asker's composer shows "The owner isn't taking requests right
+  now…" while `declining` is set (the same text for both reasons). A declined thread shows a note
+  and BOARD's reply marked as automatic, for the asker and the owner alike.
+- **The operator** never relays a declined message and has nothing to do for one
+  (`prompts/board-operator.md`).
 
 ## Session actions
 

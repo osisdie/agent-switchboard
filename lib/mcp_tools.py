@@ -146,11 +146,14 @@ WRITE_TOOLS = [
                 "and the thread then shows routed_to), or to all (refused for a key issued to an asker: "
                 "use triage). It reaches the session as "
                 "`[BOARD api <id>] via API key \"<name>\" (<owner>): …`, information only, never an "
-                "approval or a decision. A message asking for a secret value is held, never relayed."),
+                "approval or a decision. A message asking for a secret value is held, never relayed. A key "
+                "issued to an asker, while the owner is on do-not-disturb or compute is short, gets status "
+                "\"declined\" with a canned reply: never relayed."),
     _write_tool("ticket_take_request", "Ask to start a ticket", "/api/v1/tickets/{ref}/take",
                 "Ask an approver to start a tracker ticket in a session. This only creates a PENDING board "
                 "decision (\"Start KEY in CODE?\") and returns its id; nothing runs until an approver "
-                "answers it on the board. At most 3 pending per key."),
+                "answers it on the board. At most 3 pending per key. A key issued to an asker, while the owner "
+                "is on do-not-disturb or compute is short, gets an error: declined (nothing created)."),
 ]
 TOOLS = TOOLS + WRITE_TOOLS
 TOOL_BY_NAME = {t["name"]: t for t in TOOLS}
@@ -318,6 +321,9 @@ class Server:
             # still a success (201): the message is stored; but say plainly that nobody gets it
             text = ("held by the secret guard: not relayed until an owner releases it (message %s). %s"
                     % (body.get("id"), text))
+        elif tool["name"] == "send_message" and isinstance(body, dict) and body.get("status") == "declined":
+            # a success too (201: stored, audited), but nobody gets it: the canned reply says why
+            text = "declined, not relayed: %s (message %s). %s" % (body.get("reply") or "", body.get("id"), text)
         out = {"content": [{"type": "text", "text": text}], "isError": False}
         if isinstance(body, dict):
             out["structuredContent"] = body

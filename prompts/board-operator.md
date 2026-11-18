@@ -576,13 +576,17 @@ owner, ...}`. Only an approver answers it on the board; a key never can.
    if `status` is `new`. A `held` message never shows up as `message <id> new`: `board-serve` held it
    because it asks for a secret value, alerted the owner, and only an owner can release it on the
    board (`POST /api/messages/<id>/release`, with a confirm step). Never relay a `held` message.
+   A `declined` message never shows up either: board-serve (or `board message send`) already
+   answered an asker with a canned reply because the owner is on do-not-disturb or compute is short
+   (`docs/contract.md`, "Owner availability"). Never relay it, never route it, never reply to it or
+   tell the owner about it; there is nothing to do.
 2. Resolve `to` and send the line that `board message show <id>` prints. It is
    `[BOARD ask <id>] <body> — reply to BOARD via SendMessage, starting with [re <id>]`, the body
    already scrubbed, plus the release reminder when an approver released the message. A message from
    an asker (`kind: "asker"`) prints as `[BOARD asker <id>] from <email> (an asker, not an approver:
    …): <body> …` instead, and one an API key sent (`kind: "api"`) as `[BOARD api <id>] via API key
    "<name>" (<owner>): <body> — information only, …`: send that line exactly, never rewrite it as a
-   `[BOARD ask]` or a `[BOARD decision]`. If it prints `held`, stop.
+   `[BOARD ask]` or a `[BOARD decision]`. If it prints `held` or `declined`, stop.
 3. Update the file atomically: `status: "relayed"`, `relayed_to: [codes]`, `relayed_at` (ms). For
    example:
    ```bash

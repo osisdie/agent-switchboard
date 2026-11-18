@@ -67,9 +67,10 @@ keyless = [0]        # requests without an Authorization header (a count only, n
 
 
 class ApiError(Exception):
-    def __init__(self, status, error, detail="", headers=None):
+    def __init__(self, status, error, detail="", headers=None, extra=None):
         super().__init__(error)
         self.status, self.error, self.detail, self.headers = status, error, detail, headers or {}
+        self.extra = extra or {}     # more fields for the error body (and its audit row): {"reason": ...}
 
 
 def is_v1(raw_path):
@@ -163,13 +164,13 @@ def handle(h, S):
         try:
             return getattr(api, route["handler"])()
         except ApiError as exc:
-            api.audit_write(exc.status, error=exc.error)
+            api.audit_write(exc.status, error=exc.error, **exc.extra)
             raise
     except ApiError as exc:
         if h.command == "POST" and not getattr(h, "body_read", False):
             h.drain_body()
         extra = dict(exc.headers)
-        return h.send_json(exc.status, {"error": exc.error, "detail": exc.detail}, extra)
+        return h.send_json(exc.status, dict({"error": exc.error, "detail": exc.detail}, **exc.extra), extra)
     except Exception as exc:  # noqa: BLE001 - answer with JSON, never drop the connection
         S.log("%s %s failed: %r" % (h.command, urllib.parse.urlsplit(h.path).path, exc))
         return h.send_json(500, {"error": "internal"})
@@ -482,14 +483,14 @@ def _mcp_post(self, path, body):
         try:
             getattr(api, route["handler"])()
         except ApiError as exc:
-            api.audit_write(exc.status, error=exc.error)
+            api.audit_write(exc.status, error=exc.error, **exc.extra)
             raise
         return cap.out or (500, {"error": "internal"})
     except ApiError as exc:
         detail = exc.detail
         if exc.headers.get("Retry-After"):
             detail = "%s (retry after %s s)" % (detail, exc.headers["Retry-After"])
-        return exc.status, {"error": exc.error, "detail": detail}
+        return exc.status, dict({"error": exc.error, "detail": detail}, **exc.extra)
 
 
 _McpBackend.post = _mcp_post
@@ -784,6 +785,19 @@ class Api:
             raise ApiError(404, "not_found", "no such task")
         return tid
 
+    def no_new_work(self):
+        """An asker's key creates no work while the owner is on do-not-disturb or compute is short
+        (lib/availability.py): 409 declined, the canned text as the detail, {reason} in the body and
+        the audit row. Nothing is stored. Keys of approvers, release managers and others are not
+        affected; bookkeeping on an existing task never is."""
+        S = self.S
+        cfg = fleet.load_fleet()
+        if not S.messages.asker_only_now(self.rec.get("owner"), cfg):
+            return
+        reason = S.availability.decline_reason(self.h.server.home, cfg)
+        if reason:
+            raise ApiError(409, "declined", S.availability.reply_text(cfg, reason), extra={"reason": reason})
+
     def needs_person(self, stage):
         if stage not in api_spec.API_STAGES:
             raise ApiError(403, "needs_approver", "a key may not move a task to %s; that needs a person" % stage)
@@ -791,6 +805,7 @@ class Api:
     def task_new(self):
         b = self.body()
         self.known_session(b["owner"])
+        self.no_new_work()
         stage = b.get("stage", "plan")
         self.needs_person(stage)
         out = self.run(["task", "new", "--owner", b["owner"], "--stage", stage],
@@ -855,10 +870,13 @@ class Api:
         out = self.run(["message", "send", "--to", b["to"], "--api-key", self.rec["id"]], [("--file", b["body"])])
         mid, status = (out.strip().splitlines()[-1].split() + ["", ""])[:2]
         res = {"id": mid, "status": status}
-        if status == "held":
+        if status in ("held", "declined"):
             rec = self.S.messages.read(self.h.server.home, mid) or {}
-            res["reason"] = rec.get("held_reason")
-        self.audit_write(201, message_id=mid, to=b["to"], status=status)
+            res["reason"] = rec.get("held_reason" if status == "held" else "declined_reason")
+        if status == "declined":       # an asker's key while the owner is on do-not-disturb or compute is short
+            res["reply"] = self.S.availability.reply_text(fleet.load_fleet(), res["reason"])
+        self.audit_write(201, message_id=mid, to=b["to"], status=status,
+                         **({"reason": res["reason"]} if status == "declined" else {}))
         return self.h.send_json(201, res)
 
     def ticket_take(self):
@@ -871,6 +889,7 @@ class Api:
         S, raw_ref, b = self.S, urllib.parse.unquote(self.params["ref"]), self.body()
         code = b["session"]
         self.known_session(code)
+        self.no_new_work()
         # the ref must name a configured tracker's ticket (T1 routing): unknown -> 400, ambiguous -> 409;
         # stored as provider:KEY, the form `board ticket take` takes
         try:

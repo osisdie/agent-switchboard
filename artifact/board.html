@@ -502,6 +502,9 @@ dialog.notif { width: min(720px, calc(100vw - 24px)); }
 .thread .relay { font-size: 12px; color: var(--muted); }
 /* the secret guard held this message (docs/contract.md, "Secret guardrails") */
 .status.held { background: var(--lamp-soft); color: var(--lamp-ink); }
+.status.declined { background: var(--off-soft); color: var(--muted); }
+.thread .held.declined { background: var(--off-soft); color: var(--muted); }
+.replies li.canned .auto { font-weight: 500; color: var(--muted); }
 .thread .held { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 0; padding: 8px 10px; border-radius: 6px; background: var(--lamp-soft); color: var(--lamp-ink); font-size: 13px; }
 .thread .held .held-confirm { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .thread .held .held-confirm p { margin: 0; flex-basis: 100%; }
@@ -739,6 +742,12 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 .acct-btn:hover, .acct-btn[aria-expanded="true"] { border-color: var(--cord); }
 .avatar { display: grid; place-items: center; flex: none; width: 32px; height: 32px; border-radius: 50%; background: var(--cord); color: var(--cord-ink); font-family: var(--f-mono); font-size: 13px; font-weight: 600; letter-spacing: .02em; }
 .avatar.lg { width: 44px; height: 44px; font-size: 16px; }
+/* the owner's availability (online / do not disturb / away) on the profile button and in its menu */
+.acct-btn { position: relative; }
+.pres-chip { position: absolute; left: 50%; bottom: -9px; transform: translateX(-50%); white-space: nowrap; padding: 0 6px; border-radius: 999px; border: 1px solid var(--panel); font-size: 10px; font-weight: 600; line-height: 15px; background: var(--ok-soft); color: var(--ok); pointer-events: none; }
+.pres-chip.dnd { background: var(--deny); color: #fff; }
+.pres-chip.away { background: var(--lamp-soft); color: var(--lamp-ink); }
+.pres-note.warn { color: var(--deny); }
 .acct-panel { position: absolute; right: 0; top: calc(100% + 8px); width: min(340px, calc(100vw - 32px)); max-height: calc(100vh - 120px); max-height: calc(100dvh - 120px); overflow: auto; display: grid; gap: 16px; padding: 16px; border-radius: 10px; border: 1px solid var(--rule); background: var(--panel); color: var(--ink); box-shadow: 0 10px 30px rgb(0 0 0 / .18); }
 .acct-panel:focus { outline: none; }
 .acct-panel:focus-visible { outline: 2px solid var(--cord); outline-offset: 2px; }
@@ -1121,6 +1130,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     <div class="acct" id="acct">
       <button class="acct-btn" id="acct-btn" type="button" aria-expanded="false" aria-controls="acct-panel" aria-label="Account, theme, language and API keys" data-i18n-attr="aria-label">
         <span class="avatar" id="acct-avatar" aria-hidden="true">?</span>
+        <span class="pres-chip" id="acct-pres" aria-hidden="true" hidden></span>
       </button>
       <div class="acct-panel" id="acct-panel" role="region" aria-labelledby="acct-name" tabindex="-1" hidden>
         <div class="acct-who">
@@ -1131,6 +1141,16 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
           </div>
         </div>
         <ul class="acct-roles" id="acct-roles" aria-label="Your roles on this board" data-i18n-attr="aria-label"></ul>
+        <fieldset class="acct-sec" id="acct-presence" hidden>
+          <legend data-i18n>Your status</legend>
+          <div class="seg">
+            <label><input type="radio" name="sb-presence" value="online"><span data-i18n>Online</span></label>
+            <label><input type="radio" name="sb-presence" value="dnd"><span data-i18n>Do not disturb</span></label>
+            <label><input type="radio" name="sb-presence" value="away"><span data-i18n>Away</span></label>
+          </div>
+          <p class="acct-note pres-note" id="acct-pres-note"></p>
+          <p class="acct-note pres-note warn" id="acct-pres-compute" hidden data-i18n>Compute is short: askers get an automatic "try again later" reply for now.</p>
+        </fieldset>
         <fieldset class="acct-sec" id="acct-theme">
           <legend data-i18n>Theme</legend>
           <div class="seg">
@@ -1389,6 +1409,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
               <button class="btn deny" id="msg-all-yes" type="button" data-i18n>Send to all</button>
             </div>
           </div>
+          <p class="readonly-note" id="msg-paused" role="status" hidden data-i18n>The owner isn't taking requests right now. A message sent now gets an automatic reply and doesn't reach the sessions.</p>
           <p class="readonly-note" id="msg-asker-note" hidden data-i18n>You are an asker: your messages reach the session as information from you, never as a decision. You cannot answer decisions.</p>
           <div class="row">
             <span class="help"><span data-i18n>Type</span> <span class="mono">@</span> <span data-i18n>to pick a session,</span> <span class="mono">@triage</span> <span data-i18n>to let BOARD route it</span><span id="msg-help-all"><span data-i18n>, or</span> <span class="mono">@all</span></span>. <span data-i18n>Ctrl+Enter sends.</span></span>
@@ -1528,6 +1549,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     sessions: [], decisions: [], messages: [], tasks: [], approvals: [],
     operator: null, ledger: null,
     away: null, consensus: [],   // owner-away record ({since, by, said}) | null; consensus items
+    avail: null,                 // board-serve state.availability: {state: online|dnd|away, declining: null|owner_dnd|compute_low[, dnd]} | null
     notify: null,                // notification controls (board-serve state.notify / meta/notify) | null
     rc: null,                    // Remote Control choices (board-serve state.rc: {all, sessions}) | null
     resources: null,             // resources.json board view (local) | meta/resources (Artifact) | null
@@ -3385,7 +3407,9 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       no.addEventListener('click', () => { row.remove(); rel.hidden = false; rel.focus(); });
       yes.addEventListener('click', () => {
         yes.disabled = no.disabled = true;
-        adapter.releaseMessage(m.id).then(() => toast(tr('Released. The operator relays it with a reminder.')),
+        adapter.releaseMessage(m.id).then((r) => toast(tr(r && r.status === 'declined'
+          ? 'Released, then declined: askers are being declined right now, so it got the automatic reply and is not relayed.'
+          : 'Released. The operator relays it with a reminder.')),
           (e) => { handleWriteError(e); yes.disabled = no.disabled = false; });
       });
       box.append(row);
@@ -3393,6 +3417,14 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     });
     box.append(rel);
     return box;
+  }
+  // A message declined with a canned reply (the owner's do not disturb, or compute was short):
+  // stored and shown, never relayed. Everyone who sees the thread sees why (no numbers).
+  function declinedNote(m) {
+    if (str(m.status) !== 'declined') return null;
+    return h('p', { class: 'held declined', role: 'note', text: tr(m.declined_reason === 'compute_low'
+      ? 'Declined automatically, not relayed: compute was busy. The automatic reply is below.'
+      : 'Declined automatically, not relayed: the owner wasn\'t taking requests. The automatic reply is below.') });
   }
   // A long text shows its first lines; "Show more" opens it in place (the choice is kept, so a
   // re-render keeps it open).
@@ -3465,13 +3497,14 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
         timeEl(m.created_at)),
       clampText(id, str(m.body), 'body'),
       guardNote(m),
+      declinedNote(m),
       relayLine].flat().filter(Boolean));
     syncFold();
     if (replies.length) {
       // Only the latest replies; the earlier ones open in place.
       const hide = replies.length > MSG_REPLIES_SHOWN && !S.msgOpen.has(id + '#r') ? replies.length - MSG_REPLIES_SHOWN : 0;
-      const items = replies.map((r, i) => h('li', { hidden: i < hide },
-        h('span', { class: 'from' }, h('span', { text: str(r.from) || '?' }), timeEl(r.created_at)),
+      const items = replies.map((r, i) => h('li', { hidden: i < hide, class: r.canned ? 'canned' : null },
+        h('span', { class: 'from' }, h('span', { text: str(r.from) || '?' }), r.canned ? h('span', { class: 'auto', text: tr('automatic reply') }) : null, timeEl(r.created_at)),
         clampText(id + ':' + str(r.id || i), str(r.body), 'rbody')));
       if (replies.length > MSG_REPLIES_SHOWN) {
         const n = replies.length - MSG_REPLIES_SHOWN;
@@ -4377,6 +4410,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       : 'You can read the threads. Only editors of this board can send messages.');
     const an = $('#msg-asker-note');
     if (an) an.hidden = !(ok && S.askerOnly);
+    // do not disturb, or compute is short: an asker's message gets a canned reply (never the reason's numbers)
+    $('#msg-paused').hidden = !(ok && S.askerOnly && S.avail && S.avail.declining);
   }
   function histMatch(m, to, q) {
     if (to && !sessionsOf(m).includes(to)) return false;   // the same rule as the top picker and board-serve
@@ -4534,6 +4569,60 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     }).catch((e) => handleWriteError(e)).finally(() => { S.busy.delete('away'); renderAll(); });
   }
   $('#away-form').addEventListener('submit', (ev) => { ev.preventDefault(); setAway('on', $('#away-said').value.trim()); });
+
+  /* -------------------------------------------- the owner's status (profile menu) */
+  // Online, do not disturb or away (docs/contract.md "Owner availability"). Do not disturb keeps
+  // the owner present (no consensus mode) but askers' messages and work requests get a canned
+  // reply from BOARD and reach no session. Away is owner-away mode, as before. The menu makes the
+  // three exclusive: picking one turns the other mode off. Owners only (board-serve checks).
+  const PRES_LABEL = { online: 'Online', dnd: 'Do not disturb', away: 'Away' };
+  function presenceState() {
+    if (S.away) return 'away';
+    return S.avail && S.avail.state === 'dnd' ? 'dnd' : 'online';
+  }
+  const dndOn = () => !!(S.avail && (S.avail.state === 'dnd' || S.avail.dnd));
+  const presenceEditor = () => S.demo || (awayEditor() && !!adapter && typeof adapter.setDnd === 'function');
+  function renderPresence() {
+    const own = presenceEditor(), st = presenceState();
+    const chip = $('#acct-pres');
+    chip.hidden = !own;
+    chip.className = 'pres-chip ' + st;
+    chip.textContent = tr(PRES_LABEL[st]);
+    const box = $('#acct-presence');
+    box.hidden = !own;
+    if (!own) return;
+    box.disabled = S.busy.has('presence') || S.busy.has('away');
+    for (const inp of document.querySelectorAll('input[name="sb-presence"]')) inp.checked = inp.value === st;
+    $('#acct-pres-note').textContent = tr(st === 'dnd'
+      ? 'You are here, but askers get a polite automatic reply and their messages and requests reach no session.'
+      : st === 'away' ? 'Sessions decide by explicit consensus; red lines and board asks wait for you.'
+        : 'Sessions and askers reach you as usual.');
+    $('#acct-pres-compute').hidden = !(S.avail && S.avail.declining === 'compute_low' && st !== 'dnd');
+  }
+  function setPresence(want) {
+    const was = presenceState();
+    if (want === was && !(want !== 'dnd' && dndOn())) return;
+    if (S.demo) {
+      S.away = want === 'away' ? { since: Date.now(), by: 'board:you', said: 'away (set on the board)' } : null;
+      S.avail = { state: want === 'dnd' ? 'dnd' : want, declining: want === 'dnd' ? 'owner_dnd' : null };
+      renderAll(); toast(tr('Demo: shown on this page only. Nothing was saved or sent.'));
+      return;
+    }
+    if (!presenceEditor() || S.busy.has('presence')) return;
+    S.busy.add('presence'); renderPresence();
+    // away first (off, or on), then do not disturb: each step is its own audited write
+    const steps = [];
+    if (S.away && want !== 'away') steps.push(() => adapter.setAway('off', ''));
+    if (want === 'away' && !S.away) steps.push(() => adapter.setAway('on', ''));
+    const dnd = (state) => () => adapter.setDnd(state).then((r) => { if (r && r.availability && typeof r.availability === 'object') S.avail = r.availability; });
+    if (want === 'dnd') steps.push(dnd('on'));
+    else if (dndOn()) steps.push(dnd('off'));
+    steps.reduce((p, f) => p.then(f), Promise.resolve()).then(() => {
+      toast(tr(want === 'dnd' ? 'Do not disturb: askers get an automatic reply until you turn it off.'
+        : want === 'away' ? 'Marked away: sessions may decide by explicit consensus. Red lines and board asks wait for you.'
+          : 'You are online: sessions and askers reach you as usual.'));
+    }).catch((e) => handleWriteError(e)).finally(() => { S.busy.delete('presence'); renderAll(); renderProfile(); });
+  }
 
   /* ------------------------------------------------- notification controls */
   // Mutes, per-channel and global min levels and the presence policy (docs/contract.md,
@@ -5689,6 +5778,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     try { await writeP; } catch (e) { handleWriteError(e); return false; }
     let sent = false;
     if (sendP) { try { await sendP; sent = true; } catch (e) { sent = false; } }
+    if (typeof okText === 'function') okText = okText();   // null: the caller says it itself
+    if (okText === null) return true;
     toast(okText + ' · ' + (operatorOffline() ? tr('queued until the operator returns.') : sent ? tr('Sent to operator.') : queuedText()));
     return true;
   }
@@ -5952,14 +6043,17 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       toast(tr('Demo: message shown on this page only. Nothing was saved or sent.'));
       return;
     }
-    let writeP;
+    let writeP, declined = false;
     try { writeP = adapter.sendMessage(ids, p.targets, p.body, now); } catch (e) { writeP = Promise.reject(e); }
+    writeP = Promise.resolve(writeP).then((rs) => { declined = (Array.isArray(rs) ? rs : [rs]).some((r) => r && r.status === 'declined'); return rs; });
     const sendP = operatorOffline() ? null : adapter.fastPath('message', ids[0], ids.length > 1 ? { also: ids.slice(1) } : null);
     ta.value = ''; closeMentions(); renderRecipients();
     const btn = $('#msg-send'); btn.disabled = true; btn.textContent = tr('Sending…');
-    settle(writeP, sendP, ids.length > 1 ? tr('{n} messages saved', { n: ids.length }) : tr('Message saved')).then((ok) => {
+    const okText = ids.length > 1 ? tr('{n} messages saved', { n: ids.length }) : tr('Message saved');
+    settle(writeP, sendP, () => (declined ? null : okText)).then((ok) => {
       btn.disabled = false; btn.textContent = tr('Send');
       if (!ok && !ta.value) { ta.value = raw; renderRecipients(); }
+      if (ok && declined) toast(tr('Saved, not relayed: the owner isn\'t taking requests right now. The automatic reply is in the thread.'));
     });
   }
 
@@ -6299,6 +6393,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       S.operator = st.operator && typeof st.operator === 'object' ? st.operator : null;
       S.ledger = st.ledger && typeof st.ledger === 'object' ? st.ledger : null;
       S.away = st.owner_away && typeof st.owner_away === 'object' ? st.owner_away : null;
+      S.avail = st.availability && typeof st.availability === 'object' ? st.availability : null;
       S.consensus = arr(st.consensus);
       S.notify = st.notify && typeof st.notify === 'object' ? st.notify : null;
       S.rc = st.rc && typeof st.rc === 'object' ? st.rc : null;
@@ -6363,6 +6458,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       resolveDecision(id) { return post('/api/decisions/' + encodeURIComponent(id) + '/resolve', { confirm: 'resolve' }); },
       // Approvers only; board-serve runs `board away on|off --by board:<identity>`.
       setAway(state, said) { return post('/api/away', { state, said }); },
+      // Owners only: do not disturb (lib/availability.py); askers get a canned reply while it is on.
+      setDnd(state) { return post('/api/dnd', { state }); },
       // Approvers only; board-serve runs `board mute|unmute|notify-level|notify-presence --by board:<identity>`.
       setNotify(body) { return post('/api/notify-prefs', body); },
       // Approvers only; board-serve runs `board ack --by board:<identity> '*'` (the Deck's HITL key).
@@ -6565,6 +6662,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     $('#acct-out').hidden = !info.access;
     renderTheme();
     renderLang();
+    renderPresence();
   }
 
   const acctBtn = $('#acct-btn'), acctPanel = $('#acct-panel');
@@ -6595,6 +6693,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     if (e.target.name === 'sb-theme') setTheme(e.target.value);
     else if (e.target.name === 'sb-lang') setLang(e.target.value);
     else if (e.target.name === 'sb-deck') setDeckCollapsed(e.target.value === 'collapsed');
+    else if (e.target.name === 'sb-presence') setPresence(e.target.value);
   });
   function renderLang() {
     for (const inp of document.querySelectorAll('input[name="sb-lang"]')) inp.checked = inp.value === LANG;
@@ -7343,6 +7442,21 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "Going offline?": "要離開了嗎？",
       "Your words for the sessions, e.g. back Monday; agree among yourselves": "給 session 的話，例如：週一回來；你們自己商量",
       "I'm away": "我不在",
+      "Released, then declined: askers are being declined right now, so it got the automatic reply and is not relayed.": "已放行，但隨即婉拒：目前正在婉拒提問者，所以它收到自動回覆，不會轉送。",
+      "Your status": "你的狀態",
+      "Online": "在線",
+      "Do not disturb": "勿擾",
+      "Compute is short: askers get an automatic \"try again later\" reply for now.": "運算資源吃緊：提問者目前會收到「請稍後再試」的自動回覆。",
+      "The owner isn't taking requests right now. A message sent now gets an automatic reply and doesn't reach the sessions.": "目前不接受詢問或派工。現在送出的訊息會收到自動回覆，不會送到任何 session。",
+      "You are here, but askers get a polite automatic reply and their messages and requests reach no session.": "你在線上，但提問者會收到客氣的自動回覆，他們的訊息和請求不會送到任何 session。",
+      "Sessions decide by explicit consensus; red lines and board asks wait for you.": "session 用明確的共識做決定；紅線和看板提問會等你回來。",
+      "Sessions and askers reach you as usual.": "session 和提問者照常可以找你。",
+      "Do not disturb: askers get an automatic reply until you turn it off.": "勿擾：在你關閉之前，提問者都會收到自動回覆。",
+      "You are online: sessions and askers reach you as usual.": "你在線上：session 和提問者照常可以找你。",
+      "automatic reply": "自動回覆",
+      "Declined automatically, not relayed: compute was busy. The automatic reply is below.": "已自動婉拒，沒有轉送：當時運算資源忙碌。自動回覆在下方。",
+      "Declined automatically, not relayed: the owner wasn't taking requests. The automatic reply is below.": "已自動婉拒，沒有轉送：當時不接受詢問或派工。自動回覆在下方。",
+      "Saved, not relayed: the owner isn't taking requests right now. The automatic reply is in the thread.": "已保存但沒有轉送：目前不接受詢問或派工。自動回覆在對話串裡。",
       "Demo: shown on this page only. Nothing was saved or sent.": "示範：只顯示在這個頁面。沒有保存或送出任何東西。",
       "The owner was not marked away.": "主人沒有被標記為不在。",
       "Welcome back: away mode is off, and pending consensus items are back with you.": "歡迎回來：不在模式已關閉，待決的共識項目交還給你。",

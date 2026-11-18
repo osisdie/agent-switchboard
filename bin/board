@@ -69,6 +69,9 @@
 #   board away on --by WHO --said "owner's words"|--said-file PATH [--replace]
 #   board away off --by WHO [--said "..."|--said-file PATH]     owner-away mode ($BOARD_HOME/owner-away)
 #   board away status [--quiet|--json]         exit 0 when the owner is away, 1 when not
+#   board dnd on|off --by WHO [--said TEXT]     do not disturb ($BOARD_HOME/owner-dnd): the owner
+#                                              is present, askers are declined with a canned reply
+#   board dnd status [--quiet|--json]          exit 0 when do-not-disturb is on, 1 when not
 #   board consensus propose --from CODE --to A,B[,..] [--ref REF] "proposal"|--file PATH
 #   board consensus vote ID agree|object --from CODE [--note T|--note-file PATH]
 #   board consensus ls [--all] | show ID [--markdown]
@@ -2760,6 +2763,7 @@ case "$sub" in
   session) cmd_session "$@" ;;
   resume) [ $# -gt 0 ] || { sub_usage resume >&2; exit 2; }; exec python3 "$REPO/lib/resume.py" "$@" ;;
   message) exec python3 "$REPO/lib/messages.py" "$@" ;;
+  dnd) exec python3 "$REPO/lib/availability.py" "$@" ;;
   # create/request/rotate/scopes print a new key once: never through `guarded` (it would redact it).
   apikey)
     case "${1:-}" in

@@ -100,7 +100,9 @@ ROUTES = [
     # ---- writes (POST, JSON body <= 16 KiB, audited with the key's owner and name)
     {"method": "POST", "path": "/api/v1/tasks", "scope": "tasks:write", "handler": "task_new", "tag": "tasks",
      "summary": "Create a task (board task new) in %s (default plan); a later stage needs a person: 403 "
-                "needs_approver." % ", ".join(API_STAGES), "ok": 201,
+                "needs_approver. A key issued to an asker, while the owner is on do-not-disturb or compute is "
+                "short: 409 declined (reason owner_dnd|compute_low, the canned reply as detail), nothing created."
+                % ", ".join(API_STAGES), "ok": 201,
      "body": {"type": "object", "required": ["title", "owner"], "additionalProperties": False,
               "properties": {"title": {"type": "string", "minLength": 1, "maxLength": 200}, "owner": _CODE,
                              "stage": {"enum": list(STAGES)}}},
@@ -138,17 +140,22 @@ ROUTES = [
      "summary": "Post a message to a session, to \"triage\" (the board's operator routes it to the sessions "
                 "whose `about` fits) or to all (not with a key issued to an asker: 403 asker_no_all). Screened "
                 "by the secret guard (a secret request is held, never relayed); relayed as `[BOARD api <id>] "
-                "via API key \"<name>\" (<owner>): …`, information only, never a [BOARD ask] or a decision.",
+                "via API key \"<name>\" (<owner>): …`, information only, never a [BOARD ask] or a decision. "
+                "A key issued to an asker, while the owner is on do-not-disturb or compute is short: 201 with "
+                "status \"declined\", reason owner_dnd|compute_low and the canned reply (never relayed).",
      "body": {"type": "object", "required": ["to", "body"], "additionalProperties": False,
               "properties": {"to": {"anyOf": [_CODE, {"const": "triage"}, {"const": "all"}]},
                              "body": {"type": "string", "minLength": 1, "maxLength": 4000}}},
-     "schema": {"type": "object", "properties": {"id": {"type": "string"}, "status": {"enum": ["new", "held"]}}}},
+     "schema": {"type": "object", "properties": {"id": {"type": "string"},
+                                                 "status": {"enum": ["new", "held", "declined"]},
+                                                 "reason": {"type": "string"}, "reply": {"type": "string"}}}},
     {"method": "POST", "path": "/api/v1/tickets/{ref}/take", "scope": "tickets:take", "handler": "ticket_take",
      "tag": "tickets", "ok": 202,
      "summary": "Ask an approver to start a ticket in a session: creates a PENDING board decision of kind "
                 "ticket_take_request from \"api\" (\"Start KEY in CODE?\", approve/decline), never relayed to the "
                 "session. On approve the operator runs the take; a key can never answer it. At most 3 pending "
-                "per key (429).",
+                "per key (429). A key issued to an asker, while the owner is on do-not-disturb or compute is "
+                "short: 409 declined (reason owner_dnd|compute_low, the canned reply as detail), nothing created.",
      "body": {"type": "object", "required": ["session"], "additionalProperties": False,
               "properties": {"session": _CODE, "note": {"type": "string", "maxLength": 500}}},
      "schema": {"type": "object", "properties": {"decision_id": {"type": "string"},
