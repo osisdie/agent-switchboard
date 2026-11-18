@@ -1,0 +1,405 @@
+#!/usr/bin/env python3
+"""tests/test_reconcile.py — a pane prompt's decision settled from what the session reported
+(lib/reconcile.py, hooks/board-hook.sh, lib/collect.py process_decisions).
+
+Drives the real hook with Claude Code's event shapes and runs the collector's decision pass:
+answered in the pane, a press stopped at Submit then submitted in the pane (delivered), different
+answers (answered in the pane), the PostToolUse arriving after the decision went stale, permission
+allow / deny, never touching relayed / unauthorized / timeout, and the bounded events.jsonl backfill.
+
+  python3 tests/test_reconcile.py [-v]
+"""
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+
+REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+sys.path.insert(0, os.path.join(REPO, "lib"))
+TMP = tempfile.mkdtemp(prefix="switchboard-reconcile-test.")
+for k in list(os.environ):
+    if k.startswith(("SLACK_", "SMTP_", "ALERT_", "LINE_", "AWS_")) or k in ("TMUX", "TMUX_PANE"):
+        os.environ.pop(k, None)
+os.environ.update({"BOARD_HOME": os.path.join(TMP, "home0"), "BOARD_CONFIG_DIR": os.path.join(TMP, "config"),
+                   "ALERT_DESKTOP": "0"})
+os.makedirs(os.environ["BOARD_CONFIG_DIR"])
+
+import collect  # noqa: E402
+import reconcile  # noqa: E402
+
+HOOK = os.path.join(REPO, "hooks", "board-hook.sh")
+SID = "11111111-2222-3333-4444-555555555555"
+FREE = "deploy to the staging cluster first"
+Q1 = [{"question": "Which color do you prefer for the test?", "header": "Color", "multiSelect": False,
+       "options": [{"label": "Red", "description": "warm"}, {"label": "Blue", "description": "cool"},
+                   {"label": "Green", "description": "natural"}]}]
+Q2 = Q1 + [{"question": "Where should it go?", "header": "Target", "multiSelect": False,
+            "options": [{"label": "Production", "description": "live"}, {"label": "Nowhere", "description": "skip"}]}]
+
+
+def now_ms():
+    return int(time.time() * 1000)
+
+
+class Base(unittest.TestCase):
+    def setUp(self):
+        self.home = tempfile.mkdtemp(dir=TMP)
+
+    # ---- hook
+    def hook(self, payload):
+        env = dict(os.environ, BOARD_HOME=self.home, TMUX_PANE="%42")
+        r = subprocess.run(["bash", HOOK], input=json.dumps(dict(payload, session_id=SID)), env=env,
+                           capture_output=True, text=True, timeout=30, check=False)
+        self.assertEqual((r.returncode, r.stdout), (0, ""))
+
+    def ask(self, tu, qs):
+        self.hook({"hook_event_name": "PreToolUse", "tool_name": "AskUserQuestion", "tool_use_id": tu,
+                   "tool_input": {"questions": qs}})
+        self.hook({"hook_event_name": "PermissionRequest", "tool_name": "AskUserQuestion",
+                   "tool_input": {"questions": qs}})
+        return self.dec_for(tu)
+
+    def perm(self, tu, cmd="make deploy"):
+        self.hook({"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": tu,
+                   "tool_input": {"command": cmd}})
+        self.hook({"hook_event_name": "PermissionRequest", "tool_name": "Bash", "tool_input": {"command": cmd}})
+        return self.dec_for(tu)
+
+    def submit(self, tu, qs, answers):
+        """The picker submitted in the pane: Claude Code's PostToolUse for AskUserQuestion."""
+        self.hook({"hook_event_name": "PostToolUse", "tool_name": "AskUserQuestion", "tool_use_id": tu,
+                   "tool_input": {"questions": qs, "answers": answers},
+                   "tool_response": {"questions": qs, "answers": answers, "annotations": {}}})
+
+    def ran(self, tu, ok=True, error=None, tool="Bash"):
+        p = {"hook_event_name": "PostToolUse" if ok else "PostToolUseFailure", "tool_name": tool,
+             "tool_use_id": tu, "tool_input": {"command": "make deploy"}}
+        if not ok:
+            p["error"] = error or "Exit code 1"
+        self.hook(p)
+
+    # ---- files
+    def dec_for(self, tu):
+        for f in os.listdir(os.path.join(self.home, "decisions")):
+            d = self.read(f[:-5])
+            if d.get("tool_use_id") == tu:
+                return d["id"]
+        self.fail("no decision for %s" % tu)
+
+    def read(self, did):
+        with open(os.path.join(self.home, "decisions", did + ".json"), encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def patch(self, did, **kw):
+        d = self.read(did)
+        d.update(kw)
+        with open(os.path.join(self.home, "decisions", did + ".json"), "w", encoding="utf-8") as fh:
+            json.dump(d, fh)
+
+    def state(self):
+        with open(os.path.join(self.home, "state", SID + ".json"), encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def events(self):
+        with open(os.path.join(self.home, "events.jsonl"), encoding="utf-8") as fh:
+            return [json.loads(x) for x in fh if x.strip()]
+
+    def everything(self):
+        out = []
+        for root, _, files in os.walk(self.home):
+            for f in files:
+                with open(os.path.join(root, f), encoding="utf-8", errors="replace") as fh:
+                    out.append(fh.read())
+        return "\n".join(out)
+
+    def collect(self, now=None):
+        st = self.state()
+        sessions = [{"session_id": SID, "code": "CP", "aliases": ["CP"], "pid": 4242,
+                     "state": st.get("state"), "pending": st.get("pending") if st.get("state") == "needs-you" else None}]
+        return collect.process_decisions({}, self.home, sessions, now or now_ms())
+
+
+class HookRecords(Base):
+    def test_picks_and_hashes_never_the_text(self):
+        self.ask("tu_h1", Q2)
+        self.submit("tu_h1", Q2, {Q2[0]["question"]: "Blue", Q2[1]["question"]: FREE})
+        ev = [e for e in self.events() if e.get("event") == "PostToolUse"][-1]
+        self.assertEqual(ev["tool_use_id"], "tu_h1")
+        self.assertEqual(ev["outcome"]["picks"], [2, None])
+        self.assertIsNone(ev["outcome"]["text_sha"][0])
+        self.assertEqual(ev["outcome"]["text_sha"][1], reconcile.text_sha("tu_h1", FREE))
+        self.assertNotIn("staging cluster", self.everything())
+        self.assertIsNone(self.state()["pending"])
+
+    def test_label_match_is_whitespace_and_case_insensitive(self):
+        self.ask("tu_h2", Q1)
+        self.submit("tu_h2", Q1, {Q1[0]["question"]: "  green "})
+        ev = [e for e in self.events() if e.get("event") == "PostToolUse"][-1]
+        self.assertEqual(ev["outcome"]["picks"], [3])
+
+    def test_secret_looking_free_text_gets_no_hash(self):
+        self.ask("tu_h3", Q1)
+        value = "Zx81kq2Lm" + "Pq7Rt5Vw3Yb9Nc4"  # built at run time: no secret-looking literal in the repo
+        self.submit("tu_h3", Q1, {Q1[0]["question"]: "use " + "token=" + value})
+        ev = [e for e in self.events() if e.get("event") == "PostToolUse"][-1]
+        self.assertEqual(ev["outcome"], {"picks": [None], "text_sha": [None]})
+        self.assertNotIn(value, self.everything())
+
+    def test_failure_records_denied_without_the_error_text(self):
+        self.perm("tu_h4")
+        self.ran("tu_h4", ok=False, error="The user doesn't want to proceed with this tool use. "
+                                          "The tool use was rejected (MARKER-xyz).")
+        ev = [e for e in self.events() if e.get("event") == "PostToolUseFailure"][-1]
+        self.assertIs(ev.get("denied"), True)
+        self.assertNotIn("MARKER-xyz", self.everything())
+        self.perm("tu_h5")
+        self.ran("tu_h5", ok=False, error="Exit code 2: permission denied on /srv")
+        ev = [e for e in self.events() if e.get("event") == "PostToolUseFailure"][-1]
+        self.assertNotIn("denied", ev)
+
+    def test_other_tools_carry_no_outcome(self):
+        self.perm("tu_h6")
+        self.ran("tu_h6")
+        ev = [e for e in self.events() if e.get("event") == "PostToolUse"][-1]
+        self.assertNotIn("outcome", ev)
+
+
+class PaneQuestions(Base):
+    def test_no_board_answer_answered_in_pane(self):
+        did = self.ask("tu_p1", Q1)
+        self.collect()
+        self.assertEqual(self.read(did)["status"], "pending")
+        self.submit("tu_p1", Q1, {Q1[0]["question"]: "Red"})
+        self.collect()
+        d = self.read(did)
+        self.assertEqual((d["status"], d["resolved_via"], d["resolved_by"]), ("answered_in_pane", "pane", "CP"))
+        self.assertNotIn("status_reason", d)
+        self.assertNotIn("delivered_via", d)
+        last = [e for e in self.events() if e.get("type") == "decision"][-1]
+        self.assertEqual((last["status"], last["reason"]), ("answered_in_pane", "session_outcome"))
+
+    def test_partial_press_then_submitted_in_pane_is_delivered(self):
+        did = self.ask("tu_p2", Q2)
+        # board press typed both answers, then stopped at Submit: stale, partial
+        self.patch(did, answer="(answers)", answer_options=[2, 0], answer_texts=[None, FREE],
+                   status="stale", status_reason="partial", answered_by="owner")
+        self.collect()
+        self.assertEqual(self.read(did)["status"], "stale")
+        self.submit("tu_p2", Q2, {Q2[0]["question"]: "Blue", Q2[1]["question"]: "  deploy to the   staging cluster first"})
+        self.collect()
+        d = self.read(did)
+        self.assertEqual((d["status"], d["delivered_via"], d["reconciled_from"]), ("relayed", "session", "partial"))
+        self.assertNotIn("status_reason", d)
+        self.assertTrue(d["relayed_at"])
+
+    def test_different_answers_answered_in_pane(self):
+        did = self.ask("tu_p3", Q2)
+        self.patch(did, answer="(answers)", answer_options=[2, 0], answer_texts=[None, FREE],
+                   status="stale", status_reason="partial")
+        self.submit("tu_p3", Q2, {Q2[0]["question"]: "Blue", Q2[1]["question"]: "Nowhere"})
+        self.collect()
+        d = self.read(did)
+        self.assertEqual((d["status"], d["resolved_via"], d["reconciled_from"]), ("answered_in_pane", "pane", "partial"))
+        self.assertEqual(d["answer_options"], [2, 0])  # the board's answer is kept as it was
+
+    def test_late_post_tool_use_after_stale(self):
+        did = self.ask("tu_p4", Q1)
+        self.patch(did, answer="Blue", answer_index=2, relay="press", status="answered")
+        # the session moved on before it reported the picker (no PostToolUse yet)
+        self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "x"})
+        self.collect()
+        d = self.read(did)
+        self.assertEqual((d["status"], d["status_reason"]), ("stale", "moved_on"))
+        self.submit("tu_p4", Q1, {Q1[0]["question"]: "Blue"})
+        self.collect()
+        d = self.read(did)
+        self.assertEqual((d["status"], d.get("delivered_via"), d.get("reconciled_from")), ("relayed", "session", "moved_on"))
+
+    def test_single_free_text_answer_delivered(self):
+        did = self.ask("tu_p5", Q1)
+        self.patch(did, answer="Purple, please", answer_index=None, relay="press", status="stale", status_reason="partial")
+        self.submit("tu_p5", Q1, {Q1[0]["question"]: "Purple,  please"})
+        self.collect()
+        self.assertEqual(self.read(did)["status"], "relayed")
+
+    def test_declined_in_pane(self):
+        did = self.ask("tu_p6", Q1)
+        self.patch(did, answer="Blue", answer_index=2, status="stale", status_reason="screen")
+        self.ran("tu_p6", ok=False, tool="AskUserQuestion", error="User declined to answer questions")
+        self.collect()
+        d = self.read(did)
+        self.assertEqual((d["status"], d["reconciled_from"]), ("answered_in_pane", "screen"))
+
+    def test_an_answer_by_press_in_flight_is_confirmed(self):
+        did = self.ask("tu_p7", Q1)
+        self.patch(did, answer="Blue", answer_index=2, relay="press", status="answered")
+        self.submit("tu_p7", Q1, {Q1[0]["question"]: "Blue"})
+        self.collect()
+        d = self.read(did)
+        self.assertEqual((d["status"], d["delivered_via"]), ("relayed", "session"))
+        self.assertNotIn("reconciled_from", d)  # it was not stale: nothing to say about it
+
+
+    def test_a_settle_that_loses_a_race_is_retried(self):
+        did = self.ask("tu_p8", Q1)
+        self.patch(did, answer="Blue", answer_index=2, relay="press", status="answered")
+        self.submit("tu_p8", Q1, {Q1[0]["question"]: "Blue"})
+        orig = reconcile.settle
+
+        def racing(d, oc):
+            # board press marks it stale (partial) between the collector's read and its write
+            self.patch(did, status="stale", status_reason="partial")
+            return orig(d, oc)
+        reconcile.settle = racing
+        try:
+            self.collect()
+        finally:
+            reconcile.settle = orig
+        self.assertEqual(self.read(did)["status"], "stale")  # the other writer won this run
+        self.collect()
+        d = self.read(did)
+        self.assertEqual((d["status"], d.get("reconciled_from")), ("relayed", "partial"))
+
+
+class Permissions(Base):
+    def test_allow_matches_post_tool_use(self):
+        did = self.perm("tu_a1")
+        self.patch(did, answer="allow", status="stale", status_reason="screen")
+        self.ran("tu_a1")
+        self.collect()
+        d = self.read(did)
+        self.assertEqual((d["status"], d["delivered_via"], d["reconciled_from"]), ("relayed", "session", "screen"))
+
+    def test_deny_matches_a_rejection(self):
+        did = self.perm("tu_a2")
+        self.patch(did, answer="deny", status="stale", status_reason="screen")
+        self.ran("tu_a2", ok=False, error="The user doesn't want to proceed with this tool use.")
+        self.collect()
+        self.assertEqual(self.read(did)["status"], "relayed")
+
+    def test_deny_but_allowed_in_pane(self):
+        did = self.perm("tu_a3")
+        self.patch(did, answer="deny", status="stale", status_reason="screen")
+        self.ran("tu_a3")
+        self.collect()
+        d = self.read(did)
+        self.assertEqual((d["status"], d["resolved_via"]), ("answered_in_pane", "pane"))
+
+    def test_a_failure_that_is_not_a_rejection_never_counts_as_deny(self):
+        did = self.perm("tu_a4")
+        self.patch(did, answer="deny", status="stale", status_reason="screen")
+        self.ran("tu_a4", ok=False, error="Exit code 1")
+        self.collect()
+        self.assertEqual(self.read(did)["status"], "answered_in_pane")
+
+    def test_no_board_answer(self):
+        did = self.perm("tu_a5")
+        self.ran("tu_a5")
+        self.collect()
+        self.assertEqual(self.read(did)["status"], "answered_in_pane")
+
+
+class NeverDowngraded(Base):
+    def test_relayed_unauthorized_timeout_untouched(self):
+        for tu, status in (("tu_n1", "relayed"), ("tu_n2", "unauthorized"), ("tu_n3", "timeout"),
+                           ("tu_n4", "answered_in_pane")):
+            did = self.ask(tu, Q1)
+            self.patch(did, answer="Red", answer_index=1, status=status)
+            self.collect()  # fills in `from`
+            before = self.read(did)
+            self.submit(tu, Q1, {Q1[0]["question"]: "Blue"})
+            self.collect()
+            self.assertEqual(self.read(did), before, status)
+
+
+class Backfill(Base):
+    def write_events(self, lines):
+        with open(os.path.join(self.home, "events.jsonl"), "a", encoding="utf-8") as fh:
+            for ln in lines:
+                fh.write(json.dumps(ln) + "\n")
+
+    def stale_dec(self, did, tu, created, **kw):
+        os.makedirs(os.path.join(self.home, "decisions"), exist_ok=True)
+        d = {"id": did, "kind": "permission", "tool_use_id": tu, "tool_name": "Bash", "session_id": SID,
+             "status": "stale", "status_reason": "moved_on", "answer": None, "created_at": created,
+             "updated_at": created}
+        d.update(kw)
+        with open(os.path.join(self.home, "decisions", did + ".json"), "w", encoding="utf-8") as fh:
+            json.dump(d, fh)
+
+    def test_backfill_recent_events_once(self):
+        n = now_ms()
+        day = 24 * 3600 * 1000
+        os.makedirs(os.path.join(self.home, "state"))
+        with open(os.path.join(self.home, "state", SID + ".json"), "w", encoding="utf-8") as fh:
+            json.dump({"state": "working", "pending": None}, fh)
+        self.stale_dec("d-1-recent", "tu_b1", n - 2 * day, answer="allow")
+        self.stale_dec("d-1-q", "tu_b2", n - 3 * day, kind="question", source="pane")
+        self.stale_dec("d-1-old", "tu_b3", n - 9 * day)
+        # lines from a hook that did not record outcomes yet (no outcome / denied fields)
+        self.write_events([
+            {"ts": n - 9 * day + 5, "type": "hook", "session_id": SID, "event": "PostToolUse", "tool_name": "Bash",
+             "tool_use_id": "tu_b3", "state": "working"},
+            {"ts": n - 2 * day + 5, "type": "hook", "session_id": SID, "event": "PostToolUse", "tool_name": "Bash",
+             "tool_use_id": "tu_b1", "state": "working"},
+            {"ts": n - 3 * day + 5, "type": "hook", "session_id": SID, "event": "PostToolUse",
+             "tool_name": "AskUserQuestion", "tool_use_id": "tu_b2", "state": "working"},
+        ])
+        self.collect(n)
+        self.assertEqual(self.read("d-1-recent")["status"], "relayed")
+        # a picker without a recorded outcome: answered in the pane (its answers are unknown)
+        self.assertEqual(self.read("d-1-q")["status"], "answered_in_pane")
+        self.assertEqual(self.read("d-1-old")["status"], "stale")  # outside the 7-day window
+        with open(os.path.join(self.home, reconcile.CURSOR_FILE), encoding="utf-8") as fh:
+            cur = json.load(fh)
+        self.assertGreater(cur["off"], 0)
+        # read incrementally from there on: nothing it has read is read again
+        self.assertEqual(reconcile.read_outcomes(self.home, n)[0], {})
+        self.stale_dec("d-1-next", "tu_b4", n - 1000)
+        self.write_events([{"ts": n, "type": "hook", "session_id": SID, "event": "PostToolUseFailure",
+                            "tool_name": "Bash", "tool_use_id": "tu_b4", "state": "working"}])
+        outs, _ = reconcile.read_outcomes(self.home, n)
+        self.assertEqual(list(outs), ["tu_b4"])
+        self.collect(n + 1)
+        self.assertEqual(self.read("d-1-next")["status"], "answered_in_pane")
+
+    def test_backfill_is_bounded(self):
+        n = now_ms()
+        with open(os.path.join(self.home, "events.jsonl"), "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"ts": n, "type": "hook", "event": "PostToolUse", "tool_use_id": "tu_far"}) + "\n")
+            fh.write(("x" * 1000 + "\n") * (reconcile.BACKFILL_BYTES // 1000 + 10))
+            fh.write(json.dumps({"ts": n, "type": "hook", "event": "PostToolUse", "tool_use_id": "tu_near"}) + "\n")
+        outs, _ = reconcile.read_outcomes(self.home, n)
+        self.assertEqual(list(outs), ["tu_near"])
+
+    def test_an_outcome_older_than_the_decision_is_ignored(self):
+        n = now_ms()
+        self.stale_dec("d-1-new", "tu_b5", n - 1000, answer="allow")
+        self.write_events([{"ts": n - 5000, "type": "hook", "event": "PostToolUse", "tool_use_id": "tu_b5"}])
+        collect.process_decisions({}, self.home, [], n)
+        self.assertEqual(self.read("d-1-new")["status"], "stale")
+
+
+class Compare(unittest.TestCase):
+    def test_board_answers(self):
+        self.assertIsNone(reconcile.board_answers({"answer": None}))
+        self.assertEqual(reconcile.board_answers({"kind": "permission", "answer": "allow"}), "allow")
+        self.assertEqual(reconcile.board_answers({"answer": "Blue", "answer_index": 2}), [("pick", 2)])
+        self.assertEqual(reconcile.board_answers({"answer": "x y"}), [("text", "x y")])
+        self.assertEqual(reconcile.board_answers({"answer": "(options)", "answer_options": [1, 2]}),
+                         [("pick", 1), ("pick", 2)])
+
+    def test_norm(self):
+        self.assertEqual(reconcile.norm("  a　 b\n c\t"), "a b c")
+
+
+def tearDownModule():
+    shutil.rmtree(TMP, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2 if "-v" in sys.argv else 1, argv=[sys.argv[0]])

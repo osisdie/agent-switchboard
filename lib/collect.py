@@ -75,6 +75,7 @@ import notify  # noqa: E402
 import resume  # noqa: E402
 import rc  # noqa: E402
 import pomodoro  # noqa: E402
+import reconcile  # noqa: E402
 import reminders  # noqa: E402
 import resources  # noqa: E402
 import scheduler  # noqa: E402
@@ -503,12 +504,17 @@ def process_decisions(cfg, home, sessions, now):
                 if a:
                     by_code.setdefault(str(a).lower(), s)
     timeout_ms = float(cfg.get("decision_timeout_hours") or 24) * 3600 * 1000
+    # What the sessions reported for their prompts (PostToolUse / PostToolUseFailure on
+    # events.jsonl, read incrementally; lib/reconcile.py). The hook appends that line before it
+    # writes the state file, so a state without the prompt always comes with its outcome.
+    outcomes, save_cursor = reconcile.read_outcomes(home, now)
+    retry = False  # a settle lost a race with another writer: read those lines again next run
     out = []
     for path in sorted(glob.glob(os.path.join(home, "decisions", "*.json"))):
         d = read_json(path)
         if not isinstance(d, dict) or not d.get("id"):
             continue
-        changed = False
+        changed = settled = False
         status_read = d.get("status")
         # A pane question (an AskUserQuestion picker) goes stale like a permission prompt.
         if d.get("kind") == "permission" or d.get("source") == "pane":
@@ -516,6 +522,12 @@ def process_decisions(cfg, home, sessions, now):
             if not d.get("from") and sess:
                 d["from"] = sess["code"]
                 changed = True
+            # The session reported how the prompt ended: settle it with what really happened
+            # (delivered, or answered in the pane), even when it had gone stale meanwhile.
+            oc = outcomes.get(d.get("tool_use_id")) if d.get("tool_use_id") else None
+            if oc and now - int(d.get("created_at") or 0) <= reconcile.WINDOW_MS \
+                    and int(oc.get("at") or 0) >= int(d.get("created_at") or 0) and reconcile.settle(d, oc):
+                changed = settled = True
             if d.get("status") in ("pending", "answered"):
                 pend = (sess or {}).get("pending") or {}
                 if not sess or sess.get("state") != "needs-you" or pend.get("tool_use_id") != d.get("tool_use_id"):
@@ -536,13 +548,18 @@ def process_decisions(cfg, home, sessions, now):
             # was read. Re-read it right before the write and keep theirs when its status moved.
             fresh = read_json(path)
             if not isinstance(fresh, dict) or fresh.get("status") != status_read:
+                retry = retry or (settled and isinstance(fresh, dict) and fresh.get("status") in reconcile.SETTLEABLE)
                 out.append(fresh if isinstance(fresh, dict) else d)
                 continue
             d["updated_at"] = now
             write_json_atomic(path, d)
-            append_event(home, {"ts": now, "type": "decision", "id": d["id"], "status": d["status"],
-                                "by": "collector"})
+            ev = {"ts": now, "type": "decision", "id": d["id"], "status": d["status"], "by": "collector"}
+            if d.get("reconciled_at") and d["status"] in ("relayed", "answered_in_pane") and status_read != d["status"]:
+                ev["reason"] = "session_outcome"
+            append_event(home, ev)
         out.append(d)
+    if not retry:
+        save_cursor()
     keep_ms = 24 * 3600 * 1000
     out = [d for d in out if d.get("status") not in FINAL
            or now - int(d.get("updated_at") or d.get("created_at") or 0) < keep_ms]

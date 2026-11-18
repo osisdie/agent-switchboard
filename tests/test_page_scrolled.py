@@ -111,13 +111,21 @@ def main():
             status_reason="press refused: no picker in pane %10 SECRET-ish text", **{"from": "QA"})
         dec("d-7-api", "stale", "tu_7", "s-api", False, answer="Follow the earlier approach (Recommended)",
             answered_by="local", answered_at=now - 2000)
+        # DONE / PANE: settled from the session's own report (lib/reconcile.py) while the session card
+        # still shows the prompt (a snapshot not refreshed yet): never "not delivered" / "answer in
+        # the session".
+        dec("d-11-done", "relayed", "tu_11", "s-done", False, answer="Blue", answered_by="local", answered_at=now - 900,
+            relayed_at=now - 800, delivered_via="session", reconciled_from="partial", **{"from": "DONE"})
+        dec("d-12-pane", "answered_in_pane", "tu_12", "s-pane", False, answer="Red", answered_by="local",
+            answered_at=now - 700, resolved_via="pane", resolved_by="PANE", **{"from": "PANE"})
         with open(os.path.join(home, "events.jsonl"), "w", encoding="utf-8") as fh:
             fh.write(json.dumps({"ts": now - 1900, "type": "mark", "id": "d-7-api", "status": "stale",
                                  "reason": "press refused: no question picker visible in pane %10"}) + "\n")
         snap = {"generated_at": now, "decisions": [], "tasks": [],
                 "sessions": [row("INFRA", "s-infra", "d-1-infra", "tu_i"), row("OPS", "s-ops", "d-2-ops", "tu_o"),
                              row("WEB", "s-web", "d-3-web", "tu_w"), row("API", "s-api", "d-7-api", "tu_7"),
-                             row("NV", "s-nv", "d-9-nv", "tu_nv"), row("STUCK", "s-stuck", "d-10-stuck", "tu_st")]}
+                             row("NV", "s-nv", "d-9-nv", "tu_nv"), row("STUCK", "s-stuck", "d-10-stuck", "tu_st"),
+                             row("DONE", "s-done", "d-11-done", "tu_11"), row("PANE", "s-pane", "d-12-pane", "tu_12")]}
         with open(os.path.join(home, "snapshot.json"), "w", encoding="utf-8") as fh:
             json.dump(snap, fh)
         env = dict(os.environ, BOARD_HOME=home, BOARD_CONFIG_DIR=cfg, CLAUDE_SESSIONS_DIR=sess)
@@ -149,7 +157,7 @@ def main():
                 pg.wait_for_timeout(1000)
                 if errors:
                     print("page errors:", errors)
-                for code in ("INFRA", "OPS", "WEB", "NV", "STUCK"):
+                for code in ("INFRA", "OPS", "WEB", "NV", "STUCK", "DONE", "PANE"):
                     pg.click('article[aria-label="Session %s"] .scard-toggle' % code)
                     pg.wait_for_timeout(100)
 
@@ -190,6 +198,10 @@ def main():
                 check("its card: answer in the session first, with the tmux target and the close button",
                       st is not None and st["box"] and "Answer in the session" in st["box"] and "tmux STUCK:@1.%1" in st["box"]
                       and "tried 2 times" in st["box"] and st["first"] and st["resolve"] == ["Mark answered in session"], st)
+                for code in ("DONE", "PANE"):
+                    c = card(code)
+                    check("settled from the session (%s): no 'not delivered' / answer-in-session note" % code,
+                          c["note"] is None and "not delivered" not in c["text"], c)
                 check("no sideways scroll", pg.evaluate("() => document.scrollingElement.scrollWidth <= innerWidth"))
                 pg.close()
                 ctx.close()

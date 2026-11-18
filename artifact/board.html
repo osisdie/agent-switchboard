@@ -401,6 +401,9 @@ dialog.notif { width: min(720px, calc(100vw - 24px)); }
 .status.stale, .status.timeout { background: var(--off-soft); color: var(--muted); }
 .status.answered_in_pane { background: var(--ok-soft); color: var(--ok); }
 .dcard .note.maybe { color: var(--lamp-ink); }
+/* a board ask that may have been answered in its session: still open, but quieter and last */
+.dcard.maybe { opacity: .72; box-shadow: none; border-style: dashed; }
+.dcard.maybe:hover, .dcard.maybe:focus-within { opacity: 1; }
 .dcard .resolve-row { display: flex; justify-content: flex-end; }
 .btn.linkish { min-height: 32px; padding: 4px 10px; font-size: 13px; border-style: dashed; color: var(--muted); }
 .status.undelivered { background: var(--deny-soft); color: var(--deny); }
@@ -1945,7 +1948,11 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
   ];
   function colOf(s) { const st = str(s.state); for (const c of COLS) if (c.states.includes(st)) return c.key; return 'done'; }
   const isOpen = (d) => d.status === 'pending' || d.status === 'unauthorized';
-  const pendingDecisions = () => S.decisions.filter(isOpen).sort((a, b) => ts(a.created_at) - ts(b.created_at));
+  // A board ask its session may already have answered in the pane (the collector's hint) goes last:
+  // it stays open (never closed automatically), de-emphasised, with "Mark answered in session".
+  const maybeAnswered = (d) => d.hint === 'maybe_answered_in_session' && d.kind !== 'permission' && d.source !== 'pane' && !d.task_id && !isGateDecision(d);
+  const pendingDecisions = () => S.decisions.filter(isOpen)
+    .sort((a, b) => (maybeAnswered(a) - maybeAnswered(b)) || ts(a.created_at) - ts(b.created_at));
   function attention() {
     const pend = pendingDecisions();
     const fromCodes = new Set(pend.map((d) => lc(d.from)));
@@ -2369,7 +2376,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     const offline = operatorOffline();
     const appr = approverState();
     const kindLabel = tr(isGate ? (isProdGate(d) ? 'Production gate' : 'Gate') : isPerm ? 'Permission' : 'Question');
-    const card = h('article', { id: 'dec-' + d.id, class: 'dcard ' + (isGate ? 'gatecard' : isPerm ? 'permission' : 'question') + (offline ? ' queued' : ''), 'aria-label': tr('{kind} from {who}', { kind: kindLabel, who: str(d.from) }) });
+    const card = h('article', { id: 'dec-' + d.id, class: 'dcard ' + (isGate ? 'gatecard' : isPerm ? 'permission' : 'question') + (offline ? ' queued' : '') + (maybeAnswered(d) ? ' maybe' : ''), 'aria-label': tr('{kind} from {who}', { kind: kindLabel, who: str(d.from) }) });
     card.append(h('div', { class: 'dmeta' },
       h('span', { class: 'lamp needs', 'aria-hidden': 'true' }),
       h('span', { class: 'kind', text: kindLabel }),
@@ -2495,6 +2502,15 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
   function notDelivered(d) {
     return d.answer != null && d.answer !== '' && ['stale', 'timeout', 'unauthorized'].includes(str(d.status));
   }
+  // Settled from the session's own report of how the prompt ended (the collector, lib/reconcile.py):
+  // the session got exactly the board's answer (relayed, delivered_via "session"), or it was answered
+  // there differently (answered_in_pane, resolved_via "pane").
+  const viaSession = (d) => d.status === 'relayed' && d.delivered_via === 'session';
+  function sessionNote(d) {
+    if (viaSession(d)) return d.reconciled_from ? tr('delivered (finished in the session)') : '';
+    if (d.status === 'answered_in_pane' && d.resolved_via === 'pane' && d.answer != null && d.answer !== '') return tr('the session got a different answer; the board\'s was not used');
+    return '';
+  }
   const REASONS = {
     screen: 'the prompt was not on the session\'s screen',
     partial: 'typed into the question, but Enter was not pressed',
@@ -2535,12 +2551,13 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       const nd = notDelivered(d);
       return h('li', { class: nd ? 'undelivered' : null },
         nd ? h('span', { class: 'status undelivered', text: d.status_reason === 'partial' ? tr('partial') : tr('not delivered') })
-          : h('span', { class: 'status ' + str(d.status), text: d.status === 'answered_in_pane' ? tr('answered in session') : str(d.status) || 'unknown' }),
+          : h('span', { class: 'status ' + str(d.status), text: d.status === 'answered_in_pane' ? tr('answered in session') : viaSession(d) ? tr('delivered') : str(d.status) || 'unknown' }),
         h('span', { class: 'what' },
           h('span', { class: 'code-chip', text: str(d.from) || '?' }), ' ',
           str(d.question) || (d.kind === 'permission' ? tr('{tool} permission', { tool: str(d.tool_name) || 'tool' }) : isGateDecision(d) ? tr('{stage} gate', { stage: stageName(d.stage || d.gate) }) : tr('Question')),
           nd ? h('span', { class: 'undeliv' }, ' ', tr('Not delivered: {why}', { why: reasonText(d) })) : null,
-          d.answer != null && d.answer !== '' ? h('span', null, ' → ', h('span', { class: 'ans', text: str(d.answer) })) : null),
+          d.answer != null && d.answer !== '' ? h('span', null, ' → ', h('span', { class: 'ans', text: str(d.answer) })) : null,
+          sessionNote(d) ? h('span', { class: 'via-session' }, ' · ', sessionNote(d)) : null),
         timeEl(d.answered_at || d.relayed_at || d.created_at));
     });
   }
@@ -2827,7 +2844,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       // a note to answer it in the session.
       const waitDec = p && p.decision_id && !decs.some((d) => d.id === p.decision_id) ? S.decisions.find((d) => d.id === p.decision_id) : null;
       if (p && p.decision_id && !decs.some((d) => d.id === p.decision_id) && !waitDec) decs.push({ id: str(p.decision_id), kind: 'permission', tool_name: p.tool_name });
-      const inSession = waitDec && col === 'needs' && waitDec.status !== 'pending' && waitDec.status !== 'answered'
+      const inSession = waitDec && col === 'needs' && !['pending', 'answered', 'relayed', 'answered_in_pane'].includes(waitDec.status)
         ? h('span', { class: 'note in-session', text: notDelivered(waitDec)
             ? tr('Your answer was not delivered ({why}). Answer in the session.', { why: reasonText(waitDec) })
             : waitDec.press_note ? tr(pressScrolled(waitDec) ? 'Answer in the session (screen scrolled)' : 'Answer in the session (not visible on its screen)')
@@ -6994,6 +7011,9 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "Mark answered in session": "標記為已在 session 中回答",
       "Closed as answered in the session.": "已標記為在 session 中回答並關閉。",
       "answered in session": "已在 session 中回答",
+      "delivered": "已送達",
+      "delivered (finished in the session)": "已送達（在 session 中完成）",
+      "the session got a different answer; the board's was not used": "session 收到的是另一個回答，看板的回答沒有用上",
       "Only a board ask or a question in the session can be closed this way.": "只有用 board ask 提出的問題，或 session 裡的提問，可以這樣關閉。",
       "{tool} permission": "{tool} 權限",
       "{stage} gate": "{stage}關卡",
