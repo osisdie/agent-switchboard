@@ -758,6 +758,17 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 .pres-note.warn { color: var(--deny); }
 .acct-panel { position: absolute; right: 0; top: calc(100% + 8px); width: min(340px, calc(100vw - 32px)); max-height: calc(100vh - 120px); max-height: calc(100dvh - 120px); overflow: auto; display: grid; gap: 16px; padding: 16px; border-radius: 10px; border: 1px solid var(--rule); background: var(--panel); color: var(--ink); box-shadow: 0 10px 30px rgb(0 0 0 / .18); }
 .acct-panel:focus { outline: none; }
+/* Reload (header, under the profile button): an installed app (a home-screen PWA) has no browser
+   reload control. A 44px circle in the header's reserved right column, so nothing wraps. */
+.reload { position: absolute; top: 84px; right: 0; z-index: 7; }
+.reload [hidden] { display: none !important; }
+.reload-btn { display: grid; place-items: center; width: 44px; height: 44px; padding: 0; border-radius: 50%; border: 1px solid var(--rule); background: var(--panel); color: var(--ink); cursor: pointer; }
+.reload-btn:hover, .reload-btn[aria-expanded="true"] { border-color: var(--cord); color: var(--cord); }
+.reload-btn svg { width: 20px; height: 20px; }
+.reload-ask { position: absolute; right: 0; top: calc(100% + 8px); width: min(280px, calc(100vw - 32px)); display: grid; gap: 10px; padding: 12px; border-radius: 10px; border: 1px solid var(--rule); background: var(--panel); color: var(--ink); box-shadow: 0 10px 30px rgb(0 0 0 / .18); }
+.reload-ask p { margin: 0; font-size: 14px; }
+.reload-ask .btn { min-height: 44px; }
+@media (max-width: 860px) { .mast .reload { top: 56px; } }
 .acct-panel:focus-visible { outline: 2px solid var(--cord); outline-offset: 2px; }
 .acct-who { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .acct-who > div { min-width: 0; }
@@ -1189,6 +1200,18 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
           <p class="acct-note acct-dev" id="acct-dev" hidden><a href="/dev/keys" id="acct-dev-keys" data-i18n>Manage API keys</a> · <a href="/dev" id="acct-dev-portal" data-i18n>Developer portal (API, MCP)</a></p>
         </section>
         <a class="acct-out" id="acct-out" href="/cdn-cgi/access/logout" hidden data-i18n>Sign out of Cloudflare Access</a>
+      </div>
+    </div>
+    <div class="reload" id="reload">
+      <button class="reload-btn" id="reload-btn" type="button" aria-label="Reload" title="Reload" data-i18n-attr="aria-label title" aria-expanded="false" aria-controls="reload-ask">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/></svg>
+      </button>
+      <div class="reload-ask" id="reload-ask" role="alertdialog" aria-labelledby="reload-ask-t" hidden>
+        <p id="reload-ask-t" data-i18n>Unsent text or picks on this page will be lost. Reload anyway?</p>
+        <div class="confirm-row">
+          <button class="btn primary" id="reload-yes" type="button" data-i18n>Reload</button>
+          <button class="btn" id="reload-no" type="button" data-i18n>Cancel</button>
+        </div>
       </div>
     </div>
     <div class="brand">
@@ -6717,6 +6740,36 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     renderPresence();
   }
 
+  // Reload: an installed app (a home-screen PWA) has no reload control of its own. Unsent work (a
+  // message being written, an answer typed or picked on a card) asks first, in the page.
+  function unsentWork() {
+    const msg = $('#msg-input');
+    if (msg && msg.value.trim()) return true;
+    return Object.entries(S.drafts).some(([k, v]) => /^d-/.test(k) && (typeof v === 'string' ? !!v.trim()
+      : Array.isArray(v) && v.some((x) => (Array.isArray(x) ? x.length > 0 : typeof x === 'string' ? !!x.trim() : x != null))));
+  }
+  const reloadBtn = $('#reload-btn'), reloadAsk = $('#reload-ask');
+  const reloadPage = () => location.reload();
+  function closeReloadAsk(refocus) {
+    if (reloadAsk.hidden) return;
+    reloadAsk.hidden = true; reloadBtn.setAttribute('aria-expanded', 'false');
+    if (refocus) reloadBtn.focus();
+  }
+  reloadBtn.addEventListener('click', () => {
+    if (!reloadAsk.hidden) { closeReloadAsk(true); return; }
+    if (!unsentWork()) { reloadPage(); return; }
+    reloadAsk.hidden = false; reloadBtn.setAttribute('aria-expanded', 'true');
+    $('#reload-no').focus();
+  });
+  $('#reload-yes').addEventListener('click', reloadPage);
+  $('#reload-no').addEventListener('click', () => closeReloadAsk(true));
+  $('#reload').addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !reloadAsk.hidden) { e.preventDefault(); e.stopPropagation(); closeReloadAsk(true); }
+  });
+  document.addEventListener('pointerdown', (e) => {
+    if (!reloadAsk.hidden && !(e.target instanceof Element && e.target.closest('#reload'))) closeReloadAsk(false);
+  });
+
   const acctBtn = $('#acct-btn'), acctPanel = $('#acct-panel');
   const acctOpen = () => acctBtn.getAttribute('aria-expanded') === 'true';
   function openAcct() {
@@ -7764,6 +7817,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "(shortened)": "（已截短）",
       "A newer version of the board is available.": "看板有新版本。",
       "Reload": "重新載入",
+      "Unsent text or picks on this page will be lost. Reload anyway?": "這個頁面上還沒送出的文字或選擇會遺失。仍要重新載入嗎？",
       "Reload when you are ready; nothing you are typing is lost until then.": "準備好再重新載入；在那之前，你正在輸入的內容都不會遺失。",
       "Couldn't save ({code}). Reload the page; if it keeps happening, check board-serve.": "無法保存（{code}）。請重新載入頁面；如果一直發生，請檢查 board-serve。",
       "Deck": "按鍵面板",
