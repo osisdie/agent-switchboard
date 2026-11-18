@@ -343,6 +343,39 @@ def main():
         check("  dark theme: the sheet is solid (the panel colour)", r["bg"] not in ("rgba(0, 0, 0, 0)", "transparent") and r["panel"] == "#161d25", r)
         pg.close()
 
+        print("phone landscape 800x360: the keyboard through a sheet that scrolls:")
+        pg = new_page(width=800, height=360)
+        pg.click("#nav-toggle")
+        r = pg.evaluate("() => { const s = document.getElementById('nav-sheet'); return { sh: s.scrollHeight, ch: s.clientHeight, y: scrollY }; }")
+        check("the sheet is taller than the screen allows, so it scrolls", r["sh"] > r["ch"], r)
+        SEEN_JS = """() => { const s = document.getElementById('nav-sheet').getBoundingClientRect(), a = document.activeElement, b = a.getBoundingClientRect();
+          return { id: a.id || a.getAttribute('href'), inSheet: document.getElementById('nav-sheet').contains(a), seen: b.top >= s.top - 1 && b.bottom <= s.bottom + 1 }; }"""
+        pg.focus("#nav-unfold-all")
+        y0 = pg.evaluate("() => scrollY")
+        bad, steps = [], 0
+        for _ in range(14):
+            pg.keyboard.press("Shift+Tab")
+            pg.wait_for_timeout(60)
+            v = pg.evaluate(SEEN_JS)
+            if v["id"] == "nav-toggle":
+                break
+            steps += 1
+            if not (v["inSheet"] and v["seen"]):
+                bad.append(v)
+        check("  Shift+Tab up through every row: each focused row is inside the sheet's visible area", steps >= 10 and not bad, [steps, bad[:3]])
+        pg.focus("#nav-list a[href='#decisions']")
+        for _ in range(14):
+            pg.keyboard.press("Tab")
+            pg.wait_for_timeout(60)
+            v = pg.evaluate(SEEN_JS)
+            if not v["inSheet"]:
+                break
+            if not v["seen"]:
+                bad.append(v)
+        check("  Tab down through it too", not bad, bad[:3])
+        check("  and the page itself never scrolls", pg.evaluate("() => scrollY") == y0)
+        pg.close()
+
         print("desktop 1280 px:")
         pg = new_page(width=1280, height=900)
         r = pg.evaluate("""() => ({ toggle: getComputedStyle(document.getElementById('nav-toggle')).display, list: getComputedStyle(document.getElementById('nav-list')).display,

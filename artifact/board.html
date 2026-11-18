@@ -171,6 +171,8 @@ time { font-variant-numeric: tabular-nums; white-space: nowrap; }
 /* The scroll padding keeps jumps clear of this bar, but the bar itself is always in view: focusing a
    button in it (a tap, Tab) must not scroll the page to "uncover" it. */
 .secnav * { scroll-margin-top: calc(-8px - var(--secnav-h, 56px) - env(safe-area-inset-top, 0px)); }
+/* ...except inside the phone sheet, which scrolls on its own: there a focused row must scroll into it */
+.secnav .nav-sheet * { scroll-margin-top: 0; }
 .secnav-in { max-width: 1360px; margin-inline: auto; display: flex; align-items: center; gap: 8px; min-height: 48px; }
 .secnav ul { list-style: none; display: flex; gap: 4px; margin: 0; padding: 0; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
 .secnav a { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 5px; color: var(--muted); text-decoration: none; font-weight: 500; font-size: 14px; white-space: nowrap; }
