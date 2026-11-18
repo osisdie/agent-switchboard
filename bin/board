@@ -159,6 +159,7 @@ REPO="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 # board press exit 7: the note stored on the decision (press_note), with a fixed code (press_note_code).
 # "scrolled" only when the TUI's "N new messages (ctrl+End)" line was still on screen.
 PRESS_SCROLLED_NOTE="The session's screen is scrolled; nothing was pressed. Try again, or answer in the session."
+PRESS_ELSEWHERE_NOTE="The session's form shows another question; nothing was pressed. Try again, or answer in the session."
 PRESS_NOT_VISIBLE_NOTE="The prompt is not visible on the session's screen (scrolled, covered or not redrawn yet); nothing was pressed. Answer in the session, or try again later."
 BOARD_HOME="${BOARD_HOME:-$HOME/.agent-switchboard}"
 export BOARD_HOME
@@ -254,7 +255,7 @@ JQ_PANE_ANSWER='
     | if .pressable != true then "not pressable"
       elif ($o | type) != "array" or ($o | length) != ($qs | length) then "answer_options do not match the questions"
       elif $t != null and (($t | type) != "array" or ($t | length) != ($qs | length)) then "answer_texts do not match the questions"
-      elif any(range(0; $qs | length); . as $i | ($o[$i] | type) != "number" or $o[$i] < 1
+      elif any(range(0; $qs | length); . as $i | ($o[$i] | type) != "number" or $o[$i] < 1 or ($o[$i] | floor) != $o[$i]
              or (if $t != null and $t[$i] != null
                  then $o[$i] != ($qs[$i].options | length) + 1 or $o[$i] > 9 or ($t[$i] | ft_ok | not)
                  else $o[$i] > ($qs[$i].options | length) or $o[$i] > 8 end))
@@ -1349,7 +1350,10 @@ cmd_press() {
     # press_not_visible counts these presses for the decision (board answer keeps it), so the
     # board can stop offering a retry that keeps failing.
     local n code note; n="$(now_ms)"
-    if [ "${press_scrolled:-0}" = 1 ]; then code=scrolled; note="$PRESS_SCROLLED_NOTE"; else code=not_visible; note="$PRESS_NOT_VISIBLE_NOTE"; fi
+    # form_elsewhere: a form of several questions shows another of its questions (press_multi).
+    if [ "${press_scrolled:-0}" = 1 ]; then code=scrolled; note="$PRESS_SCROLLED_NOTE"
+    elif [ "${press_elsewhere:-0}" = 1 ]; then code=form_elsewhere; note="$PRESS_ELSEWHERE_NOTE"
+    else code=not_visible; note="$PRESS_NOT_VISIBLE_NOTE"; fi
     update_decision "$dec_id" '.status = "pending" | .answer = null | .answered_by = null | .answered_at = null
         | .answer_index = null | .answer_options = null | .answer_texts = null | .relay = null | .press_note = $note | .press_note_at = $now
         | .press_note_code = $code | .press_not_visible = ((.press_not_visible // 0) + 1)
@@ -1368,6 +1372,23 @@ cmd_press() {
     [ -n "$dec_id" ] && mark_status "$dec_id" stale "press partial: $1" "${3:-partial}" >/dev/null 2>&1
     exit 5
   }
+
+  # One press of a decision at a time (board-serve, the operator's relay, a CLI retry): a second
+  # press waits for the first (BOARD_PRESS_LOCK_WAIT seconds, default 30), then runs its checks
+  # on what the first left (relayed, stale or pending: not answered, so exit 4, nothing sent).
+  # Still locked after the wait: exit 4, nothing sent, the decision untouched. The lock is
+  # $BOARD_HOME/locks/press-<id>.lock on fd 6, released when this process exits.
+  if [ -n "$dec_id" ]; then
+    case "$dec_id" in *[!A-Za-z0-9._-]*) refuse_auth "invalid decision id '$dec_id'" ;; esac
+    command -v flock >/dev/null 2>&1 || refuse_auth "flock is required for board press (util-linux)"
+    mkdir -p "$BOARD_HOME/locks" && exec 6>>"$BOARD_HOME/locks/press-$dec_id.lock" \
+      || refuse_auth "cannot open the press lock of $dec_id"
+    if ! flock -w "${BOARD_PRESS_LOCK_WAIT:-30}" 6; then
+      echo "board press: refused — another press of $dec_id is still running; nothing sent" >&2
+      attempt busy "another press of this decision is still running"
+      exit 4
+    fi
+  fi
 
   # 1. A human approver must have answered this exact decision with this exact action.
   [ -n "$dec_id" ] || refuse_auth "no local $( [ "$want" = pane ] && echo "pane question" || echo permission) decision for tool_use_id $expect"
@@ -1397,15 +1418,18 @@ cmd_press() {
   fi
 
   # 3. Keys first, so a config problem never leaves a half-checked press.
-  local keys_json key keys=() q_n=0 q_idx="" q_text="" multi=0
+  local keys_json key keys=() q_n=0 q_idx="" q_text="" multi=0 dsnap=""
   if [ "$action" = answer ] && [ "$(jq -r '((.questions // []) | length) > 1' "$df")" = true ]; then
     # A form of several questions: one option per question (board answer --options), pressed one
     # question at a time by press_multi below. Recomputed from the decision, never trusted.
     multi=1
     local chk
-    chk="$(jq -r --argjson max "$FREE_TEXT_MAX" "$JQ_PANE_ANSWER"'multi_check' "$df")"
+    # One read of the decision: what is checked here is what press_multi types (dsnap), never a
+    # later re-read that another writer may have changed meanwhile.
+    dsnap="$(cat "$df")" || refuse_auth "cannot read decision $dec_id"
+    chk="$(jq -r --argjson max "$FREE_TEXT_MAX" "$JQ_PANE_ANSWER"'multi_check' <<<"$dsnap")"
     [ "$chk" = ok ] || refuse_auth "$dec_id cannot be pressed from the board: $chk"
-    [ "$(jq -r '.relay // empty' "$df")" = press ] || refuse_auth "the answer to $dec_id relays by message, not by keys"
+    [ "$(jq -r '.relay // empty' <<<"$dsnap")" = press ] || refuse_auth "the answer to $dec_id relays by message, not by keys"
   elif [ "$action" = answer ]; then
     # Recompute from the decision (never trust a stored relay/answer_index alone).
     local pa
@@ -1435,7 +1459,7 @@ cmd_press() {
     [ ${#keys[@]} -gt 0 ] || refuse "no keys configured for $action" "" config
   fi
 
-  refresh
+  refresh 6>&-   # the collector never inherits the press lock
   local snap="$BOARD_HOME/snapshot.json"
   [ -f "$snap" ] || refuse "no snapshot" "" unknown_session
   local row
@@ -1490,7 +1514,7 @@ cmd_press() {
   # lines is the whole-line press.scrolled_regex ("4 new messages (ctrl+End) ↓") instead of the
   # prompt. Send the one key that scrolls to the bottom (press.scroll_key, C-End: never submits
   # anything in Claude Code's TUI), once, then look again. Every check below runs on the new capture.
-  local press_scrolled=0
+  local press_scrolled=0 press_elsewhere=0
   if ! grep -Eq -- "$regex" <<<"$screen"; then
     local scrolled_re scroll_key
     scrolled_re="$(cfg_get press.scrolled_regex)"
@@ -1604,10 +1628,10 @@ cmd_press() {
   fi
 
   if [ "$multi" = 1 ]; then
-    press_multi "$pane" "$sf" "$df" "$st_sha" "$lines"
+    press_multi "$pane" "$sf" "$df" "$st_sha" "$lines" "$dsnap"
     attempt sent "ok" "$pane"
     MARK_OVER_STALE=1 mark_status "$dec_id" relayed >/dev/null 2>&1
-    echo "pressed answer ($(jq -r '.answer_options | map(tostring) | join(" ")' "$df"), submitted) in $code pane $pane"
+    echo "pressed answer ($(jq -r '.answer_options | map(tostring) | join(" ")' <<<"$dsnap"), submitted) in $code pane $pane"
     return 0
   fi
   if [ "$action" = answer ] && [ -n "$q_text" ]; then
@@ -1710,7 +1734,11 @@ press_scrollback() {
   PRESS_REST="$out"
 }
 
-# press_multi PANE STATE_FILE DECISION SHA LINES — runs inside cmd_press (uses its refuse/partial).
+# press_multi PANE STATE_FILE DECISION SHA LINES SNAPSHOT — runs inside cmd_press (uses its
+# refuse/partial). SNAPSHOT is the decision as cmd_press read and checked it (multi_check): the
+# questions, options and texts come from it alone. Before every key the decision file must still
+# hold the same answer_options and answer_texts, and every key sent for an option or a submit row
+# must be one digit 1-9, else it stops (exit 3 before the first key, 5 after).
 # A form of several questions, as Claude Code draws it: a tab bar ("←  ☐ Color  ☐ Size  ✔ Submit
 # →"), one question at a time (a digit picks an option and moves on to the next question), then a
 # review screen ("Review your answers": each question and "→ label") with "1. Submit answers".
@@ -1731,7 +1759,7 @@ press_scrollback() {
 # screen with the stored questions, labels and texts, on both sides alike.
 nows() { LC_ALL=C sed -E 's/[[:space:]]|\xc2[\x85\xa0]|\xe1\x9a\x80|\xe2\x80[\x80-\x8b\xa8\xa9\xaf]|\xe2\x81\x9f|\xe3\x80\x80|\xef\xbb\xbf|\xe2\x94\x82//g' | tr -d '\n'; }
 press_multi() {
-  local pane="$1" sf="$2" df="$3" sha="$4" lines="$5"
+  local pane="$1" sf="$2" df="$3" sha="$4" lines="$5" dsnap="$6" fp
   local tabbar review submit footer focus n i t tries key sent=0 raw="" prev="" why="" digit name
   local ftlabel text want send why_screen=0
   tabbar="$(cfg_get press.tabbar_regex)"; review="$(cfg_get press.review_regex)"
@@ -1754,7 +1782,9 @@ press_multi() {
   ftlabel="$(cfg_get press.free_text_label)"
   [ -n "$ftlabel" ] || refuse "press.free_text_label is not configured" "$pane" config
   grep -Eq -- "$ftlabel" <<<'' 2>/dev/null; [ $? -le 1 ] || refuse "press.free_text_label is not a valid pattern (grep -E)" "$pane" config
-  n="$(jq -r '.questions | length' "$df")"
+  dj() { jq "$@" <<<"$dsnap"; }   # read the snapshot, never the file
+  n="$(dj -r '.questions | length')"
+  fp="$(dj -c '[.answer_options, .answer_texts]')"
   # fail MESSAGE [CODE] — before the first key a refusal (CODE, default screen), after it partial
   # (moved_on when CODE is moved_on, else partial).
   fail() {
@@ -1766,13 +1796,22 @@ press_multi() {
     [ "$(jq -r '[.state, (.pending.tool_use_id // ""), (.pending.summary_sha256 // "")] | join(" ")' "$sf")" \
       = "needs-you $expect $sha" ]
   }
+  # guard WHAT — right before a key: the hook state still shows this prompt, and the decision file
+  # still holds the answer being typed (a press elsewhere that sent it back to pending cleared it).
+  guard() {
+    same_prompt || fail "pending prompt changed$1" moved_on
+    [ "$(jq -c '[.answer_options, .answer_texts]' "$df" 2>/dev/null)" = "$fp" ] \
+      || fail "the decision's answer changed while pressing$1"
+  }
+  # digit_ok KEY WHAT — an option or submit key must be a single digit 1-9, never anything else typed.
+  digit_ok() { [[ $1 =~ ^[1-9]$ ]] || fail "not a single digit for $2: nothing typed"; }
   form_region() {  # the last LINES non-blank-trailing lines, after the last tab bar; fails without one
     tmux capture-pane -p -t "$pane" 2>/dev/null | sed -e :a -e '/^[[:space:]]*$/{$d;N;ba' -e '}' | tail -n "$lines" \
       | SB_TABBAR="$tabbar" awk '$0 ~ ENVIRON["SB_TABBAR"] { buf = ""; found = 1; next } found { buf = buf $0 "\n" }
                                  END { if (!found) exit 1; printf "%s", buf }'
   }
   qkey() {  # question I as stored, up to any clip "…" or [REDACTED], no whitespace (the hook's qkey)
-    jq -r --argjson i "$1" '.questions[$i].question // "" | split("…")[0] | split("[REDACTED")[0]' "$df" | nows
+    dj -r --argjson i "$1" '.questions[$i].question // "" | split("…")[0] | split("[REDACTED")[0]' | nows
   }
   # check_question I — RAW is a fresh capture showing question I: after the tab bar, its text comes
   # first (all of it, or the stored start of a clipped one), then its labels in order, then the
@@ -1781,20 +1820,27 @@ press_multi() {
   # its picker), not a question that cannot be checked at all.
   check_question() {
     local q flat rest lab
-    why_screen=1
+    why_screen=1; press_elsewhere=0
     raw="$(form_region)" || { why="no question form visible for question $(($1 + 1))"; return 1; }
     [ "$1" -gt 0 ] && [ "$raw" = "$prev" ] && { why="question $(($1 + 1)) did not appear (the screen did not change)"; return 1; }
     q="$(qkey "$1")"; flat="$(nows <<<"$raw")"
-    [ "${#q}" -ge 8 ] || [ "$(jq -r --argjson i "$1" '.questions[$i].question // ""' "$df" | nows)" = "$q" ] \
+    [ "${#q}" -ge 8 ] || [ "$(dj -r --argjson i "$1" '.questions[$i].question // ""' | nows)" = "$q" ] \
       || { why="too little of question $(($1 + 1)) to check on screen"; why_screen=0; return 1; }
-    [ -n "$q" ] && [[ $flat == "$q"* ]] || { why="question $(($1 + 1)) is not the one showing"; return 1; }
+    if [ -z "$q" ] || [[ $flat != "$q"* ]]; then
+      why="question $(($1 + 1)) is not the one showing"
+      # another question of this form, by its stored start (the note then says so)
+      for ((t = 0; t < n; t++)); do
+        [ "$t" != "$1" ] && [ -n "$(qkey "$t")" ] && [[ $flat == "$(qkey "$t")"* ]] && press_elsewhere=1
+      done
+      return 1
+    fi
     rest="${flat#"$q"}"
     while IFS= read -r lab; do
       lab="$(nows <<<"$lab")"
       [ -n "$lab" ] || continue
       [[ $rest == *"$lab"* ]] || { why="the options of question $(($1 + 1)) are not showing"; return 1; }
       rest="${rest#*"$lab"}"
-    done < <(jq -r --argjson i "$1" '.questions[$i].options[].label' "$df")
+    done < <(dj -r --argjson i "$1" '.questions[$i].options[].label')
     grep -Eq -- "$footer" <<<"$raw" || { why="the picker of question $(($1 + 1)) is not open"; return 1; }
     if [ -n "$text" ]; then  # the row the digit goes to must be "Type something"
       grep -Eq -- "^[[:space:]]*(${focus})?[[:space:]]*${key}\.[[:space:]]*(${ftlabel})" <<<"$raw" \
@@ -1853,8 +1899,8 @@ press_multi() {
     [ "$inans" = 1 ] && shown+=("$(nows <<<"$cur")")
     [ "${#shown[@]}" = "$n" ] || { why="the review screen shows ${#shown[@]} answers for $n questions"; return 1; }
     for ((t = 0; t < n; t++)); do
-      lbl="$(jq -r --argjson i "$t" 'if (.answer_texts // [])[$i] != null then .answer_texts[$i]
-        else .questions[$i].options[.answer_options[$i] - 1].label end' "$df")"
+      lbl="$(dj -r --argjson i "$t" 'if (.answer_texts // [])[$i] != null then .answer_texts[$i]
+        else .questions[$i].options[.answer_options[$i] - 1].label end')"
       [ "${shown[$t]}" = "$(nows <<<"$lbl")" ] \
         || { why="the review screen shows another answer for question $((t + 1))"; return 1; }
     done
@@ -1880,15 +1926,15 @@ press_multi() {
     tries=1; [ "$sent" = 1 ] && tries="${BOARD_PRESS_TRIES:-20}"
     for ((i2 = 0; i2 < tries; i2++)); do
       [ "$i2" -gt 0 ] && sleep "${BOARD_PRESS_SETTLE:-0.15}"
-      same_prompt || fail "pending prompt changed" moved_on
+      guard ""
       "$@" && return 0
     done
     return 1
   }
   local i2
   for ((i = 0; i < n; i++)); do
-    key="$(jq -r --argjson i "$i" '.answer_options[$i]' "$df")"
-    text="$(jq -r --argjson i "$i" '(.answer_texts // [])[$i] // empty' "$df")"
+    key="$(dj -r --argjson i "$i" '.answer_options[$i]')"
+    text="$(dj -r --argjson i "$i" '(.answer_texts // [])[$i] // empty')"
     if ! await check_question "$i"; then
       # Before any key, a screen that shows another state of the form (another question, say, one
       # answered in the session) while the hook state still shows this prompt is not a refusal: the
@@ -1897,26 +1943,28 @@ press_multi() {
       [ "$sent" = 0 ] && [ "$why_screen" = 1 ] && refuse_screen "$why" "$pane"
       fail "$why"
     fi
-    same_prompt || fail "pending prompt changed (question $((i + 1)))" moved_on
+    guard " (question $((i + 1)))"
+    digit_ok "$key" "question $((i + 1))"
     tmux send-keys -t "$pane" "$key" || fail "send-keys failed (question $((i + 1)))"
     sent=1; prev="$raw"
     if [ -n "$text" ]; then
       # Recomputed from the decision: one line of printable text (multi_check), never "\;" at the end.
       [[ $text == *[[:cntrl:]]* ]] && partial "free text of question $((i + 1)) contains control characters" "$pane"
       await check_ft_focus "$i" || partial "$why" "$pane"
-      same_prompt || partial "pending prompt changed before typing (question $((i + 1)))" "$pane" moved_on
+      guard " before typing (question $((i + 1)))"
       # tmux reads a trailing ";" as a command separator: escape it (the text never ends in "\;").
       send="$text"; [[ $send == *";" ]] && send="${send%;}\\;"
       tmux send-keys -t "$pane" -l -- "$send" || partial "send-keys failed (typing question $((i + 1)))" "$pane"
       want="$(nows <<<"$text")"; want="${want:0:20}"
       await check_typed "$i" || partial "$why" "$pane"
-      same_prompt || partial "pending prompt changed while typing (question $((i + 1))); Enter not pressed" "$pane" moved_on
+      guard " while typing (question $((i + 1))); Enter not pressed"
       tmux send-keys -t "$pane" Enter || partial "send-keys failed (Enter, question $((i + 1)))" "$pane"
       prev="$raw"
     fi
   done
   await check_review || partial "$why; nothing submitted" "$pane"
-  same_prompt || partial "pending prompt changed before submitting" "$pane" moved_on
+  guard " before submitting"
+  digit_ok "$digit" "the submit row"
   tmux send-keys -t "$pane" "$digit" || partial "send-keys failed (submit)" "$pane"
 }
 

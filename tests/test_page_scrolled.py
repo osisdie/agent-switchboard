@@ -215,13 +215,17 @@ def main():
                                ({"error": "screen_not_ready", "detail": "x", "scrolled": True, "attempts": 1, "question": True},
                                 "session 的畫面已捲動，所以沒有按下任何鍵。請再試一次，或在 session 中回答。"),
                                ({"error": "screen_not_ready", "detail": "x", "scrolled": False, "attempts": 2, "question": True},
-                                "session 畫面上仍然看不到，沒有按下任何鍵。請到 session 中回答。")):
+                                "session 畫面上仍然看不到，沒有按下任何鍵。請到 session 中回答。"),
+                               ({"error": "screen_not_ready", "detail": "x", "scrolled": False, "attempts": 1, "question": True,
+                                 "elsewhere": True},
+                                "session 的表單停在另一題，沒有按下任何鍵。請再試一次，或到 session 中回答。")):
                 pg.route("**/api/decisions/d-9-nv/answer", nv409(body))
                 pg.evaluate("() => document.querySelectorAll('#toasts .toast').forEach((t) => t.remove())")
                 pg.click("#dec-d-9-nv .pq-opt >> nth=0")
                 pg.wait_for_timeout(400)
                 toasts = pg.evaluate("() => [...document.querySelectorAll('#toasts .toast')].map((t) => t.textContent)")
-                check("toast for scrolled=%s attempts=%s" % (body["scrolled"], body["attempts"]), want in toasts, toasts)
+                check("toast for scrolled=%s attempts=%s elsewhere=%s" % (body["scrolled"], body["attempts"], body.get("elsewhere", False)),
+                      want in toasts, toasts)
                 pg.unroute("**/api/decisions/d-9-nv/answer")
             pg.click("#dec-d-10-stuck .press-stuck .resolve-row button")
             pg.wait_for_timeout(200)

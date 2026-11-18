@@ -5582,6 +5582,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
   const pressScrolled = (d) => d.press_note_code === 'scrolled';
   const pressNote = (d) => h('p', { class: 'ctx press-note', text: pressScrolled(d)
     ? tr('The session\'s screen was scrolled, so nothing was pressed. Try again, or answer in the session.')
+    : d.press_note_code === 'form_elsewhere'
+      ? tr('The session\'s form shows another question, so nothing was pressed. Try again, or answer in the session.')
     : d.kind === 'permission'
       ? tr('The prompt isn\'t visible on the session\'s screen (scrolled, covered or not redrawn yet); nothing was pressed. Answer in the session, or try again later.')
       : tr('The question isn\'t visible on the session\'s screen (scrolled, covered or not redrawn yet); nothing was pressed. Answer in the session, or try again later.') });
@@ -5616,6 +5618,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       toast(b.scrolled === true ? tr('The session\'s screen is scrolled, so nothing was pressed. Try again, or answer in the session.')
         : Number.isInteger(b.attempts) && b.attempts >= PRESS_STUCK_AFTER
           ? tr('Still not visible on the session\'s screen; nothing was pressed. Answer it in the session.')
+          : b.elsewhere === true
+            ? tr('The session\'s form shows another question, so nothing was pressed. Try again, or answer in the session.')
           : b.question === true
             ? tr('The question isn\'t visible on the session\'s screen (scrolled, covered or not redrawn yet); nothing was pressed. Answer in the session, or try again later.')
             : tr('The prompt isn\'t visible on the session\'s screen (scrolled, covered or not redrawn yet); nothing was pressed. Answer in the session, or try again later.'), true);
@@ -7401,6 +7405,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "The question isn't visible on the session's screen (scrolled, covered or not redrawn yet); nothing was pressed. Answer in the session, or try again later.": "session 畫面上看不到這個問題（可能捲動、被蓋住或尚未重繪），沒有按下任何鍵。請到 session 中回答，或稍後再試。",
       "The prompt isn't visible on the session's screen (scrolled, covered or not redrawn yet); nothing was pressed. Answer in the session, or try again later.": "session 畫面上看不到這個提示（可能捲動、被蓋住或尚未重繪），沒有按下任何鍵。請到 session 中回答，或稍後再試。",
       "Still not visible on the session's screen; nothing was pressed. Answer it in the session.": "session 畫面上仍然看不到，沒有按下任何鍵。請到 session 中回答。",
+      "The session's form shows another question, so nothing was pressed. Try again, or answer in the session.": "session 的表單停在另一題，沒有按下任何鍵。請再試一次，或到 session 中回答。",
       "Answer in the session": "請在 session 中回答",
       "The board tried {n} times and could not see this on {who}'s screen, so nothing was pressed.": "看板試了 {n} 次，都在 {who} 的畫面上看不到它，所以沒有按下任何鍵。",
       "Go to": "前往",

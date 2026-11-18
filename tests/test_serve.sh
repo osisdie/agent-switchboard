@@ -899,7 +899,16 @@ eq "  nothing recorded" "$(jq -r '.status' "$BOARD_HOME/decisions/d-1-pqm.json")
 # This screen is not the form, while the state still shows it open: nothing pressed, pending again.
 eq "form: valid options, a screen that is not the form -> 409 screen_not_ready" "$(post /api/decisions/d-1-pqm/answer '{"options":[2,1]}')/$(body .error)" "409/screen_not_ready"
 grep -q '^send-keys' "$FAKE_TMUX_LOG" && bad "  no key sent on a screen that is not the form" || ok "  no key sent on a screen that is not the form"
+eq "  not another question of the form: elsewhere false" "$(body .elsewhere)" "false"
 eq "  pending again, answer cleared, counted" "$(jq -r '"\(.status)|\(.answer_options)|\(.press_not_visible)"' "$BOARD_HOME/decisions/d-1-pqm.json")" "pending|null|1"
+# The form on its second question (the first answered in the session): pending again, the note says so.
+cp "$FAKE_TMUX_SCREEN" "$T/screen.saved"
+printf '←  ☒ Color  ☐ Size  ✔ Submit  →\n\nWhich size?\n\n❯ 1. S\n  2. Type something.\n───\n  3. Chat about this\n\nEnter to select · Tab/Arrow keys to navigate · Esc to cancel\n' > "$FAKE_TMUX_SCREEN"
+: > "$FAKE_TMUX_LOG"
+eq "form: another question of the form showing -> 409 screen_not_ready, elsewhere" "$(post /api/decisions/d-1-pqm/answer '{"options":[2,1]}')/$(body .error)/$(body .elsewhere)" "409/screen_not_ready/true"
+grep -q '^send-keys' "$FAKE_TMUX_LOG" && bad "  no key sent" || ok "  no key sent"
+eq "  press_note_code form_elsewhere, counted" "$(jq -r '"\(.status)|\(.press_note_code)|\(.press_not_visible)"' "$BOARD_HOME/decisions/d-1-pqm.json")" "pending|form_elsewhere|2"
+cp "$T/screen.saved" "$FAKE_TMUX_SCREEN"
 # The form on its first question, never redrawn (static screen): its digit is sent, then the press
 # stops (409 partial) and keeps what board answer recorded.
 cp "$FAKE_TMUX_SCREEN" "$T/screen.saved"

@@ -172,7 +172,8 @@ class BoxedForm(unittest.TestCase):
         time.sleep(0.3)
         self.assertEqual(self.keys(d), [])
         dec = self.dec(did)
-        self.assertEqual((dec["status"], dec.get("answer_options"), dec.get("press_not_visible")), ("pending", None, 1))
+        self.assertEqual((dec["status"], dec.get("answer_options"), dec.get("press_not_visible"), dec.get("press_note_code")),
+                         ("pending", None, 1, "form_elsewhere"))
 
 
 def tearDownModule():
