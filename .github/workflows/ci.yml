@@ -71,6 +71,8 @@ jobs:
         run: python3 tests/test_resources.py -v
       - name: secret guard tests
         run: python3 tests/test_guard.py -v
+      - name: pane prompts settled from the session's own report tests
+        run: python3 tests/test_reconcile.py -v
       - name: card extras tests
         run: python3 tests/test_cards.py -v
       - name: remote control tests

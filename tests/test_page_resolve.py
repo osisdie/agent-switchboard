@@ -2,7 +2,10 @@
 """tests/test_page_resolve.py — optional headless check of closing a board ask that was answered in
 the session: the "maybe answered in the session" hint, the approver-only "Mark answered in session"
 action with its confirm step (POST /api/decisions/<id>/resolve through a real board-serve), no
-action on a gate or for a non-approver, the history chip, zh-TW, and phone width.
+action on a gate or for a non-approver, the history chip, zh-TW, and phone width. A hinted ask is
+de-emphasised and listed last. Pane prompts the collector settled from the session's own report
+(lib/reconcile.py): "delivered (finished in the session)" and "the board's was not used" in the
+history, and no "not delivered" note on the session card.
 
 Needs python playwright and a Chromium it can launch; without them it prints "skipped" and
 exits 0. CI does not run it. PLAYWRIGHT_CHROMIUM_EXECUTABLE points at a specific Chromium / headless
@@ -86,6 +89,20 @@ def main():
         dec("d-1-ask", hint="maybe_answered_in_session", hint_at=now - 120000)
         dec("d-2-gate", gate="owner", stage="plan", task_id="t-1", question="Plan ok?", options=["approve", "request changes"])
         dec("d-3-plain")
+        # settled from the session's report: a press stopped at Submit, then submitted in the pane;
+        # and a pane question answered differently in the pane
+        dec("d-4-deliv", source="pane", question="Which color for the deck?", tool_use_id="tu_x4", status="relayed",
+            answer="Blue", answer_index=2, answered_at=now - 500000, relayed_at=now - 400000,
+            delivered_via="session", reconciled_from="partial", session_id="s-1")
+        dec("d-5-pane", source="pane", question="Which port for the tunnel?", tool_use_id="tu_x5", status="answered_in_pane",
+            answer="8080", answered_at=now - 450000, resolved_via="pane", resolved_by="CP", session_id="s-1",
+            reconcile_result="differs")
+        # the session's report cannot tell what it got (a permission allowed, then the command failed)
+        dec("d-7-unk", kind="permission", question="Allow Make?", tool_name="Bash", tool_use_id="tu_x7",
+            status="answered_in_pane", answer="allow", answered_at=now - 350000, resolved_via="pane", resolved_by="CP",
+            reconcile_result="unknown", reconciled_from="screen")
+        dec("d-6-perm", kind="permission", question="Allow Bash?", tool_name="Bash", tool_use_id="tu_x6", status="relayed",
+            answer="allow", answered_at=now - 300000, relayed_at=now - 300000, delivered_via="session", reconciled_from="screen")
         with open(os.path.join(home, "snapshot.json"), "w", encoding="utf-8") as fh:
             json.dump({"generated_at": now, "sessions": [], "decisions": [], "tasks": []}, fh)
         env = dict(os.environ, BOARD_HOME=home, BOARD_CONFIG_DIR=cfg, CLAUDE_SESSIONS_DIR=sess)
@@ -125,6 +142,26 @@ def main():
             check("the hint shows on the board ask", c and c["maybe"] and c["maybe"].startswith("Maybe answered in the session: CP took a new prompt"), c)
             check("an approver gets 'Mark answered in session'", c and c["resolve"], c)
             check("no hint on an ask without one", pg.evaluate(CARD_JS, "d-3-plain")["maybe"] is None)
+            order = pg.evaluate("() => [...document.querySelectorAll('#dec-list > article')].map((a) => [a.id, a.classList.contains('maybe')])")
+            check("the hinted ask is listed last, de-emphasised; the others are not",
+                  order and order[-1] == ["dec-d-1-ask", True] and not any(m for _, m in order[:-1]), order)
+            check("  quieter (lower opacity)", float(pg.evaluate("() => getComputedStyle(document.getElementById('dec-d-1-ask')).opacity")) < 1)
+            pg.evaluate("() => { const d = document.getElementById('dec-history'); d.hidden = false; d.open = true; }")
+            HIST = """(q) => { const li = [...document.querySelectorAll('#dec-history-list li')].find((l) => l.textContent.includes(q));
+              return li ? { chip: li.querySelector('.status').textContent, text: li.textContent, nd: li.classList.contains('undelivered') } : null; }"""
+            h4 = pg.evaluate(HIST, "Which color for the deck?")
+            check("history: delivered (finished in the session), never 'not delivered'",
+                  h4 and h4["chip"] == "delivered" and "delivered (finished in the session)" in h4["text"] and not h4["nd"]
+                  and "Not delivered" not in h4["text"], h4)
+            h5 = pg.evaluate(HIST, "Which port for the tunnel?")
+            check("history: answered in session, the board's answer was not used",
+                  h5 and h5["chip"] == "answered in session" and "the board's was not used" in h5["text"] and not h5["nd"], h5)
+            h7 = pg.evaluate(HIST, "Allow Make?")
+            check("history: an unknown outcome is neutral (finished in the session), never 'different answer'",
+                  h7 and h7["chip"] == "answered in session" and "finished in the session" in h7["text"]
+                  and "different answer" not in h7["text"] and not h7["nd"], h7)
+            h6 = pg.evaluate(HIST, "Allow Bash?")
+            check("history: a permission allowed in the session = delivered", h6 and h6["chip"] == "delivered", h6)
             g = pg.evaluate(CARD_JS, "d-2-gate")
             check("never on a gate", g and not g["resolve"], g)
             pg.click('#dec-d-1-ask button:has-text("Mark answered in session")')
@@ -155,6 +192,10 @@ def main():
             pg = new_page(1280, "try{localStorage.setItem('switchboard.lang','zh-TW')}catch(e){}")
             c = pg.evaluate(CARD_JS, "d-3-plain")
             check("the action in zh-TW", c and c["resolve"] and "標記為已在 session 中回答" in c["text"], c)
+            pg.evaluate("() => { const d = document.getElementById('dec-history'); d.hidden = false; d.open = true; }")
+            zh = pg.evaluate("() => document.getElementById('dec-history-list').textContent")
+            check("history wording in zh-TW", "已送達（在 session 中完成）" in zh and "看板的回答沒有用上" in zh
+                  and "· 在 session 中完成" in zh, zh[:300])
             pg.close()
 
             print("not an approver:")

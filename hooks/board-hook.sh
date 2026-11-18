@@ -13,6 +13,9 @@
 # for AskUserQuestion its questions and options (redacted, clipped, control characters removed).
 # recent_done keeps the last 8 completed tool calls (name, that summary clipped to 120, duration,
 # ok/failed, time) inside the same state file write: no extra process per event.
+# A PostToolUse / PostToolUseFailure line on events.jsonl says how a prompt ended, never with its
+# answer text: for a submitted AskUserQuestion the option numbers (or keyed hashes of free text),
+# for a failure `denied: true` when it reads as a rejection (lib/reconcile.py).
 #
 # Env: BOARD_HOME (default ~/.agent-switchboard)
 set -u
@@ -150,11 +153,25 @@ def qinfo:
           clipped: (any($out[]; .lc or .question_clipped or .header_clipped) or ($qs | length) > 6) } end;
 JQ
 
+# A submitted AskUserQuestion picker: how it was answered, without the answer text (lib/reconcile.py
+# hook-outcome: per question the option number its label matched, or an HMAC of free text under
+# this install's key; none for text that looks like a secret, an email or a phone number). Only for
+# that one event, so python never runs on the hot path.
+outcome="null"
+case "$event" in
+  PostToolUse)
+    if [[ $input == *'"AskUserQuestion"'* ]]; then
+      outcome="$(printf '%s' "$input" | BOARD_HOME="$BOARD_HOME" python3 "$LIB/reconcile.py" hook-outcome 2>/dev/null)"
+      case "$outcome" in '{'*'}') ;; *) outcome="null" ;; esac
+    fi ;;
+esac
+
 update() {
   local old="/dev/null" out st ev dec lim tmp
   [ -s "$state_file" ] && old="$state_file"
   out="$(printf '%s' "$input" | jq -c \
     --slurpfile old "$old" \
+    --argjson outcome "$outcome" \
     --argjson now "$now_ms" \
     --argjson pid "$claude_pid" \
     --arg pane "${TMUX_PANE:-}" \
@@ -265,8 +282,15 @@ update() {
           last_stop_at: (if $ev == "Stop" or $ev == "StopFailure" then $now else ($o.last_stop_at // null) end),
           recent_done: $done,
           updated_at: $now } ),
+      # How a tool use ended, for the collector to settle its decision (lib/reconcile.py): the
+      # outcome of a picker (option numbers / free-text hashes), and on a failure only whether it reads as the
+      # rejection of the prompt by the user (the error text itself is never stored).
       ( { ts: $now, type: "hook", session_id: $in.session_id, event: $ev,
-          notification_type: $nt, tool_name: $tn, tool_use_id: $tu, state: $t.state } | clean ),
+          notification_type: $nt, tool_name: $tn, tool_use_id: $tu, state: $t.state,
+          outcome: (if $ev == "PostToolUse" and $tu != "" and ($outcome | type) == "object" then $outcome else null end),
+          denied: (if $ev == "PostToolUseFailure" and $tu != ""
+                      and (($in.error // "") | tostring | test("doesn.t want to proceed with this tool use|tool use was rejected|rejected by the user"; "i"))
+                   then true else null end) } | clean ),
       ( if $new_dec == null then null
         elif $pending.tool_name == "AskUserQuestion" then
           ($pending.questions // []) as $qs
@@ -336,9 +360,11 @@ update() {
       if [ -n "${dec:-}" ] && [ "$dec" != "null" ]; then dec="$(guard_json "$dec")"; fi ;;
   esac
 
+  # The event line goes first: a state file that no longer shows a prompt always comes with the
+  # line that says how it ended (the collector settles the prompt's decision from it).
+  [ -n "${ev:-}" ] && printf '%s\n' "$ev" >> "$BOARD_HOME/events.jsonl"
   tmp="$state_file.tmp.$$"
   printf '%s\n' "$st" > "$tmp" && mv -f "$tmp" "$state_file"
-  [ -n "${ev:-}" ] && printf '%s\n' "$ev" >> "$BOARD_HOME/events.jsonl"
   if [ -n "${dec:-}" ] && [ "$dec" != "null" ]; then
     tmp="$dec_dir/.$dec_id.tmp.$$"
     printf '%s\n' "$dec" > "$tmp" && mv -f "$tmp" "$dec_dir/$dec_id.json"

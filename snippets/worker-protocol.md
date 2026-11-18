@@ -20,6 +20,8 @@ shows the human a board and relays their answers.
   session), close the board card right away with `board resolve <id> --from <CODE> --in-pane`
   (optional `--note-file <file>`: one line, no secrets), then carry on. A late board answer for the
   same question is ignored, and I say so in one line.
+- A permission prompt or an AskUserQuestion picker in my pane needs no `board resolve`: the board
+  settles it from my session's own report of how it ended.
 - Don't stop all work while waiting. Continue with whatever doesn't depend on the answer.
 
 ### Lifecycle gates (when working on a task)

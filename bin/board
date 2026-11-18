@@ -909,20 +909,31 @@ cmd_answer() {
       lock_tf=""
     fi
   fi
-  update_decision "$id" '.status = "answered" | .answer = $a | .answered_by = $by | .answered_at = $now | .updated_at = $now
-      | del(.press_note, .press_note_at, .press_note_code, .status_reason)' \
-    --arg a "$answer" --arg by "$by" --argjson now "$now"
+  local base='.status = "answered" | .answer = $a | .answered_by = $by | .answered_at = $now | .updated_at = $now
+      | del(.press_note, .press_note_at, .press_note_code, .status_reason)'
+  local is_pane=0
+  [ "$(jq -r '.source // empty' "$f")" = pane ] && is_pane=1
+  # One write for the answer and everything derived from it (option number, form options, texts,
+  # relay): a reader (the collector settling a prompt from the session's report) never sees a new
+  # answer next to the previous answer's options.
+  if [ "$is_pane" = 1 ] && [ -n "$opts_json" ]; then
+    update_decision "$id" "$base"' | .answer_options = $o | .answer_texts = $t | .answer_index = null
+        | .relay = (if .pressable == true then "press" else "operator" end)' \
+      --arg a "$answer" --arg by "$by" --argjson now "$now" --argjson o "$opts_json" --argjson t "$texts_json"
+  elif [ "$is_pane" = 1 ]; then
+    update_decision "$id" "$JQ_PANE_ANSWER$base"' | .answer_index = pane_index | .relay = pane_relay | .answer_options = null | .answer_texts = null' \
+      --arg a "$answer" --arg by "$by" --argjson now "$now" --argjson max "$FREE_TEXT_MAX"
+  else
+    update_decision "$id" "$base" --arg a "$answer" --arg by "$by" --argjson now "$now"
+  fi
   log_event "$(jq -cn --arg id "$id" --arg by "$by" --argjson now "$now" '{ts: $now, type: "answer", id: $id, by: $by}')"
 
-  if [ "$(jq -r '.source // empty' "$f")" = pane ]; then
-    # A pane question: map the answer to its option number, and decide how it reaches the session.
+  if [ "$is_pane" = 1 ]; then
+    # A pane question: its answer was mapped to its option number above, and how it reaches the session.
     if [ -n "$opts_json" ]; then
-      update_decision "$id" '.answer_options = $o | .answer_texts = $t | .answer_index = null
-        | .relay = (if .pressable == true then "press" else "operator" end)' --argjson o "$opts_json" --argjson t "$texts_json"
       echo "$id answered (options $options$( [ "$texts_json" != null ] && echo ", free text"), relay by $(jq -r '.relay' "$f"))"
       return 0
     fi
-    update_decision "$id" "$JQ_PANE_ANSWER"'.answer_index = pane_index | .relay = pane_relay | .answer_options = null | .answer_texts = null' --argjson max "$FREE_TEXT_MAX"
     local idx relay
     idx="$(jq -r '.answer_index // empty' "$f")"
     relay="$(jq -r '.relay' "$f")"

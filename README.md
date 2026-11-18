@@ -426,8 +426,15 @@ to the Artifact or put in an alert. Turn the prompt off with `cards: {show_promp
   another session), the worker closes the card with `board resolve <id> --from API --in-pane`
   (status `answered_in_pane`). If it forgets, the card says "maybe answered in the session" once
   that session has taken a new prompt and finished a turn since the ask, and an approver can close
-  it with **Mark answered in session** (it asks to confirm; nothing is sent to the session). A card
-  is never closed automatically.
+  it with **Mark answered in session** (it asks to confirm; nothing is sent to the session). Such a
+  card moves to the end of the list, de-emphasised. A card is never closed automatically.
+- **Prompts settled by the session.** A permission prompt or a pane question ends with the
+  session's own report (`PostToolUse` / `PostToolUseFailure`), and the board follows it: when the
+  session got exactly the board's answer the decision reads **delivered** (also when a press stopped
+  at Submit and someone submitted the form in the pane: "delivered (finished in the session)"),
+  otherwise **answered in session** ("the board's was not used" only when the session provably got
+  something else). The hook records only option numbers and keyed hashes of free text (a per-install
+  key in `$BOARD_HOME/secrets/`), never the answer text (docs/contract.md, "Session outcomes").
 - **Permission prompts.** The card shows the tool name and a ≤200-char summary of its input, so you
   know what you are allowing. Token-like values in the summary are replaced with `[REDACTED]`.
   **Allow** or **Deny** makes the operator run `board answer <id> allow|deny --by <you>` and then

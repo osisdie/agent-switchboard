@@ -8,6 +8,7 @@ This repo is generic. Do not write any machine-, company-, product- or person-sp
 $BOARD_HOME/
   state/<session_id>.json   # written by hooks/board-hook.sh, one per Claude Code session
   events.jsonl              # append-only audit log (hook events, presses, relays)
+  reconcile-cursor.json     # how far the collector read events.jsonl for session outcomes ({ino, off})
   decisions/<id>.json       # written by `board ask` (kind=question) and by the hook (kind=permission,
                             # or kind=question source=pane for an AskUserQuestion picker)
   outbox/                   # reserved
@@ -40,6 +41,7 @@ $BOARD_HOME/
   apikeys/<kid>.json        # one API key: its peppered hash and metadata, never the key (0600; see "API keys")
   apikeys.lock              # flock held by `board apikey` while it changes a key
   secrets/apikey.pepper     # 32 random bytes for the key hashes (0600, made on the first create or request)
+  secrets/reconcile.key     # 32 random bytes keying the free-text answer hashes (0600, made on first use; "Session outcomes")
 ```
 
 ### state/<session_id>.json
@@ -72,7 +74,7 @@ Map hook events to states like this:
 | `SessionEnd` | offline |
 | `SessionStart` | rest |
 
-`pending` is cleared on the next `PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit` or `Stop`. The hook writes the state file atomically (write to a temp file, then `mv`). It never blocks Claude, prints nothing to stdout and always exits 0. It does not record prompt text. The only input it captures is a ≤200-char summary of the pending tool's input, and for `AskUserQuestion` its questions and options (redacted and clipped, see Pane questions). Token-like values (bearer tokens, Slack/GitHub/AWS keys, board API keys, `password=`/`token=`/`secret=`/`api_key=` values, long base64/hex runs) are replaced by `[REDACTED]` before storing. `summary_truncated`, `summary_len` and `summary_sha256` describe the full input string. When a `PermissionRequest` carries no `tool_use_id` and more than one in-flight tool use could match it, the hook does not guess: `pending.ambiguous` is `true` and no permission decision is created. `$BOARD_HOME` is mode 0700 and its files 0600 (umask 077 in every writer).
+`pending` is cleared on the next `PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit` or `Stop`. The `events.jsonl` line of a `PostToolUse` / `PostToolUseFailure` may carry `outcome` / `denied` (see "Session outcomes"); it is appended before the state file is written. The hook writes the state file atomically (write to a temp file, then `mv`). It never blocks Claude, prints nothing to stdout and always exits 0. It does not record prompt text. The only input it captures is a ≤200-char summary of the pending tool's input, and for `AskUserQuestion` its questions and options (redacted and clipped, see Pane questions). Token-like values (bearer tokens, Slack/GitHub/AWS keys, board API keys, `password=`/`token=`/`secret=`/`api_key=` values, long base64/hex runs) are replaced by `[REDACTED]` before storing. `summary_truncated`, `summary_len` and `summary_sha256` describe the full input string. When a `PermissionRequest` carries no `tool_use_id` and more than one in-flight tool use could match it, the hook does not guess: `pending.ambiguous` is `true` and no permission decision is created. `$BOARD_HOME` is mode 0700 and its files 0600 (umask 077 in every writer).
 
 ### snapshot.json (collector output)
 ```json
@@ -208,7 +210,8 @@ instead. Everything in `card` also passes the guard's `scrub_tree` like the rest
   "summary_truncated": false, "summary_len": 0, "summary_sha256": "... (permission only)",
   "status": "pending|answered|relayed|stale|timeout|unauthorized|answered_in_pane",
   "answer": null, "answered_by": null, "answered_at": null, "relayed_at": null,
-  "created_at": 0 }
+  "delivered_via": "session (settled from the session's report)", "reconciled_from": "partial",
+  "reconcile_result": "match|differs|unknown|no_answer", "reconciled_at": 0, "created_at": 0 }
 ```
 
 **Board asks answered elsewhere.** A plain board ask (`kind: "question"`, no `source: "pane"`, no
@@ -250,7 +253,8 @@ is closed with `board resolve <id> --in-pane --from <CODE>|--by <approver> [--no
   `last_stop_at` (Stop / StopFailure) in the state file. On every run the collector sets
   `hint: "maybe_answered_in_session"` and `hint_at` (that Stop) on a pending plain ask when its
   asking session's `last_prompt_at` is after the ask's `created_at` and its `last_stop_at` is after
-  that prompt: someone may have answered in the pane. It is set once and only shown. Like every
+  that prompt: someone may have answered in the pane. It is set once and only shown: the page lists
+  a hinted ask last, de-emphasised, with **Mark answered in session** for approvers. Like every
   collector write to a decision, it re-reads the file right before writing and skips it when the
   status moved meanwhile (an answer or a resolve wins).
 - board-serve: `POST /api/decisions/<id>/resolve` `{"confirm": "resolve", "note"?}`, approvers only
@@ -286,8 +290,11 @@ multiSelect, options: [{label, description}]}]}` on `PreToolUse` (with `tool_use
   `header_clipped` that its header was. Decisions without `labels_clipped` (older hooks) count any
   clipping.
 - `options` is the label list of a single question (empty for several). `from` is filled with the
-  session code by the collector, which also marks the decision `stale` when the session no longer
-  shows that `tool_use_id` pending (the human answered in the pane, `PostToolUse`, `Stop`).
+  session code by the collector. When the session reports how the prompt ended (`PostToolUse` /
+  `PostToolUseFailure` for that `tool_use_id`), the collector settles the decision from that
+  report (see "Session outcomes" below); when it no longer shows that `tool_use_id` pending without
+  such a report (`UserPromptSubmit`, `Stop`, a new session), it marks it `stale` (`status_reason:
+  "moved_on"` when the board had an answer).
 - `pressable` = 1–4 questions, none `multiSelect`, no label clipped (`labels_clipped`
   false; a long question or header alone is fine), 1–8 options each, labels unique within each
   question, and no question's start (as stored, up to a clip, whitespace removed) begins
@@ -298,6 +305,93 @@ multiSelect, options: [{label, description}]}]}` on `PreToolUse` (with `tool_use
   or a unique case-insensitive match; else `null` = free text) and `relay`: `"press"` when
   `pressable` and the answer is an option or one line of ≤200 printable characters, else
   `"operator"` (sent as `[BOARD decision <id>] <answer> (by owner on board)`).
+
+### Session outcomes: settling a pane prompt from the session's own report
+
+A permission prompt or a pane question (a decision with a `tool_use_id`) is answered either from
+the board (`board press`) or by a person in the pane. Either way the session reports how it ended,
+and that report, not the press, decides what the board shows. The board no longer leaves such a
+decision "not delivered" when the session in fact got the board's answer (a press that typed every
+answer but stopped at Submit, then someone submitted the form in the pane).
+
+**What the hook records** on the `events.jsonl` line of a `PostToolUse` / `PostToolUseFailure`
+(`type: "hook"`, `event`, `tool_use_id`, as before), and nothing more:
+
+- `outcome` (a `PostToolUse` of `AskUserQuestion` only): `{"picks": [n|null, ...], "text_sha":
+  [hex|null, ...], "kid": "hex8"}`, one entry per question in order, from Claude Code's `tool_response`
+  (`{questions, answers: {<question text>: <label or free text>}, annotations}`; else
+  `tool_input.answers`). `picks[i]` is the 1-based number of the option the answer names
+  (whitespace-normalised): its exact label first, else a case-insensitive match only when exactly
+  one label fits (labels that differ only by case need the exact one). For free text `text_sha[i]`
+  is the first 32 hex of `HMAC-SHA256(key, tool_use_id + "\n" + normalised text)` under this
+  install's key `secrets/reconcile.key` (32 random bytes, 0600 in a 0700 directory, made on first
+  use; never served, mirrored or logged; a key that is a symlink, another user's, readable by others
+  or the wrong size is not used, and then nothing is hashed). Without the key a short answer cannot
+  be guessed from its hash, and the same answer hashes differently on another install. Free text
+  that the secret guard would change (`lib/guard.py` `scrub`: vendor tokens, `key=value`
+  credentials, a literal `.env` value, random-looking runs), or that holds an email address or a
+  phone number (`lib/pii.py` `TEXT_EMAIL_RE`; 8+ digits), gets no hash at all (`null`). The digit
+  rule also catches dates and other long numbers: such an answer compares as `unknown`, never as a
+  match. The key is made by a hard link from a full temp file (another writer's key is kept); only
+  on a filesystem without hard links (`EPERM` / `ENOTSUP`) is it moved into place instead, and the
+  key is always read back from the file. `kid` (present when a hash is) is
+  `HMAC-SHA256(key, "reconcile-key-id")[:8]`: it names the key, not reveals it. A text slot whose
+  `kid` is missing or not the current key's (the key was replaced: deleted, restored, or lost in a
+  creation race) compares as `unknown`, never `differs`. The answer
+  text is never stored: not in the event, the state file or the decision. It is computed by `lib/reconcile.py hook-outcome`, the only python start, and only for
+  this event.
+- `denied: true` (a `PostToolUseFailure` only) when its error reads as the user rejecting the
+  prompt (Claude Code's "doesn't want to proceed with this tool use" / "tool use was rejected"
+  wording). The error text itself is not stored. Any other failure says nothing about allow or deny.
+- The hook appends this line **before** it writes the state file, so a state that no longer shows
+  the prompt always comes with the line that says how it ended.
+
+**What the collector does** (`lib/collect.py` `process_decisions`, `lib/reconcile.py`). It reads
+`events.jsonl` incrementally (the byte offset it reached is kept in `reconcile-cursor.json`; a
+missing or stale cursor, e.g. a rotated file, restarts from the last 8 MiB: a bounded backfill of
+lines written before this existed) and keeps the outcomes of the last 7 days. A decision is settled
+when it is a permission or a pane question with that `tool_use_id`, created within 7 days and no
+later than the outcome, and its status is `pending`, `answered` or `stale`:
+
+The outcome is compared with the board's recorded answer and the result kept in
+`reconcile_result`:
+
+| Status before | The session's outcome | `reconcile_result` | Status after |
+|---|---|---|---|
+| `answered` / `stale` with a board answer | equals it: permission `allow` and `PostToolUse`, or `deny` and `denied`; a question with every pick equal to the board's option and every free-text hash equal to the hash of the board's text | `match` | `relayed`, `delivered_via: "session"`, `relayed_at` kept or the outcome's time |
+| `answered` / `stale` with a board answer | provably something else: permission `allow` vs `denied` or `deny` vs `PostToolUse`; a question with another option, an option where the board typed text (or the reverse), or a free-text hash that differs | `differs` | `answered_in_pane`, `resolved_via: "pane"`, `resolved_by` the session code; the board's answer is kept as it was |
+| `answered` / `stale` with a board answer | cannot tell: a permission failure that is not a rejection (allowed, then the command failed, or not), a failed or declined picker, a picker without a recorded outcome (older hooks, backfill) or with the wrong number of answers, free text without a hash on either side or hashed under a replaced key | `unknown` | `answered_in_pane`, as above |
+| `pending` (no board answer) | any | `no_answer` | `answered_in_pane`, as above |
+| `relayed`, `unauthorized`, `timeout`, `answered_in_pane` | any | — | never changed |
+
+- A form of several questions is told by its stored fields, as `board answer --options` /
+  `--form-file` write them: `answer_options` one number per question (a free-text row is that
+  question's option count + 1), `answer_texts` null or one entry per question (the text, or null),
+  and `answer` the composed `Header: label · Header: text`.
+- The board's answer is only compared when its stored fields fit together (`board answer` writes
+  the answer, `answer_index`, `answer_options` and `answer_texts` in one write): an option number
+  that is not the label's, a label answer without its number, form options that do not compose the
+  stored answer (or a free-text row that is not count + 1) is left for the next run while the
+  decision was updated less than 60 s ago, and settles as `unknown` after that (at once when its
+  write time is ahead of the collector's clock).
+
+- A `stale` decision is no longer final for this transition only: it records why it had gone stale
+  in `reconciled_from` (its `status_reason` code, else `"stale"`), `status_reason` is removed, and
+  `reconciled_at` is the outcome's time. An `answered` decision (a press in flight) gets no
+  `reconciled_from`.
+- The write follows the collector's rule (re-read right before writing; skipped when the status
+  moved meanwhile, and then the cursor is not advanced, so the next run tries again while the
+  decision is still `pending`, `answered` or `stale`) and appends `{type: "decision", id, status, by: "collector", reason:
+  "session_outcome"}`.
+- `board mark` still never re-marks a final status; `board press` marking `relayed` on a decision
+  the collector already settled as `relayed` is a no-op.
+- board-serve passes `delivered_via` (only `"session"`), `reconciled_from` (only a known reason
+  code or `"stale"`) and `reconcile_result` (only the four codes) to the page. The page words them:
+  history chip **delivered**, with "delivered (finished in the session)" when it had gone stale
+  first; an `answered_in_pane` decision with a board answer says "the session got a different
+  answer; the board's was not used" only for `differs`, and a neutral "finished in the session" for
+  `unknown`. The session card never shows "Your answer was not delivered" for a decision that is
+  `relayed` or `answered_in_pane`.
 
 ### Permission decisions: who may press
 

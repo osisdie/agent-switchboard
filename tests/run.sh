@@ -954,8 +954,8 @@ eq "...not stale: pending, answer cleared, note says scrolled" "$(dj "$d" '"\(.s
 eq "...still scrolled after the key -> press_note_code scrolled, 1 attempt" "$(dj "$d" '"\(.press_note_code)/\(.press_not_visible)"')" "scrolled/1"
 eq "...the collector keeps it pending while the session waits" "$(PATH="$T/bin:$PATH" "$REPO/bin/board-collect" --once --no-notify >/dev/null 2>&1; dj "$d" .status)" "pending"
 qdone tu_s2
-eq "...stale once the session moved on (PostToolUse)" "$(PATH="$T/bin:$PATH" "$REPO/bin/board-collect" --once --no-notify >/dev/null 2>&1; dj "$d" .status)" "stale"
-eq "...stale once the session moved on, status_reason moved_on" "$(dj "$d" .status_reason)" "moved_on"
+eq "...settled once the session reported it (PostToolUse, answers not recorded) -> answered_in_pane" "$(PATH="$T/bin:$PATH" "$REPO/bin/board-collect" --once --no-notify >/dev/null 2>&1; dj "$d" .status)" "answered_in_pane"
+eq "...no status_reason, resolved_via pane" "$(dj "$d" '"\(has("status_reason"))/\(.resolved_via)"')" "false/pane"
 # Scrolled, the scroll key sent, then no picker and no scrolled line: not "scrolled" any more.
 d="$(askq tu_s2b "$Q1")"; "$B" answer "$d" "Blue" --by user-1 >/dev/null
 seqpress tu_s2b "$SCR" "$(junk)"
@@ -1750,8 +1750,13 @@ qdone tu_q11
 d="$(askq tu_q10 "$Q1")"
 qdone tu_q10
 PATH="$T/bin:$PATH" "$REPO/bin/board-collect" --once --no-notify >/dev/null 2>&1
-eq "PostToolUse for the question -> stale" "$(dj "$d" .status)" "stale"
+eq "PostToolUse for the question -> answered_in_pane (the session's own report)" "$(dj "$d" .status)" "answered_in_pane"
 eq "...from filled with the session code" "$(dj "$d" .from)" "CP"
+# The session moves on without reporting the picker (a new prompt): stale, moved_on.
+d="$(askq tu_mv1 "$Q1")"
+hook "$(jq -cn --arg s "$SID" '{session_id: $s, hook_event_name: "UserPromptSubmit"}')"
+PATH="$T/bin:$PATH" "$REPO/bin/board-collect" --once --no-notify >/dev/null 2>&1
+eq "moved on without a PostToolUse -> stale, moved_on" "$(dj "$d" '.status + "/" + .status_reason')" "stale/moved_on"
 
 hook "$(jq -cn --arg s "$SID" '{session_id: $s, hook_event_name: "UserPromptSubmit"}')"
 hook "$(jq -cn --arg s "$SID" '{session_id: $s, hook_event_name: "PreToolUse", tool_name: "Bash", tool_use_id: "tu_last", tool_input: {command: "true"}}')"
