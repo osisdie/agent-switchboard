@@ -602,6 +602,8 @@ board rc clear API               # 忘掉設定：回到 fleet.yaml（預設開�
   （由 Cloudflare Access 驗證），資料來自 `GET /api/me`。Artifact 看板上是你的 claude.ai 帳號，
   以及你能不能編輯這個看板。demo 顯示一個範例身分。
 - **你的角色：** 擁有者、approver、release manager、提問者（只能傳訊息）或 viewer。提問者看得到訊息輸入框，但沒有回答按鈕。
+- **你的狀態**（擁有者，自架看板）：在線、勿擾或不在，頭像按鈕上也會有小標籤顯示。見
+  [勿擾與自動婉拒](#勿擾與自動婉拒)。
 - **主題：** 淺色、深色或跟隨系統。選擇存在這個瀏覽器裡（`localStorage`；儲存被封鎖時只在這次瀏覽
   有效），並在頁面繪製前套用，所以不會閃一下。在 claude.ai 檢視器裡，以檢視器設定的主題為準：
   切換器會顯示該主題並停用。檢視器取消設定後，會恢復你自己的選擇。
@@ -730,6 +732,47 @@ pomodoro:                 # fleet.yaml；全部選填
   （`POST /api/away`）。不在狀態改變時，BOARD 會通知每個存活的 session，並回報誰收到、誰確認了。
 
 詳見 [`docs/contract.md`](docs/contract.md) 的「Owner away & consensus」。
+
+### 勿擾與自動婉拒
+
+**是什麼。** 有時你人在、也在工作，只是現在不想接提問者的問題或派工。**勿擾**讓你維持在場（這
+**不是**不在：不會進入共識模式），並用一段簡短的固定回覆替你回應提問者。運算資源吃緊時，看板也會
+自動這樣做。
+
+**為什麼。** 提問者的一則訊息會喚醒 BOARD 和某個 session，花掉 token。由 board-serve 送出的固定
+回覆不花任何 token，提問者知道目前的狀況，送出的內容也不會遺失。
+
+- **你的狀態**在個人選單裡（只有擁有者看得到）：**在線**、**勿擾**或**不在**，頭像按鈕上的小標籤
+  會顯示目前狀態。選單讓三者互斥。不在就是上面的主人不在模式，完全一樣。在終端機：
+
+  ```bash
+  board dnd on --by OPS          # $BOARD_HOME/owner-dnd；--said "..." 留一段備註
+  board dnd status               # exit 0 = 開，1 = 關；--quiet、--json
+  board dnd off --by OPS
+  ```
+
+- **開啟期間**，提問者的訊息（頁面、`board message send --by <提問者>`、`/api/v1/messages`、MCP
+  `send_message`）會以 `declined` 狀態保存，對話串裡加上一則 BOARD 的固定回覆，留下稽核紀錄，而且
+  **絕不轉送**：不會出現 `message <id> new`，也不會打斷任何 session。API 回 201，帶
+  `status: "declined"`、`reason` 和 `reply`。提問者的金鑰想建立工作（`POST /api/v1/tasks`、領取
+  ticket）時回 `409 declined`，什麼都不會建立。提問者的頻率限制照常適用。
+- **運算資源吃緊**（自動，原因 `compute_low`）：同樣婉拒，回覆「請稍後再試」。條件是 5 小時用量
+  達到 90 % 以上、7 天用量達到 95 % 以上，或已經碰到用量上限（取自新鮮的 `usage.json` 和
+  `limit.json`）。門檻在 `fleet.yaml`：
+
+  ```yaml
+  availability:
+    dnd_reply: "Heads down today. Please ask again tomorrow."   # 預設：English + 繁體中文
+    compute_reply: "Busy right now. Please try again later."
+    compute: {enabled: true, five_hour_pct: 90, seven_day_pct: 95, limit: true}
+  ```
+
+  回覆只有一行，會經過機密清除，最多 300 個字元。回覆絕不透露你在哪裡，也不顯示用量數字。
+- **影響誰：** 只有提問者（以及發給提問者的 API 金鑰）。擁有者、核准者、release manager，以及
+  session 自己的 `board ask` 都不會被婉拒。提問者的輸入框會顯示目前暫停受理；你在看板上看得到被
+  婉拒的對話串，標示為 `declined`。
+
+詳見 [`docs/contract.md`](docs/contract.md) 的「Owner availability (do not disturb)」。
 
 <a id="alerting--escalation"></a>
 

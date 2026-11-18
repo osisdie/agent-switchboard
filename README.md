@@ -670,6 +670,8 @@ The avatar at the top right of the board opens a small menu:
   The demo shows a sample identity.
 - **Your roles:** owner, approver, release manager, asker (messages only), or viewer. An asker gets the
   message composer but no answer buttons.
+- **Your status** (owners, self-hosted board): Online, Do not disturb or Away, also shown as a chip
+  on the avatar button. See [Do not disturb](#do-not-disturb-and-automatic-declines).
 - **Theme:** Light, Dark or System. The choice is kept in this browser (`localStorage`; if storage
   is blocked it lasts for the page view) and applied before the page paints, so there is no flash.
   Inside the claude.ai viewer, a theme the viewer has set wins: the switcher then shows it and is
@@ -817,6 +819,51 @@ never counts, and the dangerous things still wait for you.
   acknowledged it.
 
 Details: [`docs/contract.md`](docs/contract.md), "Owner away & consensus".
+
+### Do not disturb and automatic declines
+
+**What.** Sometimes you are here and working, but don't want askers' questions or work requests
+right now. **Do not disturb** keeps you present (it is *not* away: no consensus mode) and answers
+askers for you with a short canned reply. The board does the same, on its own, when compute is
+short.
+
+**Why.** An asker's message wakes BOARD and a session and spends tokens. A canned reply from
+board-serve costs nothing, the asker knows where they stand, and nothing they sent is lost.
+
+- **Your status** is in the profile menu (owners only): **Online**, **Do not disturb** or **Away**,
+  and a small chip on the avatar button shows it. The menu keeps them exclusive. Away is
+  owner-away mode, exactly as above. From a terminal:
+
+  ```bash
+  board dnd on --by OPS          # $BOARD_HOME/owner-dnd; --said "..." keeps a note for the record
+  board dnd status               # exit 0 = on, 1 = off; --quiet, --json
+  board dnd off --by OPS
+  ```
+
+- **While it is on**, an asker's message (the page, `board message send --by <asker>`,
+  `/api/v1/messages`, MCP `send_message`) is stored with status `declined`, gets the canned reply
+  from BOARD in its thread, is audited, and is **never relayed**: no `message <id> new` line, no
+  session interrupted. The API answers 201 with `status: "declined"`, `reason` and `reply`. An
+  asker's key that tries to create work (`POST /api/v1/tasks`, a ticket take) gets
+  `409 declined` and nothing is created. The asker rate limit still applies.
+- **Compute is short** (automatic, reason `compute_low`): the same decline, with a "try again later"
+  reply, while the 5-hour usage is at or above 90 %, the 7-day usage at or above 95 %, or a usage
+  limit is hit (fresh `usage.json`, `limit.json`). Thresholds in `fleet.yaml`:
+
+  ```yaml
+  availability:
+    dnd_reply: "Heads down today. Please ask again tomorrow."   # default: English + 繁體中文
+    compute_reply: "Busy right now. Please try again later."
+    compute: {enabled: true, five_hour_pct: 90, seven_day_pct: 95, limit: true}
+  ```
+
+  Replies are one line, scrubbed, at most 300 characters. They never say where you are or show
+  usage numbers.
+- **Who is affected:** askers only (and API keys issued to one). Owners, approvers, release
+  managers and sessions' own `board ask` are never declined. The asker's composer says requests
+  are paused; you see declined threads on the board, marked `declined`.
+
+Details: [`docs/contract.md`](docs/contract.md), "Owner availability (do not disturb)".
 
 ## Alerting & escalation
 

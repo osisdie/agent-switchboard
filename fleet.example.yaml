@@ -61,6 +61,14 @@ askers: []
 # Answering still needs `approvers`.
 owners: []
 # owners: [owner@example.com, owner.backup@example.com]
+# Do not disturb (`board dnd on|off`, or the profile menu): the owner is present, but askers'
+# messages and work requests get a canned reply from BOARD and reach no session. The same happens
+# on its own while compute is short (5-hour usage >= five_hour_pct, 7-day >= seven_day_pct, or a
+# usage limit is hit). Replies: one line, at most 300 characters; defaults in English + 繁體中文.
+# availability:
+#   dnd_reply: "Heads down today. Please ask again tomorrow."
+#   compute_reply: "Busy right now. Please try again later."
+#   compute: {enabled: true, five_hour_pct: 90, seven_day_pct: 95, limit: true}
 # apikeys:
 #   request_ttl_days: 14     # a key request no owner approved by then lapses (1-90)
 
