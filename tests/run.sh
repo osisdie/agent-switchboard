@@ -463,6 +463,10 @@ case "$1" in
     if [ -n "${FAKE_TMUX_MUTATE:-}" ] && { [ -z "${FAKE_TMUX_MUTATE_AT:-}" ] || [ "$n" = "$FAKE_TMUX_MUTATE_AT" ]; }; then
       jq '.pending.tool_use_id = "tu_other"' "$FAKE_TMUX_MUTATE" > "$FAKE_TMUX_MUTATE.x" && mv "$FAKE_TMUX_MUTATE.x" "$FAKE_TMUX_MUTATE"
     fi
+    # FAKE_TMUX_DEC: a decision file another writer rewrites (FAKE_TMUX_DEC_JQ) at capture FAKE_TMUX_DEC_AT.
+    if [ -n "${FAKE_TMUX_DEC:-}" ] && [ "$n" = "${FAKE_TMUX_DEC_AT:-}" ]; then
+      jq "$FAKE_TMUX_DEC_JQ" "$FAKE_TMUX_DEC" > "$FAKE_TMUX_DEC.x" && mv "$FAKE_TMUX_DEC.x" "$FAKE_TMUX_DEC"
+    fi
     # FAKE_TMUX_HISTORY: the scrollback above the screen, printed first by a capture with -S.
     case " $* " in *" -S "*) [ -n "${FAKE_TMUX_HISTORY:-}" ] && printf '%s\n' "$FAKE_TMUX_HISTORY" ;; esac
     if [ -n "${FAKE_TMUX_SEQ:-}" ]; then
@@ -1283,12 +1287,13 @@ qdone tu_m6
 
 d="$(askq tu_m7 "$Q2F")"; "$B" answer "$d" --options 2,2 --by user-1 >/dev/null
 seqpress tu_m7 "$(mq_q2)"
-eq "question 1 only in the prompt above the form (question 2 showing) -> exit 3, nothing sent" "$?/$(keys_sent)" "3/"
+eq "question 1 only in the prompt above the form (question 2 showing) -> exit 7, nothing sent" "$?/$(keys_sent)" "7/"
+eq "...the prompt still open: pending again, counted" "$(dj "$d" '"\(.status)/\(.press_not_visible)"')" "pending/1"
 qdone tu_m7
 
 d="$(askq tu_m8 "$Q2F")"; "$B" answer "$d" --options 2,2 --by user-1 >/dev/null
 seqpress tu_m8 "$(mq_q1 | sed 's/✔ Submit/  Done/')"
-eq "no tab bar -> exit 3, nothing sent" "$?/$(keys_sent)" "3/"
+eq "no tab bar -> exit 7 (the prompt still open), nothing sent" "$?/$(keys_sent)" "7/"
 qdone tu_m8
 
 # A slow redraw: question 2 shows only after a few captures -> waited for, then pressed.
@@ -1522,6 +1527,120 @@ mq3_review_w() { mq3_head ☒ ☒ ☒; printf 'Review your answers\n\n ● Which
 seqpress tu_tc "$(mq3_q 1)" "$(mq3_q 1)" "$(mq3_q 2)" "$(mq3_q 2 'Type something.')" "$(mq3_q 2 "${LONGT:0:60}")" "$(mq3_q 3)" "$(mq3_review_w)"
 eq "a wrapped text on the review is joined -> ok, submitted" "$?/$(keys_sent | grep -o 'send-keys -t %42 1|$')" "0/send-keys -t %42 1|"
 qdone tu_tc
+
+# ---- Claude Code 2.1.3xx draws a question holding a newline in a box: every line of it starts
+# with "│" (U+2502), the lines it wraps too (mid-word in CJK text), on the question screen and on
+# the review screen; the picker footer wraps on a narrow pane ("... Esc to" / "cancel"). The "│"
+# is ignored on both sides, as whitespace is.
+Q3B="$(jq -cn '[{question: "Which color for the banner?\nPick one for the header.", header: "Color", multiSelect: false,
+  options: [{label: "Red", description: "warm"}, {label: "Blue", description: "cool"}, {label: "Green", description: "natural"}]},
+  {question: "產品內的人員管理（邀請、改角色、停用、重設密碼）要鎖住。\n這個判定要用哪一層？", header: "鎖定判定", multiSelect: false,
+  options: [{label: "公司層", description: "只要公司連了就鎖"}, {label: "人層", description: "看每個人"}]},
+  {question: "Which shape for the banner?\nRound or square corners.", header: "Shape", multiSelect: false,
+  options: [{label: "Round", description: "soft"}, {label: "Square", description: "sharp"}]}]')"
+Q2B="$(jq -c '.[0:2]' <<<"$Q3B")"
+mqb_head() { printf '❯ Ask me some things.\n\n────\n←  %s Color  %s 鎖定判定%s  ✔ Submit  →\n\n' "$1" "$2" "${3:+  $3 Shape}"; }
+mqb_foot() { printf '───────\n  %s. Chat about this\n\nEnter to select · Tab/Arrow keys to navigate · Esc to\ncancel\n' "$1"; }
+# mqb_q N NQ [ROW] — question N of a form of NQ questions, boxed; ROW: the focused "Type something"
+# row's text (else option 1 focused)
+mqb_q() {
+  local n="$1" nq="$2" row="${3:-}" f1="❯" ft=" " t3=""
+  [ -n "$row" ] && { f1=" "; ft="❯"; }
+  case "$n" in
+    1) [ "$nq" = 3 ] && t3=☐; mqb_head ☐ ☐ $t3
+       printf '│ Which color for the banner?\n│ Pick one for the header.\n\n%s 1. Red\n     warm\n  2. Blue\n     cool\n  3. Green\n     natural\n%s 4. %s\n' "$f1" "$ft" "${row:-Type something.}"
+       mqb_foot 5 ;;
+    2) [ "$nq" = 3 ] && t3=☐; mqb_head ☒ ☐ $t3
+       printf '│ 產品內的人員管理（邀請、改角色、停\n│ 用、重設密碼）要鎖住。\n│ 這個判定要用哪一層？\n\n%s 1. 公司層\n     只要公司連了就鎖\n  2. 人層\n     看每個人\n%s 3. %s\n' "$f1" "$ft" "${row:-Type something.}"
+       mqb_foot 4 ;;
+    3) mqb_head ☒ ☒ ☐
+       printf '│ Which shape for the banner?\n│ Round or square corners.\n\n%s 1. Round\n     soft\n  2. Square\n     sharp\n%s 3. %s\n' "$f1" "$ft" "${row:-Type something.}"
+       mqb_foot 4 ;;
+  esac
+}
+# mqb_review A1 A2 [A3] — the review screen, its questions boxed too
+mqb_review() {
+  local t3=""; [ -n "${3:-}" ] && t3=☒
+  mqb_head ☒ ☒ $t3
+  printf 'Review your answers\n\n │ Which color for the banner?\n │ Pick one for the header.\n   → %s\n │ 產品內的人員管理（邀請、改角色、停\n │ 用、重設密碼）要鎖住。\n │ 這個判定要用哪一層？\n   → %s\n' "$1" "$2"
+  [ -n "${3:-}" ] && printf ' │ Which shape for the banner?\n │ Round or square corners.\n   → %s\n' "$3"
+  printf '\nReady to submit your answers?\n\n❯ 1. Submit answers\n  2. Cancel\n'
+}
+d="$(askq tu_b1 "$Q2B")"; "$B" answer "$d" --options 2,2 --by user-1 >/dev/null
+eq "boxed form of 2: pressable" "$(dj "$d" .pressable)" "true"
+seqpress tu_b1 "$(mqb_q 1 2)" "$(mqb_q 1 2)" "$(mqb_q 2 2)" "$(mqb_review Blue 人層)"
+eq "boxed form of 2 (│ on each line, a wrapped CJK line, wrapped footer) -> ok, digits then Submit" "$?/$(keys_sent)" \
+  "0/send-keys -t %42 2|send-keys -t %42 2|send-keys -t %42 1|"
+eq "...relayed" "$(dj "$d" .status)" "relayed"
+qdone tu_b1
+d="$(askq tu_b2 "$Q3B")"
+formf '[{"option":1},{"text":"由系統管理 per tenant"},{"option":2}]' "$d"
+seqpress tu_b2 "$(mqb_q 1 3)" "$(mqb_q 1 3)" "$(mqb_q 2 3)" "$(mqb_q 2 3 'Type something.')" "$(mqb_q 2 3 '由系統管理 per tenant')" "$(mqb_q 3 3)" "$(mqb_review Red '由系統管理 per tenant' Square)"
+eq "boxed form of 3, free text on the wrapped question -> ok" "$?/$(keys_sent)" \
+  "0/send-keys -t %42 1|send-keys -t %42 3|send-keys -t %42 -l -- 由系統管理 per tenant|send-keys -t %42 Enter|send-keys -t %42 2|send-keys -t %42 1|"
+qdone tu_b2
+# Another question showing (question 1 answered in the session) while the prompt is still open:
+# nothing is sent, the decision goes back to pending (exit 7, counted), as a hidden picker does.
+d="$(askq tu_b3 "$Q3B")"; "$B" answer "$d" --options 1,2,1 --by user-1 >/dev/null
+seqpress tu_b3 "$(mqb_q 2 3)" "$(mqb_q 2 3)"
+eq "boxed: question 2 showing, question 1 expected -> exit 7, nothing sent" "$?/$(keys_sent)" "7/"
+eq "...pending again, answer cleared, counted" "$(dj "$d" '"\(.status)/\(.answer_options)/\(.press_not_visible)/\(.press_note_code)"')" "pending/null/1/form_elsewhere"
+eq "...logged not_visible" "$(jq -s -r '[.[] | select(.type=="press")] | last | "\(.result): \(.reason)"' "$BOARD_HOME/events.jsonl")" "not_visible: question 1 is not the one showing"
+qdone tu_b3
+# A box line broken mid-word on the review screen ("hea" / "│ der.") still compares whole.
+d="$(askq tu_b4 "$Q2B")"; "$B" answer "$d" --options 3,1 --by user-1 >/dev/null
+seqpress tu_b4 "$(mqb_q 1 2)" "$(mqb_q 1 2)" "$(mqb_q 2 2)" "$(mqb_review Green 公司層 | sed 's/^ │ Pick one for the header\./ │ Pick one for the hea\n │ der./')"
+eq "boxed review with a mid-word box wrap -> ok" "$?/$(keys_sent)" "0/send-keys -t %42 3|send-keys -t %42 1|send-keys -t %42 1|"
+qdone tu_b4
+# Still refused (exit 3, stale), nothing sent: the other question showing once the session moved
+# on (the state changes during the first capture of the form), and a question 1 whose "Type
+# something" row is not where the free text goes (the form itself does not match).
+d="$(askq tu_b5 "$Q3B")"; "$B" answer "$d" --options 1,2,1 --by user-1 >/dev/null
+FAKE_TMUX_MUTATE_AT=2 FAKE_TMUX_MUTATE="$BOARD_HOME/state/$SID.json" seqpress tu_b5 "$(mqb_q 2 3)" "$(mqb_q 2 3)"
+eq "boxed: another question showing, the session moved on -> exit 3, nothing sent, stale" "$?/$(keys_sent)/$(dj "$d" .status)" "3//stale"
+qdone tu_b5
+d="$(askq tu_b6 "$Q3B")"
+formf '[{"text":"teal"},{"option":1},{"option":1}]' "$d"
+seqpress tu_b6 "$(mqb_q 1 3 | sed 's/4\. Type something\./4. Something else/')" "$(mqb_q 1 3 | sed 's/4\. Type something\./4. Something else/')"
+eq "boxed: row 4 of question 1 is not Type something -> exit 3, nothing sent, stale" "$?/$(keys_sent)/$(dj "$d" .status)" "3//stale"
+qdone tu_b6
+# A boxed review whose question lines are indented 4+ spaces right after a "→" line: a "│" line
+# is a question, never the continuation of the answer above it.
+d="$(askq tu_b7 "$Q2B")"; "$B" answer "$d" --options 2,1 --by user-1 >/dev/null
+seqpress tu_b7 "$(mqb_q 1 2)" "$(mqb_q 1 2)" "$(mqb_q 2 2)" "$(mqb_review Blue 公司層 | sed 's/^ │ /    │ /')"
+eq "boxed review, question lines indented 4+ spaces after an answer -> ok" "$?/$(keys_sent)" "0/send-keys -t %42 2|send-keys -t %42 1|send-keys -t %42 1|"
+qdone tu_b7
+# What press_multi types comes from the decision as checked, once: another writer that sends the
+# decision back to pending mid-form (answer_options cleared, as a press elsewhere that found
+# another question on screen does) stops it before the next key; "null" is never typed.
+d="$(askq tu_b8 "$Q3B")"; "$B" answer "$d" --options 1,2,1 --by user-1 >/dev/null
+FAKE_TMUX_DEC="$BOARD_HOME/decisions/$d.json" FAKE_TMUX_DEC_AT=3 FAKE_TMUX_DEC_JQ='.status = "pending" | .answer_options = null | .answer_texts = null' \
+  seqpress tu_b8 "$(mqb_q 1 3)" "$(mqb_q 1 3)" "$(mqb_q 2 3)" "$(mqb_q 3 3)" "$(mqb_review 'Red' 人層 Round)"
+eq "the decision's answer cleared after the first key -> exit 5, only that key" "$?/$(keys_sent)" "5/send-keys -t %42 1|"
+grep -q 'send-keys.*null' "$FAKE_TMUX_LOG" && bad "  no 'null' typed" || ok "  no 'null' typed"
+eq "...logged partial: the answer changed" "$(jq -s -r '[.[] | select(.type=="press")] | last | "\(.result): \(.reason)"' "$BOARD_HOME/events.jsonl")" \
+  "partial: the decision's answer changed while pressing (question 2)"
+qdone tu_b8
+# An option number that is not a whole number is never pressed (it would type "1.5").
+d="$(askq tu_b9 "$Q2B")"; "$B" answer "$d" --options 1,1 --by user-1 >/dev/null
+jq '.answer_options = [1.5, 1]' "$BOARD_HOME/decisions/$d.json" > "$T/d.x" && mv "$T/d.x" "$BOARD_HOME/decisions/$d.json"
+seqpress tu_b9 "$(mqb_q 1 2)" "$(mqb_q 1 2)"
+eq "answer_options [1.5, 1] -> exit 4, nothing sent" "$?/$(keys_sent)" "4/"
+qdone tu_b9
+# One press of a decision at a time: a second press waits for the per-decision lock, then runs.
+d="$(askq tu_ba "$Q2B")"; "$B" answer "$d" --options 2,1 --by user-1 >/dev/null
+mkdir -p "$BOARD_HOME/locks"
+flock "$BOARD_HOME/locks/press-$d.lock" sleep 3 & lockpid=$!
+sleep 0.5
+BOARD_PRESS_LOCK_WAIT=1 seqpress tu_ba "$(mqb_q 1 2)" "$(mqb_q 1 2)" "$(mqb_q 2 2)" "$(mqb_review Blue 公司層)"
+eq "the decision's press lock held elsewhere past the wait -> exit 4, nothing sent" "$?/$(keys_sent)" "4/"
+eq "...decision untouched (answered), logged busy" "$(dj "$d" .status)/$(jq -s -r '[.[] | select(.type=="press")] | last | .result' "$BOARD_HOME/events.jsonl")" "answered/busy"
+BOARD_PRESS_LOCK_WAIT=10 seqpress tu_ba "$(mqb_q 1 2)" "$(mqb_q 1 2)" "$(mqb_q 2 2)" "$(mqb_review Blue 公司層)"
+eq "...a press that waits for the lock to be released -> ok" "$?/$(keys_sent)/$(dj "$d" .status)" "0/send-keys -t %42 2|send-keys -t %42 1|send-keys -t %42 1|/relayed"
+wait "$lockpid" 2>/dev/null
+seqpress tu_ba "$(mqb_q 1 2)"
+eq "...then pressed again: no longer answered -> exit 4, nothing sent" "$?/$(keys_sent)" "4/"
+qdone tu_ba
 
 # The decision's status_reason on the new paths, and a hidden form (exit 7) clears the texts too.
 d="$(askq tu_td "$Q3F")"

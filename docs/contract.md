@@ -319,6 +319,11 @@ multiSelect, options: [{label, description}]}]}` on `PreToolUse` (with `tool_use
 
 - exit 4 (nothing sent) unless an approver answered it, `relay` is `"press"` and `answer_index`
   matches the answer again;
+- one press of a decision at a time (permissions and pane questions alike): `board press` takes
+  `$BOARD_HOME/locks/press-<decision id>.lock` (flock) before reading the decision; a second press
+  of the same decision waits up to `BOARD_PRESS_LOCK_WAIT` seconds (default 30) and then checks
+  what the first left (no longer `answered`: exit 4, nothing sent); still locked → exit 4, nothing
+  sent, the decision untouched, logged `result: "busy"`;
 - exit 3 (nothing sent, `stale`) unless the state still shows that `tool_use_id` and
   `summary_sha256` pending in that pane, the last `press.lines` lines match `press.question_regex`
   (default `Enter to select.*navigate`, the picker footer), and the start of the question (≥ 8
@@ -365,13 +370,16 @@ multiSelect, options: [{label, description}]}]}` on `PreToolUse` (with `tool_use
   `press_note_at` set (a `mark` event with `status: "pending"`), plus `press_note_code`: `scrolled`
   when one of the last 2 non-blank lines still matches `press.scrolled_regex` (after the scroll key,
   or with no scroll key configured), else `not_visible` (covered, or not drawn yet: the hook can
-  report a prompt the TUI has not redrawn); and `press_not_visible`, the number of such presses for
+  report a prompt the TUI has not redrawn), or `form_elsewhere` (a form of several questions shows
+  another of its questions, recognised by its stored start; see below); and `press_not_visible`, the number of such presses for
   this decision (`board answer` keeps it, clearing only `press_note`, `press_note_at` and
   `press_note_code`). board-serve answers 409 `screen_not_ready` with `scrolled` (boolean),
-  `attempts` (= `press_not_visible`) and `question` (a pane question, boolean) in the body. The collector marks it `stale` once the session moved on (PostToolUse, Stop or a
+  `attempts` (= `press_not_visible`), `question` (a pane question, boolean) and `elsewhere`
+  (`press_note_code: "form_elsewhere"`, boolean) in the body. The collector marks it `stale` once the session moved on (PostToolUse, Stop or a
   different pending prompt). If the state changed meanwhile it is exit 3 and `stale` as before. A
   prompt on screen about other input is still exit 3. On the page, the decision card shows the note
-  ("scrolled" only for `press_note_code: "scrolled"`, else "not visible on the session's screen
+  ("scrolled" only for `press_note_code: "scrolled"`, "the session's form shows another question"
+  for `form_elsewhere`, else "not visible on the session's screen
   (scrolled, covered or not redrawn yet)") and its buttons; from `press_not_visible` ≥ 2 the card
   leads with "Answer in the session", the session's tmux target, and (a pane question, the owner,
   the self-hosted board) **Mark answered in session**; the free-text Send is no longer the primary
@@ -405,7 +413,10 @@ multiSelect, options: [{label, description}]}]}` on `PreToolUse` (with `tool_use
 Claude Code draws them with a tab bar (`←  ☐ Color  ☐ Size  ✔ Submit  →`), one question at a
 time: a digit picks an option and moves to the next question; after the last one a review screen
 (`Review your answers`, one `→ <label>` line per question, `Ready to submit your answers?`,
-`1. Submit answers`, `2. Cancel`, no footer) waits, and its digit submits.
+`1. Submit answers`, `2. Cancel`, no footer) waits, and its digit submits. A question holding a
+newline is drawn in a box: `│ ` before each of its lines, the lines it wraps too (mid-word in CJK
+text), on the question screen and on the review screen; on a narrow pane the footer wraps
+(`… · Esc to` / `cancel`), which `press.question_regex` still matches on its first line.
 
 - `board answer <id> --form-file <path> --by <who>`: the same with free text for some questions.
   The file holds `[{"question_index": 0, "option": 2}, {"question_index": 1, "text": "..."}, ...]`:
@@ -435,7 +446,8 @@ time: a digit picks an option and moves to the next question; after the last one
   `press.focus_regex` (the focused-row marker, default `(❯|>|›)`, shared with single questions)
   must be valid extended regexes (the tab bar and focus ones for awk too), and `press.submit_label` plain text (matched literally), checked
   before any key. Whitespace is removed the same way from the screen and the stored text, Unicode spaces included
-  (NBSP, U+2000–U+200B, U+3000, ...). Only the lines after the last tab bar count: the prompt above the form can
+  (NBSP, U+2000–U+200B, U+3000, ...), and so is the box glyph `│` (U+2502), in questions, labels,
+  typed texts and review answers alike (the hook's "start alike" check drops it too). Only the lines after the last tab bar count: the prompt above the form can
   repeat the questions. For each question in order: the first text after the tab bar is that
   question (all of it, or its stored start when clipped), then its labels in order, then the
   picker footer (`press.question_regex`); after a digit, the screen must also differ from the one
@@ -444,8 +456,18 @@ time: a digit picks an option and moves to the next question; after the last one
   screen (`press.review_regex`): every question's start in order, exactly one `→` line per
   question, each equal to the chosen label (whitespace ignored), and exactly one row containing
   `press.submit_label`: the focused (`press.focus_regex`) `N.` row, after the answers, followed only by numbered rows;
-  then its digit N. **Enter is never sent on the review screen.** A mismatch before the first digit → exit 3, nothing
-  sent; after it → exit 5 (partial), `stale`, logged `partial`.
+  then its digit N. **Enter is never sent on the review screen.** Before the first digit, a
+  screen that shows another state of the form (no tab bar, another question, its options or
+  footer missing) while the state is re-read and still shows this prompt waiting → exit 7,
+  nothing sent, pending again and counted (`press_not_visible`, `answer_options` and
+  `answer_texts` cleared), as for a hidden picker, with `press_note_code: "form_elsewhere"` when
+  the screen shows another question of the form; once the session moved on → exit 3. A question
+  that cannot be checked (too little of it), a "Type something" row that is not where the text
+  goes, or any other mismatch before the first digit → exit 3, nothing sent; after it → exit 5
+  (partial), `stale`, logged `partial`. What is typed comes from one read of the decision, the one
+  `multi_check` validated: before every key the decision file must still hold the same
+  `answer_options` and `answer_texts` (else exit 3 before the first key, 5 after), and every option
+  or submit key must be a single digit 1–9 (else the same).
 - **Free text on a question** (`answer_texts[i]`), as recorded on a private tmux server: the
   digit of the "Type something" row focuses it without leaving the question, typed text replaces
   the row's label (`❯ 3. teal green`), Enter confirms it and moves to the next question, and the
@@ -455,7 +477,7 @@ time: a digit picks an option and moves to the next question; after the last one
   then the focused row N+1 must show the typed text right after `N+1.` (its first 20 non-space
   characters), and not still show the unedited label, and the state must be unchanged, and only
   then it sends `Enter`. The review line of that question must equal the text; a text the review
-  wraps continues on lines indented 4+ spaces (not a `●`, `→` or numbered row), which are joined
+  wraps continues on lines indented 4+ spaces (not a `●`, `│`, `→` or numbered row), which are joined
   to it first. A failed check after the first digit → exit 5 (partial):
   typed text whose echo does not match is never confirmed with Enter. A form hidden by a scrolled pane goes
   back to pending (exit 7) with `answer_options` and `answer_texts` cleared. The decision's
@@ -628,7 +650,7 @@ $BOARD_HOME/
 | `POST /api/tickets/take` `{ref, session, comment?, transition?, assign?}` | take a ticket for a session, see "Tickets: take". Approvers only (empty → 403 `no_approvers`; else 403 `not_approver`), checked and a refusal audited **before** anything is fetched, sent or written. `session` must be a session in the snapshot or `fleet.yaml` (else 400 `unknown_session`); `comment` a string (scrubbed, footer added) or `false` (skip) or absent (the tracker's `take.comment`); `transition`, `assign` booleans (default true; else 400 `bad_body`). → 200 `{status: "taken"\|"partial", task_id, msg_id, failed, link, ticket}`; an active take → 409 `already_taken {task_id, session}`, nothing written |
 | `POST /api/tickets/<ref>/comment` `{text}`, `/transition` `{to}`, `/assign` `{who}`, `/release` `{}` | the tracker writes and the end of a take, see "Tickets: writes". Approvers only, checked first and refusals audited. → 200 `{status: "ok", ref, ticket}` (`release`: `{status: "released", msg_id, link}`); `to` not in the tracker's `states` → 400 `bad_transition`; no active take → 409 `not_taken`; a tracker without that write → 400 `ticket_unsupported` |
 | `GET /api/events` | `text/event-stream`: `event: state` with the full state at once and after every change (1 s mtime poll; only when the state differs), `: keepalive` every 25 s |
-| `POST /api/decisions/<id>/answer` `{answer}` | `<id>` must match `^d-[0-9]+-[a-z0-9]+$`. With empty `approvers` → 403 `no_approvers` (fails closed). The identity is then checked **before anything is written**, with the rule of `board answer` (`approvers`; for a production decision, gate or stage, `release_managers`, falling back to `approvers`): not allowed → 403 `not_approver`, audited, file untouched (so it can never cancel an approver's answer that waits for the relay). `board answer` exit 8 (the gate's task was busy) → 409 `task_busy`: try again. Otherwise `board answer <id> --answer-file <tmp> --by <identity>` (argv, no shell; the answer goes by a 0600 file under `$BOARD_HOME` that is removed afterwards, so `-`, `--help` or `--answer-file` typed as an answer are recorded literally) → 200 `{status: "answered"}`. For `kind: "permission"` (`answer` = `allow`\|`deny`; `allow` with `summary_truncated` → 409 `review_in_session`), it then runs `board press <from> <answer> --expect <tool_use_id>` → 200 `{status: "relayed"}`; exit 3 → 409 `stale`; exit 4 → 403 `press_refused`; exit 7 → 409 `screen_not_ready` (the decision is pending again; the body adds `scrolled`, `attempts` and `question`). A pane question (`source: "pane"`) that is not `pressable` → 409 `answer_in_session`, untouched. A pressable form of several questions takes `{options: [i, j, ...]}` instead of `answer` (2–4 numbers, one per question, 1–8, no `answer`/`option`); a wrong count, a number out of its question's range, a boolean, free text, or `options` on any other decision → 400 `bad_options`, untouched. It runs `board answer <id> --options i,j --by <identity>`, then `board press` like below. With free text for some questions it takes `{answers: [{question_index, option} \| {question_index, text}, ...]}` instead (one entry per question, in order, exactly one of `option` 1–8 or `text` per entry, no `options`/`answer`/`option`); text is cleaned as by `board answer --form-file` and must then be 1–200 characters, not ending in `\;` and not the "Type something" row itself (else 400 `bad_answers`; `question_index`, when given, an integer equal to the entry's position), and each text is screened by the secret guard before anything is written: a request for a secret or a secret-shaped value → 400 `held_answer`, audited; it goes to `board answer <id> --form-file <0600 tmp file> --by <identity>` (removed afterwards), then `board press`; an optional `option` (1–10, a pane question's clicked button) goes to `board answer --option` (mismatch → 400 `bad_option`, untouched; `option` on any other decision → 400); otherwise, when `board answer` set `relay: "press"`, it runs `board press <from> answer --expect <tool_use_id>` with the same results (plus exit 5 → 409 `partial`), and with `relay: "operator"` it returns 200 `{status: "answered"}` for the operator to relay. A decision already `relayed`/`stale`/`timeout` → 409 `gone`. |
+| `POST /api/decisions/<id>/answer` `{answer}` | `<id>` must match `^d-[0-9]+-[a-z0-9]+$`. With empty `approvers` → 403 `no_approvers` (fails closed). The identity is then checked **before anything is written**, with the rule of `board answer` (`approvers`; for a production decision, gate or stage, `release_managers`, falling back to `approvers`): not allowed → 403 `not_approver`, audited, file untouched (so it can never cancel an approver's answer that waits for the relay). `board answer` exit 8 (the gate's task was busy) → 409 `task_busy`: try again. Otherwise `board answer <id> --answer-file <tmp> --by <identity>` (argv, no shell; the answer goes by a 0600 file under `$BOARD_HOME` that is removed afterwards, so `-`, `--help` or `--answer-file` typed as an answer are recorded literally) → 200 `{status: "answered"}`. For `kind: "permission"` (`answer` = `allow`\|`deny`; `allow` with `summary_truncated` → 409 `review_in_session`), it then runs `board press <from> <answer> --expect <tool_use_id>` → 200 `{status: "relayed"}`; exit 3 → 409 `stale`; exit 4 → 403 `press_refused`; exit 7 → 409 `screen_not_ready` (the decision is pending again; the body adds `scrolled`, `attempts`, `question` and `elsewhere`). A pane question (`source: "pane"`) that is not `pressable` → 409 `answer_in_session`, untouched. A pressable form of several questions takes `{options: [i, j, ...]}` instead of `answer` (2–4 numbers, one per question, 1–8, no `answer`/`option`); a wrong count, a number out of its question's range, a boolean, free text, or `options` on any other decision → 400 `bad_options`, untouched. It runs `board answer <id> --options i,j --by <identity>`, then `board press` like below. With free text for some questions it takes `{answers: [{question_index, option} \| {question_index, text}, ...]}` instead (one entry per question, in order, exactly one of `option` 1–8 or `text` per entry, no `options`/`answer`/`option`); text is cleaned as by `board answer --form-file` and must then be 1–200 characters, not ending in `\;` and not the "Type something" row itself (else 400 `bad_answers`; `question_index`, when given, an integer equal to the entry's position), and each text is screened by the secret guard before anything is written: a request for a secret or a secret-shaped value → 400 `held_answer`, audited; it goes to `board answer <id> --form-file <0600 tmp file> --by <identity>` (removed afterwards), then `board press`; an optional `option` (1–10, a pane question's clicked button) goes to `board answer --option` (mismatch → 400 `bad_option`, untouched; `option` on any other decision → 400); otherwise, when `board answer` set `relay: "press"`, it runs `board press <from> answer --expect <tool_use_id>` with the same results (plus exit 5 → 409 `partial`), and with `relay: "operator"` it returns 200 `{status: "answered"}` for the operator to relay. A decision already `relayed`/`stale`/`timeout` → 409 `gone`. |
 | `GET /api/messages?before=&limit=&to=&q=` | the message history (the page's History view). `X-Board: 1` and no cross-site `Sec-Fetch-Site` (else 403 `csrf`, before identity); any identity that may read the board. Threads by latest activity (the latest of created_at, released_at and the replies), then id, newest first; `before` is the cursor `<last_activity_at>.<id>` of the last thread already shown (strictly older ones follow), `limit` 1..50 (default 20), `to` a session code (threads sent, relayed or routed to it, or that it replied to: the page's session filter means the same), `triage` or `all`, `q` text (at most 200 chars, case-insensitive) in the to / by / body / ticket and the replies. Each thread goes through the same viewer filter as `/api/state` before it is searched, so a search never matches text the viewer would not see. → 200 `{messages, replies, next}`; `next` is the cursor for the following page, `null` at the end. A bad parameter → 400 `bad_request`. Read-only; nothing is deleted on disk |
 | `POST /api/messages` `{to, body}` | `to`: a session code, `"triage"` (the operator routes it, see "Message routing") or `"all"`. Only for `approvers` ∪ `release_managers` ∪ `askers` (else 403 `not_approver`); an asker who is not an approver or release manager may not send to `"all"` (403 `asker_no_all`, audited, nothing written); `all` / `triage` in another case → 400 `bad_to`, a code that is not a session on the board → 400 `unknown_session`; writes `messages/<id>.json` (`^m-[0-9]+-[a-z0-9]+$`) with `by: <identity>`, the body scrubbed, and `status: "new"`, or `"held"` when the secret guard flags it → 201 `{id, status, reason?}` (see "Secret guardrails") |
 | `POST /api/messages/<id>/release` `{confirm: "release"}` | releases a `held` message. Approvers only (empty `approvers` → 403 `no_approvers`; else 403 `not_approver`, audited). Without the confirm body → 400 `confirm_required`; unknown id → 404; not held → 409 `not_held`. A channel other than the two verified listeners (a future API key) → 403 `release_refused`; with more than one approver, the message's own sender → 403 `self_release` (except `local`: on the loopback listener the identity is always `local`, the owner at this machine). Sets `status: "new"`, `released_by`, `released_at` → 200 `{id, status: "new"}`, audited (`message-release`) |

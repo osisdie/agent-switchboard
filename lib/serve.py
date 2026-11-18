@@ -1884,14 +1884,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 after = read_json(os.path.join(self.server.home, "decisions", did + ".json"))
                 after = after if isinstance(after, dict) else {}
                 scrolled = after.get("press_note_code") == "scrolled"
+                elsewhere = after.get("press_note_code") == "form_elsewhere"
                 n = after.get("press_not_visible")
                 n = n if isinstance(n, int) and not isinstance(n, bool) and n > 0 else 1
                 raise Refused(409, "screen_not_ready",
                               "the session's screen is scrolled, so the prompt is not visible; try again, or answer in the session"
                               if scrolled else
+                              "the session's form shows another question; nothing was pressed: try again, or answer in the session"
+                              if elsewhere else
                               "the prompt is not visible on the session's screen (scrolled, covered or not redrawn yet); "
                               "nothing was pressed: answer in the session, or try again later",
-                              extra={"scrolled": scrolled, "attempts": n, "question": bool(pane_q)})
+                              extra={"scrolled": scrolled, "attempts": n, "question": bool(pane_q), "elsewhere": elsewhere})
             if rc == 5:  # free text typed into the picker, Enter not pressed
                 self.audit(ident, via, "press", id=did, code=code, key=answer, result="partial")
                 raise Refused(409, "partial", "keys were sent but Enter was not pressed; finish in the session")
