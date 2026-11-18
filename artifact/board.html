@@ -168,6 +168,9 @@ time { font-variant-numeric: tabular-nums; white-space: nowrap; }
 
 /* ---------- section nav ---------- */
 .secnav { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--paper); border-bottom: 1px solid var(--rule); }
+/* The scroll padding keeps jumps clear of this bar, but the bar itself is always in view: focusing a
+   button in it (a tap, Tab) must not scroll the page to "uncover" it. */
+.secnav * { scroll-margin-top: calc(-8px - var(--secnav-h, 56px) - env(safe-area-inset-top, 0px)); }
 .secnav-in { max-width: 1360px; margin-inline: auto; display: flex; align-items: center; gap: 8px; min-height: 48px; }
 .secnav ul { list-style: none; display: flex; gap: 4px; margin: 0; padding: 0; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
 .secnav a { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 5px; color: var(--muted); text-decoration: none; font-weight: 500; font-size: 14px; white-space: nowrap; }
@@ -180,7 +183,7 @@ time { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .icon-btn:hover { border-color: var(--cord); }
 /* wide screens: the sheet is just the row of links (its tools are phone-only) */
 .nav-sheet { display: contents; }
-.nav-tools, .to-top { display: none; }
+.nav-tools, .to-top, .nav-backdrop { display: none; }
 /* Phones: the bar is the first thing on the page and stays at the top; "Sections" opens a sheet
    over the content (the bar's height never changes, so a jump still lands below it). */
 @media (max-width: 860px) {
@@ -199,6 +202,7 @@ time { font-variant-numeric: tabular-nums; white-space: nowrap; }
     background: var(--panel); border: 1px solid var(--rule); border-radius: var(--r); box-shadow: 0 12px 32px rgb(0 0 0 / .22); }
   .secnav.open { z-index: 9; }  /* the open sheet covers the account button too */
   .secnav.open .nav-sheet { display: flex; }
+  .secnav.open .nav-backdrop { display: block; position: fixed; inset: calc(env(safe-area-inset-top, 0px) + var(--secnav-h, 56px)) 0 0; z-index: -1; background: rgb(0 0 0 / .14); }
   .secnav ul { display: none; flex-direction: column; gap: 2px; overflow: visible; flex: none; }
   .secnav.open ul { display: flex; }
   .secnav ul a { display: flex; justify-content: space-between; min-height: 44px; padding: 8px 12px; font-size: 16px; color: var(--ink); }
@@ -321,9 +325,12 @@ dialog.notif { width: min(720px, calc(100vw - 24px)); }
 .sec:not(.sec-folded) .sec-sum { display: none; }
 .sec.sec-folded > :not(.sec-head), .sec.sec-folded .sec-head .hint { display: none; }
 @media (max-width: 860px) { .sec-fold { width: 44px; height: 44px; border-radius: 22px; font-size: 15px; } .sec-head { align-items: center; } }
-/* long text in a card: the first lines, then "Show more" */
-.dcard .clamp, .ccard .clamp { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
-.dcard > .more, .ccard > .more { justify-self: start; }
+/* long text in a card: on a phone, the first lines, then "Show more" (wide screens show it all) */
+.dcard > .more, .ccard > .more { display: none; justify-self: start; }
+@media (max-width: 860px) {
+  .dcard .clamp, .ccard .clamp { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+  .dcard > .more, .ccard > .more { display: inline-flex; }
+}
 .empty { border: 1px dashed var(--rule); border-radius: var(--r); padding: 18px; color: var(--muted); background: color-mix(in srgb, var(--panel) 50%, transparent); }
 .empty strong { color: var(--ink); display: block; font-weight: 600; margin-bottom: 2px; }
 
@@ -1229,6 +1236,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
         <button class="btn" id="nav-unfold-all" type="button" aria-label="Expand all sections" data-i18n-attr="aria-label"><span data-i18n>Expand all</span></button>
       </div>
       </div>
+      <div class="nav-backdrop" id="nav-backdrop" aria-hidden="true"></div>
       <button class="icon-btn" id="notif-btn" type="button" aria-haspopup="dialog" title="Push notifications: mute, triage and presence" data-i18n-attr="title"><span class="nlamp unknown" id="notif-lamp" aria-hidden="true"></span><span id="notif-label" data-i18n>Notifications</span></button>
       <button class="icon-btn" id="info-btn" type="button" aria-haspopup="dialog" title="Versions, cost and how this works" aria-label="Info" data-i18n-attr="title aria-label">ⓘ <span class="info-t" data-i18n>Info</span></button>
     </div>
@@ -1940,7 +1948,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     const pend = pendingDecisions();
     const fromCodes = new Set(pend.map((d) => lc(d.from)));
     const waitingSessions = S.sessions.filter((s) => s.state === 'needs-you' && !fromCodes.has(lc(s.code)) && !(s.aliases || []).some((a) => fromCodes.has(lc(a))));
-    return { decisions: pend.length, sessions: waitingSessions.length, total: pend.length + waitingSessions.length };
+    return { decisions: pend.length, sessions: waitingSessions.length, total: pend.length + waitingSessions.length,
+      decIds: pend.map((d) => str(d.id)), sessionCodes: waitingSessions.map((s) => str(s.code)) };
   }
 
   /* --------------------------------------------------------------- header */
@@ -3371,7 +3380,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     const open = S.msgOpen.has(key);
     const p = h('p', { class: cls + (long && !open ? ' clamp' : ''), text });
     if (!long) return p;
-    const b = h('button', { type: 'button', class: 'btn linkish more', 'aria-expanded': open ? 'true' : 'false', text: tr(open ? 'Show less' : 'Show more') });
+    const b = h('button', { type: 'button', class: 'btn linkish more', 'aria-expanded': open ? 'true' : 'false', text: tr(open ? 'Show less' : 'Show more'),
+      dataset: { focus: 'more:' + key.replace(/[^\w:.-]/g, '_') } });  // a re-render keeps the keyboard focus here
     b.addEventListener('click', () => {
       const now = !S.msgOpen.has(key);
       if (now) S.msgOpen.add(key); else S.msgOpen.delete(key);
@@ -5991,7 +6001,14 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
   $('#nav-toggle').addEventListener('click', () => setNavOpen(!nav.classList.contains('open')));
   nav.addEventListener('click', (e) => { if (e.target.closest('a')) setNavOpen(false); });
   nav.addEventListener('keydown', (e) => { if (e.key === 'Escape' && nav.classList.contains('open')) { e.stopPropagation(); setNavOpen(false, true); } });
-  document.addEventListener('pointerdown', (e) => { if (nav.classList.contains('open') && !nav.contains(e.target)) setNavOpen(false); }, true);
+  // A tap outside the open sheet lands on a see-through backdrop: it only closes the sheet, never
+  // presses what lies under it (an answer button, say).
+  $('#nav-backdrop').addEventListener('click', () => setNavOpen(false));
+  // Tabbing out of the menu (the sheet and its button) closes it.
+  nav.addEventListener('focusout', (e) => {
+    const to = e.relatedTarget;
+    if (nav.classList.contains('open') && to && to !== $('#nav-toggle') && !$('#nav-sheet').contains(to)) setNavOpen(false);
+  });
   function toTop() {
     window.scrollTo({ top: 0, behavior: reducedMotion() ? 'auto' : 'smooth' });
     $('#nav-toggle').focus({ preventScroll: true });
@@ -6043,7 +6060,9 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     try { v = JSON.parse(localStorage.getItem(SEC_KEY) || 'null'); } catch (e) { v = null; }
     return new Set(v && Array.isArray(v.ids) ? v.ids.filter((k) => SECTIONS.includes(k)) : []);
   })();
-  let decSeen = -1;  // pending decisions at the last render (-1: none rendered yet)
+  // what needed the owner at the last render: pending decision ids, sessions waiting without one
+  // (null: nothing rendered yet, so whatever waits on first load counts as new)
+  let seenNeeds = null;
   function setSecFolded(ids, on) {
     for (const id of ids) { if (on) secFolded.add(id); else secFolded.delete(id); }
     try { localStorage.setItem(SEC_KEY, JSON.stringify({ ids: [...secFolded] })); } catch (e) { /* this page view only */ }
@@ -6076,7 +6095,9 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       b.title = b.getAttribute('aria-label');
       const badge = SEC_BADGE[id] && document.getElementById(SEC_BADGE[id]);
       sum.textContent = badge ? badge.textContent : '';
-      sum.classList.toggle('hot', !!badge && badge.classList.contains('hot'));
+      // Board's count turns hot while a session there waits on the owner
+      const hot = id === 'board' ? S.sessions.some((x) => colOf(x) === 'needs') : !!badge && badge.classList.contains('hot');
+      sum.classList.toggle('hot', hot);
       sum.hidden = !badge;
     }
     const n = $('#nav-toggle-n'), need = attention().total;
@@ -6084,25 +6105,40 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     // the bar's height can change (a folded section never moves it, but keep the measure honest)
     spy();
   }
-  // Called after each header render: pending decisions open the Decisions section when they first
-  // show and whenever their number grows.
+  // Called after each header render: what waits on the owner opens its section when it first shows
+  // and whenever something new arrives (a new pending decision opens Decisions; a new session that
+  // waits without a decision opens Board), even if as many others were answered in the same update.
   function guardDecisions() {
-    const n = attention().decisions;
-    if (n > 0 && n > decSeen && secFolded.has('decisions')) setSecFolded(['decisions'], false);
-    decSeen = n;
-    syncSecFolds();
+    const a = attention(), prev = seenNeeds;
+    const fresh = (now, before) => now.some((k) => !before || !before.includes(k));
+    const open = [];
+    if (fresh(a.decIds, prev && prev.dec) && secFolded.has('decisions')) open.push('decisions');
+    if (fresh(a.sessionCodes, prev && prev.ses) && secFolded.has('board')) open.push('board');
+    seenNeeds = { dec: a.decIds, ses: a.sessionCodes };
+    if (open.length) setSecFolded(open, false); else syncSecFolds();
   }
+  // Collapse all leaves open what waits on the owner: Decisions with a pending decision, Board with
+  // a session that needs you without one.
   $('#nav-fold-all').addEventListener('click', () => {
-    const keep = attention().decisions > 0 ? ['decisions'] : [];
+    const a = attention(), keep = [];
+    if (a.decisions > 0) keep.push('decisions');
+    if (a.sessions > 0) keep.push('board');
     setSecFolded(SECTIONS.filter((id) => !keep.includes(id)), true);
     setNavOpen(false);
     toTop();
   });
-  $('#nav-unfold-all').addEventListener('click', () => { setSecFolded(SECTIONS, false); setNavOpen(false); });
+  $('#nav-unfold-all').addEventListener('click', () => { setSecFolded(SECTIONS, false); setNavOpen(false, true); });
   // the counts beside folded headings follow the nav's badges (Messages and others update them)
   if (window.MutationObserver) new MutationObserver(() => syncSecFolds()).observe($('#nav-list'), { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['class'] });
   navReady = true;
   syncSecFolds();
+  // Opened with #section (or #anything in one): that section opens, and the jump lands on it.
+  (() => {
+    let id = '';
+    try { id = decodeURIComponent(location.hash.slice(1)); } catch (e) { return; }
+    const el = id && document.getElementById(id);
+    if (el && unfoldFor(el)) afterFragmentScroll(() => { if (!userActed) el.scrollIntoView({ block: 'start' }); });
+  })();
 
   /* ----------------------------------------------------------- live data */
   function docs(snap) { return snap.docs.filter((d) => d.exists).map((d) => Object.assign({ id: d.id }, d.data())); }

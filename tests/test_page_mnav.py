@@ -24,8 +24,14 @@ exits 0, so it never blocks anyone. CI does not run it.
 PLAYWRIGHT_CHROMIUM_EXECUTABLE points at a specific Chromium / headless shell when the one
 playwright expects is not installed.
 """
+import json
 import os
+import shutil
+import socket
+import subprocess
 import sys
+import tempfile
+import time
 
 REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 PAGE = "file://" + os.path.join(REPO, "artifact", "board.html") + "?demo=1"
@@ -51,6 +57,54 @@ def check(name, cond, detail=None):
         print("  FAIL " + name)
         if detail is not None:
             print("       " + str(detail)[:400])
+
+
+def free_port():
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+def write_json(path, data):
+    """Write atomically: board-serve polls these files and must never read half of one."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path + ".tmp", "w", encoding="utf-8") as fh:
+        json.dump(data, fh)
+    os.replace(path + ".tmp", path)
+
+
+def serve(tmp):
+    """board-serve on a scratch BOARD_HOME (approver: local); returns (proc, url, home)."""
+    home, cfg = os.path.join(tmp, "home"), os.path.join(tmp, "config")
+    for d in (home, cfg, os.path.join(tmp, "sessions"), os.path.join(home, "decisions")):
+        os.makedirs(d, exist_ok=True)
+    port = free_port()
+    with open(os.path.join(cfg, "fleet.yaml"), "w", encoding="utf-8") as fh:
+        fh.write("approvers: [local]\nserve:\n  enabled: true\n  port: %d\n" % port)
+    env = dict(os.environ, BOARD_HOME=home, BOARD_CONFIG_DIR=cfg, CLAUDE_SESSIONS_DIR=os.path.join(tmp, "sessions"), ALERT_DESKTOP="0")
+    for k in [x for x in env if x.startswith(("SLACK_", "SMTP_", "ALERT_", "LINE_", "AWS_")) and x != "ALERT_DESKTOP"] + ["TMUX", "TMUX_PANE", "BOARD_PUBLIC_URL"]:
+        env.pop(k, None)
+    proc = subprocess.Popen([os.path.join(REPO, "bin", "board-serve"), "--quiet"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for _ in range(80):
+        try:
+            socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
+            break
+        except OSError:
+            time.sleep(0.1)
+    return proc, "http://127.0.0.1:%d/" % port, home
+
+
+def session(code, state, now):
+    return {"code": code, "aliases": [code], "name": code, "state": state, "status": "waiting" if state == "needs-you" else "busy",
+            "updated_at": now, "title": "work", "repo": "app", "branch": "main", "recent": [], "pending": None}
+
+
+def decision(home, did, frm, status, now):
+    write_json(os.path.join(home, "decisions", did + ".json"),
+               {"id": did, "kind": "question", "from": frm, "question": "Ship %s?" % did, "options": ["yes", "no"],
+                "status": status, "answer": None, "created_at": now - 60000, "updated_at": now})
 
 
 def settle(pg):
@@ -135,9 +189,38 @@ def main():
             pg.keyboard.press("Escape")
             r = pg.evaluate("() => ({ open: document.getElementById('secnav').classList.contains('open'), focus: document.activeElement.id })")
             check("Escape closes the sheet and focus returns to the button", not r["open"] and r["focus"] == "nav-toggle", r)
+            # A decision's answer button lies under the open sheet's backdrop: the tap only closes.
+            pg.evaluate("""() => { const b = document.querySelector('#dec-d-2-demo .opts button'); document.documentElement.style.scrollBehavior = 'auto';
+              window.scrollBy(0, b.getBoundingClientRect().top - (innerHeight - 60)); document.documentElement.style.scrollBehavior = ''; }""")
+            pg.wait_for_timeout(200)
+            CARD_JS = """() => { const c = document.getElementById('dec-d-2-demo'), b = c.querySelector('.opts button').getBoundingClientRect();
+              return { sig: c.dataset.sig, text: c.innerText, x: b.left + b.width / 2, y: b.top + b.height / 2 }; }"""
+            c0 = pg.evaluate(CARD_JS)
+            y0 = pg.evaluate("() => scrollY")
             pg.click("#nav-toggle")
-            pg.mouse.click(w // 2, hgt - 20)
+            r = pg.evaluate("() => document.getElementById('nav-sheet').getBoundingClientRect().bottom")
+            hit = pg.evaluate("([x, y]) => { const e = document.elementFromPoint(x, y); return e ? e.id || e.className : null; }", [c0["x"], c0["y"]])
+            check("  opening (and focusing) the menu does not scroll the page", pg.evaluate("() => scrollY") == y0, [y0, pg.evaluate("() => scrollY")])
+            check("  below the open sheet, a backdrop is what a tap hits", hit == "nav-backdrop", hit)
+            pg.mouse.click(c0["x"], c0["y"])
+            pg.wait_for_timeout(300)
+            c1 = pg.evaluate(CARD_JS)
             check("a tap outside closes it", not pg.evaluate("() => document.getElementById('secnav').classList.contains('open')"))
+            check("  and does not press the answer button under it", c0["y"] > r and c1["sig"] == c0["sig"] and c1["text"] == c0["text"], [c0["y"], r, c0["text"][-120:], c1["text"][-120:]])
+            pg.mouse.click(c1["x"], c1["y"])
+            pg.wait_for_timeout(300)
+            check("  (the same tap with the sheet closed does answer it)", pg.evaluate("() => !document.getElementById('dec-d-2-demo')"))
+            pg.close()
+            pg = new_page(width=w, height=hgt)
+            pg.click("#nav-toggle")
+            pg.focus("#nav-unfold-all")
+            pg.keyboard.press("Tab")
+            r = pg.evaluate("() => ({ open: document.getElementById('secnav').classList.contains('open'), inSheet: document.getElementById('nav-sheet').contains(document.activeElement), at: document.activeElement.id })")
+            check("Tab out of the sheet closes it", not r["open"] and not r["inSheet"], r)
+            pg.click("#nav-toggle")
+            pg.click("#nav-unfold-all")
+            r = pg.evaluate("() => ({ open: document.getElementById('secnav').classList.contains('open'), focus: document.activeElement.id })")
+            check("Expand all closes the sheet and focus returns to the button", not r["open"] and r["focus"] == "nav-toggle", r)
 
             print("phone %d px: back to the top:" % w)
             pg.evaluate("() => window.scrollTo({ top: 0, behavior: 'instant' })")
@@ -199,12 +282,16 @@ def main():
         check("Expand all sections opens everything", not any(x["folded"] for x in f.values()), f)
         r = pg.evaluate("() => document.querySelector('#needs-tile').getAttribute('href')")
         pg.click("#messages .sec-fold")
-        pg.evaluate("() => window.scrollTo({ top: 0, behavior: 'instant' })")
-        pg.goto(PAGE.replace("?demo=1", "?demo=1#messages"))
-        pg.wait_for_timeout(300)
         pg.evaluate("() => { location.hash = ''; location.hash = '#messages'; }")
         settle(pg)
         check("a #messages link opens a folded Messages", not pg.evaluate("() => document.getElementById('messages').classList.contains('sec-folded')"))
+        pg.click("#lifecycle .sec-fold")
+        pg.goto("about:blank")
+        pg.goto(PAGE + "#lifecycle")
+        pg.wait_for_timeout(800)
+        settle(pg)
+        r = pg.evaluate("() => ({ folded: document.getElementById('lifecycle').classList.contains('sec-folded'), head: document.getElementById('h-lifecycle').getBoundingClientRect().top, nav: document.getElementById('secnav').getBoundingClientRect().bottom })")
+        check("opening the page at #lifecycle (folded before) opens it and lands on it", not r["folded"] and r["nav"] - 1 <= r["head"] <= r["nav"] + 60, r)
         pg.close()
 
         print("phone: storage blocked:")
@@ -233,6 +320,11 @@ def main():
         pg.click("#dec-d-2-demo > .more")
         r = pg.evaluate("() => { const p = document.querySelector('#dec-d-2-demo .ctx'); return { clamp: p.classList.contains('clamp'), text: document.querySelector('#dec-d-2-demo > .more').textContent }; }")
         check("  Show more opens it", not r["clamp"] and r["text"] == "Show less", r)
+        pg.focus("#dec-d-2-demo > .more")
+        pg.evaluate("() => window.dispatchEvent(new StorageEvent('storage', { key: 'switchboard.lang', newValue: 'zh-TW' }))")
+        pg.wait_for_timeout(300)
+        r = pg.evaluate("() => ({ focus: document.activeElement.dataset.focus || document.activeElement.id || document.activeElement.tagName, text: document.activeElement.textContent, rebuilt: !document.querySelector('#dec-d-2-demo > .more[data-focus]') ? null : true })")
+        check("  a re-render (language switch) keeps the keyboard focus on it", r["focus"] == "more:ctx:d-2-demo" and r["text"] == "收起", r)
         pg.close()
 
         print("phone: zh-TW and dark:")
@@ -257,14 +349,64 @@ def main():
           tools: getComputedStyle(document.getElementById('nav-tools')).display, navTop: document.getElementById('secnav').getBoundingClientRect().top,
           deck: document.getElementById('deck').getBoundingClientRect().bottom, rail: getComputedStyle(document.querySelector('.rail-more')).display,
           stages: [...document.querySelectorAll('#tasks .tcard:first-child .rail .stage')].filter((s) => s.getBoundingClientRect().height > 0).length,
-          links: [...document.querySelectorAll('#nav-list a')].filter((a) => a.getBoundingClientRect().height > 0).length })""")
+          links: [...document.querySelectorAll('#nav-list a')].filter((a) => a.getBoundingClientRect().height > 0).length,
+          ctx: document.querySelector('#dec-d-2-demo .ctx').getBoundingClientRect().height, ctxFull: document.querySelector('#dec-d-2-demo .ctx').scrollHeight,
+          more: getComputedStyle(document.querySelector('#dec-d-2-demo > .more')).display })""")
         check("the row of links as before: no menu button, no sheet tools, below the Deck",
               r["toggle"] == "none" and r["list"] == "flex" and r["tools"] == "none" and r["navTop"] > r["deck"] and r["links"] >= 8, r)
         check("  task rails show all five stages, no Show all stages", r["rail"] == "none" and r["stages"] == 5, r)
+        check("  a long decision context shows in full, no Show more", r["ctx"] >= r["ctxFull"] - 1 and r["more"] == "none", r)
         pg.evaluate("() => window.scrollTo({ top: 3000, behavior: 'instant' })")
         pg.wait_for_timeout(200)
         check("  no floating ↑ on desktop", pg.evaluate(TOP_JS)["hidden"])
         pg.close()
+
+        print("board-serve, phone: what waits on you is never folded away:")
+        tmp = tempfile.mkdtemp(prefix="switchboard-mnav.")
+        srv = None
+        try:
+            srv, url, home = serve(tmp)
+            now = int(time.time() * 1000)
+            # WAIT needs you without a board decision (it lives only in Board); d-1 waits in Decisions.
+            write_json(os.path.join(home, "snapshot.json"), {"generated_at": now, "decisions": [], "tasks": [], "sessions": [
+                session("WAIT", "needs-you", now), session("API", "working", now), session("WEB", "working", now)]})
+            decision(home, "d-1", "API", "pending", now)
+            ctx = browser.new_context(viewport={"width": 390, "height": 844})
+            pg = ctx.new_page()
+            pg.on("pageerror", lambda e: errors.append(str(e)))
+            pg.goto(url)
+            pg.wait_for_function("() => document.getElementById('nav-toggle-n').textContent === '2' && !!document.getElementById('dec-d-1')", timeout=15000)
+            pg.click("#nav-toggle")
+            pg.click("#nav-fold-all")
+            f = {x["id"]: x for x in pg.evaluate(FOLD_JS)}
+            check("Collapse all keeps Board open while a session there needs you (and Decisions)",
+                  not f["board"]["folded"] and not f["decisions"]["folded"] and f["messages"]["folded"], f)
+            pg.click("#board .sec-fold")
+            pg.click("#decisions .sec-fold")
+            r = pg.evaluate("() => ({ hot: document.querySelector('#board .sec-sum').classList.contains('hot'), folded: document.getElementById('board').classList.contains('sec-folded') })")
+            check("  folded by hand, Board's count is highlighted", r["folded"] and r["hot"], r)
+            # d-1 answered and d-2 asked in the same update: still one pending, but a new one.
+            decision(home, "d-1", "API", "relayed", now)
+            decision(home, "d-2", "WEB", "pending", now)
+            pg.wait_for_function("() => !!document.getElementById('dec-d-2') && !document.getElementById('dec-d-1')", timeout=15000)
+            pg.wait_for_timeout(200)
+            check("  one answered and a new one asked at once: Decisions opens again",
+                  not pg.evaluate("() => document.getElementById('decisions').classList.contains('sec-folded')"))
+            pg.click("#decisions .sec-fold")
+            # WAIT goes back to work and NEXT starts to need you: still one, but a new one.
+            write_json(os.path.join(home, "snapshot.json"), {"generated_at": now + 1, "decisions": [], "tasks": [], "sessions": [
+                session("WAIT", "working", now), session("API", "working", now), session("WEB", "working", now), session("NEXT", "needs-you", now)]})
+            pg.wait_for_function("() => document.body.textContent.includes('NEXT')", timeout=15000)
+            pg.wait_for_timeout(200)
+            r = pg.evaluate("() => ({ board: document.getElementById('board').classList.contains('sec-folded'), dec: document.getElementById('decisions').classList.contains('sec-folded') })")
+            check("  a new session that needs you opens Board again (Decisions, nothing new, stays folded)", not r["board"] and r["dec"], r)
+            pg.close()
+            ctx.close()
+        finally:
+            if srv:
+                srv.terminate()
+                srv.wait()
+            shutil.rmtree(tmp, ignore_errors=True)
 
         check("no page errors", not errors, errors[:5])
         browser.close()
