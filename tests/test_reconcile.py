@@ -152,6 +152,7 @@ class HookRecords(Base):
         ev = [e for e in self.events() if e.get("event") == "PostToolUse"][-1]
         self.assertEqual(ev["tool_use_id"], "tu_h1")
         self.assertEqual(ev["outcome"]["picks"], [2, None])
+        self.assertEqual(ev["outcome"]["kid"], reconcile.key_id(reconcile.hash_key(self.home, create=False)))
         self.assertIsNone(ev["outcome"]["text_sha"][0])
         key = reconcile.hash_key(self.home, create=False)
         self.assertEqual(ev["outcome"]["text_sha"][1], reconcile.text_sha(key, "tu_h1", FREE))
@@ -307,6 +308,23 @@ class PaneQuestions(Base):
             self.collect()
             d = self.read(did)
             self.assertEqual((d["status"], d["reconcile_result"]), want, pane)
+
+    def test_a_replaced_key_is_unknown_not_differs(self):
+        for tu, replace, want in (("tu_r1", False, ("relayed", "match")), ("tu_r2", True, ("answered_in_pane", "unknown"))):
+            did = self.ask(tu, Q1)
+            self.board_answer(did, FREE)
+            self.patch(did, status="stale", status_reason="partial")
+            self.submit(tu, Q1, {Q1[0]["question"]: FREE})
+            ev = [e for e in self.events() if e.get("event") == "PostToolUse"][-1]["outcome"]
+            key = reconcile.hash_key(self.home, create=False)
+            self.assertEqual(ev["kid"], reconcile.key_id(key))
+            self.assertNotEqual(ev["kid"], key.hex()[:8])  # an id, not a piece of the key
+            if replace:  # the key file deleted (or restored from elsewhere): a new key is made
+                os.remove(os.path.join(self.home, reconcile.KEY_FILE))
+                self.assertNotEqual(reconcile.key_id(reconcile.hash_key(self.home)), ev["kid"])
+            self.collect()
+            d = self.read(did)
+            self.assertEqual((d["status"], d["reconcile_result"]), want, tu)
 
     def test_form_free_text_differs(self):
         did = self.ask("tu_f4", Q2)

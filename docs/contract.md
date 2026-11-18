@@ -318,7 +318,7 @@ answer but stopped at Submit, then someone submitted the form in the pane).
 (`type: "hook"`, `event`, `tool_use_id`, as before), and nothing more:
 
 - `outcome` (a `PostToolUse` of `AskUserQuestion` only): `{"picks": [n|null, ...], "text_sha":
-  [hex|null, ...]}`, one entry per question in order, from Claude Code's `tool_response`
+  [hex|null, ...], "kid": "hex8"}`, one entry per question in order, from Claude Code's `tool_response`
   (`{questions, answers: {<question text>: <label or free text>}, annotations}`; else
   `tool_input.answers`). `picks[i]` is the 1-based number of the option the answer names
   (whitespace-normalised): its exact label first, else a case-insensitive match only when exactly
@@ -334,7 +334,10 @@ answer but stopped at Submit, then someone submitted the form in the pane).
   rule also catches dates and other long numbers: such an answer compares as `unknown`, never as a
   match. The key is made by a hard link from a full temp file (another writer's key is kept); only
   on a filesystem without hard links (`EPERM` / `ENOTSUP`) is it moved into place instead, and the
-  key is always read back from the file. The answer
+  key is always read back from the file. `kid` (present when a hash is) is
+  `HMAC-SHA256(key, "reconcile-key-id")[:8]`: it names the key, not reveals it. A text slot whose
+  `kid` is missing or not the current key's (the key was replaced: deleted, restored, or lost in a
+  creation race) compares as `unknown`, never `differs`. The answer
   text is never stored: not in the event, the state file or the decision. It is computed by `lib/reconcile.py hook-outcome`, the only python start, and only for
   this event.
 - `denied: true` (a `PostToolUseFailure` only) when its error reads as the user rejecting the
@@ -357,7 +360,7 @@ The outcome is compared with the board's recorded answer and the result kept in
 |---|---|---|---|
 | `answered` / `stale` with a board answer | equals it: permission `allow` and `PostToolUse`, or `deny` and `denied`; a question with every pick equal to the board's option and every free-text hash equal to the hash of the board's text | `match` | `relayed`, `delivered_via: "session"`, `relayed_at` kept or the outcome's time |
 | `answered` / `stale` with a board answer | provably something else: permission `allow` vs `denied` or `deny` vs `PostToolUse`; a question with another option, an option where the board typed text (or the reverse), or a free-text hash that differs | `differs` | `answered_in_pane`, `resolved_via: "pane"`, `resolved_by` the session code; the board's answer is kept as it was |
-| `answered` / `stale` with a board answer | cannot tell: a permission failure that is not a rejection (allowed, then the command failed, or not), a failed or declined picker, a picker without a recorded outcome (older hooks, backfill) or with the wrong number of answers, free text without a hash on either side | `unknown` | `answered_in_pane`, as above |
+| `answered` / `stale` with a board answer | cannot tell: a permission failure that is not a rejection (allowed, then the command failed, or not), a failed or declined picker, a picker without a recorded outcome (older hooks, backfill) or with the wrong number of answers, free text without a hash on either side or hashed under a replaced key | `unknown` | `answered_in_pane`, as above |
 | `pending` (no board answer) | any | `no_answer` | `answered_in_pane`, as above |
 | `relayed`, `unauthorized`, `timeout`, `answered_in_pane` | any | — | never changed |
 

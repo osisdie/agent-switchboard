@@ -78,8 +78,9 @@ def board_home():
 def hash_key(home, create=True):
     """This install's key for free-text hashes ($BOARD_HOME/secrets/reconcile.key: 32 random bytes,
     0600, made on first use; never served, mirrored or logged). None when it cannot be used safely
-    (a symlink, another owner, readable by others, the wrong size): then nothing is hashed, and a
-    lost key only makes older hashes incomparable ("unknown")."""
+    (a symlink, another owner, readable by others, the wrong size): then nothing is hashed. Every
+    outcome with a hash carries the id of the key that made it (key_id), so a replaced key (deleted,
+    restored, or lost in a creation race) makes older hashes compare as "unknown", never "differs"."""
     path = os.path.join(home, KEY_FILE)
     if create and not os.path.lexists(path):
         try:
@@ -117,6 +118,11 @@ def hash_key(home, create=True):
             return None
         data = fh.read(KEY_BYTES + 1)
     return data if len(data) == KEY_BYTES else None
+
+
+def key_id(key):
+    """A short id of a hash key (not the key): which key made an outcome's hashes."""
+    return hmac.new(key, b"reconcile-key-id", hashlib.sha256).hexdigest()[:8]
 
 
 def text_sha(key, tool_use_id, text):
@@ -189,7 +195,10 @@ def hook_outcome(payload, home=None):
             continue
         key = key or hash_key(home or board_home())
         shas.append(text_sha(key, tu, a) if key else None)
-    return {"picks": picks, "text_sha": shas}
+    out = {"picks": picks, "text_sha": shas}
+    if key and any(shas):
+        out["kid"] = key_id(key)
+    return out
 
 
 # ------------------------------------------------------------------ collector side
@@ -241,6 +250,8 @@ def read_outcomes(home, now):
                 oc = ev.get("outcome")
                 if isinstance(oc, dict) and isinstance(oc.get("picks"), list) and isinstance(oc.get("text_sha"), list):
                     o["picks"], o["text_sha"] = oc["picks"], oc["text_sha"]
+                    if isinstance(oc.get("kid"), str):
+                        o["kid"] = oc["kid"]
                 out[tu] = o
 
     def save():
@@ -366,7 +377,8 @@ def compare(d, outcome, key):
         else:
             if p is not None:
                 return "differs"  # an option where the board typed text
-            if sh is None or key is None:
+            if sh is None or key is None or outcome.get("kid") != key_id(key):
+                # no hash, no key, or hashed under another key (replaced since): cannot tell
                 result = "unknown"
             elif sh != text_sha(key, tu, v):
                 return "differs"
