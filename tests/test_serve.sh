@@ -896,9 +896,19 @@ eq "form: free text instead of options 400" "$(post /api/decisions/d-1-pqm/answe
 eq "options on a single question 400" "$(post /api/decisions/d-1-pq1/answer '{"options":[1,1]}')/$(body .error)" "400/bad_options"
 eq "  nothing recorded" "$(jq -r '.status' "$BOARD_HOME/decisions/d-1-pqm.json")/$(jq -r '.status' "$BOARD_HOME/decisions/d-1-pq1.json")" "pending/pending"
 : > "$FAKE_TMUX_LOG"
-eq "form: valid options are recorded, then pressed (this screen is not the form: 409 stale)" "$(post /api/decisions/d-1-pqm/answer '{"options":[2,1]}')/$(body .error)" "409/stale"
-eq "  recorded by board answer --options" "$(jq -r '"\(.answer)|\(.answer_options | join(","))|\(.answered_by)"' "$BOARD_HOME/decisions/d-1-pqm.json")" "Color: Blue · Size: S|2,1|local"
+# This screen is not the form, while the state still shows it open: nothing pressed, pending again.
+eq "form: valid options, a screen that is not the form -> 409 screen_not_ready" "$(post /api/decisions/d-1-pqm/answer '{"options":[2,1]}')/$(body .error)" "409/screen_not_ready"
 grep -q '^send-keys' "$FAKE_TMUX_LOG" && bad "  no key sent on a screen that is not the form" || ok "  no key sent on a screen that is not the form"
+eq "  pending again, answer cleared, counted" "$(jq -r '"\(.status)|\(.answer_options)|\(.press_not_visible)"' "$BOARD_HOME/decisions/d-1-pqm.json")" "pending|null|1"
+# The form on its first question, never redrawn (static screen): its digit is sent, then the press
+# stops (409 partial) and keeps what board answer recorded.
+cp "$FAKE_TMUX_SCREEN" "$T/screen.saved"
+printf '←  ☐ Color  ☐ Size  ✔ Submit  →\n\nWhich color?\n\n❯ 1. Red\n  2. Blue\n  3. Type something.\n───\n  4. Chat about this\n\nEnter to select · Tab/Arrow keys to navigate · Esc to cancel\n' > "$FAKE_TMUX_SCREEN"
+: > "$FAKE_TMUX_LOG"
+eq "form: valid options are recorded, then pressed (409 partial here)" "$(post /api/decisions/d-1-pqm/answer '{"options":[2,1]}')/$(body .error)" "409/partial"
+eq "  recorded by board answer --options" "$(jq -r '"\(.answer)|\(.answer_options | join(","))|\(.answered_by)"' "$BOARD_HOME/decisions/d-1-pqm.json")" "Color: Blue · Size: S|2,1|local"
+eq "  only the first digit was sent" "$(grep '^send-keys' "$FAKE_TMUX_LOG" | tr '\n' '|')" "send-keys -t %42 2|"
+cp "$T/screen.saved" "$FAKE_TMUX_SCREEN"
 # Free text per question: {answers: [{question_index, option | text}, ...]}.
 paneq d-1-pqt tu_qt "$Q2F" true
 A='/api/decisions/d-1-pqt/answer'
@@ -919,12 +929,21 @@ eq "answers: question_index true 400" "$(post $A '{"answers":[{"question_index":
 eq "answers: question_index 0.0 400" "$(post $A '{"answers":[{"question_index":0.0,"option":1},{"option":1}]}')/$(body .error)" "400/bad_answers"
 eq "  nothing recorded" "$(jq -r '.status' "$BOARD_HOME/decisions/d-1-pqt.json")" "pending"
 : > "$FAKE_TMUX_LOG"
-eq "answers: option + text with a newline/escape -> recorded (one line), then pressed (409 stale here)" \
-  "$(post $A '{"answers":[{"question_index":0,"option":2},{"question_index":1,"text":"extra\nlarge\u001b[1m"}]}')/$(body .error)" "409/stale"
+eq "answers: option + text, a screen that is not the form -> 409 screen_not_ready" \
+  "$(post $A '{"answers":[{"question_index":0,"option":2},{"question_index":1,"text":"extra\nlarge\u001b[1m"}]}')/$(body .error)" "409/screen_not_ready"
+grep -q '^send-keys' "$FAKE_TMUX_LOG" && bad "  no key sent on a screen that is not the form" || ok "  no key sent on a screen that is not the form"
+eq "  pending again, options and texts cleared" "$(jq -r '"\(.status)|\(.answer_options)|\(.answer_texts)"' "$BOARD_HOME/decisions/d-1-pqt.json")" "pending|null|null"
+ls "$BOARD_HOME"/.form.* >/dev/null 2>&1 && bad "  the form file is removed" || ok "  the form file is removed"
+cp "$FAKE_TMUX_SCREEN" "$T/screen.saved"
+printf '←  ☐ Color  ☐ Size  ✔ Submit  →\n\nWhich color?\n\n❯ 1. Red\n  2. Blue\n  3. Type something.\n───\n  4. Chat about this\n\nEnter to select · Tab/Arrow keys to navigate · Esc to cancel\n' > "$FAKE_TMUX_SCREEN"
+: > "$FAKE_TMUX_LOG"
+eq "answers: option + text with a newline/escape -> recorded (one line), then pressed (409 partial here)" \
+  "$(post $A '{"answers":[{"question_index":0,"option":2},{"question_index":1,"text":"extra\nlarge\u001b[1m"}]}')/$(body .error)" "409/partial"
 eq "  recorded by board answer --form-file" "$(jq -r '"\(.answer)|\(.answer_options | join(","))|\(.answer_texts[1])|\(.answered_by)"' "$BOARD_HOME/decisions/d-1-pqt.json")" \
   "Color: Blue · Size: extra large [1m|2,2|extra large [1m|local"
-grep -q '^send-keys' "$FAKE_TMUX_LOG" && bad "  no key sent on a screen that is not the form" || ok "  no key sent on a screen that is not the form"
+eq "  only the first digit was sent" "$(grep '^send-keys' "$FAKE_TMUX_LOG" | tr '\n' '|')" "send-keys -t %42 2|"
 ls "$BOARD_HOME"/.form.* >/dev/null 2>&1 && bad "  the form file is removed" || ok "  the form file is removed"
+cp "$T/screen.saved" "$FAKE_TMUX_SCREEN"
 rm -f "$BOARD_HOME/decisions/d-1-pqt.json"
 rm -f "$BOARD_HOME/decisions/d-1-pqm.json"
 paneq d-1-pq1 tu_q1 "$Q1" true

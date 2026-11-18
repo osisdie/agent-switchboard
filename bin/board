@@ -262,7 +262,7 @@ JQ_PANE_ANSWER='
       elif any($qs[]; .multiSelect == true) then "multi-select"
       elif any($qs[]; ([ .options[].label | tostring | trim | ascii_downcase ] | unique | length) != (.options | length))
         then "repeated labels"
-      elif ([ $qs[] | .question // "" | tostring | split("…")[0] | split("[REDACTED")[0] | gsub("[\\s\u0085\u00a0\u1680\u2000-\u200b\u2028\u2029\u202f\u205f\u3000\ufeff]"; "") ] as $k
+      elif ([ $qs[] | .question // "" | tostring | split("…")[0] | split("[REDACTED")[0] | gsub("[\\s\u0085\u00a0\u1680\u2000-\u200b\u2028\u2029\u202f\u205f\u3000\ufeff\u2502]"; "") ] as $k
             | any(range(0; $k | length) as $a | range(0; $k | length) as $b | select($a != $b) | [$a, $b];
                   . as $p | $k[$p[1]] | startswith($k[$p[0]])))
         then "questions start alike"
@@ -1722,15 +1722,18 @@ press_scrollback() {
 # once the focused row shows the typed text; Enter there confirms the text and moves on, as a digit
 # does. Then the review screen must list every question with the chosen label or text, and its
 # submit row's digit is pressed (never Enter there). A check that fails before the first key
-# exits 3; after it, 5 (partial, stale): typed text whose echo does not match is never confirmed.
+# exits 3, or 7 (pending again) when the screen shows the form elsewhere while the prompt is still
+# open; after it, 5 (partial, stale): typed text whose echo does not match is never confirmed.
 # nows — the text on stdin without whitespace, ASCII or Unicode (NBSP, the U+2000 spaces, ideographic
-# space, zero-width space, BOM; the set the hook's jq removes): how press_multi compares the screen
-# with the stored questions, on both sides alike.
-nows() { LC_ALL=C sed -E 's/[[:space:]]|\xc2[\x85\xa0]|\xe1\x9a\x80|\xe2\x80[\x80-\x8b\xa8\xa9\xaf]|\xe2\x81\x9f|\xe3\x80\x80|\xef\xbb\xbf//g' | tr -d '\n'; }
+# space, zero-width space, BOM; the set the hook's jq removes) and without the box glyph "│"
+# (U+2502: Claude Code draws a question holding a newline in a box, "│ " before each of its lines,
+# the lines it wraps too, on the question and the review screen): how press_multi compares the
+# screen with the stored questions, labels and texts, on both sides alike.
+nows() { LC_ALL=C sed -E 's/[[:space:]]|\xc2[\x85\xa0]|\xe1\x9a\x80|\xe2\x80[\x80-\x8b\xa8\xa9\xaf]|\xe2\x81\x9f|\xe3\x80\x80|\xef\xbb\xbf|\xe2\x94\x82//g' | tr -d '\n'; }
 press_multi() {
   local pane="$1" sf="$2" df="$3" sha="$4" lines="$5"
   local tabbar review submit footer focus n i t tries key sent=0 raw="" prev="" why="" digit name
-  local ftlabel text want send
+  local ftlabel text want send why_screen=0
   tabbar="$(cfg_get press.tabbar_regex)"; review="$(cfg_get press.review_regex)"
   submit="$(cfg_get press.submit_label)"; footer="$(cfg_get press.question_regex)"; focus="$(cfg_get press.focus_regex)"
   # Configured patterns are checked before any key: each must be a valid extended regex for grep -E
@@ -1774,13 +1777,16 @@ press_multi() {
   # check_question I — RAW is a fresh capture showing question I: after the tab bar, its text comes
   # first (all of it, or the stored start of a clipped one), then its labels in order, then the
   # picker footer; and it is not the screen the previous digit was sent on. Sets WHY when not.
+  # WHY_SCREEN=1 when the screen shows another state of the form (not the question, its options or
+  # its picker), not a question that cannot be checked at all.
   check_question() {
     local q flat rest lab
+    why_screen=1
     raw="$(form_region)" || { why="no question form visible for question $(($1 + 1))"; return 1; }
     [ "$1" -gt 0 ] && [ "$raw" = "$prev" ] && { why="question $(($1 + 1)) did not appear (the screen did not change)"; return 1; }
     q="$(qkey "$1")"; flat="$(nows <<<"$raw")"
     [ "${#q}" -ge 8 ] || [ "$(jq -r --argjson i "$1" '.questions[$i].question // ""' "$df" | nows)" = "$q" ] \
-      || { why="too little of question $(($1 + 1)) to check on screen"; return 1; }
+      || { why="too little of question $(($1 + 1)) to check on screen"; why_screen=0; return 1; }
     [ -n "$q" ] && [[ $flat == "$q"* ]] || { why="question $(($1 + 1)) is not the one showing"; return 1; }
     rest="${flat#"$q"}"
     while IFS= read -r lab; do
@@ -1792,7 +1798,7 @@ press_multi() {
     grep -Eq -- "$footer" <<<"$raw" || { why="the picker of question $(($1 + 1)) is not open"; return 1; }
     if [ -n "$text" ]; then  # the row the digit goes to must be "Type something"
       grep -Eq -- "^[[:space:]]*(${focus})?[[:space:]]*${key}\.[[:space:]]*(${ftlabel})" <<<"$raw" \
-        || { why="row $key of question $(($1 + 1)) is not \"Type something\""; return 1; }
+        || { why="row $key of question $(($1 + 1)) is not \"Type something\""; why_screen=0; return 1; }
     fi
   }
   # check_ft_focus I — after the "Type something" digit: that row is focused, still unedited.
@@ -1828,7 +1834,8 @@ press_multi() {
       rest="${rest#*"$q"}"
     done
     # "→ Redwood" never passes for "Red". An answer the screen wrapped continues on the next lines,
-    # indented deeper than the "●" question lines (4+ spaces) and not a "●", "→" or numbered row:
+    # indented deeper than the "●" question lines (4+ spaces) and not a "●", "│" (a boxed question),
+    # "→" or numbered row:
     # those lines are joined to it, so a long typed text compares whole.
     local -a shown=()
     local cur="" inans=0
@@ -1836,7 +1843,7 @@ press_multi() {
       if [[ $seg =~ ^[[:space:]]*→ ]]; then
         [ "$inans" = 1 ] && shown+=("$(nows <<<"$cur")")
         cur="${seg#*→}"; inans=1
-      elif [ "$inans" = 1 ] && [[ $seg =~ ^[[:space:]]{4,}[^[:space:]] ]] && ! [[ $seg =~ ^[[:space:]]*(●|[1-9]\.) ]]; then
+      elif [ "$inans" = 1 ] && [[ $seg =~ ^[[:space:]]{4,}[^[:space:]] ]] && ! [[ $seg =~ ^[[:space:]]*(●|│|[1-9]\.) ]]; then
         cur="$cur$seg"
       else
         [ "$inans" = 1 ] && shown+=("$(nows <<<"$cur")")
@@ -1882,7 +1889,14 @@ press_multi() {
   for ((i = 0; i < n; i++)); do
     key="$(jq -r --argjson i "$i" '.answer_options[$i]' "$df")"
     text="$(jq -r --argjson i "$i" '(.answer_texts // [])[$i] // empty' "$df")"
-    await check_question "$i" || fail "$why"
+    if ! await check_question "$i"; then
+      # Before any key, a screen that shows another state of the form (another question, say, one
+      # answered in the session) while the hook state still shows this prompt is not a refusal: the
+      # decision goes back to pending (exit 7, counted), as a hidden picker does, so it can be
+      # pressed again. refuse_screen reads the state again; moved on, it refuses (exit 3).
+      [ "$sent" = 0 ] && [ "$why_screen" = 1 ] && refuse_screen "$why" "$pane"
+      fail "$why"
+    fi
     same_prompt || fail "pending prompt changed (question $((i + 1)))" moved_on
     tmux send-keys -t "$pane" "$key" || fail "send-keys failed (question $((i + 1)))"
     sent=1; prev="$raw"

@@ -405,7 +405,10 @@ multiSelect, options: [{label, description}]}]}` on `PreToolUse` (with `tool_use
 Claude Code draws them with a tab bar (`←  ☐ Color  ☐ Size  ✔ Submit  →`), one question at a
 time: a digit picks an option and moves to the next question; after the last one a review screen
 (`Review your answers`, one `→ <label>` line per question, `Ready to submit your answers?`,
-`1. Submit answers`, `2. Cancel`, no footer) waits, and its digit submits.
+`1. Submit answers`, `2. Cancel`, no footer) waits, and its digit submits. A question holding a
+newline is drawn in a box: `│ ` before each of its lines, the lines it wraps too (mid-word in CJK
+text), on the question screen and on the review screen; on a narrow pane the footer wraps
+(`… · Esc to` / `cancel`), which `press.question_regex` still matches on its first line.
 
 - `board answer <id> --form-file <path> --by <who>`: the same with free text for some questions.
   The file holds `[{"question_index": 0, "option": 2}, {"question_index": 1, "text": "..."}, ...]`:
@@ -435,7 +438,8 @@ time: a digit picks an option and moves to the next question; after the last one
   `press.focus_regex` (the focused-row marker, default `(❯|>|›)`, shared with single questions)
   must be valid extended regexes (the tab bar and focus ones for awk too), and `press.submit_label` plain text (matched literally), checked
   before any key. Whitespace is removed the same way from the screen and the stored text, Unicode spaces included
-  (NBSP, U+2000–U+200B, U+3000, ...). Only the lines after the last tab bar count: the prompt above the form can
+  (NBSP, U+2000–U+200B, U+3000, ...), and so is the box glyph `│` (U+2502), in questions, labels,
+  typed texts and review answers alike (the hook's "start alike" check drops it too). Only the lines after the last tab bar count: the prompt above the form can
   repeat the questions. For each question in order: the first text after the tab bar is that
   question (all of it, or its stored start when clipped), then its labels in order, then the
   picker footer (`press.question_regex`); after a digit, the screen must also differ from the one
@@ -444,8 +448,14 @@ time: a digit picks an option and moves to the next question; after the last one
   screen (`press.review_regex`): every question's start in order, exactly one `→` line per
   question, each equal to the chosen label (whitespace ignored), and exactly one row containing
   `press.submit_label`: the focused (`press.focus_regex`) `N.` row, after the answers, followed only by numbered rows;
-  then its digit N. **Enter is never sent on the review screen.** A mismatch before the first digit → exit 3, nothing
-  sent; after it → exit 5 (partial), `stale`, logged `partial`.
+  then its digit N. **Enter is never sent on the review screen.** Before the first digit, a
+  screen that shows another state of the form (no tab bar, another question, its options or
+  footer missing) while the state is re-read and still shows this prompt waiting → exit 7,
+  nothing sent, pending again and counted (`press_not_visible`, `answer_options` and
+  `answer_texts` cleared), as for a hidden picker; once the session moved on → exit 3. A question
+  that cannot be checked (too little of it), a "Type something" row that is not where the text
+  goes, or any other mismatch before the first digit → exit 3, nothing sent; after it → exit 5
+  (partial), `stale`, logged `partial`.
 - **Free text on a question** (`answer_texts[i]`), as recorded on a private tmux server: the
   digit of the "Type something" row focuses it without leaving the question, typed text replaces
   the row's label (`❯ 3. teal green`), Enter confirms it and moves to the next question, and the
@@ -455,7 +465,7 @@ time: a digit picks an option and moves to the next question; after the last one
   then the focused row N+1 must show the typed text right after `N+1.` (its first 20 non-space
   characters), and not still show the unedited label, and the state must be unchanged, and only
   then it sends `Enter`. The review line of that question must equal the text; a text the review
-  wraps continues on lines indented 4+ spaces (not a `●`, `→` or numbered row), which are joined
+  wraps continues on lines indented 4+ spaces (not a `●`, `│`, `→` or numbered row), which are joined
   to it first. A failed check after the first digit → exit 5 (partial):
   typed text whose echo does not match is never confirmed with Enter. A form hidden by a scrolled pane goes
   back to pending (exit 7) with `answer_options` and `answer_texts` cleared. The decision's

@@ -503,7 +503,9 @@ to the Artifact or put in an alert. Turn the prompt off with `cards: {show_promp
   **Send answers**. `board press` goes question by question, checking each one on screen: an option
   is its digit; typed text picks that question's "Type something" row, types the text, and presses
   Enter only once the row shows it (else it stops there, exit 5). Then it checks the review screen
-  and picks **Submit answers** (never Enter there). Typed text becomes one line (line breaks and
+  and picks **Submit answers** (never Enter there). If, before the first key, the screen shows the
+  form elsewhere (another question, say) while the prompt is still open, nothing is pressed and
+  the card goes back to pending (exit 7), to send again or answer in the session. Typed text becomes one line (line breaks and
   control characters turn into spaces), at most 200 characters, and goes through the secret guard. Multi-select or a clipped option label make a read-only card: answer it in the session.
   When the session moves on, the card goes stale.
 
