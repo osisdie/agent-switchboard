@@ -3407,7 +3407,9 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       no.addEventListener('click', () => { row.remove(); rel.hidden = false; rel.focus(); });
       yes.addEventListener('click', () => {
         yes.disabled = no.disabled = true;
-        adapter.releaseMessage(m.id).then(() => toast(tr('Released. The operator relays it with a reminder.')),
+        adapter.releaseMessage(m.id).then((r) => toast(tr(r && r.status === 'declined'
+          ? 'Released, then declined: askers are being declined right now, so it got the automatic reply and is not relayed.'
+          : 'Released. The operator relays it with a reminder.')),
           (e) => { handleWriteError(e); yes.disabled = no.disabled = false; });
       });
       box.append(row);
@@ -7440,6 +7442,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "Going offline?": "要離開了嗎？",
       "Your words for the sessions, e.g. back Monday; agree among yourselves": "給 session 的話，例如：週一回來；你們自己商量",
       "I'm away": "我不在",
+      "Released, then declined: askers are being declined right now, so it got the automatic reply and is not relayed.": "已放行，但隨即婉拒：目前正在婉拒提問者，所以它收到自動回覆，不會轉送。",
       "Your status": "你的狀態",
       "Online": "在線",
       "Do not disturb": "勿擾",

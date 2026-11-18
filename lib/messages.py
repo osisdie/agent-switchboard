@@ -233,12 +233,19 @@ def create(home, to, body, by, background_alert=False, asker=None, api=None, dec
         audit(home, {"action": "held", "id": mid, "to": to, "by": by, "reason": reason})
         alert("guard:held:%s" % mid, HELD_TITLE, mid, background=background_alert)
     elif decline:
-        rid = "r-%d-%s" % (now, secrets.token_hex(3))
-        _write(os.path.join(_dir(home), mid, "replies", rid + ".json"),
-               {"id": rid, "from": "BOARD", "body": decline[1], "created_at": now, "canned": decline[0]})
-        audit(home, dict({"type": "message", "action": "declined", "id": mid, "to": to, "by": by,
-                          "reason": decline[0]}, **({"key_id": api["key_id"]} if api else {})))
+        _canned(home, rec, decline, now)
     return rec
+
+
+def _canned(home, rec, decline, now):
+    """A declined message's canned reply from BOARD, and its audit row."""
+    rid = "r-%d-%s" % (now, secrets.token_hex(3))
+    _write(os.path.join(_dir(home), rec["id"], "replies", rid + ".json"),
+           {"id": rid, "from": "BOARD", "body": decline[1], "created_at": now, "canned": decline[0]})
+    api = rec.get("api") if isinstance(rec.get("api"), dict) else {}
+    audit(home, dict({"type": "message", "action": "declined", "id": rec["id"], "to": rec.get("to"),
+                      "by": rec.get("by"), "reason": decline[0]},
+                     **({"key_id": api["key_id"]} if api.get("key_id") else {})))
 
 
 def decline_for(home, by, cfg=None):
@@ -283,17 +290,31 @@ def ticket_relay_text(rec):
                writes.AUTHORIZES, prov, key, mid))
 
 
-def release(home, mid, by):
-    """Release a held message (the caller checked that `by` is an approver). Returns the record."""
+def release(home, mid, by, cfg=None):
+    """Release a held message (the caller checked that `by` is an approver). Returns the record:
+    status "new", or "declined" when an asker sent it and their requests are declined right now
+    (the owner's do-not-disturb, or compute is short: lib/availability.py, checked at release
+    time): then it gets the canned reply and is never relayed, like one declined when sent."""
     rec = read(home, mid)
     if rec is None:
         raise MessageError("not_found", "no such message")
     if rec.get("status") != "held":
         raise MessageError("not_held", "the message is not held")
     now = now_ms()
-    rec.update({"status": "new", "released_by": by, "released_at": now})
+    decline = None
+    if asker_origin(rec, cfg):
+        import availability  # noqa: WPS433
+        cfg = cfg if cfg is not None else fleet.load_fleet()
+        reason = availability.decline_reason(home, cfg)
+        decline = (reason, availability.reply_text(cfg, reason)) if reason else None
+    rec.update({"status": "declined" if decline else "new", "released_by": by, "released_at": now})
+    if decline:
+        rec.update({"declined_reason": decline[0], "declined_at": now})
     _write(path_of(home, mid), rec)
-    audit(home, {"action": "release", "id": mid, "by": by, "reason": rec.get("held_reason")})
+    audit(home, dict({"action": "release", "id": mid, "by": by, "reason": rec.get("held_reason")},
+                     **({"result": "declined", "declined_reason": decline[0]} if decline else {})))
+    if decline:
+        _canned(home, rec, decline, now)
     try:
         import notify  # noqa: WPS433
         notify.resolve("guard:held:%s" % mid)

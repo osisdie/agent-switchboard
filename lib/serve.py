@@ -2005,13 +2005,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.audit(ident, via, "message-release", id=mid, result="refused", reason="self-release")
                 raise Refused(403, "self_release", "another owner must release a message you sent")
             try:
-                messages.release(self.server.home, mid, by)
+                rel = messages.release(self.server.home, mid, by)
             except messages.MessageError as exc:
                 self.audit(ident, via, "message-release", id=mid, result=exc.code)
                 raise Refused(404 if exc.code == "not_found" else 409, exc.code, exc.detail) from exc
-            self.audit(ident, via, "message-release", id=mid, result="released")
+            # an asker's message while their requests are declined: released into "declined" (the
+            # canned reply, never relayed), checked now, not when it was sent
+            declined = rel.get("status") == "declined"
+            self.audit(ident, via, "message-release", id=mid, result="declined" if declined else "released",
+                       **({"reason": rel.get("declined_reason")} if declined else {}))
         self.hub_kick()
-        return self.send_json(200, {"id": mid, "status": "new"})
+        out = {"id": mid, "status": rel.get("status")}
+        if declined:
+            out["reason"] = rel.get("declined_reason")
+        return self.send_json(200, out)
 
 
     def resolve(self, did, body, ident, via):

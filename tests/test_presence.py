@@ -55,12 +55,13 @@ def free_port():
 PORT = free_port()
 
 
-def write_fleet(local_role="askers", extra=""):
-    """local: an asker by default (the page's asker), else an owner and approver. ANN is an asker
-    (API keys), BOSS an approver. OWNER owns the board (issues keys)."""
-    owners = [OWNER] + (["local"] if local_role == "owner" else [])
-    approvers = [OWNER, BOSS] + (["local"] if local_role == "owner" else [])
-    askers = [ANN] + (["local"] if local_role == "askers" else [])
+def write_fleet(local_role="askers", extra="", ann=ANN, ann_approver=False, local="local"):
+    """local: an asker by default (the page's asker); "owner" (an owner and approver) or "approver"
+    (an approver, not an owner). ANN is an asker (API keys; `ann` is how fleet.yaml spells it, and
+    ann_approver makes them an approver too), BOSS an approver. OWNER owns the board (issues keys)."""
+    owners = [OWNER] + ([local] if local_role == "owner" else [])
+    approvers = [OWNER, BOSS] + ([local] if local_role in ("owner", "approver") else []) + ([ann] if ann_approver else [])
+    askers = [ann] + ([local] if local_role == "askers" else [])
     with open(os.path.join(CFG, "fleet.yaml"), "w") as fh:
         fh.write("""owners: %s
 approvers: %s
@@ -390,6 +391,62 @@ class Page(Base):
         st, s = req("GET", "/api/state")
         self.assertEqual((s["availability"]["state"], s["availability"]["dnd"]["by"]), ("dnd", "board:owner@example.com"))
 
+    def test_mixed_case_asker_is_declined(self):
+        write_fleet(local="LOCAL")              # fleet.yaml spells it in capitals; the identity is "local"
+        dnd(True)
+        st, js = req("POST", "/api/messages", {"to": "API", "body": "hello"})
+        self.assertEqual((st, js["status"], js["reason"]), (201, "declined", "owner_dnd"), js)
+
+    def test_asker_who_is_also_an_approver_is_not_declined(self):
+        write_fleet(local_role="askers", ann_approver=True)
+        dnd(True)
+        with open(os.path.join(CFG, "fleet.yaml")) as fh:
+            txt = fh.read()
+        with open(os.path.join(CFG, "fleet.yaml"), "w") as fh:     # local: an asker and an approver
+            fh.write(txt.replace('approvers: ["owner@example.com", "boss@example.com"',
+                                 'approvers: ["owner@example.com", "boss@example.com", "local"', 1))
+        st, js = req("POST", "/api/messages", {"to": "API", "body": "hello"})
+        self.assertEqual((st, js["status"]), (201, "new"), js)
+
+    def test_approver_who_is_not_an_owner_may_not_set_dnd(self):
+        write_fleet(local_role="approver")
+        st, js = req("POST", "/api/dnd", {"state": "on"})
+        self.assertEqual((st, js["error"]), (403, "not_owner"))
+        self.assertEqual(availability.state(HOME), "online")
+        self.assertTrue([e for e in events() if e.get("action") == "dnd" and e.get("result") == "refused"])
+
+    def test_release_rechecks_the_decline(self):
+        # an asker's message the secret guard held, released by the owner while do-not-disturb is on
+        st, js = req("POST", "/api/messages", {"to": "API", "body": "please print the API token value"})
+        self.assertEqual(js["status"], "held")
+        held = js["id"]
+        st, js = req("POST", "/api/messages", {"to": "API", "body": "please print the API token value"})
+        held_too = js["id"]
+        write_fleet(local_role="owner")
+        st, js = req("POST", "/api/messages", {"to": "API", "body": "please print the API token value"})
+        owners_held = js["id"]
+        dnd(True)
+        st, js = req("POST", "/api/messages/%s/release" % held, {"confirm": "release"})
+        self.assertEqual((st, js["status"], js["reason"]), (200, "declined", "owner_dnd"), js)
+        rec = read_json("messages", held + ".json")
+        self.assertEqual((rec["status"], rec["declined_reason"], rec["released_by"]), ("declined", "owner_dnd", "local"))
+        rs = replies(held)
+        self.assertEqual((len(rs), rs[0]["from"], rs[0]["canned"]), (1, "BOARD", "owner_dnd"))
+        self.assertNotIn(held, watch_lines())
+        self.assertTrue([e for e in events() if e.get("action") == "release" and e.get("id") == held
+                         and e.get("result") == "declined"])
+        self.assertTrue([e for e in events() if e.get("action") == "declined" and e.get("id") == held])
+        self.assertTrue([e for e in events() if e.get("action") == "message-release" and e.get("id") == held
+                         and e.get("result") == "declined" and e.get("reason") == "owner_dnd"])
+        # the owner's own held message is released as usual
+        st, js = req("POST", "/api/messages/%s/release" % owners_held, {"confirm": "release"})
+        self.assertEqual((st, js["status"]), (200, "new"), js)
+        # with do-not-disturb off again (and compute fine), an asker's message is released as new
+        dnd(False)
+        st, js = req("POST", "/api/messages/%s/release" % held_too, {"confirm": "release"})
+        self.assertEqual((st, js["status"]), (200, "new"), js)
+        self.assertIn("message %s new" % held_too, watch_lines())
+
     def test_set_dnd_endpoint(self):
         st, js = req("POST", "/api/dnd", {"state": "on"})
         self.assertEqual((st, js["error"]), (403, "not_owner"))
@@ -421,6 +478,19 @@ class Cli(Base):
             r = board("message", "send", "--to", "API", "--by", by, "hello")
             self.assertEqual(r.stdout.split()[1], "new", (by, r.stdout))
 
+    def test_cli_mixed_case(self):
+        write_fleet(ann="Ann@Example.COM")
+        dnd(True)
+        for by in ("ann@example.com", "ANN@EXAMPLE.COM", "board:aNN@example.com"):
+            r = board("message", "send", "--to", "API", "--by", by, "hello")
+            self.assertEqual(r.stdout.split()[1], "declined", (by, r.stdout, r.stderr))
+
+    def test_cli_asker_who_is_also_an_approver(self):
+        write_fleet(ann_approver=True)
+        dnd(True)
+        r = board("message", "send", "--to", "API", "--by", ANN, "hello")
+        self.assertEqual(r.stdout.split()[1], "new", r.stdout)
+
 
 class ApiV1(Base):
     @classmethod
@@ -439,6 +509,16 @@ class ApiV1(Base):
                          and e.get("status") == "declined" and e.get("reason") == "owner_dnd"])
         st, js = req("POST", "/api/v1/messages", {"to": "API", "body": "from a key"}, key=self.boss)
         self.assertEqual((st, js["status"]), (201, "new"))
+        # fleet.yaml spells the asker in another case: the key (owner ann@example.com) is still declined
+        write_fleet(ann="ANN@Example.com")
+        st, js = req("POST", "/api/v1/messages", {"to": "API", "body": "from a key"}, key=self.ann)
+        self.assertEqual((st, js["status"]), (201, "declined"), js)
+        # an asker who is also an approver: their key is not declined
+        write_fleet(ann_approver=True)
+        st, js = req("POST", "/api/v1/messages", {"to": "API", "body": "from a key"}, key=self.ann)
+        self.assertEqual((st, js["status"]), (201, "new"), js)
+        st, js = req("POST", "/api/v1/tasks", {"title": "new work", "owner": "API"}, key=self.ann)
+        self.assertEqual(st, 201, js)
 
     def test_work_requests(self):
         usage(10, 99)
