@@ -10,20 +10,26 @@ instead of leaving it `stale` ("not delivered"):
   - the board had recorded an answer and the session's actual answer equals it -> `relayed`,
     `delivered_via: "session"` (e.g. a press that typed every answer but stopped at Submit, then
     someone submitted it in the pane);
-  - otherwise -> `answered_in_pane`, `resolved_via: "pane"`.
+  - otherwise -> `answered_in_pane`, `resolved_via: "pane"`, with `reconcile_result` saying
+    whether the session provably got something else ("differs") or the report cannot tell
+    ("unknown"), or the board had no answer ("no_answer").
 
 What the hook stores (docs/contract.md, "Session outcomes"): for a picker, per question the 1-based
-number of the option whose label the answer equals, or for free text a salted hash of it (never
-the text; nothing at all when the text looks like a secret). For a failure, `denied: true` only
+number of the option whose label the answer equals, or for free text an HMAC of it under this
+install's key ($BOARD_HOME/secrets/reconcile.key, 0600; never the text, and nothing at all for text
+that looks like a secret, an email address or a phone number). For a failure, `denied: true` only
 when Claude Code's rejection wording is in the error (the error text is not stored).
 
 CLI (for hooks/board-hook.sh):
   reconcile.py hook-outcome     hook JSON on stdin -> {"picks": [...], "text_sha": [...]} or nothing
 """
 import hashlib
+import hmac
 import json
 import os
 import re
+import secrets
+import stat
 import sys
 import unicodedata
 
@@ -42,6 +48,16 @@ OUTCOME_EVENTS = ("PostToolUse", "PostToolUseFailure")
 SPACE_RE = re.compile(r"[\s\u0085\u00a0\u1680\u2000-\u200b\u2028\u2029\u202f\u205f\u3000\ufeff]+")
 CTRL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 MAX_Q = 6
+KEY_FILE = os.path.join("secrets", "reconcile.key")
+KEY_BYTES = 32
+# A phone number: 8+ digits, optionally with + ( ) spaces dots or dashes between them.
+PHONE_RE = re.compile(r"(?<![\w.])\+?\(?\d(?:[\s().-]*\d){7,}(?![\w.])")
+# reconcile_result codes (the page words them)
+RESULTS = ("match", "differs", "unknown", "no_answer")
+INCONSISTENT = "inconsistent"
+# A decision answered this recently whose stored option fields do not fit its answer is left for
+# the next run (a writer may be mid-way); after that it settles as "unknown".
+INCONSISTENT_GRACE_MS = 60 * 1000
 
 
 def norm(s):
@@ -53,19 +69,79 @@ def norm(s):
     return SPACE_RE.sub(" ", CTRL_RE.sub(" ", s)).strip()
 
 
-def text_sha(tool_use_id, text):
-    """A free-text answer's fingerprint: salted with the tool_use_id (one prompt's hashes say
-    nothing about another's), 128 bits."""
-    h = hashlib.sha256(("%s\n%s" % (tool_use_id, norm(text))).encode("utf-8"))
-    return h.hexdigest()[:32]
+def board_home():
+    return os.environ.get("BOARD_HOME") or os.path.join(os.path.expanduser("~"), ".agent-switchboard")
 
 
-def _secret_like(text):
+def hash_key(home, create=True):
+    """This install's key for free-text hashes ($BOARD_HOME/secrets/reconcile.key: 32 random bytes,
+    0600, made on first use; never served, mirrored or logged). None when it cannot be used safely
+    (a symlink, another owner, readable by others, the wrong size): then nothing is hashed, and a
+    lost key only makes older hashes incomparable ("unknown")."""
+    path = os.path.join(home, KEY_FILE)
+    if create and not os.path.lexists(path):
+        try:
+            os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+            tmp = "%s.tmp.%d.%s" % (path, os.getpid(), secrets.token_hex(4))
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            try:
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(secrets.token_bytes(KEY_BYTES))
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                try:
+                    os.link(tmp, path)  # another writer won: theirs is kept
+                except FileExistsError:
+                    pass
+                except OSError:
+                    if not os.path.lexists(path):
+                        os.rename(tmp, path)
+            finally:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+        except OSError:
+            return None
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    with os.fdopen(fd, "rb") as fh:
+        st = os.fstat(fh.fileno())
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid() or stat.S_IMODE(st.st_mode) & 0o077:
+            return None
+        data = fh.read(KEY_BYTES + 1)
+    return data if len(data) == KEY_BYTES else None
+
+
+def text_sha(key, tool_use_id, text):
+    """A free-text answer's fingerprint: HMAC-SHA256 under this install's key, over the
+    tool_use_id and the normalised text, first 128 bits. Without the key (it never leaves
+    $BOARD_HOME) a short answer cannot be guessed from its hash."""
+    msg = ("%s\n%s" % (tool_use_id, norm(text))).encode("utf-8")
+    return hmac.new(key, msg, hashlib.sha256).hexdigest()[:32]
+
+
+def _unhashable(text):
+    """Free text that gets no hash at all: what the secret guard would change, and anything that
+    looks like an email address or a phone number."""
     try:
         import guard
-        return guard.scrub(text) != text
+        import pii
+        return guard.scrub(text) != text or bool(pii.TEXT_EMAIL_RE.search(text)) or bool(PHONE_RE.search(text))
     except Exception:  # noqa: BLE001 - no guard: be safe, store nothing
         return True
+
+
+def label_pick(answer, options):
+    """The 1-based option an answer names: its exact (whitespace-normalised) label first, else a
+    case-insensitive match when exactly one label fits; None for free text."""
+    labels = [norm(o.get("label") if isinstance(o, dict) else o) for o in (options or [])]
+    if answer in labels:
+        return labels.index(answer) + 1
+    ci = [i for i, lb in enumerate(labels) if lb.casefold() == answer.casefold()]
+    return ci[0] + 1 if len(ci) == 1 else None
 
 
 def _answers_of(payload):
@@ -76,7 +152,7 @@ def _answers_of(payload):
     return None, None
 
 
-def hook_outcome(payload):
+def hook_outcome(payload, home=None):
     """What a PostToolUse of an AskUserQuestion says about its answers, without the answer text."""
     if not isinstance(payload, dict) or payload.get("hook_event_name") != "PostToolUse" \
             or payload.get("tool_name") != "AskUserQuestion" or not payload.get("tool_use_id"):
@@ -86,6 +162,7 @@ def hook_outcome(payload):
     if qs is None:
         return None
     by_norm = {norm(k): v for k, v in answers.items() if isinstance(k, str)}
+    key = None
     picks, shas = [], []
     for q in qs[:MAX_Q]:
         q = q if isinstance(q, dict) else {}
@@ -97,13 +174,17 @@ def hook_outcome(payload):
             picks.append(None)
             shas.append(None)
             continue
-        labels = [norm(o.get("label") if isinstance(o, dict) else o).casefold() for o in (q.get("options") or [])]
-        if a.casefold() in labels:
-            picks.append(labels.index(a.casefold()) + 1)
+        n = label_pick(a, q.get("options"))
+        if n is not None:
+            picks.append(n)
             shas.append(None)
-        else:
-            picks.append(None)
-            shas.append(None if _secret_like(a) else text_sha(tu, a))
+            continue
+        picks.append(None)
+        if _unhashable(a):
+            shas.append(None)
+            continue
+        key = key or hash_key(home or board_home())
+        shas.append(text_sha(key, tu, a) if key else None)
     return {"picks": picks, "text_sha": shas}
 
 
@@ -173,14 +254,18 @@ def read_outcomes(home, now):
 
 def board_answers(d):
     """The board's recorded answer as a comparable value: "allow" / "deny" for a permission, for a
-    question a list per question of ("pick", n) or ("text", text); None when nothing was recorded."""
+    question a list per question of ("pick", n) or ("text", text); None when nothing was recorded;
+    INCONSISTENT when the stored option fields do not fit the answer (another write in progress)."""
     ans = d.get("answer")
     if ans is None or ans == "":
         return None
     if d.get("kind") == "permission":
-        return ans if ans in ("allow", "deny") else None
+        return ans if ans in ("allow", "deny") else INCONSISTENT
+    qs = d.get("questions") if isinstance(d.get("questions"), list) else []
     opts, texts = d.get("answer_options"), d.get("answer_texts")
-    if isinstance(opts, list) and opts:
+    if ans in ("(options)", "(answers)"):
+        if not isinstance(opts, list) or not opts or (qs and len(opts) != len(qs)):
+            return INCONSISTENT
         texts = texts if isinstance(texts, list) and len(texts) == len(opts) else [None] * len(opts)
         out = []
         for o, t in zip(opts, texts):
@@ -189,49 +274,83 @@ def board_answers(d):
             elif isinstance(o, int) and not isinstance(o, bool) and o >= 1:
                 out.append(("pick", o))
             else:
-                return None
+                return INCONSISTENT
         return out
+    if opts is not None:
+        return INCONSISTENT  # a single answer next to a form's options: not one write
     idx = d.get("answer_index")
+    q0 = qs[0].get("options") if qs and isinstance(qs[0], dict) else None
+    want = label_pick(norm(str(ans)), q0) if q0 is not None else None
     if isinstance(idx, int) and not isinstance(idx, bool) and idx >= 1:
-        return [("pick", idx)]
+        return [("pick", idx)] if q0 is None or want == idx else INCONSISTENT
+    if want is not None:
+        return INCONSISTENT  # the answer is a label but no option number was stored with it
     return [("text", str(ans))]
 
 
-def matches(d, outcome):
-    """Did the session end with exactly the board's recorded answer?"""
+
+def compare(d, outcome, key):
+    """"match" (the session got exactly the board's answer), "differs" (it provably got something
+    else), "unknown" (the report cannot tell), "no_answer" (the board recorded none), or
+    INCONSISTENT."""
     want = board_answers(d)
     if want is None:
-        return False
+        return "no_answer"
+    if want == INCONSISTENT:
+        return INCONSISTENT
     if d.get("kind") == "permission":
         got = "allow" if outcome.get("ok") else ("deny" if outcome.get("denied") else None)
-        return got == want
+        if got is None:
+            return "unknown"  # a failure that is not a rejection: allowed and failed, or not
+        return "match" if got == want else "differs"
     if not outcome.get("ok"):
-        return False
+        return "unknown"
     picks, shas = outcome.get("picks"), outcome.get("text_sha")
     if not isinstance(picks, list) or not isinstance(shas, list) or len(picks) != len(want) \
             or len(shas) != len(want):
-        return False
+        return "unknown"
     tu = str(d.get("tool_use_id") or "")
-    for (kind, v), p, s in zip(want, picks, shas):
+    result = "match"
+    for (kind, v), p, sh in zip(want, picks, shas):
+        p = p if isinstance(p, int) and not isinstance(p, bool) else None
+        sh = sh if isinstance(sh, str) and sh else None
         if kind == "pick":
-            if p != v:
-                return False
-        elif not isinstance(s, str) or s != text_sha(tu, v):
-            return False
-    return True
+            if p is not None:
+                if p != v:
+                    return "differs"
+            elif sh is not None:
+                return "differs"  # free text where the board picked an option
+            else:
+                result = "unknown"
+        else:
+            if p is not None:
+                return "differs"  # an option where the board typed text
+            if sh is None or key is None:
+                result = "unknown"
+            elif sh != text_sha(key, tu, v):
+                return "differs"
+    return result
 
 
-def settle(d, outcome):
-    """Apply a session outcome to a settleable decision (in place). Returns True when changed."""
+def settle(d, outcome, now=None, home=None):
+    """Apply a session outcome to a settleable decision (in place). Returns "settled", "retry"
+    (not now: its stored answer fields are mid-write) or None (nothing to do)."""
     if d.get("status") not in SETTLEABLE or not d.get("tool_use_id"):
-        return False
+        return None
     if not (d.get("kind") == "permission" or d.get("source") == "pane"):
-        return False
+        return None
+    key = hash_key(home or board_home(), create=False) if d.get("kind") != "permission" else None
+    result = compare(d, outcome, key)
+    if result == INCONSISTENT:
+        if now is not None and now - int(d.get("updated_at") or d.get("answered_at") or 0) < INCONSISTENT_GRACE_MS:
+            return "retry"
+        result = "unknown"
     # A stale decision keeps why it had gone stale (its status_reason code, e.g. partial).
     if d.get("status") == "stale":
         d["reconciled_from"] = str(d.get("status_reason") or "stale")
     at = outcome.get("at")
-    if matches(d, outcome):
+    d["reconcile_result"] = result
+    if result == "match":
         d["status"] = "relayed"
         d["relayed_at"] = d.get("relayed_at") or at
         d["delivered_via"] = "session"
@@ -242,7 +361,7 @@ def settle(d, outcome):
         d["resolved_at"] = at
     d.pop("status_reason", None)
     d["reconciled_at"] = at
-    return True
+    return "settled"
 
 
 def main(argv):
@@ -251,7 +370,7 @@ def main(argv):
             payload = json.load(sys.stdin)
         except ValueError:
             return 0
-        o = hook_outcome(payload)
+        o = hook_outcome(payload, board_home())
         if o is not None:
             sys.stdout.write(json.dumps(o, separators=(",", ":")))
         return 0

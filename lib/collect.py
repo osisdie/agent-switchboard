@@ -526,8 +526,12 @@ def process_decisions(cfg, home, sessions, now):
             # (delivered, or answered in the pane), even when it had gone stale meanwhile.
             oc = outcomes.get(d.get("tool_use_id")) if d.get("tool_use_id") else None
             if oc and now - int(d.get("created_at") or 0) <= reconcile.WINDOW_MS \
-                    and int(oc.get("at") or 0) >= int(d.get("created_at") or 0) and reconcile.settle(d, oc):
-                changed = settled = True
+                    and int(oc.get("at") or 0) >= int(d.get("created_at") or 0):
+                r = reconcile.settle(d, oc, now, home)
+                if r == "settled":
+                    changed = settled = True
+                elif r == "retry":
+                    retry = True  # its answer fields are mid-write: read this outcome again next run
             if d.get("status") in ("pending", "answered"):
                 pend = (sess or {}).get("pending") or {}
                 if not sess or sess.get("state") != "needs-you" or pend.get("tool_use_id") != d.get("tool_use_id"):

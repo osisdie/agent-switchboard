@@ -432,8 +432,9 @@ to the Artifact or put in an alert. Turn the prompt off with `cards: {show_promp
   session's own report (`PostToolUse` / `PostToolUseFailure`), and the board follows it: when the
   session got exactly the board's answer the decision reads **delivered** (also when a press stopped
   at Submit and someone submitted the form in the pane: "delivered (finished in the session)"),
-  otherwise **answered in session**. The hook records only option numbers and salted hashes of free
-  text, never the answer text (docs/contract.md, "Session outcomes").
+  otherwise **answered in session** ("the board's was not used" only when the session provably got
+  something else). The hook records only option numbers and keyed hashes of free text (a per-install
+  key in `$BOARD_HOME/secrets/`), never the answer text (docs/contract.md, "Session outcomes").
 - **Permission prompts.** The card shows the tool name and a ≤200-char summary of its input, so you
   know what you are allowing. Token-like values in the summary are replaced with `[REDACTED]`.
   **Allow** or **Deny** makes the operator run `board answer <id> allow|deny --by <you>` and then

@@ -14,7 +14,7 @@
 # recent_done keeps the last 8 completed tool calls (name, that summary clipped to 120, duration,
 # ok/failed, time) inside the same state file write: no extra process per event.
 # A PostToolUse / PostToolUseFailure line on events.jsonl says how a prompt ended, never with its
-# answer text: for a submitted AskUserQuestion the option numbers (or salted hashes of free text),
+# answer text: for a submitted AskUserQuestion the option numbers (or keyed hashes of free text),
 # for a failure `denied: true` when it reads as a rejection (lib/reconcile.py).
 #
 # Env: BOARD_HOME (default ~/.agent-switchboard)
@@ -154,13 +154,14 @@ def qinfo:
 JQ
 
 # A submitted AskUserQuestion picker: how it was answered, without the answer text (lib/reconcile.py
-# hook-outcome: per question the option number its label matched, or a salted hash of free text,
-# none for secret-looking text). Only for that one event, so python never runs on the hot path.
+# hook-outcome: per question the option number its label matched, or an HMAC of free text under
+# this install's key; none for text that looks like a secret, an email or a phone number). Only for
+# that one event, so python never runs on the hot path.
 outcome="null"
 case "$event" in
   PostToolUse)
     if [[ $input == *'"AskUserQuestion"'* ]]; then
-      outcome="$(printf '%s' "$input" | python3 "$LIB/reconcile.py" hook-outcome 2>/dev/null)"
+      outcome="$(printf '%s' "$input" | BOARD_HOME="$BOARD_HOME" python3 "$LIB/reconcile.py" hook-outcome 2>/dev/null)"
       case "$outcome" in '{'*'}') ;; *) outcome="null" ;; esac
     fi ;;
 esac

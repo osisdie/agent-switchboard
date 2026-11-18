@@ -41,6 +41,7 @@ $BOARD_HOME/
   apikeys/<kid>.json        # one API key: its peppered hash and metadata, never the key (0600; see "API keys")
   apikeys.lock              # flock held by `board apikey` while it changes a key
   secrets/apikey.pepper     # 32 random bytes for the key hashes (0600, made on the first create or request)
+  secrets/reconcile.key     # 32 random bytes keying the free-text answer hashes (0600, made on first use; "Session outcomes")
 ```
 
 ### state/<session_id>.json
@@ -210,7 +211,7 @@ instead. Everything in `card` also passes the guard's `scrub_tree` like the rest
   "status": "pending|answered|relayed|stale|timeout|unauthorized|answered_in_pane",
   "answer": null, "answered_by": null, "answered_at": null, "relayed_at": null,
   "delivered_via": "session (settled from the session's report)", "reconciled_from": "partial",
-  "reconciled_at": 0, "created_at": 0 }
+  "reconcile_result": "match|differs|unknown|no_answer", "reconciled_at": 0, "created_at": 0 }
 ```
 
 **Board asks answered elsewhere.** A plain board ask (`kind: "question"`, no `source: "pane"`, no
@@ -319,13 +320,18 @@ answer but stopped at Submit, then someone submitted the form in the pane).
 - `outcome` (a `PostToolUse` of `AskUserQuestion` only): `{"picks": [n|null, ...], "text_sha":
   [hex|null, ...]}`, one entry per question in order, from Claude Code's `tool_response`
   (`{questions, answers: {<question text>: <label or free text>}, annotations}`; else
-  `tool_input.answers`). `picks[i]` is the 1-based number of the option whose label equals the
-  answer (whitespace-normalised, case-insensitive); for free text `text_sha[i]` is the first 32 hex
-  of `sha256(tool_use_id + "\n" + normalised text)`: salted per prompt, so it says nothing about
-  another prompt's answers. Free text that the secret guard would change (`lib/guard.py` `scrub`:
-  vendor tokens, `key=value` credentials, a literal `.env` value, random-looking runs) gets no hash
-  at all (`null`). The answer text is never stored: not in the event, the state file or the
-  decision. It is computed by `lib/reconcile.py hook-outcome`, the only python start, and only for
+  `tool_input.answers`). `picks[i]` is the 1-based number of the option the answer names
+  (whitespace-normalised): its exact label first, else a case-insensitive match only when exactly
+  one label fits (labels that differ only by case need the exact one). For free text `text_sha[i]`
+  is the first 32 hex of `HMAC-SHA256(key, tool_use_id + "\n" + normalised text)` under this
+  install's key `secrets/reconcile.key` (32 random bytes, 0600 in a 0700 directory, made on first
+  use; never served, mirrored or logged; a key that is a symlink, another user's, readable by others
+  or the wrong size is not used, and then nothing is hashed). Without the key a short answer cannot
+  be guessed from its hash, and the same answer hashes differently on another install. Free text
+  that the secret guard would change (`lib/guard.py` `scrub`: vendor tokens, `key=value`
+  credentials, a literal `.env` value, random-looking runs), or that holds an email address or a
+  phone number (`lib/pii.py` `TEXT_EMAIL_RE`; 8+ digits), gets no hash at all (`null`). The answer
+  text is never stored: not in the event, the state file or the decision. It is computed by `lib/reconcile.py hook-outcome`, the only python start, and only for
   this event.
 - `denied: true` (a `PostToolUseFailure` only) when its error reads as the user rejecting the
   prompt (Claude Code's "doesn't want to proceed with this tool use" / "tool use was rejected"
@@ -340,12 +346,22 @@ lines written before this existed) and keeps the outcomes of the last 7 days. A 
 when it is a permission or a pane question with that `tool_use_id`, created within 7 days and no
 later than the outcome, and its status is `pending`, `answered` or `stale`:
 
-| Status before | The session's outcome | Status after |
-|---|---|---|
-| `answered` / `stale` with a board answer | equals the board's answer: permission `allow` and `PostToolUse`, or `deny` and `denied`; a question with every pick equal to the board's option and every free-text hash equal to the hash of the board's text | `relayed`, `delivered_via: "session"`, `relayed_at` kept or the outcome's time |
-| `answered` / `stale` with a board answer | anything else (another option, other text, a declined picker, a failure that is not a rejection, a picker without a recorded outcome) | `answered_in_pane`, `resolved_via: "pane"`, `resolved_by` the session code; the board's answer is kept as it was |
-| `pending` (no board answer) | any | `answered_in_pane`, as above |
-| `relayed`, `unauthorized`, `timeout`, `answered_in_pane` | any | never changed |
+The outcome is compared with the board's recorded answer and the result kept in
+`reconcile_result`:
+
+| Status before | The session's outcome | `reconcile_result` | Status after |
+|---|---|---|---|
+| `answered` / `stale` with a board answer | equals it: permission `allow` and `PostToolUse`, or `deny` and `denied`; a question with every pick equal to the board's option and every free-text hash equal to the hash of the board's text | `match` | `relayed`, `delivered_via: "session"`, `relayed_at` kept or the outcome's time |
+| `answered` / `stale` with a board answer | provably something else: permission `allow` vs `denied` or `deny` vs `PostToolUse`; a question with another option, an option where the board typed text (or the reverse), or a free-text hash that differs | `differs` | `answered_in_pane`, `resolved_via: "pane"`, `resolved_by` the session code; the board's answer is kept as it was |
+| `answered` / `stale` with a board answer | cannot tell: a permission failure that is not a rejection (allowed, then the command failed, or not), a failed or declined picker, a picker without a recorded outcome (older hooks, backfill) or with the wrong number of answers, free text without a hash on either side | `unknown` | `answered_in_pane`, as above |
+| `pending` (no board answer) | any | `no_answer` | `answered_in_pane`, as above |
+| `relayed`, `unauthorized`, `timeout`, `answered_in_pane` | any | — | never changed |
+
+- The board's answer is only compared when its stored fields fit together (`board answer` writes
+  the answer, `answer_index`, `answer_options` and `answer_texts` in one write): an option number
+  that is not the label's, a label answer without its number, a single answer next to a form's
+  options, or a form answer without them is left for the next run while the decision was updated
+  less than 60 s ago, and settles as `unknown` after that.
 
 - A `stale` decision is no longer final for this transition only: it records why it had gone stale
   in `reconciled_from` (its `status_reason` code, else `"stale"`), `status_reason` is removed, and
@@ -357,12 +373,13 @@ later than the outcome, and its status is `pending`, `answered` or `stale`:
   "session_outcome"}`.
 - `board mark` still never re-marks a final status; `board press` marking `relayed` on a decision
   the collector already settled as `relayed` is a no-op.
-- board-serve passes `delivered_via` (only `"session"`) and `reconciled_from` (only a known reason
-  code or `"stale"`) to the page. The page words them: history chip **delivered**, with
-  "delivered (finished in the session)" when it had gone stale first; an `answered_in_pane`
-  decision settled from the pane that carries a board answer says "the session got a different
-  answer; the board's was not used". The session card never shows "Your answer was not delivered"
-  for a decision that is `relayed` or `answered_in_pane`.
+- board-serve passes `delivered_via` (only `"session"`), `reconciled_from` (only a known reason
+  code or `"stale"`) and `reconcile_result` (only the four codes) to the page. The page words them:
+  history chip **delivered**, with "delivered (finished in the session)" when it had gone stale
+  first; an `answered_in_pane` decision with a board answer says "the session got a different
+  answer; the board's was not used" only for `differs`, and a neutral "finished in the session" for
+  `unknown`. The session card never shows "Your answer was not delivered" for a decision that is
+  `relayed` or `answered_in_pane`.
 
 ### Permission decisions: who may press
 

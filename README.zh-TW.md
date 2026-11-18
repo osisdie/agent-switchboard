@@ -409,7 +409,8 @@ pane 標題裡的任務、執行中或閒置、記憶體用量）、已用的 co
 - **由 session 結案的提示**。權限提示或 pane 問題結束時，session 自己會回報（`PostToolUse`／
   `PostToolUseFailure`），看板就照這個回報更新：session 收到的正好是看板的回答時，決策顯示**已送達**
   （按鍵停在 Submit、後來有人在 pane 裡送出表單也一樣，顯示「已送達（在 session 中完成）」），否則顯示
-  **已在 session 中回答**。hook 只記錄選項編號和自由文字的加鹽雜湊，絕不記錄回答內容
+  **已在 session 中回答**（只有確定 session 收到的是別的回答時，才會註明「看板的回答沒有用上」）。hook
+  只記錄選項編號和自由文字的帶金鑰雜湊（每個安裝各自一把金鑰，放在 `$BOARD_HOME/secrets/`），絕不記錄回答內容
   （docs/contract.md，「Session outcomes」）。
 - **權限提示**。卡片會顯示工具名稱，以及其輸入內容的摘要（最多 200 個字元），讓你知道自己允許的是什麼。
   摘要裡看起來像 token 的值會被替換成 `[REDACTED]`。按下 **Allow** 或 **Deny** 後，operator 會執行

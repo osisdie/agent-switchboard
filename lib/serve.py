@@ -204,7 +204,7 @@ DECISION_KEYS = ("id", "kind", "from", "question", "options", "context", "tool_u
                  "labels_clipped", "answer_options", "press_note", "press_note_code", "press_not_visible",
                  "status_reason",
                  # settled from the session's own report (lib/reconcile.py)
-                 "delivered_via", "reconciled_from",
+                 "delivered_via", "reconciled_from", "reconcile_result",
                  # pane questions (an AskUserQuestion picker): source "pane"
                  "source", "questions", "questions_clipped", "pressable", "answer_index", "relay")
 OPERATOR_KEYS = ("heartbeat_at", "version", "operator_session", "account_hint")
@@ -636,6 +636,8 @@ class StateBuilder:
                 row.pop("delivered_via", None)
             if row.get("reconciled_from") not in REASON_CODES + ("stale",):
                 row.pop("reconciled_from", None)
+            if row.get("reconcile_result") not in RECONCILE_RESULTS:
+                row.pop("reconcile_result", None)
             if not row.get("from") and d.get("session_id") in by_sid:
                 row["from"] = by_sid[d["session_id"]]
             decisions.append(row)
@@ -877,6 +879,8 @@ from tickets.viewer import tasks_for, ticket_text_for  # noqa: E402,F401
 
 REASON_CODES = ("screen", "partial", "moved_on", "timeout", "not_approver", "unknown_session", "operator", "config")
 UNDELIVERED = ("stale", "timeout", "unauthorized")
+# How a pane prompt was settled from the session's report (lib/reconcile.py RESULTS).
+RECONCILE_RESULTS = ("match", "differs", "unknown", "no_answer")
 
 
 def mark_reason_code(ev):

@@ -2503,12 +2503,14 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     return d.answer != null && d.answer !== '' && ['stale', 'timeout', 'unauthorized'].includes(str(d.status));
   }
   // Settled from the session's own report of how the prompt ended (the collector, lib/reconcile.py):
-  // the session got exactly the board's answer (relayed, delivered_via "session"), or it was answered
-  // there differently (answered_in_pane, resolved_via "pane").
+  // the session got exactly the board's answer (relayed, delivered_via "session"), provably got
+  // something else (reconcile_result "differs"), or the report cannot tell ("unknown": neutral).
   const viaSession = (d) => d.status === 'relayed' && d.delivered_via === 'session';
   function sessionNote(d) {
     if (viaSession(d)) return d.reconciled_from ? tr('delivered (finished in the session)') : '';
-    if (d.status === 'answered_in_pane' && d.resolved_via === 'pane' && d.answer != null && d.answer !== '') return tr('the session got a different answer; the board\'s was not used');
+    if (d.status !== 'answered_in_pane' || d.resolved_via !== 'pane' || d.answer == null || d.answer === '') return '';
+    if (d.reconcile_result === 'differs') return tr('the session got a different answer; the board\'s was not used');
+    if (d.reconcile_result === 'unknown') return tr('finished in the session');
     return '';
   }
   const REASONS = {
@@ -7014,6 +7016,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "delivered": "已送達",
       "delivered (finished in the session)": "已送達（在 session 中完成）",
       "the session got a different answer; the board's was not used": "session 收到的是另一個回答，看板的回答沒有用上",
+      "finished in the session": "在 session 中完成",
       "Only a board ask or a question in the session can be closed this way.": "只有用 board ask 提出的問題，或 session 裡的提問，可以這樣關閉。",
       "{tool} permission": "{tool} 權限",
       "{stage} gate": "{stage}關卡",

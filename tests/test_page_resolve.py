@@ -95,7 +95,12 @@ def main():
             answer="Blue", answer_index=2, answered_at=now - 500000, relayed_at=now - 400000,
             delivered_via="session", reconciled_from="partial", session_id="s-1")
         dec("d-5-pane", source="pane", question="Which port for the tunnel?", tool_use_id="tu_x5", status="answered_in_pane",
-            answer="8080", answered_at=now - 450000, resolved_via="pane", resolved_by="CP", session_id="s-1")
+            answer="8080", answered_at=now - 450000, resolved_via="pane", resolved_by="CP", session_id="s-1",
+            reconcile_result="differs")
+        # the session's report cannot tell what it got (a permission allowed, then the command failed)
+        dec("d-7-unk", kind="permission", question="Allow Make?", tool_name="Bash", tool_use_id="tu_x7",
+            status="answered_in_pane", answer="allow", answered_at=now - 350000, resolved_via="pane", resolved_by="CP",
+            reconcile_result="unknown", reconciled_from="screen")
         dec("d-6-perm", kind="permission", question="Allow Bash?", tool_name="Bash", tool_use_id="tu_x6", status="relayed",
             answer="allow", answered_at=now - 300000, relayed_at=now - 300000, delivered_via="session", reconciled_from="screen")
         with open(os.path.join(home, "snapshot.json"), "w", encoding="utf-8") as fh:
@@ -151,6 +156,10 @@ def main():
             h5 = pg.evaluate(HIST, "Which port for the tunnel?")
             check("history: answered in session, the board's answer was not used",
                   h5 and h5["chip"] == "answered in session" and "the board's was not used" in h5["text"] and not h5["nd"], h5)
+            h7 = pg.evaluate(HIST, "Allow Make?")
+            check("history: an unknown outcome is neutral (finished in the session), never 'different answer'",
+                  h7 and h7["chip"] == "answered in session" and "finished in the session" in h7["text"]
+                  and "different answer" not in h7["text"] and not h7["nd"], h7)
             h6 = pg.evaluate(HIST, "Allow Bash?")
             check("history: a permission allowed in the session = delivered", h6 and h6["chip"] == "delivered", h6)
             g = pg.evaluate(CARD_JS, "d-2-gate")
@@ -185,7 +194,8 @@ def main():
             check("the action in zh-TW", c and c["resolve"] and "標記為已在 session 中回答" in c["text"], c)
             pg.evaluate("() => { const d = document.getElementById('dec-history'); d.hidden = false; d.open = true; }")
             zh = pg.evaluate("() => document.getElementById('dec-history-list').textContent")
-            check("history wording in zh-TW", "已送達（在 session 中完成）" in zh and "看板的回答沒有用上" in zh, zh[:300])
+            check("history wording in zh-TW", "已送達（在 session 中完成）" in zh and "看板的回答沒有用上" in zh
+                  and "· 在 session 中完成" in zh, zh[:300])
             pg.close()
 
             print("not an approver:")
