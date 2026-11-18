@@ -1767,13 +1767,13 @@ press_multi() {
   tabbar="$(cfg_get press.tabbar_regex)"; review="$(cfg_get press.review_regex)"
   submit="$(cfg_get press.submit_label)"; footer="$(cfg_get press.question_regex)"; focus="$(cfg_get press.focus_regex)"
   # Configured patterns are checked before any key: each must be a valid extended regex for grep -E
-  # (exit 2 on a bad one) and, where awk uses it (tab bar, focus markers), for awk too; the submit
-  # label is plain text, matched literally (never a pattern).
+  # (exit 2 on a bad one) and, where awk uses it (tab bar, picker footer, focus markers), for awk
+  # too; the submit label is plain text, matched literally (never a pattern).
   for name in tabbar_regex review_regex question_regex focus_regex; do
     case "$name" in tabbar_regex) re="$tabbar" ;; review_regex) re="$review" ;; question_regex) re="$footer" ;; *) re="$focus" ;; esac
     [ -n "$re" ] || refuse "press.$name is not configured" "$pane" config
     grep -Eq -- "$re" <<<'' 2>/dev/null; [ $? -le 1 ] || refuse "press.$name is not a valid pattern (grep -E)" "$pane" config
-    case "$name" in tabbar_regex|focus_regex)
+    case "$name" in tabbar_regex|question_regex|focus_regex)
       SB_RE="$re" awk 'BEGIN { if ("" ~ ENVIRON["SB_RE"]) x = 1 }' 2>/dev/null \
         || refuse "press.$name is not a valid pattern (awk)" "$pane" config ;;
     esac
@@ -1869,7 +1869,10 @@ press_multi() {
   }
   # check_review — RAW is a fresh capture of the review screen: every question in order, exactly
   # one "→ label" line per question equal to the chosen label, and one Submit row: the focused row
-  # of the last numbered block (after the answers). Sets DIGIT, or WHY when not.
+  # of the last numbered block (after the answers). Below it the TUI draws only blank lines, the
+  # block's other rows ("2. Cancel"), a horizontal rule (box-drawing lines, "────"), and the picker
+  # footer (press.question_regex), whose wrapped tail ("cancel") may take the next line: at most
+  # three words of letters (and "·"). Any other line there refuses. Sets DIGIT, or WHY when not.
   check_review() {
     local q flat rest seg lbl
     raw="$(form_region)" || { why="no review screen after the last question"; return 1; }
@@ -1906,8 +1909,9 @@ press_multi() {
       [ "${shown[$t]}" = "$(nows <<<"$lbl")" ] \
         || { why="the review screen shows another answer for question $((t + 1))"; return 1; }
     done
-    digit="$(SB_SUBMIT="$submit" SB_FOCUS="$focus" awk '
-      BEGIN { lab = ENVIRON["SB_SUBMIT"]; fre = "^[[:space:]]*(" ENVIRON["SB_FOCUS"] ")[[:space:]]*[1-9]\\.[[:space:]]*" }
+    digit="$(SB_SUBMIT="$submit" SB_FOCUS="$focus" SB_FOOTER="$footer" awk '
+      BEGIN { lab = ENVIRON["SB_SUBMIT"]; fre = "^[[:space:]]*(" ENVIRON["SB_FOCUS"] ")[[:space:]]*[1-9]\\.[[:space:]]*"
+              foot = ENVIRON["SB_FOOTER"] }
       { l[NR] = $0; if ($0 ~ /^[[:space:]]*→/) last = NR; if (index($0, lab)) { cnt++; row = NR } }
       END {
         if (cnt != 1 || row <= last) exit 1
@@ -1915,8 +1919,20 @@ press_multi() {
         if (!match(s, fre)) exit 1
         pre = substr(s, 1, RLENGTH); rest = substr(s, RLENGTH + 1); sub(/[[:space:]]+$/, "", rest)
         if (rest != lab || !match(pre, /[1-9]\.[[:space:]]*$/)) exit 1
-        for (i = row + 1; i <= NR; i++)
-          if (l[i] !~ /^[[:space:]]*$/ && l[i] !~ /^[[:space:]]*[1-9]\.[[:space:]]/) exit 1
+        for (i = row + 1; i <= NR; i++) {
+          s = l[i]
+          if (s ~ /^[[:space:]]*$/ || s ~ /^[[:space:]]*[1-9]\.[[:space:]]/) continue
+          if (s ~ foot) { tail = i + 1; continue }
+          # a rule: box-drawing lines (light, heavy, double, dashed) and spaces only
+          r = s; gsub(/[[:space:]]|─|━|═|┄|┅|┈|┉|╌|╍/, "", r)
+          if (r == "") continue
+          # the wrapped tail of the footer, right below it: 1-3 words of letters, "·" between them
+          if (i == tail) {
+            r = s; gsub(/·/, " ", r)
+            if (r ~ /^[[:space:]]*[[:alpha:]]+([[:space:]]+[[:alpha:]]+)?([[:space:]]+[[:alpha:]]+)?[[:space:]]*$/) continue
+          }
+          exit 1
+        }
         print substr(pre, RSTART, 1)
       }' <<<"$raw")" \
       && [ -n "$digit" ] || { why="no single focused \"$submit\" row at the end of the review screen"; return 1; }

@@ -19,15 +19,17 @@ Writes DIR/pid (its pid) and appends every key to DIR/keys (one JSON line {key, 
   question-cjk: the same, the question in Chinese with a full-width space (U+3000) in its start.
   Keys are only recorded there.
 
-  STATE form2 | form3 | form3-q2: a form of several questions (tests/test_press_form.py), drawn as
+  STATE form2 | form3 | form4 | form3-q2: a form of several questions (tests/test_press_form.py), drawn as
   Claude Code 2.1.3xx draws it: a tab bar, one question at a time in a box ("│ ..." on every line,
   wrapped lines too: a question holding a newline gets this gutter), its options, the "Type
   something" row, and the picker footer wrapped onto two lines ("... Esc to" / "cancel"). A digit
   picks an option and moves on; the "Type something" digit focuses that row, typed text replaces
   its label, Enter confirms it and moves on. Then the review screen (the questions boxed too,
-  "→ answer" under each) with "1. Submit answers": 1 submits (DIR/answers gets the answers).
-  form2 asks FORM[:2], form3 all of FORM; form3-q2 opens on question 2 (question 1 answered in
-  the session already).
+  "→ answer" under each) with "1. Submit answers" and "2. Cancel", then a horizontal rule ("────",
+  as the TUI draws it under the rows): 1 submits (DIR/answers gets the answers). form2 asks
+  FORM[:2], form3 FORM[:3], form4 all four questions, its review screen with the picker footer
+  wrapped under the rule too; form3-q2 opens on question 2 (question 1 answered in the session
+  already).
 """
 import json
 import os
@@ -52,6 +54,8 @@ FORM = [
      "options": [{"label": "Small", "description": "compact"}, {"label": "Large", "description": "wide"}]},
     {"question": "Which shape for the banner?\nRound or square corners.", "header": "Shape", "multiSelect": False,
      "options": [{"label": "Round", "description": "soft"}, {"label": "Square", "description": "sharp"}]},
+    {"question": "Who signs off on the banner copy?\nThe team that owns the header.", "header": "Owner", "multiSelect": False,
+     "options": [{"label": "Design", "description": "the design team"}, {"label": "Marketing", "description": "the campaign team"}]},
 ]
 FORM_WIDTH = 52   # columns of a boxed question line after "│ " (a full-width character takes 2)
 
@@ -134,7 +138,8 @@ class Tui:
                                 "Enter to select · ↑/↓ to navigate · Esc to cancel"])
 
     def form_init(self):
-        self.qs = FORM[:2] if self.state == "form2" else FORM
+        self.qs = FORM[:4] if self.state == "form4" else FORM[:2] if self.state == "form2" else FORM[:3]
+        self.review_footer = self.state == "form4"
         self.answers = [None] * len(self.qs)
         self.cur = 0
         if self.state == "form3-q2":
@@ -151,7 +156,10 @@ class Tui:
             out += ["Review your answers", ""]
             for q, a in zip(self.qs, self.answers):
                 out += [" │ " + ln for ln in wrap(q["question"], FORM_WIDTH)] + ["   → " + a]
-            return out + ["", "Ready to submit your answers?", "", "❯ 1. Submit answers", "  2. Cancel"]
+            out += ["", "Ready to submit your answers?", "", "❯ 1. Submit answers", "  2. Cancel", "─" * 56]
+            if self.review_footer:
+                out += ["Enter to select · Tab/Arrow keys to navigate · Esc to", "cancel"]
+            return out
         q = self.qs[self.cur]
         out += ["│ " + ln for ln in wrap(q["question"], FORM_WIDTH)] + [""]
         n = len(q["options"])

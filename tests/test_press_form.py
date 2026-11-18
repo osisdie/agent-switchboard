@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """tests/test_press_form.py — `board press` on a form of several questions, through a real tmux:
-tests/fake_claude_tui.py (states form2, form3, form3-q2) draws the form as Claude Code 2.1.3xx
-does, each question in a box ("│ ..." on every line, a wrapped line too) and the picker footer
-wrapped onto two lines. press answers it question by question (digits, a "Type something" text)
-and submits it on the review screen, whose questions are boxed too; with another question showing
-it sends nothing.
+tests/fake_claude_tui.py (states form2, form3, form4, form3-q2) draws the form as Claude Code
+2.1.3xx does, each question in a box ("│ ..." on every line, a wrapped line too) and the picker
+footer wrapped onto two lines. press answers it question by question (digits, a "Type something"
+text) and submits it on the review screen, whose questions are boxed too and whose rows end with a
+horizontal rule (and, for form4, the wrapped picker footer); with another question showing it
+sends nothing.
 
 The pane runs in a PRIVATE tmux server (`tmux -L <test socket> -f /dev/null`, its socket under the
 test's temporary directory, TMUX unset); only that server is killed. Never reads
@@ -159,6 +160,17 @@ class BoxedForm(unittest.TestCase):
         self.assertEqual(rc, 0, out + tmux("capture-pane", "-p", "-t", "CP"))
         self.assertEqual(self.answers(d), ["公司層", "teal green", "Square"])
         self.assertEqual("".join(self.keys(d)), "13teal green" + "Enter" + "21")
+        self.assertEqual(self.dec(did)["status"], "relayed")
+
+    def test_four_questions_rule_and_footer_under_submit(self):
+        # the review screen ends with a rule under "2. Cancel" and the picker footer wrapped onto
+        # two lines ("... Esc to" / "cancel"): Submit is still the last numbered block
+        d, did = self.start("form4", 4, ["--form-file", [{"option": 2}, {"option": 1}, {"text": "pill shaped"}, {"option": 2}]])
+        rc, out = board("press", "CP", "answer", "--expect", "tu_form")
+        screen = tmux("capture-pane", "-p", "-t", "CP")
+        self.assertEqual(rc, 0, out + screen)
+        self.assertEqual(self.answers(d), ["人層", "Small", "pill shaped", "Marketing"])
+        self.assertEqual("".join(self.keys(d)), "213pill shaped" + "Enter" + "21")
         self.assertEqual(self.dec(did)["status"], "relayed")
 
     def test_other_question_showing_no_key(self):
