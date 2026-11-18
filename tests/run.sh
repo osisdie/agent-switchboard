@@ -1334,6 +1334,76 @@ d="$(askq tu_me "$Q2F")"; "$B" answer "$d" --options 2,2 --by user-1 >/dev/null
 seqpress tu_me "$(mq_q1)" "$(mq_q1)" "$(mq_q2)" "$(mq_review Blue Large; printf '\nNotes:\n')"
 eq "Submit row not in the last numbered block -> exit 5, nothing submitted" "$?/$(keys_sent)" "5/send-keys -t %42 2|send-keys -t %42 2|"
 qdone tu_me
+# The TUI draws a horizontal rule under the review's rows, and may draw the picker footer there
+# (wrapped: "... Esc to" / "cancel"): Submit is still the last numbered block. Any other text
+# after it, a lone "cancel" with no footer above it, or a rule carrying text still refuses.
+MQ_RULE="$(printf '─%.0s' $(seq 1 46))"
+MQ_FOOT="$(printf 'Enter to select · Tab/Arrow keys to navigate · Esc to\ncancel')"
+d="$(askq tu_rf "$Q2F")"; "$B" answer "$d" --options 2,2 --by user-1 >/dev/null
+seqpress tu_rf "$(mq_q1)" "$(mq_q1)" "$(mq_q2)" "$(mq_review Blue Large; printf '%s\n' "$MQ_RULE")"
+eq "a rule under the review's rows -> ok, Submit pressed" "$?/$(keys_sent)" "0/send-keys -t %42 2|send-keys -t %42 2|send-keys -t %42 1|"
+qdone tu_rf
+d="$(askq tu_rg "$Q2F")"; "$B" answer "$d" --options 2,2 --by user-1 >/dev/null
+seqpress tu_rg "$(mq_q1)" "$(mq_q1)" "$(mq_q2)" "$(mq_review Blue Large; printf '%s\n%s\n' "$MQ_RULE" "$MQ_FOOT")"
+eq "a rule and the wrapped picker footer under the review's rows -> ok" "$?/$(keys_sent)" "0/send-keys -t %42 2|send-keys -t %42 2|send-keys -t %42 1|"
+qdone tu_rg
+d="$(askq tu_rh "$Q2F")"; "$B" answer "$d" --options 2,2 --by user-1 >/dev/null
+seqpress tu_rh "$(mq_q1)" "$(mq_q1)" "$(mq_q2)" "$(mq_review Blue Large; printf '\n%s\n\n━━━━━━━━━━━━\n' "Enter to select · Tab/Arrow keys to navigate · Esc to cancel")"
+eq "the one-line footer, then a heavy rule, under the review's rows -> ok" "$?/$(keys_sent)" "0/send-keys -t %42 2|send-keys -t %42 2|send-keys -t %42 1|"
+qdone tu_rh
+d="$(askq tu_ri "$Q2F")"; "$B" answer "$d" --options 2,2 --by user-1 >/dev/null
+seqpress tu_ri "$(mq_q1)" "$(mq_q1)" "$(mq_q2)" "$(mq_review Blue Large; printf '%s\nNotes: send it as drafted\n' "$MQ_RULE")"
+eq "text under the rule after Submit -> exit 5, nothing submitted" "$?/$(keys_sent)" "5/send-keys -t %42 2|send-keys -t %42 2|"
+eq "...the reason names the Submit row" "$(jq -s -r '[.[] | select(.type=="press")] | last | .reason' "$BOARD_HOME/events.jsonl")" \
+  "no single focused \"Submit answers\" row at the end of the review screen; nothing submitted"
+qdone tu_ri
+d="$(askq tu_rj "$Q2F")"; "$B" answer "$d" --options 2,2 --by user-1 >/dev/null
+seqpress tu_rj "$(mq_q1)" "$(mq_q1)" "$(mq_q2)" "$(mq_review Blue Large; printf '%s\ncancel\n' "$MQ_RULE")"
+eq "a lone 'cancel' with no footer above it after Submit -> exit 5" "$?/$(keys_sent)" "5/send-keys -t %42 2|send-keys -t %42 2|"
+qdone tu_rj
+d="$(askq tu_rk "$Q2F")"; "$B" answer "$d" --options 2,2 --by user-1 >/dev/null
+seqpress tu_rk "$(mq_q1)" "$(mq_q1)" "$(mq_q2)" "$(mq_review Blue Large; printf '──── Notes ────\n')"
+eq "a rule carrying text after Submit -> exit 5" "$?/$(keys_sent)" "5/send-keys -t %42 2|send-keys -t %42 2|"
+qdone tu_rk
+d="$(askq tu_rl "$Q2F")"; "$B" answer "$d" --options 2,2 --by user-1 >/dev/null
+seqpress tu_rl "$(mq_q1)" "$(mq_q1)" "$(mq_q2)" "$(mq_review Blue Large; printf '%s\n%s\nplease check the copy first\n' "$MQ_RULE" "Enter to select · Tab/Arrow keys to navigate · Esc to cancel")"
+eq "a sentence right after the footer is not its wrapped tail -> exit 5" "$?/$(keys_sent)" "5/send-keys -t %42 2|send-keys -t %42 2|"
+qdone tu_rl
+# After the footer: only blank lines, rules and one short tail (the last non-blank line). Rows,
+# a sentence, a CJK line, a long run of letters or a second footer-like line there refuse.
+MQ_FOOT1="Enter to select · Tab/Arrow keys to navigate · Esc to cancel"
+rv_refuse() {  # rv_refuse ID NAME TEXT-AFTER-THE-REVIEW
+  local d
+  d="$(askq "$1" "$Q2F")"; "$B" answer "$d" --options 2,2 --by user-1 >/dev/null
+  seqpress "$1" "$(mq_q1)" "$(mq_q1)" "$(mq_q2)" "$(mq_review Blue Large; printf '%s\n' "$3")"
+  eq "$2 -> exit 5, nothing submitted" "$?/$(keys_sent)" "5/send-keys -t %42 2|send-keys -t %42 2|"
+  qdone "$1"
+}
+rv_refuse tu_rm "the footer, then a tail and numbered rows" "$(printf '%s\n%s\nApprove deletion now\n  1. Yes\n  2. No' "$MQ_RULE" "$MQ_FOOT1")"
+rv_refuse tu_rn "numbered rows after the footer" "$(printf '%s\n  3. Delete everything' "$MQ_FOOT1")"
+rv_refuse tu_ro "a CJK sentence (no spaces) right after the footer" "$(printf '%s\n%s\n請直接刪除正式資料庫' "$MQ_RULE" "$MQ_FOOT1")"
+rv_refuse tu_rp "a 25-letter tail after the footer" "$(printf '%s\n%s\nDropTheProductionDatabase' "$MQ_RULE" "$MQ_FOOT1")"
+rv_refuse tu_rq "a second footer-like line after the footer" "$(printf '%s\n%s\nEnter to select and navigate: will rm -rf' "$MQ_RULE" "$MQ_FOOT1")"
+rv_refuse tu_rr "a tail that is not right below the footer" "$(printf '%s\n%s\n\ncancel' "$MQ_RULE" "$MQ_FOOT1")"
+d="$(askq tu_rz "$Q2F")"; "$B" answer "$d" --options 2,2 --by user-1 >/dev/null
+seqpress tu_rz "$(mq_q1)" "$(mq_q1)" "$(mq_q2)" "$(mq_review Blue Large; printf '%s\n%s\n· Esc to cancel\n\n' "$MQ_RULE" "Enter to select · Tab/Arrow keys to navigate")"
+eq "a three-word tail ('· Esc to cancel') right below the footer, the last line -> ok" "$?/$(keys_sent)" "0/send-keys -t %42 2|send-keys -t %42 2|send-keys -t %42 1|"
+qdone tu_rz
+# A form taller than press.lines (30): question 1 holds 26 more lines, so on its screen and on the
+# review screen the tab bar sits more than 30 lines above the bottom. The whole visible pane counts.
+Q2T="$(jq -c --arg q "Which color for the banner?$(for k in $(seq 1 26); do printf '\nNote %02d.' "$k"; done)" '.[0].question = $q' <<<"$Q2F")"
+mqt_notes() { for k in $(seq 1 26); do printf '%sNote %02d.\n' "$1" "$k"; done; }
+mqt_q1() { mq_head ☐ ☐; printf 'Which color for the banner?\n'; mqt_notes ''
+  printf '\n❯ 1. Red\n     warm\n  2. Blue\n     cool\n  3. Green\n     natural\n  4. Type something.\n───\n  5. Chat about this\n\nEnter to select · Tab/Arrow keys to navigate · Esc to cancel\n'; }
+mqt_review() { mq_head ☒ ☒; printf 'Review your answers\n\n ● Which color for the banner?\n'; mqt_notes '   '
+  printf '   → Blue\n ● Which size for the banner?\n   → Large\n\nReady to submit your answers?\n\n❯ 1. Submit answers\n  2. Cancel\n%s\n' "$MQ_RULE"; }
+eq "the tall form's review: tab bar more than 30 lines above the bottom" \
+  "$(mqt_review | sed -e :a -e '/^[[:space:]]*$/{$d;N;ba' -e '}' | tail -n 30 | grep -c '✔ Submit')" "0"
+d="$(askq tu_rt "$Q2T")"; "$B" answer "$d" --options 2,2 --by user-1 >/dev/null
+eq "a tall form: pressable, not clipped" "$(dj "$d" '"\(.pressable)/\(.questions_clipped)"')" "true/false"
+seqpress tu_rt "$(mqt_q1)" "$(mqt_q1)" "$(mq_q2)" "$(mqt_review)"
+eq "a form taller than press.lines -> ok, digits then Submit" "$?/$(keys_sent)" "0/send-keys -t %42 2|send-keys -t %42 2|send-keys -t %42 1|"
+qdone tu_rt
 
 # Questions that start alike (same first 40 characters, same labels) are not pressable: a screen
 # still on one could pass for the other. A decision forced pressable is still refused by press.

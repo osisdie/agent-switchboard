@@ -1630,7 +1630,7 @@ cmd_press() {
   fi
 
   if [ "$multi" = 1 ]; then
-    press_multi "$pane" "$sf" "$df" "$st_sha" "$lines" "$dsnap"
+    press_multi "$pane" "$sf" "$df" "$st_sha" "$dsnap"
     attempt sent "ok" "$pane"
     MARK_OVER_STALE=1 mark_status "$dec_id" relayed >/dev/null 2>&1
     echo "pressed answer ($(jq -r '.answer_options | map(tostring) | join(" ")' <<<"$dsnap"), submitted) in $code pane $pane"
@@ -1736,7 +1736,7 @@ press_scrollback() {
   PRESS_REST="$out"
 }
 
-# press_multi PANE STATE_FILE DECISION SHA LINES SNAPSHOT — runs inside cmd_press (uses its
+# press_multi PANE STATE_FILE DECISION SHA SNAPSHOT — runs inside cmd_press (uses its
 # refuse/partial). SNAPSHOT is the decision as cmd_press read and checked it (multi_check): the
 # questions, options and texts come from it alone. Before every key the decision file must still
 # hold the same answer_options and answer_texts, and every key sent for an option or a submit row
@@ -1744,13 +1744,14 @@ press_scrollback() {
 # A form of several questions, as Claude Code draws it: a tab bar ("←  ☐ Color  ☐ Size  ✔ Submit
 # →"), one question at a time (a digit picks an option and moves on to the next question), then a
 # review screen ("Review your answers": each question and "→ label") with "1. Submit answers".
-# Only the lines after the last tab bar count: the session's own text above (the prompt that asked
-# for the form) may repeat the questions. For each question: its start and every label in order
-# must show, the hook state must still be this prompt, then its option digit. A question answered
-# with free text (answer_texts) takes its "Type something" row instead: the row's digit (the
-# picker stays on the question with that row focused), the text typed literally, and Enter only
-# once the focused row shows the typed text; Enter there confirms the text and moves on, as a digit
-# does. Then the review screen must list every question with the chosen label or text, and its
+# Only the lines after the last tab bar count, anywhere on the visible pane (not only the last
+# press.lines: a tall review screen can push its tab bar above them): the session's own text above
+# (the prompt that asked for the form) may repeat the questions. For each question: its start and
+# every label in order must show, the hook state must still be this prompt, then its option digit.
+# A question answered with free text (answer_texts) takes its "Type something" row instead: the
+# row's digit (the picker stays on the question with that row focused), the text typed literally,
+# and Enter only once the focused row shows the typed text; Enter there confirms the text and
+# moves on, as a digit does. Then the review screen must list every question with the chosen label or text, and its
 # submit row's digit is pressed (never Enter there). A check that fails before the first key
 # exits 3, or 7 (pending again) when the screen shows the form elsewhere while the prompt is still
 # open; after it, 5 (partial, stale): typed text whose echo does not match is never confirmed.
@@ -1761,20 +1762,22 @@ press_scrollback() {
 # screen with the stored questions, labels and texts, on both sides alike.
 nows() { LC_ALL=C sed -E 's/[[:space:]]|\xc2[\x85\xa0]|\xe1\x9a\x80|\xe2\x80[\x80-\x8b\xa8\xa9\xaf]|\xe2\x81\x9f|\xe3\x80\x80|\xef\xbb\xbf|\xe2\x94\x82//g' | tr -d '\n'; }
 press_multi() {
-  local pane="$1" sf="$2" df="$3" sha="$4" lines="$5" dsnap="$6" fp
+  local pane="$1" sf="$2" df="$3" sha="$4" dsnap="$5" fp
   local tabbar review submit footer focus n i t tries key sent=0 raw="" prev="" why="" digit name
   local ftlabel text want send why_screen=0
   tabbar="$(cfg_get press.tabbar_regex)"; review="$(cfg_get press.review_regex)"
   submit="$(cfg_get press.submit_label)"; footer="$(cfg_get press.question_regex)"; focus="$(cfg_get press.focus_regex)"
   # Configured patterns are checked before any key: each must be a valid extended regex for grep -E
-  # (exit 2 on a bad one) and, where awk uses it (tab bar, focus markers), for awk too; the submit
-  # label is plain text, matched literally (never a pattern).
+  # (exit 2 on a bad one) and, where awk uses it (tab bar, picker footer, focus markers), for awk
+  # too, in this locale and in LC_ALL=C (check_review); the submit label is plain text, matched
+  # literally (never a pattern).
   for name in tabbar_regex review_regex question_regex focus_regex; do
     case "$name" in tabbar_regex) re="$tabbar" ;; review_regex) re="$review" ;; question_regex) re="$footer" ;; *) re="$focus" ;; esac
     [ -n "$re" ] || refuse "press.$name is not configured" "$pane" config
     grep -Eq -- "$re" <<<'' 2>/dev/null; [ $? -le 1 ] || refuse "press.$name is not a valid pattern (grep -E)" "$pane" config
-    case "$name" in tabbar_regex|focus_regex)
-      SB_RE="$re" awk 'BEGIN { if ("" ~ ENVIRON["SB_RE"]) x = 1 }' 2>/dev/null \
+    case "$name" in tabbar_regex|question_regex|focus_regex)
+      { SB_RE="$re" awk 'BEGIN { if ("" ~ ENVIRON["SB_RE"]) x = 1 }' \
+          && SB_RE="$re" LC_ALL=C awk 'BEGIN { if ("" ~ ENVIRON["SB_RE"]) x = 1 }'; } 2>/dev/null \
         || refuse "press.$name is not a valid pattern (awk)" "$pane" config ;;
     esac
   done
@@ -1807,8 +1810,8 @@ press_multi() {
   }
   # digit_ok KEY WHAT — an option or submit key must be a single digit 1-9, never anything else typed.
   digit_ok() { [[ $1 =~ ^[1-9]$ ]] || fail "not a single digit for $2: nothing typed"; }
-  form_region() {  # the last LINES non-blank-trailing lines, after the last tab bar; fails without one
-    tmux capture-pane -p -t "$pane" 2>/dev/null | sed -e :a -e '/^[[:space:]]*$/{$d;N;ba' -e '}' | tail -n "$lines" \
+  form_region() {  # the visible pane, after the last tab bar (trailing blank lines dropped); fails without one
+    tmux capture-pane -p -t "$pane" 2>/dev/null | sed -e :a -e '/^[[:space:]]*$/{$d;N;ba' -e '}' \
       | SB_TABBAR="$tabbar" awk '$0 ~ ENVIRON["SB_TABBAR"] { buf = ""; found = 1; next } found { buf = buf $0 "\n" }
                                  END { if (!found) exit 1; printf "%s", buf }'
   }
@@ -1869,7 +1872,12 @@ press_multi() {
   }
   # check_review — RAW is a fresh capture of the review screen: every question in order, exactly
   # one "→ label" line per question equal to the chosen label, and one Submit row: the focused row
-  # of the last numbered block (after the answers). Sets DIGIT, or WHY when not.
+  # of the last numbered block (after the answers). Below it the TUI draws only blank lines, the
+  # block's other rows ("2. Cancel"), horizontal rules (box-drawing lines, "────") and, last, the
+  # picker footer (press.question_regex). After the footer only blank lines, rules and one wrapped
+  # tail of it ("cancel") may follow: on the line right below the footer, the last non-blank line,
+  # 1-3 words of ASCII letters (12 at most each, "·" between them). No numbered row and no second
+  # footer after it; any other line refuses. Sets DIGIT, or WHY when not.
   check_review() {
     local q flat rest seg lbl
     raw="$(form_region)" || { why="no review screen after the last question"; return 1; }
@@ -1906,8 +1914,11 @@ press_multi() {
       [ "${shown[$t]}" = "$(nows <<<"$lbl")" ] \
         || { why="the review screen shows another answer for question $((t + 1))"; return 1; }
     done
-    digit="$(SB_SUBMIT="$submit" SB_FOCUS="$focus" awk '
-      BEGIN { lab = ENVIRON["SB_SUBMIT"]; fre = "^[[:space:]]*(" ENVIRON["SB_FOCUS"] ")[[:space:]]*[1-9]\\.[[:space:]]*" }
+    # LC_ALL=C: byte-wise, so a letter is ASCII only (gawk in a UTF-8 locale would take a CJK
+    # sentence for one word); the box-drawing glyphs and "·" are matched as their UTF-8 bytes.
+    digit="$(SB_SUBMIT="$submit" SB_FOCUS="$focus" SB_FOOTER="$footer" LC_ALL=C awk '
+      BEGIN { lab = ENVIRON["SB_SUBMIT"]; fre = "^[[:space:]]*(" ENVIRON["SB_FOCUS"] ")[[:space:]]*[1-9]\\.[[:space:]]*"
+              foot = ENVIRON["SB_FOOTER"] }
       { l[NR] = $0; if ($0 ~ /^[[:space:]]*→/) last = NR; if (index($0, lab)) { cnt++; row = NR } }
       END {
         if (cnt != 1 || row <= last) exit 1
@@ -1915,8 +1926,26 @@ press_multi() {
         if (!match(s, fre)) exit 1
         pre = substr(s, 1, RLENGTH); rest = substr(s, RLENGTH + 1); sub(/[[:space:]]+$/, "", rest)
         if (rest != lab || !match(pre, /[1-9]\.[[:space:]]*$/)) exit 1
-        for (i = row + 1; i <= NR; i++)
-          if (l[i] !~ /^[[:space:]]*$/ && l[i] !~ /^[[:space:]]*[1-9]\.[[:space:]]/) exit 1
+        for (i = NR; i > row; i--) if (l[i] !~ /^[[:space:]]*$/) break
+        lastnb = i
+        for (i = row + 1; i <= NR; i++) {
+          s = l[i]
+          if (s ~ /^[[:space:]]*$/) continue
+          # a rule: box-drawing lines (light, heavy, double, dashed) and spaces only
+          r = s; gsub(/[[:space:]]|─|━|═|┄|┅|┈|┉|╌|╍/, "", r)
+          if (r == "") continue
+          if (!ft) {
+            if (s ~ /^[[:space:]]*[1-9]\.[[:space:]]/) continue
+            if (s ~ foot) { ft = i; continue }
+            exit 1
+          }
+          # after the footer: only its wrapped tail, right below it and the last non-blank line
+          if (i != ft + 1 || i != lastnb) exit 1
+          r = s; gsub(/·/, " ", r)
+          nw = split(r, w, " ")
+          if (nw < 1 || nw > 3) exit 1
+          for (k = 1; k <= nw; k++) if (w[k] !~ /^[A-Za-z]+$/ || length(w[k]) > 12) exit 1
+        }
         print substr(pre, RSTART, 1)
       }' <<<"$raw")" \
       && [ -n "$digit" ] || { why="no single focused \"$submit\" row at the end of the review screen"; return 1; }
