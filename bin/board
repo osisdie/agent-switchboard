@@ -1381,8 +1381,10 @@ cmd_press() {
   if [ -n "$dec_id" ]; then
     case "$dec_id" in *[!A-Za-z0-9._-]*) refuse_auth "invalid decision id '$dec_id'" ;; esac
     command -v flock >/dev/null 2>&1 || refuse_auth "flock is required for board press (util-linux)"
-    mkdir -p "$BOARD_HOME/locks" && exec 6>>"$BOARD_HOME/locks/press-$dec_id.lock" \
-      || refuse_auth "cannot open the press lock of $dec_id"
+    # (bash, not in POSIX mode, survives a failed exec redirection: it only returns non-zero)
+    if ! mkdir -p "$BOARD_HOME/locks" || ! { exec 6>>"$BOARD_HOME/locks/press-$dec_id.lock"; } 2>/dev/null; then
+      refuse_auth "cannot open the press lock of $dec_id"
+    fi
     if ! flock -w "${BOARD_PRESS_LOCK_WAIT:-30}" 6; then
       echo "board press: refused — another press of $dec_id is still running; nothing sent" >&2
       attempt busy "another press of this decision is still running"
