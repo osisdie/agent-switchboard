@@ -450,7 +450,7 @@ class Keys(Base):
         # nowhere on disk: not in the key store, events.jsonl (the audit), state, or the server's log
         disk = everything_on_disk()
         self.assertNotIn(key, disk)
-        self.assertNotIn(key.split("_")[-1], disk)               # not even the secret part
+        self.assertNotIn(key.split("_", 3)[3], disk)             # not even the secret (asb_<kind>_<kid>_<secret>; it may hold "_")
         row = [e for e in events() if e.get("type") == "apikey" and e.get("key_id") == js["id"]]
         self.assertEqual([(e["action"], e["result"], e["via"]) for e in row], [("create", "ok", "board")])
         self.assertEqual(whoami(key)[1]["scopes"], ["read:state", "read:tasks"])
