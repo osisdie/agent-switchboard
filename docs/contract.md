@@ -448,8 +448,9 @@ text), on the question screen and on the review screen; on a narrow pane the foo
   in `LC_ALL=C`), and `press.submit_label` plain text (matched literally), checked
   before any key. Whitespace is removed the same way from the screen and the stored text, Unicode spaces included
   (NBSP, U+2000–U+200B, U+3000, ...), and so is the box glyph `│` (U+2502), in questions, labels,
-  typed texts and review answers alike (the hook's "start alike" check drops it too). Only the lines after the last tab bar count: the prompt above the form can
-  repeat the questions. For each question in order: the first text after the tab bar is that
+  typed texts and review answers alike (the hook's "start alike" check drops it too). Only the lines after the last tab bar count, anywhere on the visible pane (not only the
+  last `press.lines`, so a review screen taller than that still shows its tab bar): the prompt
+  above the form can repeat the questions. For each question in order: the first text after the tab bar is that
   question (all of it, or its stored start when clipped), then its labels in order, then the
   picker footer (`press.question_regex`); after a digit, the screen must also differ from the one
   the digit was sent on. Each later screen is awaited up to `BOARD_PRESS_TRIES` captures (default

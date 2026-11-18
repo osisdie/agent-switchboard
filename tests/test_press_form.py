@@ -78,7 +78,7 @@ class BoxedForm(unittest.TestCase):
     def tearDown(self):
         tmux("kill-server")   # only the private server of this test
 
-    def start(self, state, nq, answer):
+    def start(self, state, nq, answer, rows=40):
         """The fake TUI in STATE, the hook told about the first NQ questions of FORM, and the
         decision answered with ANSWER (board answer arguments). Returns (dir, decision id)."""
         with open(os.path.join(CFG, "fleet.yaml"), "w") as fh:
@@ -87,7 +87,7 @@ class BoxedForm(unittest.TestCase):
         d = tempfile.mkdtemp(dir=TMP)
         cmd = "%s %s %s %s" % (sys.executable, os.path.join(REPO, "tests", "fake_claude_tui.py"), d, state)
         for _ in range(3):   # a server still shutting down refuses new-session
-            tmux("new-session", "-d", "-s", "CP", "-x", "60", "-y", "40", cmd)
+            tmux("new-session", "-d", "-s", "CP", "-x", "60", "-y", str(rows), cmd)
             for _ in range(100):
                 if os.path.exists(os.path.join(d, "pid")) and "Enter to select" in tmux("capture-pane", "-p", "-t", "CP"):
                     break
@@ -172,6 +172,28 @@ class BoxedForm(unittest.TestCase):
         self.assertEqual(self.answers(d), ["人層", "Small", "pill shaped", "Marketing"])
         self.assertEqual("".join(self.keys(d)), "213pill shaped" + "Enter" + "21")
         self.assertEqual(self.dec(did)["status"], "relayed")
+
+    def test_review_taller_than_press_lines(self):
+        # a 50-row pane, the questions wrapped in a narrow box: the review screen runs more than 30
+        # lines (press.lines) below its tab bar, which is still found on the visible pane
+        d, did = self.start("form4-tall", 4, ["--options", "1,2,1,2"], rows=50)
+        rc, out = board("press", "CP", "answer", "--expect", "tu_form")
+        self.assertEqual(rc, 0, out + tmux("capture-pane", "-p", "-t", "CP"))
+        self.assertEqual(self.answers(d), ["公司層", "Large", "Round", "Marketing"])
+        self.assertEqual(self.keys(d), ["1", "2", "1", "2", "1"])
+        self.assertEqual(self.dec(did)["status"], "relayed")
+
+    def test_tall_review_screen_shape(self):
+        # the fixture itself: the tab bar of form4-tall's review screen is more than 30 lines above
+        # its last non-blank line (form4's is not), so the test above covers the tall case
+        from fake_claude_tui import Tui
+        for state, tall in (("form4-tall", True), ("form4", False)):
+            t = Tui(TMP, state)
+            t.form_init()
+            t.answers, t.state = [o["options"][0]["label"] for o in t.qs], "review"
+            lines = t.form_lines()
+            tab = max(i for i, ln in enumerate(lines) if ln.startswith("←"))
+            self.assertEqual(len(lines) - 1 - tab > 30, tall, state)
 
     def test_other_question_showing_no_key(self):
         # question 1 was answered in the session: question 2 shows, the board expects question 1.

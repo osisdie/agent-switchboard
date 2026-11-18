@@ -1630,7 +1630,7 @@ cmd_press() {
   fi
 
   if [ "$multi" = 1 ]; then
-    press_multi "$pane" "$sf" "$df" "$st_sha" "$lines" "$dsnap"
+    press_multi "$pane" "$sf" "$df" "$st_sha" "$dsnap"
     attempt sent "ok" "$pane"
     MARK_OVER_STALE=1 mark_status "$dec_id" relayed >/dev/null 2>&1
     echo "pressed answer ($(jq -r '.answer_options | map(tostring) | join(" ")' <<<"$dsnap"), submitted) in $code pane $pane"
@@ -1736,7 +1736,7 @@ press_scrollback() {
   PRESS_REST="$out"
 }
 
-# press_multi PANE STATE_FILE DECISION SHA LINES SNAPSHOT — runs inside cmd_press (uses its
+# press_multi PANE STATE_FILE DECISION SHA SNAPSHOT — runs inside cmd_press (uses its
 # refuse/partial). SNAPSHOT is the decision as cmd_press read and checked it (multi_check): the
 # questions, options and texts come from it alone. Before every key the decision file must still
 # hold the same answer_options and answer_texts, and every key sent for an option or a submit row
@@ -1744,13 +1744,14 @@ press_scrollback() {
 # A form of several questions, as Claude Code draws it: a tab bar ("←  ☐ Color  ☐ Size  ✔ Submit
 # →"), one question at a time (a digit picks an option and moves on to the next question), then a
 # review screen ("Review your answers": each question and "→ label") with "1. Submit answers".
-# Only the lines after the last tab bar count: the session's own text above (the prompt that asked
-# for the form) may repeat the questions. For each question: its start and every label in order
-# must show, the hook state must still be this prompt, then its option digit. A question answered
-# with free text (answer_texts) takes its "Type something" row instead: the row's digit (the
-# picker stays on the question with that row focused), the text typed literally, and Enter only
-# once the focused row shows the typed text; Enter there confirms the text and moves on, as a digit
-# does. Then the review screen must list every question with the chosen label or text, and its
+# Only the lines after the last tab bar count, anywhere on the visible pane (not only the last
+# press.lines: a tall review screen can push its tab bar above them): the session's own text above
+# (the prompt that asked for the form) may repeat the questions. For each question: its start and
+# every label in order must show, the hook state must still be this prompt, then its option digit.
+# A question answered with free text (answer_texts) takes its "Type something" row instead: the
+# row's digit (the picker stays on the question with that row focused), the text typed literally,
+# and Enter only once the focused row shows the typed text; Enter there confirms the text and
+# moves on, as a digit does. Then the review screen must list every question with the chosen label or text, and its
 # submit row's digit is pressed (never Enter there). A check that fails before the first key
 # exits 3, or 7 (pending again) when the screen shows the form elsewhere while the prompt is still
 # open; after it, 5 (partial, stale): typed text whose echo does not match is never confirmed.
@@ -1761,7 +1762,7 @@ press_scrollback() {
 # screen with the stored questions, labels and texts, on both sides alike.
 nows() { LC_ALL=C sed -E 's/[[:space:]]|\xc2[\x85\xa0]|\xe1\x9a\x80|\xe2\x80[\x80-\x8b\xa8\xa9\xaf]|\xe2\x81\x9f|\xe3\x80\x80|\xef\xbb\xbf|\xe2\x94\x82//g' | tr -d '\n'; }
 press_multi() {
-  local pane="$1" sf="$2" df="$3" sha="$4" lines="$5" dsnap="$6" fp
+  local pane="$1" sf="$2" df="$3" sha="$4" dsnap="$5" fp
   local tabbar review submit footer focus n i t tries key sent=0 raw="" prev="" why="" digit name
   local ftlabel text want send why_screen=0
   tabbar="$(cfg_get press.tabbar_regex)"; review="$(cfg_get press.review_regex)"
@@ -1809,8 +1810,8 @@ press_multi() {
   }
   # digit_ok KEY WHAT — an option or submit key must be a single digit 1-9, never anything else typed.
   digit_ok() { [[ $1 =~ ^[1-9]$ ]] || fail "not a single digit for $2: nothing typed"; }
-  form_region() {  # the last LINES non-blank-trailing lines, after the last tab bar; fails without one
-    tmux capture-pane -p -t "$pane" 2>/dev/null | sed -e :a -e '/^[[:space:]]*$/{$d;N;ba' -e '}' | tail -n "$lines" \
+  form_region() {  # the visible pane, after the last tab bar (trailing blank lines dropped); fails without one
+    tmux capture-pane -p -t "$pane" 2>/dev/null | sed -e :a -e '/^[[:space:]]*$/{$d;N;ba' -e '}' \
       | SB_TABBAR="$tabbar" awk '$0 ~ ENVIRON["SB_TABBAR"] { buf = ""; found = 1; next } found { buf = buf $0 "\n" }
                                  END { if (!found) exit 1; printf "%s", buf }'
   }

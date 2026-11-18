@@ -1389,6 +1389,21 @@ d="$(askq tu_rz "$Q2F")"; "$B" answer "$d" --options 2,2 --by user-1 >/dev/null
 seqpress tu_rz "$(mq_q1)" "$(mq_q1)" "$(mq_q2)" "$(mq_review Blue Large; printf '%s\n%s\n· Esc to cancel\n\n' "$MQ_RULE" "Enter to select · Tab/Arrow keys to navigate")"
 eq "a three-word tail ('· Esc to cancel') right below the footer, the last line -> ok" "$?/$(keys_sent)" "0/send-keys -t %42 2|send-keys -t %42 2|send-keys -t %42 1|"
 qdone tu_rz
+# A form taller than press.lines (30): question 1 holds 26 more lines, so on its screen and on the
+# review screen the tab bar sits more than 30 lines above the bottom. The whole visible pane counts.
+Q2T="$(jq -c --arg q "Which color for the banner?$(for k in $(seq 1 26); do printf '\nNote %02d.' "$k"; done)" '.[0].question = $q' <<<"$Q2F")"
+mqt_notes() { for k in $(seq 1 26); do printf '%sNote %02d.\n' "$1" "$k"; done; }
+mqt_q1() { mq_head ☐ ☐; printf 'Which color for the banner?\n'; mqt_notes ''
+  printf '\n❯ 1. Red\n     warm\n  2. Blue\n     cool\n  3. Green\n     natural\n  4. Type something.\n───\n  5. Chat about this\n\nEnter to select · Tab/Arrow keys to navigate · Esc to cancel\n'; }
+mqt_review() { mq_head ☒ ☒; printf 'Review your answers\n\n ● Which color for the banner?\n'; mqt_notes '   '
+  printf '   → Blue\n ● Which size for the banner?\n   → Large\n\nReady to submit your answers?\n\n❯ 1. Submit answers\n  2. Cancel\n%s\n' "$MQ_RULE"; }
+eq "the tall form's review: tab bar more than 30 lines above the bottom" \
+  "$(mqt_review | sed -e :a -e '/^[[:space:]]*$/{$d;N;ba' -e '}' | tail -n 30 | grep -c '✔ Submit')" "0"
+d="$(askq tu_rt "$Q2T")"; "$B" answer "$d" --options 2,2 --by user-1 >/dev/null
+eq "a tall form: pressable, not clipped" "$(dj "$d" '"\(.pressable)/\(.questions_clipped)"')" "true/false"
+seqpress tu_rt "$(mqt_q1)" "$(mqt_q1)" "$(mq_q2)" "$(mqt_review)"
+eq "a form taller than press.lines -> ok, digits then Submit" "$?/$(keys_sent)" "0/send-keys -t %42 2|send-keys -t %42 2|send-keys -t %42 1|"
+qdone tu_rt
 
 # Questions that start alike (same first 40 characters, same labels) are not pressable: a screen
 # still on one could pass for the other. A decision forced pressable is still refused by press.
