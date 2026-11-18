@@ -330,7 +330,11 @@ answer but stopped at Submit, then someone submitted the form in the pane).
   be guessed from its hash, and the same answer hashes differently on another install. Free text
   that the secret guard would change (`lib/guard.py` `scrub`: vendor tokens, `key=value`
   credentials, a literal `.env` value, random-looking runs), or that holds an email address or a
-  phone number (`lib/pii.py` `TEXT_EMAIL_RE`; 8+ digits), gets no hash at all (`null`). The answer
+  phone number (`lib/pii.py` `TEXT_EMAIL_RE`; 8+ digits), gets no hash at all (`null`). The digit
+  rule also catches dates and other long numbers: such an answer compares as `unknown`, never as a
+  match. The key is made by a hard link from a full temp file (another writer's key is kept); only
+  on a filesystem without hard links (`EPERM` / `ENOTSUP`) is it moved into place instead, and the
+  key is always read back from the file. The answer
   text is never stored: not in the event, the state file or the decision. It is computed by `lib/reconcile.py hook-outcome`, the only python start, and only for
   this event.
 - `denied: true` (a `PostToolUseFailure` only) when its error reads as the user rejecting the
@@ -357,11 +361,16 @@ The outcome is compared with the board's recorded answer and the result kept in
 | `pending` (no board answer) | any | `no_answer` | `answered_in_pane`, as above |
 | `relayed`, `unauthorized`, `timeout`, `answered_in_pane` | any | — | never changed |
 
+- A form of several questions is told by its stored fields, as `board answer --options` /
+  `--form-file` write them: `answer_options` one number per question (a free-text row is that
+  question's option count + 1), `answer_texts` null or one entry per question (the text, or null),
+  and `answer` the composed `Header: label · Header: text`.
 - The board's answer is only compared when its stored fields fit together (`board answer` writes
   the answer, `answer_index`, `answer_options` and `answer_texts` in one write): an option number
-  that is not the label's, a label answer without its number, a single answer next to a form's
-  options, or a form answer without them is left for the next run while the decision was updated
-  less than 60 s ago, and settles as `unknown` after that.
+  that is not the label's, a label answer without its number, form options that do not compose the
+  stored answer (or a free-text row that is not count + 1) is left for the next run while the
+  decision was updated less than 60 s ago, and settles as `unknown` after that (at once when its
+  write time is ahead of the collector's clock).
 
 - A `stale` decision is no longer final for this transition only: it records why it had gone stale
   in `reconciled_from` (its `status_reason` code, else `"stale"`), `status_reason` is removed, and

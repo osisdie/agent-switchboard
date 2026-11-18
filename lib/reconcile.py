@@ -23,6 +23,7 @@ when Claude Code's rejection wording is in the error (the error text is not stor
 CLI (for hooks/board-hook.sh):
   reconcile.py hook-outcome     hook JSON on stdin -> {"picks": [...], "text_sha": [...]} or nothing
 """
+import errno
 import hashlib
 import hmac
 import json
@@ -50,7 +51,8 @@ CTRL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 MAX_Q = 6
 KEY_FILE = os.path.join("secrets", "reconcile.key")
 KEY_BYTES = 32
-# A phone number: 8+ digits, optionally with + ( ) spaces dots or dashes between them.
+# A phone number: 8+ digits, optionally with + ( ) spaces dots or dashes between them. Dates and
+# other long numbers match too: such text gets no hash (its slot compares as "unknown").
 PHONE_RE = re.compile(r"(?<![\w.])\+?\(?\d(?:[\s().-]*\d){7,}(?![\w.])")
 # reconcile_result codes (the page words them)
 RESULTS = ("match", "differs", "unknown", "no_answer")
@@ -93,9 +95,11 @@ def hash_key(home, create=True):
                     os.link(tmp, path)  # another writer won: theirs is kept
                 except FileExistsError:
                     pass
-                except OSError:
-                    if not os.path.lexists(path):
-                        os.rename(tmp, path)
+                except OSError as exc:
+                    # a filesystem without hard links only: replace, then use whatever is there now
+                    if exc.errno not in (errno.EPERM, errno.ENOTSUP, errno.EOPNOTSUPP):
+                        raise
+                    os.replace(tmp, path)
             finally:
                 try:
                     os.unlink(tmp)
@@ -252,41 +256,78 @@ def read_outcomes(home, now):
     return out, save
 
 
+def _form_answer_text(qs, opts, texts):
+    """The answer text `board answer --options` / `--form-file` composes for a form: "Header: label"
+    per question (the text for a free-text row), joined by " · "."""
+    parts = []
+    for i, q in enumerate(qs):
+        h = str(q.get("header") or "").strip() or "Q%d" % (i + 1)
+        if texts[i] is not None:
+            v = texts[i]
+        else:
+            v = str(q["options"][opts[i] - 1].get("label") if isinstance(q["options"][opts[i] - 1], dict)
+                    else q["options"][opts[i] - 1])
+        parts.append("%s: %s" % (h, v))
+    return " · ".join(parts)
+
+
 def board_answers(d):
     """The board's recorded answer as a comparable value: "allow" / "deny" for a permission, for a
     question a list per question of ("pick", n) or ("text", text); None when nothing was recorded;
-    INCONSISTENT when the stored option fields do not fit the answer (another write in progress)."""
+    INCONSISTENT when the stored option fields do not fit the answer (another write in progress).
+
+    A form of several questions is told by its stored fields, as bin/board writes them:
+    `answer_options` one number per question (a free-text row is that question's option count + 1),
+    `answer_texts` null or one entry per question (the text, or null for an option), and `answer`
+    the composed "Header: label · Header: text" (checked when it can be recomposed)."""
     ans = d.get("answer")
     if ans is None or ans == "":
         return None
     if d.get("kind") == "permission":
         return ans if ans in ("allow", "deny") else INCONSISTENT
     qs = d.get("questions") if isinstance(d.get("questions"), list) else []
+    qs = [q if isinstance(q, dict) else {} for q in qs]
     opts, texts = d.get("answer_options"), d.get("answer_texts")
-    if ans in ("(options)", "(answers)"):
-        if not isinstance(opts, list) or not opts or (qs and len(opts) != len(qs)):
+    if opts is not None:
+        if not isinstance(opts, list) or len(opts) < 2 or len(opts) != len(qs):
             return INCONSISTENT
-        texts = texts if isinstance(texts, list) and len(texts) == len(opts) else [None] * len(opts)
+        if texts is None:
+            texts = [None] * len(opts)
+        if not isinstance(texts, list) or len(texts) != len(opts):
+            return INCONSISTENT
         out = []
-        for o, t in zip(opts, texts):
-            if isinstance(t, str) and t:
+        for q, o, t in zip(qs, opts, texts):
+            n = len(q.get("options") or [])
+            if not isinstance(o, int) or isinstance(o, bool):
+                return INCONSISTENT
+            if t is not None:
+                if not isinstance(t, str) or not t or o != n + 1:
+                    return INCONSISTENT
                 out.append(("text", t))
-            elif isinstance(o, int) and not isinstance(o, bool) and o >= 1:
+            elif 1 <= o <= n:
                 out.append(("pick", o))
             else:
                 return INCONSISTENT
+        composed = _form_answer_text(qs, opts, texts)
+        if norm(str(ans)) not in (norm(composed), norm(_scrub(composed))):
+            return INCONSISTENT  # the options of another answer
         return out
-    if opts is not None:
-        return INCONSISTENT  # a single answer next to a form's options: not one write
     idx = d.get("answer_index")
-    q0 = qs[0].get("options") if qs and isinstance(qs[0], dict) else None
+    q0 = qs[0].get("options") if qs else None
     want = label_pick(norm(str(ans)), q0) if q0 is not None else None
     if isinstance(idx, int) and not isinstance(idx, bool) and idx >= 1:
         return [("pick", idx)] if q0 is None or want == idx else INCONSISTENT
-    if want is not None:
+    if want is not None and len(qs) <= 1:
         return INCONSISTENT  # the answer is a label but no option number was stored with it
     return [("text", str(ans))]
 
+
+def _scrub(text):
+    try:
+        import guard
+        return guard.scrub(text)
+    except Exception:  # noqa: BLE001
+        return text
 
 
 def compare(d, outcome, key):
@@ -342,7 +383,10 @@ def settle(d, outcome, now=None, home=None):
     key = hash_key(home or board_home(), create=False) if d.get("kind") != "permission" else None
     result = compare(d, outcome, key)
     if result == INCONSISTENT:
-        if now is not None and now - int(d.get("updated_at") or d.get("answered_at") or 0) < INCONSISTENT_GRACE_MS:
+        # A write time ahead of our clock (skew, a hand-edited file) never keeps it waiting: it
+        # counts as old, so the decision settles as unknown instead of retrying forever.
+        written = int(d.get("updated_at") or d.get("answered_at") or 0)
+        if now is not None and written <= now and now - written < INCONSISTENT_GRACE_MS:
             return "retry"
         result = "unknown"
     # A stale decision keeps why it had gone stale (its status_reason code, e.g. partial).

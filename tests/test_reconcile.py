@@ -94,6 +94,28 @@ class Base(unittest.TestCase):
         with open(os.path.join(self.home, "decisions", did + ".json"), encoding="utf-8") as fh:
             return json.load(fh)
 
+    def board_answer(self, did, *args, path_prefix=None):
+        """The real `board answer DID ARGS --by user-1` (an approver, so an owner) on this home."""
+        cfg = os.path.join(self.home, "cfg")
+        if not os.path.exists(os.path.join(cfg, "fleet.yaml")):
+            os.makedirs(cfg, exist_ok=True)
+            with open(os.path.join(cfg, "fleet.yaml"), "w", encoding="utf-8") as fh:
+                fh.write("approvers: [user-1]\n")
+        env = dict(os.environ, BOARD_HOME=self.home, BOARD_CONFIG_DIR=cfg,
+                   CLAUDE_SESSIONS_DIR=os.path.join(self.home, "sessions"))
+        if path_prefix:
+            env["PATH"] = path_prefix + os.pathsep + os.environ["PATH"]
+        r = subprocess.run([os.path.join(REPO, "bin", "board"), "answer", did] + list(args) + ["--by", "user-1"],
+                           env=env, capture_output=True, text=True, timeout=60, check=False)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return self.read(did)
+
+    def form_file(self, entries):
+        path = os.path.join(self.home, "form.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(entries, fh)
+        return path
+
     def patch(self, did, **kw):
         d = self.read(did)
         d.update(kw)
@@ -157,6 +179,28 @@ class HookRecords(Base):
         # a key readable by others is never used
         os.chmod(path, 0o644)
         self.assertIsNone(reconcile.hash_key(self.home, create=False))
+
+    def test_hash_key_without_hard_links(self):
+        import errno as _errno
+        real_link = os.link
+
+        def no_link(*a, **k):
+            raise OSError(_errno.EPERM, "Operation not permitted")
+        os.link = no_link
+        try:
+            key = reconcile.hash_key(self.home)
+            self.assertEqual(len(key or b""), reconcile.KEY_BYTES)
+            self.assertEqual(reconcile.hash_key(self.home), key)  # the same key is read back
+            self.assertEqual(os.stat(os.path.join(self.home, reconcile.KEY_FILE)).st_mode & 0o777, 0o600)
+
+            def io_error(*a, **k):
+                raise OSError(_errno.EIO, "I/O error")
+            os.link = io_error
+            other = tempfile.mkdtemp(dir=TMP)
+            self.assertIsNone(reconcile.hash_key(other))  # any other failure: no key, nothing hashed
+            self.assertEqual([f for f in os.listdir(os.path.join(other, "secrets"))], [])
+        finally:
+            os.link = real_link
 
     def test_email_or_phone_gets_no_hash(self):
         for i, text in enumerate(("mail it to someone@example.com", "call +1 (555) 010-9999 tomorrow")):
@@ -223,9 +267,12 @@ class PaneQuestions(Base):
 
     def test_partial_press_then_submitted_in_pane_is_delivered(self):
         did = self.ask("tu_p2", Q2)
+        d = self.board_answer(did, "--form-file", self.form_file([{"option": 2}, {"text": FREE}]))
+        # as bin/board stores a form: the composed answer, the text row as option count + 1
+        self.assertEqual((d["answer"], d["answer_options"], d["answer_texts"]),
+                         ("Color: Blue · Target: " + FREE, [2, 3], [None, FREE]))
         # board press typed both answers, then stopped at Submit: stale, partial
-        self.patch(did, answer="(answers)", answer_options=[2, 0], answer_texts=[None, FREE],
-                   status="stale", status_reason="partial", answered_by="owner")
+        self.patch(did, status="stale", status_reason="partial")
         self.collect()
         self.assertEqual(self.read(did)["status"], "stale")
         self.submit("tu_p2", Q2, {Q2[0]["question"]: "Blue", Q2[1]["question"]: "  deploy to the   staging cluster first"})
@@ -238,14 +285,36 @@ class PaneQuestions(Base):
 
     def test_different_answers_answered_in_pane(self):
         did = self.ask("tu_p3", Q2)
-        self.patch(did, answer="(answers)", answer_options=[2, 0], answer_texts=[None, FREE],
-                   status="stale", status_reason="partial")
+        self.board_answer(did, "--form-file", self.form_file([{"option": 2}, {"text": FREE}]))
+        self.patch(did, status="stale", status_reason="partial")
         self.submit("tu_p3", Q2, {Q2[0]["question"]: "Blue", Q2[1]["question"]: "Nowhere"})
         self.collect()
         d = self.read(did)
         self.assertEqual((d["status"], d["resolved_via"], d["reconciled_from"], d["reconcile_result"]),
                          ("answered_in_pane", "pane", "partial", "differs"))
-        self.assertEqual(d["answer_options"], [2, 0])  # the board's answer is kept as it was
+        self.assertEqual(d["answer_options"], [2, 3])  # the board's answer is kept as it was
+
+    def test_form_options_then_submitted_in_pane(self):
+        for tu, pane, want in (("tu_f1", ("Blue", "Production"), ("relayed", "match")),
+                               ("tu_f2", ("Red", "Production"), ("answered_in_pane", "differs")),
+                               ("tu_f3", ("Blue", "Nowhere"), ("answered_in_pane", "differs"))):
+            did = self.ask(tu, Q2)
+            d = self.board_answer(did, "--options", "2,1")
+            self.assertEqual((d["answer"], d["answer_options"], d.get("answer_texts")),
+                             ("Color: Blue · Target: Production", [2, 1], None))
+            self.patch(did, status="stale", status_reason="partial")
+            self.submit(tu, Q2, {Q2[0]["question"]: pane[0], Q2[1]["question"]: pane[1]})
+            self.collect()
+            d = self.read(did)
+            self.assertEqual((d["status"], d["reconcile_result"]), want, pane)
+
+    def test_form_free_text_differs(self):
+        did = self.ask("tu_f4", Q2)
+        self.board_answer(did, "--form-file", self.form_file([{"option": 2}, {"text": FREE}]))
+        self.patch(did, status="stale", status_reason="partial")
+        self.submit("tu_f4", Q2, {Q2[0]["question"]: "Blue", Q2[1]["question"]: "deploy to production first"})
+        self.collect()
+        self.assertEqual(self.read(did)["reconcile_result"], "differs")
 
     def test_late_post_tool_use_after_stale(self):
         did = self.ask("tu_p4", Q1)
@@ -297,11 +366,14 @@ class PaneQuestions(Base):
         d = self.read(did)
         self.assertEqual((d["status"], d["reconcile_result"]), ("answered_in_pane", "unknown"))
 
+    def test_a_write_time_ahead_of_the_clock_never_waits(self):
+        did = self.ask("tu_p12", Q1)
+        self.patch(did, answer="Red", answer_index=2, status="answered", updated_at=now_ms() + 3600 * 1000)
+        self.submit("tu_p12", Q1, {Q1[0]["question"]: "Blue"})
+        self.collect()
+        self.assertEqual(self.read(did).get("reconcile_result"), "unknown")
+
     def test_board_answer_is_one_write(self):
-        cfg = os.path.join(self.home, "cfg")
-        os.makedirs(cfg)
-        with open(os.path.join(cfg, "fleet.yaml"), "w", encoding="utf-8") as fh:
-            fh.write("approvers: [user-1]\n")
         shim = os.path.join(self.home, "shim")
         os.makedirs(shim)
         log = os.path.join(self.home, "mv.log")
@@ -310,15 +382,10 @@ class PaneQuestions(Base):
             fh.write('#!/bin/sh\nfor a; do last="$a"; done\ncase "$last" in */decisions/*.json) echo "$last" >> "%s";; esac\nexec %s "$@"\n' % (log, real))
         os.chmod(os.path.join(shim, "mv"), 0o755)
         did = self.ask("tu_p11", Q2)
-        env = dict(os.environ, BOARD_HOME=self.home, BOARD_CONFIG_DIR=cfg, PATH=shim + os.pathsep + os.environ["PATH"],
-                   CLAUDE_SESSIONS_DIR=os.path.join(self.home, "sessions"))
-        board = os.path.join(REPO, "bin", "board")
         for args in (["--options", "2,1"], ["Blue"]):
             if os.path.exists(log):
                 os.remove(log)
-            r = subprocess.run([board, "answer", did] + args + ["--by", "user-1"], env=env, capture_output=True,
-                               text=True, timeout=60, check=False)
-            self.assertEqual(r.returncode, 0, r.stderr)
+            self.board_answer(did, *args, path_prefix=shim)
             with open(log, encoding="utf-8") as fh:
                 writes = [x for x in fh.read().split() if x.endswith(did + ".json")]
             self.assertEqual(len(writes), 1, (args, writes))
@@ -499,11 +566,18 @@ class Compare(unittest.TestCase):
         self.assertEqual(reconcile.board_answers({"answer": "Blue", "answer_index": 2, "questions": Q1}), [("pick", 2)])
         self.assertEqual(reconcile.board_answers({"answer": "Red", "answer_index": 2, "questions": Q1}), reconcile.INCONSISTENT)
         self.assertEqual(reconcile.board_answers({"answer": "Red", "answer_index": None, "questions": Q1}), reconcile.INCONSISTENT)
-        self.assertEqual(reconcile.board_answers({"answer": "Red", "answer_options": [1, 2]}), reconcile.INCONSISTENT)
-        self.assertEqual(reconcile.board_answers({"answer": "(options)", "answer_options": None}), reconcile.INCONSISTENT)
+        form = {"answer": "Color: Blue · Target: Production", "answer_options": [2, 1], "answer_texts": None,
+                "questions": Q2}
+        self.assertEqual(reconcile.board_answers(form), [("pick", 2), ("pick", 1)])
+        # a single answer next to a form's options, or options of another answer
+        self.assertEqual(reconcile.board_answers(dict(form, answer="Red")), reconcile.INCONSISTENT)
+        self.assertEqual(reconcile.board_answers(dict(form, answer_options=[1, 1])), reconcile.INCONSISTENT)
+        # a free-text row is that question's option count + 1, with its text
+        ft = dict(form, answer="Color: Blue · Target: x y", answer_options=[2, 3], answer_texts=[None, "x y"])
+        self.assertEqual(reconcile.board_answers(ft), [("pick", 2), ("text", "x y")])
+        self.assertEqual(reconcile.board_answers(dict(ft, answer_options=[2, 1])), reconcile.INCONSISTENT)
+        self.assertEqual(reconcile.board_answers(dict(form, answer_options=[2])), reconcile.INCONSISTENT)
         self.assertEqual(reconcile.board_answers({"answer": "x y"}), [("text", "x y")])
-        self.assertEqual(reconcile.board_answers({"answer": "(options)", "answer_options": [1, 2]}),
-                         [("pick", 1), ("pick", 2)])
 
     def test_norm(self):
         self.assertEqual(reconcile.norm("  a　 b\n c\t"), "a b c")
