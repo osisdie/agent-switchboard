@@ -236,7 +236,7 @@ def main():
                 for f in fs:
                     with open(os.path.join(root, f), "rb") as fh:
                         disk += fh.read().decode("utf-8", "replace")
-            check("the key is nowhere in BOARD_HOME", key not in disk and key.split("_")[-1] not in disk)
+            check("the key is nowhere in BOARD_HOME", key not in disk and key.split("_", 3)[3] not in disk)
             sel = "#keys-table tr[data-kid='%s'] button[data-act='revoke']" % row["id"]
             pg.click(sel)
             armed = pg.text_content(sel)
