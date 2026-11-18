@@ -444,7 +444,8 @@ text), on the question screen and on the review screen; on a narrow pane the foo
 - `board press <CODE> answer --expect <tool_use_id>`, with the same approver, state and hash
   checks as one question. `press.tabbar_regex`, `press.review_regex`, `press.question_regex` and
   `press.focus_regex` (the focused-row marker, default `(❯|>|›)`, shared with single questions)
-  must be valid extended regexes (the tab bar and focus ones for awk too), and `press.submit_label` plain text (matched literally), checked
+  must be valid extended regexes (the tab bar, footer and focus ones for awk too, in the locale and
+  in `LC_ALL=C`), and `press.submit_label` plain text (matched literally), checked
   before any key. Whitespace is removed the same way from the screen and the stored text, Unicode spaces included
   (NBSP, U+2000–U+200B, U+3000, ...), and so is the box glyph `│` (U+2502), in questions, labels,
   typed texts and review answers alike (the hook's "start alike" check drops it too). Only the lines after the last tab bar count: the prompt above the form can
@@ -455,8 +456,13 @@ text), on the question screen and on the review screen; on a narrow pane the foo
   20, `BOARD_PRESS_SETTLE` seconds apart), and the state is re-read before each. On the review
   screen (`press.review_regex`): every question's start in order, exactly one `→` line per
   question, each equal to the chosen label (whitespace ignored), and exactly one row containing
-  `press.submit_label`: the focused (`press.focus_regex`) `N.` row, after the answers, followed only by numbered rows;
-  then its digit N. **Enter is never sent on the review screen.** Before the first digit, a
+  `press.submit_label`: the focused (`press.focus_regex`) `N.` row, after the answers. Below it
+  only blank lines, the block's other numbered rows, horizontal rules (lines of box-drawing
+  characters `─ ━ ═ ┄ ┅ ┈ ┉ ╌ ╍` and spaces) and, as the final lines, the picker footer
+  (`press.question_regex`); after the footer only blank lines, rules and one wrapped tail of it
+  (`cancel`): the line right below the footer and the last non-blank line, 1–3 words of ASCII
+  letters (at most 12 each, `·` between them). No numbered row and no second footer after the
+  footer; any other line → no submit. Then its digit N. **Enter is never sent on the review screen.** Before the first digit, a
   screen that shows another state of the form (no tab bar, another question, its options or
   footer missing) while the state is re-read and still shows this prompt waiting → exit 7,
   nothing sent, pending again and counted (`press_not_visible`, `answer_options` and
