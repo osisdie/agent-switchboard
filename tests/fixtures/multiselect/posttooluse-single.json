@@ -1,0 +1,67 @@
+{
+ "hook_event_name": "PostToolUse",
+ "tool_name": "AskUserQuestion",
+ "tool_input": {
+  "questions": [
+   {
+    "question": "Which fruits should go into the basket today?",
+    "header": "Fruits",
+    "options": [
+     {
+      "label": "Apple",
+      "description": "Crisp and sweet, a classic choice"
+     },
+     {
+      "label": "Banana",
+      "description": "Soft, potassium-rich, easy to eat"
+     },
+     {
+      "label": "Cherry",
+      "description": "Small, sweet and juicy"
+     },
+     {
+      "label": "Grape",
+      "description": "Bite-sized and great for snacking"
+     }
+    ],
+    "multiSelect": true
+   }
+  ],
+  "answers": {
+   "Which fruits should go into the basket today?": "Cherry, Apple"
+  },
+  "annotations": {}
+ },
+ "tool_response": {
+  "questions": [
+   {
+    "question": "Which fruits should go into the basket today?",
+    "header": "Fruits",
+    "options": [
+     {
+      "label": "Apple",
+      "description": "Crisp and sweet, a classic choice"
+     },
+     {
+      "label": "Banana",
+      "description": "Soft, potassium-rich, easy to eat"
+     },
+     {
+      "label": "Cherry",
+      "description": "Small, sweet and juicy"
+     },
+     {
+      "label": "Grape",
+      "description": "Bite-sized and great for snacking"
+     }
+    ],
+    "multiSelect": true
+   }
+  ],
+  "answers": {
+   "Which fruits should go into the basket today?": "Cherry, Apple"
+  },
+  "annotations": {}
+ },
+ "tool_use_id": "toolu_fixture_1"
+}

@@ -247,23 +247,32 @@ JQ_PANE_ANSWER='
   def ft_ok: type == "string" and length > 0 and length <= $max
     and (test("[\u0000-\u001f\u007f-\u009f\u2028\u2029\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]") | not)
     and (test("\\\\;$") | not);
-  def pane_relay: if multi then "operator"
+  # A multi-select question is answered with its labels (board answer --form-file): a plain answer
+  # to one goes out as a message.
+  def has_ms: any((.questions // [])[]; .multiSelect == true);
+  def pane_relay: if multi or has_ms then "operator"
     elif (.pressable == true) and labels_unique and (pane_index != null or typeable)
     then "press" else "operator" end;
   # A form of several questions answered one option per question (board answer --options):
   # "ok", or why it cannot be pressed.
   # A question answered with text has answer_options = its "Type something" row (options + 1) and
-  # its text in answer_texts.
+  # its text in answer_texts. A multi-select question has the list of its checked option numbers
+  # (ascending, no repeats, possibly empty) and no text. A single question is pressed this way only
+  # when it is multi-select.
   def multi_check: (.answer_options // null) as $o | (.answer_texts // null) as $t | (.questions // []) as $qs
     | if .pressable != true then "not pressable"
+      elif ($qs | length) < 1 or (($qs | length) == 1 and ($qs[0].multiSelect != true)) then "not a form"
       elif ($o | type) != "array" or ($o | length) != ($qs | length) then "answer_options do not match the questions"
       elif $t != null and (($t | type) != "array" or ($t | length) != ($qs | length)) then "answer_texts do not match the questions"
-      elif any(range(0; $qs | length); . as $i | ($o[$i] | type) != "number" or $o[$i] < 1 or ($o[$i] | floor) != $o[$i]
-             or (if $t != null and $t[$i] != null
-                 then $o[$i] != ($qs[$i].options | length) + 1 or $o[$i] > 9 or ($t[$i] | ft_ok | not)
-                 else $o[$i] > ($qs[$i].options | length) or $o[$i] > 8 end))
+      elif any(range(0; $qs | length); . as $i | $o[$i] as $x | ($qs[$i].options | length) as $n
+             | if $qs[$i].multiSelect == true
+               then ($x | type) != "array" or $n > 8 or ($t != null and $t[$i] != null)
+                    or any($x[]; type != "number" or . < 1 or . != floor or . > $n) or $x != ($x | unique)
+               else ($x | type) != "number" or $x < 1 or ($x | floor) != $x
+                    or (if $t != null and $t[$i] != null
+                        then $x != $n + 1 or $x > 9 or ($t[$i] | ft_ok | not)
+                        else $x > $n or $x > 8 end) end)
         then "an option is out of range, or a text cannot be typed"
-      elif any($qs[]; .multiSelect == true) then "multi-select"
       elif any($qs[]; ([ .options[].label | tostring | trim | ascii_downcase ] | unique | length) != (.options | length))
         then "repeated labels"
       elif ([ $qs[] | .question // "" | tostring | split("…")[0] | split("[REDACTED")[0] | gsub("[\\s\u0085\u00a0\u1680\u2000-\u200b\u2028\u2029\u202f\u205f\u3000\ufeff\u2502]"; "") ] as $k
@@ -761,18 +770,21 @@ cmd_answer() {
         elif ($qs | length) < 2 then "--options is for a form of several questions (use --option)"
         elif ($o | length) != ($qs | length) then "\($o | length) options for \($qs | length) questions"
         elif any(range(0; $qs | length); $o[.] > ($qs[.].options | length)) then "an option number is out of range"
-        elif any($qs[]; .multiSelect == true) then "a multi-select question is answered in the session"
+        elif any($qs[]; .multiSelect == true) then "a multi-select question is answered by its labels (--form-file)"
         else "ok" end' "$f")"
     [ "$why" = ok ] || { echo "board answer: $why on $id; nothing recorded" >&2; exit 2; }
     answer="$(jq -r --argjson o "$opts_json" '[ range(0; .questions | length) as $i | .questions[$i]
         | ((.header // "") | tostring | gsub("^\\s+|\\s+$"; "")) as $h
         | (if $h == "" then "Q\($i + 1)" else $h end) + ": " + (.options[$o[$i] - 1].label | tostring) ] | join(" · ")' "$f")"
   fi
-  # --form-file PATH: [{"question_index": 0, "option": 2} | {"question_index": 1, "text": "..."}, ...],
-  # one entry per question, in order. Free text is untrusted: it comes by file (never a shell
-  # argument), loses control, escape and line-break characters (a newline would submit early or
-  # move the focus), must then be 1-$FREE_TEXT_MAX characters and not end in "\;", and goes
-  # through the secret guard below. Checked before anything is written (exit 2).
+  # --form-file PATH: [{"question_index": 0, "option": 2} | {"question_index": 1, "text": "..."}
+  # | {"question_index": 2, "labels": ["A", "C"]}, ...], one entry per question, in order. Free text
+  # is untrusted: it comes by file (never a shell argument), loses control, escape and line-break
+  # characters (a newline would submit early or move the focus), must then be 1-$FREE_TEXT_MAX
+  # characters and not end in "\;", and goes through the secret guard below. A multi-select
+  # question is answered by "labels" only: each an exact option label (as stored), no repeats, none
+  # at all allowed; kept as its option numbers, ascending. A single question takes --form-file only
+  # when it is multi-select. Checked before anything is written (exit 2).
   local texts_json="null"
   if [ -n "$form_file" ]; then
     { [ -z "$answer" ] && [ -z "$option" ] && [ -z "$options" ]; } \
@@ -783,15 +795,24 @@ cmd_answer() {
       . as $a | $d[0] as $dec | ($dec.questions // []) as $qs
       | def bad($w): {ok: false, why: $w};
       if $dec.source != "pane" then bad("--form-file is only for a question shown in a session")
-      elif ($qs | length) < 2 then bad("--form-file is for a form of several questions")
-      elif any($qs[]; .multiSelect == true) then bad("a multi-select question is answered in the session")
+      elif ($qs | length) < 1 or (($qs | length) == 1 and $qs[0].multiSelect != true)
+        then bad("--form-file is for a form of several questions or a multi-select question")
       elif ($a | type) != "array" or ($a | length) != ($qs | length) then bad("one answer per question, in order")
       elif any(range(0; $a | length); . as $i | $a[$i] as $e
              | ($e | type) != "object"
-               or (($e | keys) - ["question_index", "option", "text"] | length) > 0
+               or (($e | keys) - ["question_index", "option", "text", "labels"] | length) > 0
                or (($e | has("question_index")) and $e.question_index != $i)
-               or (($e | has("option")) == ($e | has("text"))))
-        then bad("each answer is {question_index, option} or {question_index, text}")
+               or ([$e | has("option", "text", "labels")] | map(select(.)) | length) != 1)
+        then bad("each answer is {question_index, option}, {question_index, text} or {question_index, labels}")
+      elif any(range(0; $a | length); . as $i | ($a[$i] | has("labels")) != ($qs[$i].multiSelect == true))
+        then bad("a multi-select question is answered by labels, any other by option or text")
+      elif any(range(0; $a | length); . as $i | $a[$i] | has("labels")
+             and ((.labels | type) != "array" or (.labels | length) > ($qs[$i].options | length)
+                  or any(.labels[]; type != "string")
+                  or (.labels | unique | length) != (.labels | length)
+                  or ($qs[$i].options | length) > 8
+                  or any(.labels[]; . as $l | [ $qs[$i].options[].label | tostring ] | index([$l]) == null)))
+        then bad("labels must be distinct option labels, exactly as shown")
       elif any(range(0; $a | length); . as $i | $a[$i] | has("option")
              and ((.option | type) != "number" or .option != (.option | floor) or .option < 1
                   or .option > ($qs[$i].options | length) or .option > 8))
@@ -802,7 +823,11 @@ cmd_answer() {
              and (((.text | clean_text) | ft_ok | not) or ($qs[$i].options | length) + 1 > 9))
         then bad("a text answer is empty, longer than \($max) characters, or ends in \"\\;\"")
       else {ok: true,
-            options: [ range(0; $a | length) as $i | $a[$i] | if has("option") then .option else ($qs[$i].options | length) + 1 end ],
+            options: [ range(0; $a | length) as $i | $a[$i]
+              | if has("option") then .option
+                elif has("labels") then .labels as $ls
+                  | [ range(0; $qs[$i].options | length) as $k | select($ls | index([$qs[$i].options[$k].label | tostring]) != null) | $k + 1 ]
+                else ($qs[$i].options | length) + 1 end ],
             texts: [ $a[] | if has("text") then (.text | clean_text) else null end ]} end' "$form_file" 2>/dev/null)" \
       || { echo "board answer: --form-file is not valid JSON; nothing recorded" >&2; exit 2; }
     [ "$(jq -r '.ok' <<<"$parsed")" = true ] \
@@ -818,10 +843,14 @@ cmd_answer() {
         && { echo "board answer: a text answer may not be the \"Type something\" row itself on $id; nothing recorded" >&2; exit 2; }
     done < <(jq -r '.[] | select(. != null)' <<<"$texts_json")
     options="$(jq -r '.options | map(tostring) | join(",")' <<<"$parsed")"
+    # A multi-select question reads "Header: A, C" (its labels in option order), "Header: (none)"
+    # when nothing is checked; lib/reconcile.py composes it the same way.
     answer="$(jq -r --argjson o "$opts_json" --argjson t "$texts_json" '[ range(0; .questions | length) as $i | .questions[$i]
         | ((.header // "") | tostring | gsub("^\\s+|\\s+$"; "")) as $h
         | (if $h == "" then "Q\($i + 1)" else $h end) + ": "
-          + (if $t[$i] != null then $t[$i] else (.options[$o[$i] - 1].label | tostring) end) ] | join(" · ")' "$f")"
+          + (if $t[$i] != null then $t[$i]
+             elif ($o[$i] | type) == "array" then (if $o[$i] == [] then "(none)" else [ .options[$o[$i][] - 1].label | tostring ] | join(", ") end)
+             else (.options[$o[$i] - 1].label | tostring) end) ] | join(" · ")' "$f")"
   fi
   local raw_answer="$answer"
   answer="$(guard_scrub "$answer")"   # a free-text answer is shown on the board and relayed
@@ -934,7 +963,7 @@ cmd_answer() {
   if [ "$is_pane" = 1 ]; then
     # A pane question: its answer was mapped to its option number above, and how it reaches the session.
     if [ -n "$opts_json" ]; then
-      echo "$id answered (options $options$( [ "$texts_json" != null ] && echo ", free text"), relay by $(jq -r '.relay' "$f"))"
+      echo "$id answered (options $options$( [ "$(jq -r 'any(.[]?; . != null)' <<<"$texts_json")" = true ] && echo ", free text"), relay by $(jq -r '.relay' "$f"))"
       return 0
     fi
     local idx relay
@@ -1435,9 +1464,11 @@ cmd_press() {
 
   # 3. Keys first, so a config problem never leaves a half-checked press.
   local keys_json key keys=() q_n=0 q_idx="" q_text="" multi=0 dsnap=""
-  if [ "$action" = answer ] && [ "$(jq -r '((.questions // []) | length) > 1' "$df")" = true ]; then
-    # A form of several questions: one option per question (board answer --options), pressed one
-    # question at a time by press_multi below. Recomputed from the decision, never trusted.
+  if [ "$action" = answer ] && [ "$(jq -r '((.questions // []) | length) > 1 or any((.questions // [])[]; .multiSelect == true)' "$df")" = true ]; then
+    # A form of several questions, or a multi-select question (Claude Code draws a single one as a
+    # form too: a tab bar, then a review screen): one option per question, the checked options of
+    # a multi-select one (board answer --options / --form-file), pressed one question at a time by
+    # press_multi below. Recomputed from the decision, never trusted.
     multi=1
     local chk
     # One read of the decision: what is checked here is what press_multi types (dsnap), never a
@@ -1454,7 +1485,7 @@ cmd_press() {
        idx: pane_index, typeable: typeable, relay: pane_relay,
        text: (.answer // "" | trim), stored: (.answer_index // null)}' "$df")"
     [ "$(jq -r .pressable <<<"$pa")" = true ] \
-      || refuse_auth "$dec_id is not pressable from the board (several questions, multi-select, clipped or repeated labels): answer it in the session"
+      || refuse_auth "$dec_id is not pressable from the board (clipped or repeated labels): answer it in the session"
     [ "$(jq -r .relay <<<"$pa")" = press ] \
       || refuse_auth "the answer to $dec_id is not an option and not one line of <= $FREE_TEXT_MAX characters: relay it as a message"
     q_n="$(jq -r .n <<<"$pa")"
@@ -1644,6 +1675,10 @@ cmd_press() {
   fi
 
   if [ "$multi" = 1 ]; then
+    # The names a labelled rule may carry (check_review): this session's code, aliases,
+    # registered name and tmux session, one per line.
+    PRESS_RULE_NAMES="$(jq -r --arg t "${tmux_target%%:*}" '[.code, (.aliases // [])[], .name, $t]
+      | map(select(type == "string" and . != "" and (test("\\s") | not))) | unique | .[]' <<<"$row")"
     press_multi "$pane" "$sf" "$df" "$st_sha" "$dsnap"
     attempt sent "ok" "$pane"
     MARK_OVER_STALE=1 mark_status "$dec_id" relayed >/dev/null 2>&1
@@ -1769,12 +1804,33 @@ press_scrollback() {
 # submit row's digit is pressed (never Enter there). A check that fails before the first key
 # exits 3, or 7 (pending again) when the screen shows the form elsewhere while the prompt is still
 # open; after it, 5 (partial, stale): typed text whose echo does not match is never confirmed.
+# A multi-select question (answer_options[i] a list; a single question is drawn the same way, tab
+# bar and review screen included) shows "N. [ ] label" / "N. [✔] label" rows: a digit toggles
+# that box and the cursor stays. Its boxes are read from the screen (a human in the pane may have
+# checked some), the "Type something" row must be unchecked, unedited and not focused (a digit
+# there is typed into it), and only the boxes that differ are toggled, one digit at a time, each
+# re-captured until exactly that box flipped (else 5). Then press.next_key moves on. On the
+# review screen a multi-select answer is "→ A, B" in the order the boxes were checked (compared as
+# a set), and a question left with no box checked is not listed at all.
 # nows — the text on stdin without whitespace, ASCII or Unicode (NBSP, the U+2000 spaces, ideographic
 # space, zero-width space, BOM; the set the hook's jq removes) and without the box glyph "│"
 # (U+2502: Claude Code draws a question holding a newline in a box, "│ " before each of its lines,
 # the lines it wraps too, on the question and the review screen): how press_multi compares the
 # screen with the stored questions, labels and texts, on both sides alike.
 nows() { LC_ALL=C sed -E 's/[[:space:]]|\xc2[\x85\xa0]|\xe1\x9a\x80|\xe2\x80[\x80-\x8b\xa8\xa9\xaf]|\xe2\x81\x9f|\xe3\x80\x80|\xef\xbb\xbf|\xe2\x94\x82//g' | tr -d '\n'; }
+# JQ_ANY_ORDER — m($s; $labels): is $s (whitespace removed, as nows leaves it) every label of
+# $labels exactly once, in any order, joined by ","? The review screen lists a multi-select
+# answer as "→ Grape, Banana": in the order the boxes were checked, which a human in the pane may
+# have started, so it is compared as a set. Labels holding "," are tried every way (backtracking).
+JQ_ANY_ORDER='
+  def m($s; $ls):
+    if ($ls | length) == 0 then $s == ""
+    else [ range(0; $ls | length) as $k | $ls[$k] as $l
+           | select(($l | length) > 0 and ($s | startswith($l)))
+           | ($s | .[($l | length):]) as $r | ($ls[:$k] + $ls[$k + 1:]) as $rest
+           | if ($rest | length) == 0 then $r == "" else ($r | startswith(",")) and m($r[1:]; $rest) end ]
+         | any end;
+'
 press_multi() {
   local pane="$1" sf="$2" df="$3" sha="$4" dsnap="$5" fp
   local tabbar review submit footer focus n i t tries key sent=0 raw="" prev="" why="" digit name
@@ -1802,6 +1858,11 @@ press_multi() {
   [ -n "$ftlabel" ] || refuse "press.free_text_label is not configured" "$pane" config
   grep -Eq -- "$ftlabel" <<<'' 2>/dev/null; [ $? -le 1 ] || refuse "press.free_text_label is not a valid pattern (grep -E)" "$pane" config
   dj() { jq "$@" <<<"$dsnap"; }   # read the snapshot, never the file
+  local next_key="" ms cur="" exp mwant tog
+  if [ "$(dj -r 'any(.questions[]; .multiSelect == true)')" = true ]; then
+    next_key="$(cfg_get press.next_key)"
+    case "$next_key" in Right|Tab) ;; *) refuse "press.next_key must be Right or Tab" "$pane" config ;; esac
+  fi
   n="$(dj -r '.questions | length')"
   fp="$(dj -c '[.answer_options, .answer_texts]')"
   # fail MESSAGE [CODE] — before the first key a refusal (CODE, default screen), after it partial
@@ -1866,6 +1927,44 @@ press_multi() {
         || { why="row $key of question $(($1 + 1)) is not \"Type something\""; why_screen=0; return 1; }
     fi
   }
+  # boxes I — RAW shows multi-select question I: its rows "N. [ ] label" / "N. [✔] label" (the
+  # focus marker before the focused one), one per option in order, each the start of that option's
+  # label, then the "Type something" row: unchecked, unedited and not focused. Sets CUR (the checked
+  # option numbers, ascending, as JSON), else WHY. Only "[ ]" and "[✔]" are read as boxes.
+  boxes() {
+    local line rest k st focused nrow=0 nopt lab
+    local -a cl=()
+    nopt="$(dj -r --argjson i "$1" '.questions[$i].options | length')"
+    while IFS= read -r line; do
+      focused=0
+      if [[ $line =~ ^[[:space:]]*(${focus}) ]]; then focused=1; line="${line:${#BASH_REMATCH[0]}}"; fi
+      [[ $line =~ ^[[:space:]]*([1-9])\.[[:space:]]+\[( |✔)\](.*)$ ]] || continue
+      k="${BASH_REMATCH[1]}"; st="${BASH_REMATCH[2]}"; rest="${BASH_REMATCH[3]}"
+      nrow=$((nrow + 1))
+      [ "$k" = "$nrow" ] || { why="the boxes of question $(($1 + 1)) are not numbered 1 to $((nopt + 1))"; return 1; }
+      if [ "$k" -le "$nopt" ]; then
+        lab="$(dj -r --argjson i "$1" --argjson k "$k" '.questions[$i].options[$k - 1].label' | nows)"
+        rest="$(nows <<<"$rest")"
+        { [ -n "$rest" ] && [[ $lab == "$rest"* ]]; } || { why="box $k of question $(($1 + 1)) is not its option"; return 1; }
+        [ "$st" = " " ] || cl+=("$k")
+      elif [ "$st" != " " ] || [ "$focused" = 1 ] || ! [[ $rest =~ ^[[:space:]]*(${ftlabel})[.…]*[[:space:]]*$ ]]; then
+        why="\"Type something\" of question $(($1 + 1)) is checked, edited or focused: answer it in the session"; return 1
+      fi
+    done <<<"$raw"
+    [ "$nrow" = "$((nopt + 1))" ] || { why="question $(($1 + 1)) does not show its $nopt boxes and \"Type something\""; return 1; }
+    cur="[$(IFS=,; echo "${cl[*]}")]"
+  }
+  # check_ms I [WANT] — question I is showing (check_question) and its boxes are read (CUR); with
+  # WANT (JSON), CUR must be WANT.
+  check_ms() {
+    check_question "$1" || return 1
+    boxes "$1" || { why_screen=0; return 1; }
+    [ -z "${2:-}" ] || [ "$cur" = "$2" ] \
+      || { why="the boxes of question $(($1 + 1)) read $cur, not $2"; why_screen=0; return 1; }
+  }
+  # check_toggled I WANT — after a toggle: the same question, its boxes now WANT (the screen is
+  # expected to have changed, so the "did not appear" check of a new question does not apply).
+  check_toggled() { local prev=""; check_ms "$@"; }
   # check_ft_focus I — after the "Type something" digit: that row is focused, still unedited.
   check_ft_focus() {
     raw="$(form_region)" || { why="the form closed after the \"Type something\" key of question $(($1 + 1))"; return 1; }
@@ -1898,22 +1997,27 @@ press_multi() {
     [ "$raw" != "$prev" ] || { why="the review screen did not appear (the screen did not change)"; return 1; }
     grep -Eq -- "$review" <<<"$raw" || { why="the review screen did not appear"; return 1; }
     flat="$(nows <<<"$raw")"; rest="$flat"
+    # A multi-select question with no box checked is not listed (the screen says some questions
+    # are unanswered): only the others are looked for, in order.
     for ((t = 0; t < n; t++)); do
+      [ "$(dj -r --argjson i "$t" '.answer_options[$i] == []')" = true ] && continue
       q="$(qkey "$t")"
       [[ $rest == *"$q"* ]] || { why="the review screen does not show question $((t + 1))"; return 1; }
       rest="${rest#*"$q"}"
     done
     # "→ Redwood" never passes for "Red". An answer the screen wrapped continues on the next lines,
-    # indented deeper than the "●" question lines (4+ spaces) and not a "●", "│" (a boxed question),
-    # "→" or numbered row:
-    # those lines are joined to it, so a long typed text compares whole.
+    # indented deeper than the "●" question lines (3+ spaces: Claude Code 2.1.32x draws them 3 in,
+    # under the "→") and not a "●", "│" (a boxed question), "⚠", "→" or numbered row (a focused
+    # one too, "❯ 1."), so the submit row is never read as part of an answer:
+    # those lines are joined to it, so a long typed text or list of labels compares whole.
     local -a shown=()
     local cur="" inans=0
     while IFS= read -r seg; do
       if [[ $seg =~ ^[[:space:]]*→ ]]; then
         [ "$inans" = 1 ] && shown+=("$(nows <<<"$cur")")
         cur="${seg#*→}"; inans=1
-      elif [ "$inans" = 1 ] && [[ $seg =~ ^[[:space:]]{4,}[^[:space:]] ]] && ! [[ $seg =~ ^[[:space:]]*(●|│|[1-9]\.) ]]; then
+      elif [ "$inans" = 1 ] && [[ $seg =~ ^[[:space:]]{3,}[^[:space:]] ]] \
+           && ! [[ $seg =~ ^[[:space:]]*(●|│|⚠|((${focus})[[:space:]]*)?[1-9]\.) ]]; then
         cur="$cur$seg"
       else
         [ "$inans" = 1 ] && shown+=("$(nows <<<"$cur")")
@@ -1921,18 +2025,42 @@ press_multi() {
       fi
     done <<<"$raw"
     [ "$inans" = 1 ] && shown+=("$(nows <<<"$cur")")
-    [ "${#shown[@]}" = "$n" ] || { why="the review screen shows ${#shown[@]} answers for $n questions"; return 1; }
+    local na j=0 k labs
+    na="$(dj -r '[.answer_options[] | select(. != [])] | length')"
+    [ "${#shown[@]}" = "$na" ] || { why="the review screen shows ${#shown[@]} answers for $na answered questions"; return 1; }
     for ((t = 0; t < n; t++)); do
-      lbl="$(dj -r --argjson i "$t" 'if (.answer_texts // [])[$i] != null then .answer_texts[$i]
-        else .questions[$i].options[.answer_options[$i] - 1].label end')"
-      [ "${shown[$t]}" = "$(nows <<<"$lbl")" ] \
-        || { why="the review screen shows another answer for question $((t + 1))"; return 1; }
+      if [ "$(dj -r --argjson i "$t" '.answer_options[$i] | type')" = array ]; then
+        [ "$(dj -r --argjson i "$t" '.answer_options[$i] == []')" = true ] && continue
+        labs="[]"
+        for k in $(dj -r --argjson i "$t" '.answer_options[$i][]'); do
+          labs="$(jq -c --arg l "$(dj -r --argjson i "$t" --argjson k "$k" '.questions[$i].options[$k - 1].label' | nows)" '. + [$l]' <<<"$labs")"
+        done
+        jq -e --arg s "${shown[$j]}" "$JQ_ANY_ORDER"'m($s; .)' <<<"$labs" >/dev/null \
+          || { why="the review screen shows other boxes for question $((t + 1))"; return 1; }
+      else
+        lbl="$(dj -r --argjson i "$t" 'if (.answer_texts // [])[$i] != null then .answer_texts[$i]
+          else .questions[$i].options[.answer_options[$i] - 1].label end')"
+        [ "${shown[$j]}" = "$(nows <<<"$lbl")" ] \
+          || { why="the review screen shows another answer for question $((t + 1))"; return 1; }
+      fi
+      j=$((j + 1))
     done
     # LC_ALL=C: byte-wise, so a letter is ASCII only (gawk in a UTF-8 locale would take a CJK
     # sentence for one word); the box-drawing glyphs and "·" are matched as their UTF-8 bytes.
-    digit="$(SB_SUBMIT="$submit" SB_FOCUS="$focus" SB_FOOTER="$footer" LC_ALL=C awk '
+    # A rule may carry the session's name (Claude Code 2.1.327: "───── CP ─"): rule characters, one
+    # space, one name, one space, rule characters, nothing else. The name must be one of this
+    # session's names (PRESS_RULE_NAMES: its code, aliases, registered name, tmux session), at most
+    # 64 bytes, no space.
+    digit="$(SB_SUBMIT="$submit" SB_FOCUS="$focus" SB_FOOTER="$footer" SB_NAMES="${PRESS_RULE_NAMES:-}" LC_ALL=C awk '
+      function isrule(x,   r, nm) {
+        r = x; gsub(/[[:space:]]|─|━|═|┄|┅|┈|┉|╌|╍/, "", r)
+        if (r == "") return 1
+        if (x !~ /^(─|━|═|┄|┅|┈|┉|╌|╍)+ [^[:space:]]+ (─|━|═|┄|┅|┈|┉|╌|╍)+$/) return 0
+        nm = x; sub(/^(─|━|═|┄|┅|┈|┉|╌|╍)+ /, "", nm); sub(/ (─|━|═|┄|┅|┈|┉|╌|╍)+$/, "", nm)
+        return length(nm) <= 64 && names != "" && index("\n" names "\n", "\n" nm "\n") > 0
+      }
       BEGIN { lab = ENVIRON["SB_SUBMIT"]; fre = "^[[:space:]]*(" ENVIRON["SB_FOCUS"] ")[[:space:]]*[1-9]\\.[[:space:]]*"
-              foot = ENVIRON["SB_FOOTER"] }
+              foot = ENVIRON["SB_FOOTER"]; names = ENVIRON["SB_NAMES"] }
       { l[NR] = $0; if ($0 ~ /^[[:space:]]*→/) last = NR; if (index($0, lab)) { cnt++; row = NR } }
       END {
         if (cnt != 1 || row <= last) exit 1
@@ -1940,20 +2068,21 @@ press_multi() {
         if (!match(s, fre)) exit 1
         pre = substr(s, 1, RLENGTH); rest = substr(s, RLENGTH + 1); sub(/[[:space:]]+$/, "", rest)
         if (rest != lab || !match(pre, /[1-9]\.[[:space:]]*$/)) exit 1
-        for (i = NR; i > row; i--) if (l[i] !~ /^[[:space:]]*$/) break
+        for (i = NR; i > row; i--) if (l[i] !~ /^[[:space:]]*$/ && !isrule(l[i])) break
         lastnb = i
         for (i = row + 1; i <= NR; i++) {
           s = l[i]
           if (s ~ /^[[:space:]]*$/) continue
-          # a rule: box-drawing lines (light, heavy, double, dashed) and spaces only
-          r = s; gsub(/[[:space:]]|─|━|═|┄|┅|┈|┉|╌|╍/, "", r)
-          if (r == "") continue
+          # a rule: box-drawing lines (light, heavy, double, dashed) and spaces only, or one that
+          # carries the name of this session
+          if (isrule(s)) continue
           if (!ft) {
             if (s ~ /^[[:space:]]*[1-9]\.[[:space:]]/) continue
             if (s ~ foot) { ft = i; continue }
             exit 1
           }
           # after the footer: only its wrapped tail, right below it and the last non-blank line
+          # (rules aside)
           if (i != ft + 1 || i != lastnb) exit 1
           r = s; gsub(/·/, " ", r)
           nw = split(r, w, " ")
@@ -1978,6 +2107,31 @@ press_multi() {
   }
   local i2
   for ((i = 0; i < n; i++)); do
+    ms="$(dj -r --argjson i "$i" '.questions[$i].multiSelect == true')"
+    if [ "$ms" = true ]; then
+      text=""
+      mwant="$(dj -c --argjson i "$i" '.answer_options[$i]')"
+      if ! await check_ms "$i"; then
+        [ "$sent" = 0 ] && [ "$why_screen" = 1 ] && refuse_screen "$why" "$pane"
+        fail "$why"
+      fi
+      # Only the boxes that differ, ascending; each re-captured until exactly it flipped.
+      tog="$(jq -rn --argjson a "$cur" --argjson b "$mwant" '(($a - $b) + ($b - $a)) | sort | .[]')"
+      exp="$cur"
+      for key in $tog; do
+        exp="$(jq -cn --argjson e "$exp" --argjson k "$key" 'if ($e | index([$k])) == null then $e + [$k] | sort else $e - [$k] end')"
+        guard " (question $((i + 1)), box $key)"
+        digit_ok "$key" "box $key of question $((i + 1))"
+        tmux send-keys -t "$pane" "$key" || fail "send-keys failed (question $((i + 1)), box $key)"
+        sent=1; prev="$raw"
+        await check_toggled "$i" "$exp" || partial "box $key did not flip: $why; nothing submitted" "$pane"
+      done
+      [ "$exp" = "$mwant" ] || fail "the boxes of question $((i + 1)) do not match the answer"
+      guard " (question $((i + 1)), moving on)"
+      tmux send-keys -t "$pane" "$next_key" || fail "send-keys failed (moving on from question $((i + 1)))"
+      sent=1; prev="$raw"
+      continue
+    fi
     key="$(dj -r --argjson i "$i" '.answer_options[$i]')"
     text="$(dj -r --argjson i "$i" '(.answer_texts // [])[$i] // empty')"
     if ! await check_question "$i"; then

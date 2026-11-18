@@ -15,7 +15,8 @@ instead of leaving it `stale` ("not delivered"):
     ("unknown"), or the board had no answer ("no_answer").
 
 What the hook stores (docs/contract.md, "Session outcomes"): for a picker, per question the 1-based
-number of the option whose label the answer equals, or for free text an HMAC of it under this
+number of the option whose label the answer equals (for a multi-select question the list of the
+checked option numbers, ascending), or for free text an HMAC of it under this
 install's key ($BOARD_HOME/secrets/reconcile.key, 0600; never the text, and nothing at all for text
 that looks like a secret, an email address or a phone number). For a failure, `denied: true` only
 when Claude Code's rejection wording is in the error (the error text is not stored).
@@ -154,6 +155,42 @@ def label_pick(answer, options):
     return ci[0] + 1 if len(ci) == 1 else None
 
 
+AMBIGUOUS = "ambiguous"
+
+
+def multi_picks(answer, options):
+    """The options a multi-select answer names: Claude Code reports the checked boxes as their
+    labels joined by ", " in the order they were checked ("Cherry, Apple"), "" for none (or no
+    entry at all when the question was never touched). Returns the 1-based option numbers
+    ascending (each label used once, exact after whitespace normalisation), [] for "", None when
+    the answer is no such list (free text typed into "Type something", say), or AMBIGUOUS when
+    labels holding ", " let it be read as more than one set ("North, East" with the options
+    "North, East", "North" and "East"): such an answer is never compared as "differs"."""
+    labels = [norm(o.get("label") if isinstance(o, dict) else o) for o in (options or [])]
+    answer = norm(answer)
+    if not answer:
+        return []
+    found = set()
+
+    def walk(rest, used):
+        for i, lb in enumerate(labels):
+            if i in used or not lb or not rest.startswith(lb):
+                continue
+            tail = rest[len(lb):]
+            if not tail:
+                found.add(used | {i})
+            elif tail.startswith(", "):
+                walk(tail[2:], used | {i})
+            if len(found) > 1:
+                return
+    walk(answer, frozenset())
+    if not found:
+        return None
+    if len(found) > 1:
+        return AMBIGUOUS
+    return sorted(i + 1 for i in next(iter(found)))
+
+
 def _answers_of(payload):
     for k in ("tool_response", "tool_input"):
         v = payload.get(k)
@@ -180,6 +217,18 @@ def hook_outcome(payload, home=None):
         if a is None:
             a = by_norm.get(norm(q.get("question")))
         a = norm(a)
+        if q.get("multiSelect") is True:
+            # a list of option numbers ([] for no box checked); nothing when it reads as more than
+            # one set (compares as "unknown"); else free text, hashed below
+            ms = multi_picks(a, q.get("options"))
+            if ms == AMBIGUOUS:
+                picks.append(None)
+                shas.append(None)
+                continue
+            if ms is not None:
+                picks.append(ms)
+                shas.append(None)
+                continue
         if not a:
             picks.append(None)
             shas.append(None)
@@ -275,6 +324,9 @@ def _form_answer_text(qs, opts, texts):
         h = str(q.get("header") or "").strip() or "Q%d" % (i + 1)
         if texts[i] is not None:
             v = texts[i]
+        elif isinstance(opts[i], list):  # a multi-select question: its labels in option order
+            v = ", ".join(str(q["options"][k - 1].get("label") if isinstance(q["options"][k - 1], dict)
+                              else q["options"][k - 1]) for k in opts[i]) or "(none)"
         else:
             v = str(q["options"][opts[i] - 1].get("label") if isinstance(q["options"][opts[i] - 1], dict)
                     else q["options"][opts[i] - 1])
@@ -288,9 +340,11 @@ def board_answers(d):
     INCONSISTENT when the stored option fields do not fit the answer (another write in progress).
 
     A form of several questions is told by its stored fields, as bin/board writes them:
-    `answer_options` one number per question (a free-text row is that question's option count + 1),
-    `answer_texts` null or one entry per question (the text, or null for an option), and `answer`
-    the composed "Header: label · Header: text" (checked when it can be recomposed)."""
+    `answer_options` one number per question (a free-text row is that question's option count + 1;
+    a multi-select question: the list of its checked option numbers, ascending, ("multi", (n, ...))
+    here), `answer_texts` null or one entry per question (the text, or null for an option), and
+    `answer` the composed "Header: label · Header: A, C · Header: text" (checked when it can be
+    recomposed). A single multi-select question is stored the same way."""
     ans = d.get("answer")
     if ans is None or ans == "":
         return None
@@ -300,7 +354,8 @@ def board_answers(d):
     qs = [q if isinstance(q, dict) else {} for q in qs]
     opts, texts = d.get("answer_options"), d.get("answer_texts")
     if opts is not None:
-        if not isinstance(opts, list) or len(opts) < 2 or len(opts) != len(qs):
+        if not isinstance(opts, list) or len(opts) != len(qs) or len(opts) < 1 \
+                or (len(opts) == 1 and qs[0].get("multiSelect") is not True):
             return INCONSISTENT
         if texts is None:
             texts = [None] * len(opts)
@@ -309,6 +364,12 @@ def board_answers(d):
         out = []
         for q, o, t in zip(qs, opts, texts):
             n = len(q.get("options") or [])
+            if q.get("multiSelect") is True:
+                if t is not None or not isinstance(o, list) or o != sorted(set(o)) \
+                        or any(not isinstance(k, int) or isinstance(k, bool) or not 1 <= k <= n for k in o):
+                    return INCONSISTENT
+                out.append(("multi", tuple(o)))
+                continue
             if not isinstance(o, int) or isinstance(o, bool):
                 return INCONSISTENT
             if t is not None:
@@ -364,8 +425,18 @@ def compare(d, outcome, key):
     tu = str(d.get("tool_use_id") or "")
     result = "match"
     for (kind, v), p, sh in zip(want, picks, shas):
-        p = p if isinstance(p, int) and not isinstance(p, bool) else None
         sh = sh if isinstance(sh, str) and sh else None
+        if kind == "multi":
+            # the session's checked boxes (a list), as a set; free text there is something else
+            if isinstance(p, list) and all(isinstance(k, int) and not isinstance(k, bool) for k in p):
+                if sorted(set(p)) != list(v):
+                    return "differs"
+            elif sh is not None:
+                return "differs"
+            else:
+                result = "unknown"
+            continue
+        p = p if isinstance(p, int) and not isinstance(p, bool) else None
         if kind == "pick":
             if p is not None:
                 if p != v:

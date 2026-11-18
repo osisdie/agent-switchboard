@@ -1,0 +1,11 @@
+────────────────────────────────────────────────────────────
+←  ☒ Checks  ✔ Submit  →
+
+Review your answers
+
+ │ ● Which checks should run before the release?
+ │   Pick every check that applies.
+   → Lint
+
+❯ 1. Submit answers
+  2. Cancel

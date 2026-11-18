@@ -161,6 +161,8 @@ serve:
 # option is chosen with its number key, free text through "Type something"). A form of several
 # questions: only lines after its tab bar (`tabbar_regex`) count; it ends on a review screen
 # (`review_regex`) whose `submit_label` row (plain text, not a pattern) is picked by its number.
+# A multi-select question ("1. [ ] label" rows): only the boxes that differ from the answer are
+# toggled by their numbers, then `next_key` (Right or Tab) moves on.
 press:
   prompt_regex: 'Do you want to (proceed|make this edit|create|overwrite|allow)'
   question_regex: 'Enter to select.*navigate'
@@ -169,6 +171,7 @@ press:
   review_regex: 'Review your answers'
   focus_regex: '(❯|>|›)'   # the marker of the focused picker row
   submit_label: 'Submit answers'
+  next_key: Right             # leaves a multi-select question (Right or Tab, never Enter)
   # The TUI scrolled up with a prompt open (one of its last 2 non-blank lines is, as a whole line,
   # "4 new messages (ctrl+End) ↓"): press sends scroll_key once (scrolls to the bottom, never submits
   # in Claude Code's TUI), then checks the screen again.

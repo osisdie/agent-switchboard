@@ -1,0 +1,139 @@
+{
+ "hook_event_name": "PostToolUse",
+ "tool_name": "AskUserQuestion",
+ "tool_input": {
+  "questions": [
+   {
+    "question": "Which toppings go on the pizza tonight?",
+    "header": "Toppings",
+    "options": [
+     {
+      "label": "Cheese",
+      "description": "Classic mozzarella topping"
+     },
+     {
+      "label": "Olives",
+      "description": "Briny black or green olives"
+     },
+     {
+      "label": "Peppers",
+      "description": "Sweet bell peppers for crunch"
+     },
+     {
+      "label": "Onions",
+      "description": "Sharp, savory onion rings"
+     }
+    ],
+    "multiSelect": true
+   },
+   {
+    "question": "Which crust do you want?",
+    "header": "Crust",
+    "options": [
+     {
+      "label": "Thin",
+      "description": "Light and crispy base"
+     },
+     {
+      "label": "Thick",
+      "description": "Soft, bready and filling"
+     }
+    ],
+    "multiSelect": false
+   },
+   {
+    "question": "Which sides should we order with it?",
+    "header": "Sides",
+    "options": [
+     {
+      "label": "Salad",
+      "description": "Fresh green side salad"
+     },
+     {
+      "label": "Fries",
+      "description": "Crispy golden potato fries"
+     },
+     {
+      "label": "Soup",
+      "description": "Warm bowl of soup of the day"
+     }
+    ],
+    "multiSelect": true
+   }
+  ],
+  "answers": {
+   "Which toppings go on the pizza tonight?": "Olives, Peppers",
+   "Which crust do you want?": "Thick",
+   "Which sides should we order with it?": ""
+  },
+  "annotations": {}
+ },
+ "tool_response": {
+  "questions": [
+   {
+    "question": "Which toppings go on the pizza tonight?",
+    "header": "Toppings",
+    "options": [
+     {
+      "label": "Cheese",
+      "description": "Classic mozzarella topping"
+     },
+     {
+      "label": "Olives",
+      "description": "Briny black or green olives"
+     },
+     {
+      "label": "Peppers",
+      "description": "Sweet bell peppers for crunch"
+     },
+     {
+      "label": "Onions",
+      "description": "Sharp, savory onion rings"
+     }
+    ],
+    "multiSelect": true
+   },
+   {
+    "question": "Which crust do you want?",
+    "header": "Crust",
+    "options": [
+     {
+      "label": "Thin",
+      "description": "Light and crispy base"
+     },
+     {
+      "label": "Thick",
+      "description": "Soft, bready and filling"
+     }
+    ],
+    "multiSelect": false
+   },
+   {
+    "question": "Which sides should we order with it?",
+    "header": "Sides",
+    "options": [
+     {
+      "label": "Salad",
+      "description": "Fresh green side salad"
+     },
+     {
+      "label": "Fries",
+      "description": "Crispy golden potato fries"
+     },
+     {
+      "label": "Soup",
+      "description": "Warm bowl of soup of the day"
+     }
+    ],
+    "multiSelect": true
+   }
+  ],
+  "answers": {
+   "Which toppings go on the pizza tonight?": "Olives, Peppers",
+   "Which crust do you want?": "Thick",
+   "Which sides should we order with it?": ""
+  },
+  "annotations": {}
+ },
+ "tool_use_id": "toolu_fixture_2"
+}

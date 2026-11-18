@@ -383,6 +383,14 @@ dialog.notif { width: min(720px, calc(100vw - 24px)); }
 .panecard .pq-opt { display: flex; flex-direction: column; align-items: flex-start; text-align: left; gap: 2px; width: 100%; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 .panecard .pq-opt small, .panecard .pq-ro small { color: var(--muted); font-weight: 400; }
 .panecard .pq-ro { border: 1px solid var(--rule); border-radius: 6px; padding: 6px 10px; overflow-wrap: anywhere; }
+/* A multi-select question: one checkbox per option (a 44px-tall row, the whole row clickable). */
+.panecard .pq-check { display: flex; align-items: flex-start; gap: 10px; min-height: 44px; box-sizing: border-box; padding: 8px 10px; border: 1px solid var(--rule); border-radius: 6px; background: var(--paper); color: var(--ink); cursor: pointer; overflow-wrap: anywhere; }
+.panecard .pq-check input { flex: 0 0 auto; width: 20px; height: 20px; margin: 1px 0 0; accent-color: var(--cord); cursor: pointer; }
+.panecard .pq-check .pq-cl { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.panecard .pq-check small { color: var(--muted); font-weight: 400; }
+.panecard .pq-check.picked { border-color: var(--cord); box-shadow: inset 0 0 0 1px var(--cord); }
+.panecard .pq-check:focus-within { outline: 2px solid var(--cord); outline-offset: 1px; }
+.panecard .pq-none { font-size: 13px; color: var(--muted); margin: 0 0 8px; }
 .free input, .panecard .pq-free input { flex: 1 1 200px; min-width: 0; font: inherit; font-size: 14px; padding: 7px 10px; border-radius: 5px; border: 1px solid var(--rule); background: var(--paper); color: var(--ink); }
 .confirm-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .confirm-row .q { font-size: 14px; font-weight: 600; flex-basis: 100%; }
@@ -2242,15 +2250,22 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
   }
   // A pane question: the AskUserQuestion picker a session shows. One single-select question can be
   // answered here (board-serve presses the option's number key, or types the text into "Type
-  // something"); several questions or multi-select are shown read-only, to answer in the session.
+  // something"); a form of several questions, or a multi-select question (checkboxes), is answered
+  // on the self-hosted board and pressed question by question; elsewhere it is shown read-only.
   function buildPaneQuestion(d) {
     const qs = (Array.isArray(d.questions) ? d.questions : []).filter((q) => q && typeof q === 'object');
-    const pressable = d.pressable === true && qs.length === 1 && !qs[0].multiSelect;
-    // A form of several single-select questions: one option per question, sent together. Pressed by
-    // board-serve question by question; the Artifact board has no such relay, so it stays read-only.
-    const formOk = d.pressable === true && qs.length > 1 && qs.every((q) => !q.multiSelect);
+    const anyMs = qs.some((q) => q.multiSelect === true);
+    const pressable = d.pressable === true && qs.length === 1 && !anyMs;
+    // A form of several questions, or a multi-select question alone (Claude Code draws it as a form):
+    // one option, or a set of checked options, per question, sent together. Pressed by board-serve
+    // question by question; the Artifact board has no such relay, so it stays read-only.
+    const formOk = d.pressable === true && (qs.length > 1 || anyMs);
     const multi = formOk && (isLocal() || S.demo);
-    const picks = Array.isArray(S.drafts[d.id + ':picks']) ? S.drafts[d.id + ':picks'] : qs.map(() => null);
+    // picks[i]: an option number, or for a multi-select question the list of checked option numbers
+    // (none checked is an answer too).
+    const draftPicks = S.drafts[d.id + ':picks'];
+    const picks = Array.isArray(draftPicks) && draftPicks.length === qs.length ? draftPicks
+      : qs.map((q) => (q.multiSelect === true ? [] : null));
     // Free text per question ("Type something" in the session's form): a pick or a text, never both.
     const texts = Array.isArray(S.drafts[d.id + ':texts']) ? S.drafts[d.id + ':texts'] : qs.map(() => '');
     const busy = S.busy.has(d.id), offline = operatorOffline(), appr = approverState();
@@ -2269,7 +2284,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       card.append(h('p', { class: 'note owneronly', text: tr('Only the board\'s owner answers questions in a session.') }));
     }
     let sendMulti = null;
-    const pickedAll = () => picks.length === qs.length && qs.every((q, i) => Number.isInteger(picks[i]) || !!cleanText(texts[i]));
+    const pickedAll = () => picks.length === qs.length && qs.every((q, i) => (q.multiSelect === true ? Array.isArray(picks[i])
+      : Number.isInteger(picks[i]) || !!cleanText(texts[i])));
     const list = qs.length ? qs : [{ question: str(d.question) || tr('Question'), options: [] }];
     // The hook clips a long question (the picker in the session shows it whole); say so.
     // Only the question text itself: a clipped header alone is not marked.
@@ -2297,7 +2313,32 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       const box = h('section', { class: 'pq-q', 'aria-label': tr('Question {n}', { n: qi + 1 }) });
       if (q.header) box.append(h('div', { class: 'pq-head', text: str(q.header) + (q.multiSelect ? ' · ' + tr('choose any') : '') }));
       if (list.length > 1) box.append(h('p', { class: 'ctx' }, str(q.question), shortNote(q)));
-      if (liveMulti) {
+      if (liveMulti && q.multiSelect === true) {
+        // Checkboxes: any number of options, none included; kept in the draft so a re-render keeps
+        // them. No free text here: the press never types into the session's "Type something".
+        const group = h('div', { class: 'pq-opts', role: 'group', 'aria-label': tr('Options for question {n}', { n: qi + 1 }) });
+        const none = h('p', { class: 'pq-none', text: tr('No box checked: sent as an empty answer.') });
+        const sync = () => { none.hidden = picks[qi].length > 0; };
+        opts.forEach((o, i) => {
+          const on = picks[qi].includes(i + 1);
+          const cb = h('input', { type: 'checkbox', dataset: { q: String(qi + 1), option: String(i + 1) } });
+          cb.checked = on;
+          const row = h('label', { class: 'pq-check' + (on ? ' picked' : '') }, cb,
+            h('span', { class: 'pq-cl' }, h('span', { text: (i + 1) + '. ' + str(o.label) }), o.description ? h('small', { text: str(o.description) }) : null));
+          cb.addEventListener('change', () => {
+            const set = new Set(picks[qi]);
+            if (cb.checked) set.add(i + 1); else set.delete(i + 1);
+            picks[qi] = [...set].sort((a, b) => a - b);
+            S.drafts[d.id + ':picks'] = picks.slice();
+            row.classList.toggle('picked', cb.checked);
+            sync();
+            if (sendMulti) sendMulti.disabled = !pickedAll();
+          });
+          group.append(row);
+        });
+        sync();
+        box.append(group, none);
+      } else if (liveMulti) {
         // Toggle buttons, one pick per question; kept in the draft so a re-render keeps them.
         const group = h('div', { class: 'pq-opts', role: 'group', 'aria-label': tr('Options for question {n}', { n: qi + 1 }) });
         opts.forEach((o, i) => {
@@ -2349,22 +2390,31 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     }
     if (liveMulti) {
       if (appr === false) card.append(h('p', { class: 'note noappr', text: tr('You are not an approver — your answer won\'t be sent.') }));
+      const label = (q, n) => { const o = (q.options || [])[n - 1]; return str(o && typeof o === 'object' ? o.label : o); };
       sendMulti = h('button', { class: 'btn primary', type: 'button', disabled: !pickedAll(), dataset: { focus: 'send-form' },
         onclick: () => {
           if (!pickedAll()) return;
-          const parts = qs.map((q, i) => (Number.isInteger(picks[i]) ? { option: picks[i] } : { text: cleanText(texts[i]) }));
+          // A multi-select question goes by its labels (exact, as the session sent them).
+          const parts = qs.map((q, i) => (q.multiSelect === true ? { labels: picks[i].map((n) => label(q, n)) }
+            : Number.isInteger(picks[i]) ? { option: picks[i] } : { text: cleanText(texts[i]) }));
           const text = qs.map((q, i) => (str(q.header).trim() || 'Q' + (i + 1)) + ': ' + (parts[i].text != null ? parts[i].text
-            : str((q.options || [])[picks[i] - 1] && q.options[picks[i] - 1].label))).join(' · ');
-          if (parts.some((x) => x.text != null)) answerDecision(d, text, null, null, parts.map((x, i) => Object.assign({ question_index: i }, x)));
+            : parts[i].labels ? (parts[i].labels.join(', ') || '(none)') : label(q, picks[i]))).join(' · ');
+          if (parts.some((x) => x.text != null || x.labels)) answerDecision(d, text, null, null, parts.map((x, i) => Object.assign({ question_index: i }, x)));
           else answerDecision(d, text, null, picks.slice());
-        }, text: tr('Send answers') });
-      card.append(h('div', { class: 'free' }, h('span', { class: 'help', text: tr('Pick an option or type an answer for each question, then send them together.') }), sendMulti));
+        }, text: tr(qs.length === 1 ? 'Submit' : 'Send answers') });
+      card.append(h('div', { class: 'free' }, h('span', { class: 'help', text: tr(qs.length === 1 ? 'Check any options, then submit.'
+        : anyMs ? 'Answer each question (check any options where several are allowed), then send them together.'
+          : 'Pick an option or type an answer for each question, then send them together.') }), sendMulti));
     } else if (multi && busy) {
       card.append(h('p', { class: 'saving', text: tr('Sending your answer…') }));
     } else if (formOk && !multi) {
-      card.append(h('p', { class: 'note queue', text: tr('Answer on the self-hosted board or in the session (multi-question form).') }));
+      card.append(h('p', { class: 'note queue', text: tr(anyMs ? 'Answer on the self-hosted board or in the session (multi-select).'
+        : 'Answer on the self-hosted board or in the session (multi-question form).') }));
     } else if (!pressable && !formOk) {
-      const why = tr(qs.length > 1 ? (qs.some((q) => q.multiSelect) ? 'multi-select' : 'multi-question form') : qs.some((q) => q.multiSelect) ? 'multi-select' : 'shown only in part here');
+      // Why it is read-only: clipped labels (shown only in part); else a form or a multi-select
+      // question this board cannot press (an older hook, too many options, repeated labels).
+      const clipped = d.labels_clipped === true || (d.labels_clipped == null && d.questions_clipped === true);
+      const why = tr(clipped ? 'shown only in part here' : qs.length > 1 ? (anyMs ? 'multi-select' : 'multi-question form') : anyMs ? 'multi-select' : 'shown only in part here');
       card.append(h('p', { class: 'note queue', text: tr('Answer in the session ({why}).', { why }) }));
     } else if (busy) {
       card.append(h('p', { class: 'saving', text: tr('Sending your answer…') }));
@@ -2383,7 +2433,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     const link = sessionLink(d.from, tr(pressable || multi ? 'Open session' : 'Answer in session'));
     const tmux = !link && sess && sess.tmux ? h('span', { class: 'mono', text: 'tmux ' + str(sess.tmux) }) : null;
     card.append(h('div', { class: 'dfoot' },
-      h('span', { text: tr(multi ? 'Your choices are picked in {who}\'s form one question at a time, then submitted.'
+      h('span', { text: tr(multi && qs.length === 1 ? 'Your choices are checked in {who}\'s question, then submitted.'
+        : multi ? 'Your choices are picked in {who}\'s form one question at a time, then submitted.'
         : pressable ? (isLocal() ? 'Your choice is picked in {who}\'s question right away.' : 'Your choice is picked in {who}\'s question by the operator.') : 'This question waits in {who}\'s session.', { who }) }),
       link || tmux));
     return card;
@@ -2547,7 +2598,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
   };
   // Only the fixed codes are worded; anything else (free text a db record may carry) never reaches the page.
   // A form of several questions is never "typed into the question": its keys went in, it was not submitted.
-  const isForm = (d) => Array.isArray(d.questions) && d.questions.length > 1;
+  // A form, or a multi-select question (drawn and pressed as a form, with a Submit step).
+  const isForm = (d) => Array.isArray(d.questions) && (d.questions.length > 1 || d.questions.some((q) => q && q.multiSelect === true));
   const reasonText = (d) => (typeof d.status_reason === 'string' && Object.hasOwn(REASONS, d.status_reason)
     ? tr(d.status_reason === 'partial' && isForm(d) ? 'keys were sent but the form was not submitted' : REASONS[d.status_reason]) : tr('reason not recorded'));
   function renderDecisions() {
@@ -7843,6 +7895,12 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "Answer on the self-hosted board or in the session (multi-question form).": "請在自架看板或 session 中回答（多題表單）。",
       "Your choices are picked in {who}'s form one question at a time, then submitted.": "你的選擇會在 {who} 的表單中逐題選取，然後送出。",
       "Answers picked and submitted in {who}.": "已在 {who} 選取並送出回答。",
+      "Your choices are checked in {who}'s question, then submitted.": "你勾選的項目會在 {who} 的問題中勾選，然後送出。",
+      "Answer on the self-hosted board or in the session (multi-select).": "請在自架看板或 session 中回答（複選）。",
+      "Check any options, then submit.": "勾選任意選項後送出。",
+      "Submit": "送出",
+      "Answer each question (check any options where several are allowed), then send them together.": "逐題作答（可複選的題目可勾選多個），再一起送出。",
+      "No box checked: sent as an empty answer.": "沒有勾選：會送出空白回答。",
       "{n} item, longest first": "{n} 項，等最久的在前",
       "{n} items, longest first": "{n} 項，等最久的在前",
       "Waiting: ": "等待中：",

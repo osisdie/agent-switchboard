@@ -1,0 +1,21 @@
+────────────────────────────────────────────────────────────
+←  ☐ Checks  ✔ Submit  →
+
+│ Which checks should run before the release?
+│ Pick every check that applies.
+
+❯ 1. [ ] Unit tests across every supported runtime and
+         platform combination
+         Run the full unit test suite on every supported
+         runtime and platform
+  2. [ ] Lint
+         Run the linter to catch style and code quality
+         issues
+  3. [ ] Docs build
+         Build the documentation to confirm it compiles
+  4. [ ] Type something
+     Submit
+────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel

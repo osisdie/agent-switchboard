@@ -295,16 +295,19 @@ multiSelect, options: [{label, description}]}]}` on `PreToolUse` (with `tool_use
   report (see "Session outcomes" below); when it no longer shows that `tool_use_id` pending without
   such a report (`UserPromptSubmit`, `Stop`, a new session), it marks it `stale` (`status_reason:
   "moved_on"` when the board had an answer).
-- `pressable` = 1–4 questions, none `multiSelect`, no label clipped (`labels_clipped`
+- `pressable` = 1–4 questions (`multiSelect` ones included), no label clipped (`labels_clipped`
   false; a long question or header alone is fine), 1–8 options each, labels unique within each
   question, and no question's start (as stored, up to a clip, whitespace removed) begins
   another's. Otherwise the card is read-only ("answer in the session") and board-serve refuses
   answers (409 `answer_in_session`). A pressable form of several questions is answered with one
-  option per question (below); the Artifact page has no relay for it and keeps it read-only.
+  option per question, a multi-select question (alone or in a form) with its labels (below); the
+  Artifact page has no relay for these and keeps them read-only.
 - `board answer` adds `answer_index` (1-based option number when the answer equals a label, exact
   or a unique case-insensitive match; else `null` = free text) and `relay`: `"press"` when
   `pressable` and the answer is an option or one line of ≤200 printable characters, else
-  `"operator"` (sent as `[BOARD decision <id>] <answer> (by owner on board)`).
+  `"operator"` (sent as `[BOARD decision <id>] <answer> (by owner on board)`). A plain answer to
+  a multi-select question always relays by message (`"operator"`): only `--form-file` labels are
+  pressed.
 
 ### Session outcomes: settling a pane prompt from the session's own report
 
@@ -322,7 +325,16 @@ answer but stopped at Submit, then someone submitted the form in the pane).
   (`{questions, answers: {<question text>: <label or free text>}, annotations}`; else
   `tool_input.answers`). `picks[i]` is the 1-based number of the option the answer names
   (whitespace-normalised): its exact label first, else a case-insensitive match only when exactly
-  one label fits (labels that differ only by case need the exact one). For free text `text_sha[i]`
+  one label fits (labels that differ only by case need the exact one). For a `multiSelect`
+  question Claude Code reports the checked boxes as their labels joined by `", "` in the order
+  they were checked (`"Cherry, Apple"`), `""` for none (no entry at all when the question was
+  never touched): `picks[i]` is then the list of their option numbers, ascending (`[1, 3]`; `[]`
+  for `""` or no entry, an answer like any other, never "no answer"), each label used once
+  (exact, whitespace-normalised; labels holding `", "` are tried every way). An answer such
+  labels let be read as more than one set (`"North, East"` with the options `North, East`,
+  `North` and `East`) gets `null` and no hash: it compares as `unknown`, never `differs`. An
+  answer that is no such list (text typed into "Type something") is free text. A list compares with the board's recorded boxes as a set:
+  equal → `match`, another list or free text → `differs`. For free text `text_sha[i]`
   is the first 32 hex of `HMAC-SHA256(key, tool_use_id + "\n" + normalised text)` under this
   install's key `secrets/reconcile.key` (32 random bytes, 0600 in a 0700 directory, made on first
   use; never served, mirrored or logged; a key that is a symlink, another user's, readable by others
@@ -516,7 +528,7 @@ text), on the question screen and on the review screen; on a narrow pane the foo
   The file holds `[{"question_index": 0, "option": 2}, {"question_index": 1, "text": "..."}, ...]`:
   one entry per question, in order (`question_index` optional, but when given it must be the
   entry's position), each with exactly one of `option` (within its question's options, ≤ 8) or
-  `text`. Free text is untrusted: it only ever comes by file (never a shell argument). Control,
+  `text`, or `labels` for a multi-select question (see "Multi-select questions" below). Free text is untrusted: it only ever comes by file (never a shell argument). Control,
   escape and line-break characters (C0, C1, U+2028/2029), zero-width and bidi controls become
   spaces, runs of space one, trimmed; it must then be 1–200 characters, not end in `\;`, and its
   question must have ≤ 8 options (its "Type something" row is digit N+1). Anything else → exit 2,
@@ -531,7 +543,7 @@ text), on the question screen and on the review screen; on a narrow pane the foo
 - `board answer <id> --options 2,1 --by <who>`: one option number per question, nothing else (no
   answer text, no `--option`). Refused with exit 2, nothing written, unless the decision is a pane
   question of ≥ 2 questions, the count matches, every number is within its question's options,
-  and no question is `multiSelect`. It records `answer` = `Header: label · Header: label` (`Q<n>`
+  and no question is `multiSelect` (those take `--form-file` labels). It records `answer` = `Header: label · Header: label` (`Q<n>`
   without a header), `answer_options` (the numbers), `answer_index: null`, and `relay: "press"`
   when `pressable`. Any other answer to a form (free text) relays by message (`"operator"`), and
   `board press` refuses it (exit 4).
@@ -578,13 +590,53 @@ text), on the question screen and on the review screen; on a narrow pane the foo
   then the focused row N+1 must show the typed text right after `N+1.` (its first 20 non-space
   characters), and not still show the unedited label, and the state must be unchanged, and only
   then it sends `Enter`. The review line of that question must equal the text; a text the review
-  wraps continues on lines indented 4+ spaces (not a `●`, `│`, `→` or numbered row), which are joined
+  wraps continues on lines indented 3+ spaces (as recorded: 3 in, under the `→`; not a `●`, `│`, `→` or numbered row), which are joined
   to it first. A failed check after the first digit → exit 5 (partial):
   typed text whose echo does not match is never confirmed with Enter. A form hidden by a scrolled pane goes
   back to pending (exit 7) with `answer_options` and `answer_texts` cleared. The decision's
   `status_reason` on these paths: `screen` (what the pane shows), `moved_on` (the hook state moved
   past the prompt, before or after a key), `config` (`press.free_text_label` missing or not a
   valid pattern), `partial` (keys sent, the form not submitted; the board words it so for a form).
+
+### Multi-select questions
+
+A `multiSelect` question is drawn as a form even when it is alone (as recorded from Claude Code
+2.1.32x): the tab bar (`←  ☐ Fruits  ✔ Submit  →`, `☒` once a box is checked), the question, one
+row per option `N. [ ] label` / `N. [✔] label` (a long label wraps under it, like its
+description), the "Type something" row `N+1. [ ] Type something`, then a `Next` row (`Submit` on
+the last question), a rule, `Chat about this` and the footer. A **digit toggles that box and the
+cursor stays**; Enter toggles the focused row; Enter on the `Next`/`Submit` row, `→` or Tab move
+to the next question (after the last one: the review screen), `←` goes back with the boxes kept.
+With the "Type something" row focused, a digit is typed into it. On the review screen a
+multi-select answer is one `→ A, B` line listing the boxes **in the order they were checked**; a
+question with no box checked is not listed and the screen says `⚠ Some questions are
+unanswered`; `1. Submit answers` still submits, and the session gets `""` for it.
+
+- **Wire shape.** `board answer <id> --form-file <path> --by <who>` with `{"question_index": i,
+  "labels": ["Apple", "Cherry"]}` for each multi-select question (`option`/`text` for the others;
+  a single question takes `--form-file` only when it is multi-select). Each label must be one of
+  that question's option labels exactly as stored (trimmed by the hook), no repeats, any number
+  from none (`[]`) to all; `labels` on a single-select question, or `option`/`text` on a
+  multi-select one → exit 2, nothing written. It records `answer_options[i]` = the checked option
+  numbers ascending (`[1, 3]`, `[]`), `answer_texts[i]` = `null`, and `answer` = `Header: Apple,
+  Cherry` (option order; `Header: (none)` for none). board-serve takes the same entry in
+  `{answers: [...]}` (1–4 entries; 1 only for a multi-select question); a label that is not an
+  option, a repeat, or a multi-select question answered any other way (`answer`, `options`) →
+  400 `bad_answers` / `bad_options`, untouched.
+- **Press.** `board press <CODE> answer` takes a decision with a multi-select question through the
+  form path (`multi_check`: each multi-select entry a list of distinct option numbers, ascending,
+  within ≤ 8 options, no text). For that question, after the usual question check (its start,
+  every label in order, the footer): every `N. [ ]` / `N. [✔]` row (after an optional focus marker)
+  must be numbered 1…N+1 in order, row k showing the start of label k (whitespace removed), and
+  row N+1 must be the unchecked, unedited "Type something" row (`press.free_text_label`) and not
+  focused; else exit 3 before any key (5 after), nothing typed there. The checked boxes are read
+  from the screen (a human may have checked some), and only the boxes that differ from the answer
+  are toggled, ascending, one digit at a time: after each the screen is re-captured (up to
+  `BOARD_PRESS_TRIES`) until the boxes read exactly as expected (else exit 5, partial, nothing
+  submitted). Then `press.next_key` (`Right`, or `Tab`; anything else → exit 3, `config`; Enter
+  is never used there). The review screen must list exactly the answered questions in order; a
+  multi-select one's `→` line must be its chosen labels, each once, in any order (compared with
+  whitespace removed, `,` between them), and the submit row's digit is pressed as for any form.
 
 ## Artifact db (written by the BOARD operator session via Artifact write_db; page reads/writes)
 
@@ -753,7 +805,7 @@ $BOARD_HOME/
 | `POST /api/tickets/take` `{ref, session, comment?, transition?, assign?}` | take a ticket for a session, see "Tickets: take". Approvers only (empty → 403 `no_approvers`; else 403 `not_approver`), checked and a refusal audited **before** anything is fetched, sent or written. `session` must be a session in the snapshot or `fleet.yaml` (else 400 `unknown_session`); `comment` a string (scrubbed, footer added) or `false` (skip) or absent (the tracker's `take.comment`); `transition`, `assign` booleans (default true; else 400 `bad_body`). → 200 `{status: "taken"\|"partial", task_id, msg_id, failed, link, ticket}`; an active take → 409 `already_taken {task_id, session}`, nothing written |
 | `POST /api/tickets/<ref>/comment` `{text}`, `/transition` `{to}`, `/assign` `{who}`, `/release` `{}` | the tracker writes and the end of a take, see "Tickets: writes". Approvers only, checked first and refusals audited. → 200 `{status: "ok", ref, ticket}` (`release`: `{status: "released", msg_id, link}`); `to` not in the tracker's `states` → 400 `bad_transition`; no active take → 409 `not_taken`; a tracker without that write → 400 `ticket_unsupported` |
 | `GET /api/events` | `text/event-stream`: `event: state` with the full state at once and after every change (1 s mtime poll; only when the state differs), `: keepalive` every 25 s |
-| `POST /api/decisions/<id>/answer` `{answer}` | `<id>` must match `^d-[0-9]+-[a-z0-9]+$`. With empty `approvers` → 403 `no_approvers` (fails closed). The identity is then checked **before anything is written**, with the rule of `board answer` (`approvers`; for a production decision, gate or stage, `release_managers`, falling back to `approvers`): not allowed → 403 `not_approver`, audited, file untouched (so it can never cancel an approver's answer that waits for the relay). `board answer` exit 8 (the gate's task was busy) → 409 `task_busy`: try again. Otherwise `board answer <id> --answer-file <tmp> --by <identity>` (argv, no shell; the answer goes by a 0600 file under `$BOARD_HOME` that is removed afterwards, so `-`, `--help` or `--answer-file` typed as an answer are recorded literally) → 200 `{status: "answered"}`. For `kind: "permission"` (`answer` = `allow`\|`deny`; `allow` with `summary_truncated` → 409 `review_in_session`), it then runs `board press <from> <answer> --expect <tool_use_id>` → 200 `{status: "relayed"}`; exit 3 → 409 `stale`; exit 4 → 403 `press_refused`; exit 7 → 409 `screen_not_ready` (the decision is pending again; the body adds `scrolled`, `attempts`, `question` and `elsewhere`). A pane question (`source: "pane"`) that is not `pressable` → 409 `answer_in_session`, untouched. A pressable form of several questions takes `{options: [i, j, ...]}` instead of `answer` (2–4 numbers, one per question, 1–8, no `answer`/`option`); a wrong count, a number out of its question's range, a boolean, free text, or `options` on any other decision → 400 `bad_options`, untouched. It runs `board answer <id> --options i,j --by <identity>`, then `board press` like below. With free text for some questions it takes `{answers: [{question_index, option} \| {question_index, text}, ...]}` instead (one entry per question, in order, exactly one of `option` 1–8 or `text` per entry, no `options`/`answer`/`option`); text is cleaned as by `board answer --form-file` and must then be 1–200 characters, not ending in `\;` and not the "Type something" row itself (else 400 `bad_answers`; `question_index`, when given, an integer equal to the entry's position), and each text is screened by the secret guard before anything is written: a request for a secret or a secret-shaped value → 400 `held_answer`, audited; it goes to `board answer <id> --form-file <0600 tmp file> --by <identity>` (removed afterwards), then `board press`; an optional `option` (1–10, a pane question's clicked button) goes to `board answer --option` (mismatch → 400 `bad_option`, untouched; `option` on any other decision → 400); otherwise, when `board answer` set `relay: "press"`, it runs `board press <from> answer --expect <tool_use_id>` with the same results (plus exit 5 → 409 `partial`), and with `relay: "operator"` it returns 200 `{status: "answered"}` for the operator to relay. A decision already `relayed`/`stale`/`timeout` → 409 `gone`. |
+| `POST /api/decisions/<id>/answer` `{answer}` | `<id>` must match `^d-[0-9]+-[a-z0-9]+$`. With empty `approvers` → 403 `no_approvers` (fails closed). The identity is then checked **before anything is written**, with the rule of `board answer` (`approvers`; for a production decision, gate or stage, `release_managers`, falling back to `approvers`): not allowed → 403 `not_approver`, audited, file untouched (so it can never cancel an approver's answer that waits for the relay). `board answer` exit 8 (the gate's task was busy) → 409 `task_busy`: try again. Otherwise `board answer <id> --answer-file <tmp> --by <identity>` (argv, no shell; the answer goes by a 0600 file under `$BOARD_HOME` that is removed afterwards, so `-`, `--help` or `--answer-file` typed as an answer are recorded literally) → 200 `{status: "answered"}`. For `kind: "permission"` (`answer` = `allow`\|`deny`; `allow` with `summary_truncated` → 409 `review_in_session`), it then runs `board press <from> <answer> --expect <tool_use_id>` → 200 `{status: "relayed"}`; exit 3 → 409 `stale`; exit 4 → 403 `press_refused`; exit 7 → 409 `screen_not_ready` (the decision is pending again; the body adds `scrolled`, `attempts`, `question` and `elsewhere`). A pane question (`source: "pane"`) that is not `pressable` → 409 `answer_in_session`, untouched. A pressable form of several questions takes `{options: [i, j, ...]}` instead of `answer` (2–4 numbers, one per question, 1–8, no `answer`/`option`); a wrong count, a number out of its question's range, a boolean, free text, or `options` on any other decision → 400 `bad_options`, untouched. It runs `board answer <id> --options i,j --by <identity>`, then `board press` like below. With free text for some questions, or a multi-select question (alone or in a form), it takes `{answers: [{question_index, option} \| {question_index, text} \| {question_index, labels}, ...]}` instead (one entry per question, in order, exactly one of `option` 1–8, `text` or `labels` per entry, no `options`/`answer`/`option`; `labels` — a list of exact, distinct option labels, `[]` allowed — for and only for a multi-select question; 1–4 entries, 1 only for a lone multi-select question; else 400 `bad_answers`); text is cleaned as by `board answer --form-file` and must then be 1–200 characters, not ending in `\;` and not the "Type something" row itself (else 400 `bad_answers`; `question_index`, when given, an integer equal to the entry's position), and each text is screened by the secret guard before anything is written: a request for a secret or a secret-shaped value → 400 `held_answer`, audited; it goes to `board answer <id> --form-file <0600 tmp file> --by <identity>` (removed afterwards), then `board press`; an optional `option` (1–10, a pane question's clicked button) goes to `board answer --option` (mismatch → 400 `bad_option`, untouched; `option` on any other decision → 400); otherwise, when `board answer` set `relay: "press"`, it runs `board press <from> answer --expect <tool_use_id>` with the same results (plus exit 5 → 409 `partial`), and with `relay: "operator"` it returns 200 `{status: "answered"}` for the operator to relay. A decision already `relayed`/`stale`/`timeout` → 409 `gone`. |
 | `GET /api/messages?before=&limit=&to=&q=` | the message history (the page's History view). `X-Board: 1` and no cross-site `Sec-Fetch-Site` (else 403 `csrf`, before identity); any identity that may read the board. Threads by latest activity (the latest of created_at, released_at and the replies), then id, newest first; `before` is the cursor `<last_activity_at>.<id>` of the last thread already shown (strictly older ones follow), `limit` 1..50 (default 20), `to` a session code (threads sent, relayed or routed to it, or that it replied to: the page's session filter means the same), `triage` or `all`, `q` text (at most 200 chars, case-insensitive) in the to / by / body / ticket and the replies. Each thread goes through the same viewer filter as `/api/state` before it is searched, so a search never matches text the viewer would not see. → 200 `{messages, replies, next}`; `next` is the cursor for the following page, `null` at the end. A bad parameter → 400 `bad_request`. Read-only; nothing is deleted on disk |
 | `POST /api/messages` `{to, body}` | `to`: a session code, `"triage"` (the operator routes it, see "Message routing") or `"all"`. Only for `approvers` ∪ `release_managers` ∪ `askers` (else 403 `not_approver`); an asker who is not an approver or release manager may not send to `"all"` (403 `asker_no_all`, audited, nothing written); `all` / `triage` in another case → 400 `bad_to`, a code that is not a session on the board → 400 `unknown_session`; writes `messages/<id>.json` (`^m-[0-9]+-[a-z0-9]+$`) with `by: <identity>`, the body scrubbed, and `status: "new"`, or `"held"` when the secret guard flags it → 201 `{id, status, reason?}` (see "Secret guardrails"). From an asker while the owner is on do-not-disturb or compute is short: `status: "declined"`, the canned reply added from BOARD, never relayed → 201 `{id, status: "declined", reason: "owner_dnd"\|"compute_low", reply}` (after the rate limit, which still applies; the secret guard's hold comes first) (see "Owner availability") |
 | `POST /api/messages/<id>/release` `{confirm: "release"}` | releases a `held` message. Approvers only (empty `approvers` → 403 `no_approvers`; else 403 `not_approver`, audited). Without the confirm body → 400 `confirm_required`; unknown id → 404; not held → 409 `not_held`. A channel other than the two verified listeners (a future API key) → 403 `release_refused`; with more than one approver, the message's own sender → 403 `self_release` (except `local`: on the loopback listener the identity is always `local`, the owner at this machine). Sets `status: "new"`, `released_by`, `released_at` → 200 `{id, status: "new"}`, audited (`message-release`). An asker's message (see "Owner availability") released while askers are declined (checked at release time, not when it was sent) becomes `status: "declined"` instead, with the canned reply, never relayed → 200 `{id, status: "declined", reason}`, audited (`result: "declined"`) |

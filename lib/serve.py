@@ -1701,19 +1701,34 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # "option": 2}, {"question_index": 1, "text": "..."}, ...]}, one per question, in order.
         # Text is cleaned like board answer does (control, escape and line-break characters become
         # spaces), capped, and screened by the secret guard; it reaches the CLI by file.
+        # A multi-select question (alone, or in a form) is answered {"question_index": i,
+        # "labels": ["A", "C"]}: exact option labels, no repeats, [] for none; checked against the
+        # decision below and kept as its option numbers, ascending.
         answers = body.get("answers")
         texts = None
+        labels = None
         if answers is not None:
             if options is not None or body.get("answer") is not None or body.get("option") is not None:
                 raise Refused(400, "bad_answers", "answers go without options, answer or option")
-            if not isinstance(answers, list) or not 2 <= len(answers) <= 4:
-                raise Refused(400, "bad_answers", "answers must be one entry per question (2-4)")
-            options, texts = [], []
+            if not isinstance(answers, list) or not 1 <= len(answers) <= 4:
+                raise Refused(400, "bad_answers", "answers must be one entry per question (1-4)")
+            options, texts, labels = [], [], []
             for i, a in enumerate(answers):
-                if not isinstance(a, dict) or set(a) - {"question_index", "option", "text"} \
+                if not isinstance(a, dict) or set(a) - {"question_index", "option", "text", "labels"} \
                         or ("question_index" in a and (type(a["question_index"]) is not int or a["question_index"] != i)) \
-                        or ("option" in a) == ("text" in a):
-                    raise Refused(400, "bad_answers", "each answer is {question_index, option} or {question_index, text}, in order")
+                        or sum(k in a for k in ("option", "text", "labels")) != 1:
+                    raise Refused(400, "bad_answers", "each answer is {question_index, option}, {question_index, text} "
+                                  "or {question_index, labels}, in order")
+                if "labels" in a:
+                    ls = a["labels"]
+                    if not isinstance(ls, list) or len(ls) > 8 or any(not isinstance(x, str) or len(x) > MAX_ANSWER for x in ls) \
+                            or len(set(ls)) != len(ls):
+                        raise Refused(400, "bad_answers", "labels are distinct option labels (at most 8)")
+                    options.append([])   # its option numbers, set below from the question
+                    texts.append(None)
+                    labels.append(list(ls))
+                    continue
+                labels.append(None)
                 if "option" in a:
                     o = a["option"]
                     if isinstance(o, bool) or not isinstance(o, int) or not 1 <= o <= 8:
@@ -1778,13 +1793,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 raise Refused(400, "bad_answer", "a permission answer is allow or deny")
             if options is not None:
                 qs = dec.get("questions") if isinstance(dec.get("questions"), list) else []
-                if kind != "question" or dec.get("source") != "pane" or len(qs) < 2:
+                is_ms = [isinstance(q, dict) and q.get("multiSelect") is True for q in qs]
+                if kind != "question" or dec.get("source") != "pane" or not qs \
+                        or (len(qs) < 2 and not (labels is not None and is_ms[0])):
                     raise Refused(400, "bad_options", "options are only for a form of several questions in a session")
                 if len(options) != len(qs):
-                    raise Refused(400, "bad_options", "%d options for %d questions" % (len(options), len(qs)))
+                    raise Refused(400, "bad_answers" if labels is not None else "bad_options",
+                                  "%d answers for %d questions" % (len(options), len(qs)))
+                if labels is None and any(is_ms):
+                    raise Refused(400, "bad_options", "a multi-select question is answered by its labels")
                 for i, (o, q) in enumerate(zip(options, qs)):
                     n = len(q.get("options") or []) if isinstance(q, dict) else 0
-                    if texts is not None and texts[i] is not None:
+                    if labels is not None and (labels[i] is not None) != is_ms[i]:
+                        raise Refused(400, "bad_answers", "question %d is answered by %s" % (
+                            i + 1, "its labels" if is_ms[i] else "an option or a text"))
+                    if labels is not None and labels[i] is not None:
+                        names = [str(x.get("label")) if isinstance(x, dict) else str(x) for x in (q.get("options") or [])]
+                        if any(x not in names for x in labels[i]):
+                            raise Refused(400, "bad_answers", "question %d has no such option" % (i + 1))
+                        options[i] = [k + 1 for k, x in enumerate(names) if x in labels[i]]
+                    elif texts is not None and texts[i] is not None:
                         options[i] = n + 1  # the "Type something" row
                         if n + 1 > 9:
                             raise Refused(400, "bad_answers", "question %d has too many options for free text" % (i + 1))
@@ -1814,13 +1842,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 raise Refused(409, "review_in_session",
                               "the request is only partly shown here: review and allow it in the session")
             pane_q = kind == "question" and dec.get("source") == "pane"
-            # A pane question with multi-select, clipped labels or repeated labels is read-only here.
+            # A pane question with clipped labels or repeated labels is read-only here.
             if pane_q and not dec.get("pressable"):
                 self.audit(ident, via, "answer", id=did, result="refused", reason="not pressable")
                 raise Refused(409, "answer_in_session",
                               "this question can only be answered in the session")
             if pane_q and len(dec.get("questions") or []) > 1 and options is None:
                 raise Refused(400, "bad_options", "a form of several questions is answered with one option per question")
+            if pane_q and options is None and any(isinstance(q, dict) and q.get("multiSelect") is True
+                                                  for q in (dec.get("questions") or [])):
+                raise Refused(400, "bad_answers", "a multi-select question is answered by its labels")
             code = dec.get("from")
             if (kind == "permission" or pane_q) and not code:
                 snap = read_json(os.path.join(home, "snapshot.json")) or {}
@@ -1834,7 +1865,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 fd, afile = tempfile.mkstemp(prefix=".form.", dir=home)
                 try:
                     with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                        json.dump([{"question_index": i, "text": t} if t is not None else {"question_index": i, "option": o}
+                        json.dump([{"question_index": i, "text": t} if t is not None
+                                   else {"question_index": i, "labels": labels[i]} if labels and labels[i] is not None
+                                   else {"question_index": i, "option": o}
                                    for i, (o, t) in enumerate(zip(options, texts))], fh, ensure_ascii=False)
                     rc, out, err = self.board("answer", did, "--form-file", afile, "--by", by)
                 finally:
