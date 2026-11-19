@@ -144,13 +144,15 @@ ROUTES = [
                 "A key issued to an asker, while the owner is on do-not-disturb or compute is short: 201 with "
                 "status \"declined\", reason owner_dnd|compute_low and the canned reply (never relayed). A key "
                 "issued to an asker while the local asker desk is up: status \"desk\" (a local model answers "
-                "it in the thread, marked as such; no Claude session gets it).",
+                "it in the thread, marked as such; no Claude session gets it); when it asks for work, also "
+                "forward \"pending\": the owner is asked on the board whether to forward it to a session.",
      "body": {"type": "object", "required": ["to", "body"], "additionalProperties": False,
               "properties": {"to": {"anyOf": [_CODE, {"const": "triage"}, {"const": "all"}]},
                              "body": {"type": "string", "minLength": 1, "maxLength": 4000}}},
      "schema": {"type": "object", "properties": {"id": {"type": "string"},
                                                  "status": {"enum": ["new", "held", "declined", "desk"]},
-                                                 "reason": {"type": "string"}, "reply": {"type": "string"}}}},
+                                                 "reason": {"type": "string"}, "reply": {"type": "string"},
+                                                 "forward": {"enum": ["pending"]}}}},
     {"method": "POST", "path": "/api/v1/tickets/{ref}/take", "scope": "tickets:take", "handler": "ticket_take",
      "tag": "tickets", "ok": 202,
      "summary": "Ask an approver to start a ticket in a session: creates a PENDING board decision of kind "

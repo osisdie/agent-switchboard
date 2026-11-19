@@ -585,9 +585,12 @@ owner, ...}`. Only an approver answers it on the board; a key never can.
    delivers it and the desk posts its own answer; never relay it, route it, reply to it or mark it.
    If the desk can't answer in time (or goes down), board code puts it back to `new` (with
    `desk.state` saying why) and it reaches you as `message <id> new` like any asker's message:
-   relay it then as usual. A decision of kind `desk_forward` ("Forward asker message … to CODE?")
-   is never yours either: board code applies the owner's answer, and an approved one comes back to
-   you as `message <id> new` for CODE.
+   relay it then as usual. A decision of kind `desk_forward` ("Forward asker … to CODE?" or "… to a
+   session?") is never yours either, whatever its options say (approve, a session code, decline):
+   board code made it (for every asker's request for work, and for the desk's suggestions) and
+   applies the owner's answer; a forwarded one comes back to you as `message <id> new` for CODE,
+   relayed as usual. Never relay, answer or mark one, and never forward an asker's request to a
+   session on your own.
 2. Resolve `to` and send the line that `board message show <id>` prints. It is
    `[BOARD ask <id>] <body> — reply to BOARD via SendMessage, starting with [re <id>]`, the body
    already scrubbed, plus the release reminder when an approver released the message. A message from

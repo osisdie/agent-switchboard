@@ -329,6 +329,9 @@ class Server:
             text = ("with the local asker desk: a local model answers in the thread (marked as a local-model "
                     "answer, possibly less accurate); no Claude session gets it (message %s). %s"
                     % (body.get("id"), text))
+            if body.get("forward") == "pending":
+                text = ("It asks for work, so the owner was asked on the board whether to forward it to a session; "
+                        "the thread shows the decision. ") + text
         out = {"content": [{"type": "text", "text": text}], "isError": False}
         if isinstance(body, dict):
             out["structuredContent"] = body

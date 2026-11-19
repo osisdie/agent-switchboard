@@ -2,7 +2,8 @@
 """tests/test_page_desk.py — optional headless check of the local asker desk on the board page
 (lib/desk.py): the owner's header pill (answering / desk not running / down), the asker's composer
 note (and no "paused" note while the desk answers, even on do-not-disturb), the thread's "local
-model" status and notes (with the desk, after a timeout, a suggested forward) and the "local model ·
+model" status and notes (with the desk, after a timeout, a suggested forward, a work request waiting for
+the owner's forward, declined, forwarded, and on do-not-disturb) and the "local model ·
 may be less accurate" label on the desk's replies. English and 繁體中文, desktop and phone width.
 
 The desk process is a stand-in (a sleeping python with the desk's launch flags and env), registered
@@ -148,11 +149,17 @@ def threads(home):
             ("desk", {"session": "ASK", "state": "delivered", "queued_at": now}, None),
             ("replied", {"session": "ASK", "state": "answered", "queued_at": now, "answered_at": now, "suggest": "API"},
              "LOCAL-ANSWER: see lib/messages.py:42"),
-            ("new", {"session": "ASK", "state": "timeout", "queued_at": now - 700000, "left_at": now}, None))):
+            ("new", {"session": "ASK", "state": "timeout", "queued_at": now - 700000, "left_at": now}, None),
+            # work requests (lib/desk.py classify): the owner's "forward?" card pending, declined, done
+            ("pending", {"session": "ASK", "state": "answered", "queued_at": now, "answered_at": now, "work": True,
+                         "forward": "pending", "forward_decision": "d-1-aa"}, "LOCAL-ANSWER: for information"),
+            ("fdeclined", {"session": "ASK", "state": "answered", "queued_at": now, "answered_at": now, "work": True,
+                           "forward": "declined", "forward_decision": "d-1-bb"}, None))):
         mid = "m-%d-dsk%d" % (now - n, n)
+        real = {"pending": "replied", "fdeclined": "replied"}.get(status, status)
         wj(os.path.join(home, "messages", mid + ".json"), {
             "id": mid, "to": "API", "by": "ann@example.invalid", "kind": "asker", "asker": "ann@example.invalid",
-            "created_at": now - n, "status": status, "desk": desk, "body": "question %d" % n})
+            "created_at": now - n, "status": real, "desk": desk, "body": "question %d" % n})
         if reply:
             rid = "r-%d-dsk%d" % (now, n)
             wj(os.path.join(home, "messages", mid, "replies", rid + ".json"),
@@ -172,17 +179,28 @@ VIEW_JS = """() => {
 THREAD_JS = """(id) => {
   const li = document.getElementById('thread-' + id);
   if (!li) return null;
-  const st = li.querySelector('.thread-top .status'), note = li.querySelector('.held.desk');
+  const st = li.querySelector('.thread-top .status');
+  const notes = [...li.querySelectorAll('.held.desk')].map((x) => x.textContent), note = notes.length ? notes.join(' | ') : null;
   const lab = li.querySelector('.replies .auto.local');
-  return { status: st ? st.textContent : null, note: note ? note.textContent : null, label: lab ? lab.textContent : null };
+  return { status: st ? st.textContent : null, note: note, label: lab ? lab.textContent : null };
 }"""
 
 L = {"en": {"answering": "Local model answering", "down": "Local model down", "status": "local model",
             "with": "With the local model", "timeout": "didn't answer in time", "suggest": "suggests that API",
-            "label": "local model · may be less accurate", "local": "A local model answers"},
+            "label": "local model · may be less accurate", "local": "A local model answers",
+            "waiting": "Waiting for the owner to forward this to a session.",
+            "declined": "The owner declined to forward it to a session.", "forwarded": "The owner forwarded it to API.",
+            "away": "The owner isn't taking requests right now",
+            "bad_target": "That session is no longer on the board: pick another or decline.",
+            "not_approver": "That answer came from someone who isn't an approver, so it wasn't applied.",
+            "no_target": "Pick a session to forward it to, or decline."},
      "zh-TW": {"answering": "本機模型回答中", "down": "本機模型離線", "status": "本機模型",
                "with": "交給本機模型", "timeout": "沒有及時回答", "suggest": "建議由 API",
-               "label": "本機模型 · 可能不夠準確", "local": "目前由本機模型"}}
+               "label": "本機模型 · 可能不夠準確", "local": "目前由本機模型",
+               "waiting": "等待主人決定是否轉給某個 session 處理。", "declined": "主人決定不轉給 session 處理。",
+               "forwarded": "主人已把它轉給 API。", "away": "目前不接受詢問或派工",
+               "bad_target": "看板上已經沒有那個 session：請改選另一個，或拒絕。",
+               "not_approver": "那個回答來自非核准者，所以沒有套用。", "no_target": "請選一個要轉給的 session，或拒絕。"}}
 
 
 def open_page(browser, base, lang, width):
@@ -227,6 +245,48 @@ def main():
                 t = page.evaluate(THREAD_JS, ids["new"])
                 check("%s: a timed-out thread says it went the usual way" % tag,
                       t and T["timeout"] in (t["note"] or "") and t["label"] is None, t)
+                t = page.evaluate(THREAD_JS, ids["pending"])
+                check("%s: a work request waits for the owner's forward" % tag,
+                      t and T["waiting"] in (t["note"] or "") and T["away"] not in (t["note"] or "")
+                      and t["label"] == T["label"], t)
+                t = page.evaluate(THREAD_JS, ids["fdeclined"])
+                check("%s: the owner's decline is shown" % tag, t and T["declined"] in (t["note"] or ""), t)
+                ctx.close()
+            # forward cards an answer bounced off: the card says why (en, zh-TW)
+            for why in ("bad_target", "not_approver", "no_target"):
+                wj(os.path.join(home, "decisions", "d-1-%s.json" % why.replace("_", "")), {
+                    "id": "d-1-%s" % why.replace("_", ""), "kind": "desk_forward", "from": "desk",
+                    "question": "Forward asker ann@example.invalid's request to a session? (%s)" % why,
+                    "options": ["API", "decline"], "context": "\"please review !7\"", "status": "pending",
+                    "created_at": int(time.time() * 1000), "ignored_why": why,
+                    "ignored": {"by": "board:someone@example.invalid", "answer": "x", "why": why, "at": 1},
+                    "request": {"kind": "desk_forward", "message_id": "m-1-abc", "session": None}})
+            subprocess.run([os.path.join(REPO, "bin", "board-collect"), "--once", "--no-notify"],
+                           env=env, check=True, stdout=subprocess.DEVNULL)
+            for lang in ("en", "zh-TW"):
+                ctx, page = open_page(browser, base, lang, 390 if lang == "zh-TW" else 1280)
+                page.wait_for_selector("#dec-d-1-badtarget", timeout=10000)
+                got = page.evaluate("""() => Object.fromEntries(['badtarget', 'notapprover', 'notarget'].map((k) => {
+                  const n = document.querySelector('#dec-d-1-' + k + ' .note.bounced');
+                  return [k, n ? n.textContent : null]; }))""")
+                check("owner %s: each bounced forward card says why" % lang,
+                      got["badtarget"] == L[lang]["bad_target"] and got["notapprover"] == L[lang]["not_approver"]
+                      and got["notarget"] == L[lang]["no_target"], got)
+                ctx.close()
+            # the owner forwarded one (newest, so it is among the threads shown at first)
+            now = int(time.time() * 1000) + 5000
+            fmid = "m-%d-dskfw" % now
+            wj(os.path.join(home, "messages", fmid + ".json"), {
+                "id": fmid, "to": "API", "by": "ann@example.invalid", "kind": "asker", "asker": "ann@example.invalid",
+                "created_at": now, "status": "new", "body": "please review !7",
+                "desk": {"session": "ASK", "state": "forwarded", "queued_at": now, "work": True, "forward": "forwarded",
+                         "forwarded_to": "API", "forwarded_at": now, "forward_decision": "d-1-cc"}})
+            for lang in ("en", "zh-TW"):
+                ctx, page = open_page(browser, base, lang, 1280)
+                page.wait_for_selector("#thread-" + fmid, timeout=10000)
+                t = page.evaluate(THREAD_JS, fmid)
+                check("owner %s: the forward is shown, no longer waiting" % lang,
+                      t and L[lang]["forwarded"] in (t["note"] or "") and L[lang]["waiting"] not in (t["note"] or ""), t)
                 ctx.close()
             stop(procs)
 
@@ -271,6 +331,20 @@ def main():
             page.wait_for_selector("#thread-" + names[0], timeout=10000)
             t = page.evaluate(THREAD_JS, names[0])
             check("asker: the new thread says it is with the local model", t and L["en"]["with"] in (t["note"] or ""), t)
+            # addressed to a session: a work request; the owner's card is made now, and on do not
+            # disturb the asker is told the owner isn't taking requests (the card still waits)
+            check("asker: a message to a session is a work request with a pending card",
+                  (rec.get("desk") or {}).get("work") is True and (rec.get("desk") or {}).get("forward") == "pending"
+                  and os.path.exists(os.path.join(home, "decisions", str((rec.get("desk") or {}).get("forward_decision"))
+                                                  + ".json")), rec)
+            check("asker: on do not disturb the thread says it waits and the owner isn't taking requests",
+                  t and L["en"]["waiting"] in (t["note"] or "") and L["en"]["away"] in (t["note"] or ""), t)
+            ctx.close()
+            ctx, page = open_page(browser, base, "zh-TW", 390)
+            page.wait_for_selector("#thread-" + names[0], timeout=10000)
+            t = page.evaluate(THREAD_JS, names[0])
+            check("asker zh-TW: the waiting and away notes are translated",
+                  t and L["zh-TW"]["waiting"] in (t["note"] or "") and L["zh-TW"]["away"] in (t["note"] or ""), t)
             ctx.close()
             stop(procs)
             procs = []

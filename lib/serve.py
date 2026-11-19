@@ -207,6 +207,8 @@ DECISION_KEYS = ("id", "kind", "from", "question", "options", "context", "tool_u
                  "escalation_level", "notified_via", "summary_truncated",
                  "labels_clipped", "answer_options", "press_note", "press_note_code", "press_not_visible",
                  "status_reason",
+                 # the local desk's forward card: why an answer was not applied (a fixed code)
+                 "ignored_why",
                  # settled from the session's own report (lib/reconcile.py)
                  "delivered_via", "reconciled_from", "reconcile_result",
                  # pane questions (an AskUserQuestion picker): source "pane"
@@ -2026,6 +2028,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             out["reason"] = rec["held_reason"]
         elif rec["status"] == "declined":
             out.update({"reason": rec["declined_reason"], "reply": decline[1]})
+        elif rec["status"] == "desk" and (rec.get("desk") or {}).get("forward") == "pending":
+            out["forward"] = "pending"      # a work request: the owner decides whether a session takes it
         return self.send_json(201, out)
 
     def release(self, mid, body, ident, via):
