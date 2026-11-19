@@ -173,19 +173,45 @@ time { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .secnav * { scroll-margin-top: calc(-8px - var(--secnav-h, 56px) - env(safe-area-inset-top, 0px)); }
 /* ...except inside the phone sheet, which scrolls on its own: there a focused row must scroll into it */
 .secnav .nav-sheet * { scroll-margin-top: 0; }
-.secnav-in { max-width: 1360px; margin-inline: auto; display: flex; align-items: center; gap: 8px; min-height: 48px; }
-.secnav ul { list-style: none; display: flex; gap: 4px; margin: 0; padding: 0; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
+.secnav-in { position: relative; max-width: 1360px; margin-inline: auto; display: flex; align-items: center; gap: 8px; min-height: 48px; }
+.secnav ul { list-style: none; margin: 0; padding: 0; }
 .secnav a { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 5px; color: var(--muted); text-decoration: none; font-weight: 500; font-size: 14px; white-space: nowrap; }
 .secnav a:hover { color: var(--ink); background: var(--panel); }
-.secnav a[aria-current="true"] { color: var(--ink); background: var(--panel); box-shadow: inset 0 -2px 0 var(--cord); }
+.secnav a[aria-current="location"] { color: var(--ink); background: var(--panel); box-shadow: inset 0 -2px 0 var(--cord); }
 .secnav .badge { font-family: var(--f-mono); font-size: 11px; padding: 0 6px; border-radius: 9px; background: var(--off-soft); color: var(--muted); }
 .secnav .badge.hot { background: var(--lamp-soft); color: var(--lamp-ink); }
-.secnav .nav-toggle { display: none; }
 .icon-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 34px; padding: 0 12px; border-radius: 17px; border: 1px solid var(--rule); background: var(--panel); color: var(--ink); font: inherit; font-size: 13px; font-weight: 500; cursor: pointer; white-space: nowrap; }
 .icon-btn:hover { border-color: var(--cord); }
-/* wide screens: the sheet is just the row of links (its tools are phone-only) */
-.nav-sheet { display: contents; }
-.nav-tools, .to-top, .nav-backdrop { display: none; }
+/* "Sections" opens a sheet of every section with its count, Top, collapse / expand all: a dropdown
+   under the button on wide screens, a sheet over the page on phones (below). */
+.secnav .nav-toggle { flex: none; font-weight: 600; border-color: color-mix(in srgb, var(--cord) 55%, var(--rule)); background: var(--cord-soft); color: var(--ink); }
+.secnav .nav-toggle .burger { font-size: 15px; line-height: 1; }
+.nav-sheet { display: none; position: absolute; z-index: 6; top: calc(100% + 1px); left: 0; flex-direction: column; gap: 6px; padding: 8px;
+  width: min(340px, 100%); max-height: max(180px, calc(100vh - var(--nav-bottom, 56px) - 16px)); overflow-y: auto; overscroll-behavior: contain;
+  background: var(--panel); border: 1px solid var(--rule); border-radius: var(--r); box-shadow: 0 12px 32px rgb(0 0 0 / .22); }
+.secnav.open { z-index: 9; }  /* the open sheet covers the account button too */
+.secnav.open .nav-sheet { display: flex; }
+.nav-sheet ul { display: flex; flex-direction: column; gap: 2px; }
+.nav-sheet ul a { display: flex; justify-content: space-between; padding: 7px 10px; color: var(--ink); }
+/* the tools stay in view at the sheet's foot while the list scrolls */
+.nav-tools { position: sticky; bottom: -8px; display: flex; flex-wrap: wrap; gap: 6px; margin: 0 -8px -8px; padding: 8px; border-top: 1px solid var(--rule); background: var(--panel); }
+.nav-tools .btn { flex: 1 1 auto; justify-content: center; padding-inline: 10px; }
+/* A click outside the open sheet lands on a backdrop that only closes it (see-through on wide screens) */
+.nav-backdrop { display: none; }
+.secnav.open .nav-backdrop { display: block; position: fixed; inset: 0; z-index: -1; }
+/* wide screens keep the row of links beside the button (it scrolls sideways when it runs out of room;
+   the sheet reaches every section either way); it never widens the page */
+.wrap > .secnav { min-width: 0; }
+.nav-row { display: flex; gap: 4px; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
+/* an edge that hides more links fades out */
+.nav-row.more-r { mask-image: linear-gradient(to right, #000 calc(100% - 40px), transparent); }
+.nav-row.more-l { mask-image: linear-gradient(to left, #000 calc(100% - 40px), transparent); }
+.nav-row.more-l.more-r { mask-image: linear-gradient(to right, transparent, #000 40px, #000 calc(100% - 40px), transparent); }
+/* "↑" back to the top, once you have scrolled down */
+.to-top { position: fixed; z-index: 7; right: calc(var(--gutter-r) + 2px); bottom: calc(18px + env(safe-area-inset-bottom, 0px)); display: grid; place-items: center; width: 44px; height: 44px; padding: 0;
+  border-radius: 50%; border: 1px solid var(--rule); background: var(--panel); color: var(--ink); font: inherit; font-size: 20px; line-height: 1; cursor: pointer; box-shadow: 0 4px 14px rgb(0 0 0 / .2); }
+.to-top:hover { border-color: var(--cord); }
+.to-top[hidden] { display: none; }
 /* Phones: the bar is the first thing on the page and stays at the top; "Sections" opens a sheet
    over the content (the bar's height never changes, so a jump still lands below it). */
 @media (max-width: 860px) {
@@ -195,27 +221,18 @@ time { font-variant-numeric: tabular-nums; white-space: nowrap; }
   .wrap > .secnav::before { content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none; box-shadow: 0 0 0 100vmax var(--paper), 0 1px 0 100vmax var(--rule); clip-path: inset(0 -100vmax -1px); }
   .wrap > .mast { padding-top: 0; }
   .mast .acct { top: 0; }
-  .secnav-in { position: relative; justify-content: space-between; min-height: 56px; }
-  .secnav .nav-toggle { display: inline-flex; margin-right: auto; font-size: 15px; font-weight: 600; border-color: color-mix(in srgb, var(--cord) 55%, var(--rule)); background: var(--cord-soft); color: var(--ink); }
-  .secnav .nav-toggle .burger { font-size: 17px; line-height: 1; }
+  .secnav-in { justify-content: space-between; min-height: 56px; }
+  .secnav .nav-toggle { margin-right: auto; font-size: 15px; }
+  .secnav .nav-toggle .burger { font-size: 17px; }
   .secnav .icon-btn { height: 44px; border-radius: 22px; padding: 0 14px; }
-  .nav-sheet { display: none; position: absolute; z-index: 6; top: calc(100% + 1px); left: 0; right: 0; flex-direction: column; gap: 6px; padding: 8px;
-    max-height: calc(100dvh - var(--secnav-h, 56px) - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 12px); overflow-y: auto; overscroll-behavior: contain;
-    background: var(--panel); border: 1px solid var(--rule); border-radius: var(--r); box-shadow: 0 12px 32px rgb(0 0 0 / .22); }
-  .secnav.open { z-index: 9; }  /* the open sheet covers the account button too */
-  .secnav.open .nav-sheet { display: flex; }
-  .secnav.open .nav-backdrop { display: block; position: fixed; inset: calc(env(safe-area-inset-top, 0px) + var(--secnav-h, 56px)) 0 0; z-index: -1; background: rgb(0 0 0 / .14); }
-  .secnav ul { display: none; flex-direction: column; gap: 2px; overflow: visible; flex: none; }
-  .secnav.open ul { display: flex; }
-  .secnav ul a { display: flex; justify-content: space-between; min-height: 44px; padding: 8px 12px; font-size: 16px; color: var(--ink); }
-  .secnav ul .badge { font-size: 12px; padding: 1px 8px; }
-  /* the tools stay in view at the sheet's foot while the list scrolls */
-  .nav-tools { position: sticky; bottom: -8px; display: flex; flex-wrap: wrap; gap: 6px; margin: 0 -8px -8px; padding: 8px; border-top: 1px solid var(--rule); background: var(--panel); }
-  .nav-tools .btn { min-height: 44px; flex: 1 1 auto; justify-content: center; padding-inline: 10px; }
-  .to-top { position: fixed; z-index: 7; right: calc(var(--gutter-r) + 2px); bottom: calc(18px + env(safe-area-inset-bottom, 0px)); display: grid; place-items: center; width: 48px; height: 48px; padding: 0;
-    border-radius: 50%; border: 1px solid var(--rule); background: var(--panel); color: var(--ink); font: inherit; font-size: 22px; line-height: 1; cursor: pointer; box-shadow: 0 4px 14px rgb(0 0 0 / .2); }
-  .to-top:hover { border-color: var(--cord); }
-  .to-top[hidden] { display: none; }
+  .nav-row { display: none; }
+  .nav-sheet { right: 0; width: auto;
+    max-height: calc(100dvh - var(--secnav-h, 56px) - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 12px); }
+  .secnav.open .nav-backdrop { inset: calc(env(safe-area-inset-top, 0px) + var(--secnav-h, 56px)) 0 0; background: rgb(0 0 0 / .14); }
+  .nav-sheet ul a { min-height: 44px; padding: 8px 12px; font-size: 16px; }
+  .nav-sheet ul .badge { font-size: 12px; padding: 1px 8px; }
+  .nav-tools .btn { min-height: 44px; }
+  .to-top { width: 48px; height: 48px; font-size: 22px; }
 }
 @media (max-width: 420px) {
   .secnav .info-t { display: none; }
@@ -1302,6 +1319,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       </div>
       </div>
       <div class="nav-backdrop" id="nav-backdrop" aria-hidden="true"></div>
+      <ul class="nav-row" id="nav-row" aria-label="Section links" data-i18n-attr="aria-label"></ul>
       <button class="icon-btn" id="notif-btn" type="button" aria-haspopup="dialog" title="Push notifications: mute, triage and presence" data-i18n-attr="title"><span class="nlamp unknown" id="notif-lamp" aria-hidden="true"></span><span id="notif-label" data-i18n>Notifications</span></button>
       <button class="icon-btn" id="info-btn" type="button" aria-haspopup="dialog" title="Versions, cost and how this works" aria-label="Info" data-i18n-attr="title aria-label">ⓘ <span class="info-t" data-i18n>Info</span></button>
     </div>
@@ -6267,15 +6285,31 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
 
   /* ------------------------------------------------------- nav + scrollspy */
   const nav = $('#secnav');
-  // Phones: "Sections" opens a sheet over the page (links with counts, Top, collapse / expand all).
+  // "Sections" opens a sheet (links with counts, Top, collapse / expand all): over the page on
+  // phones, a dropdown under the button on wide screens, where it fits below the bar wherever the
+  // bar is (it sits under the Deck until you scroll that far).
+  const navBottom = () => document.documentElement.style.setProperty('--nav-bottom', Math.round(nav.getBoundingClientRect().bottom) + 'px');
   function setNavOpen(open, refocus) {
+    if (open) navBottom();
     nav.classList.toggle('open', open);
     $('#nav-toggle').setAttribute('aria-expanded', String(open));
+    // while the sheet is open its list is the one to read and use: the row's copy stands aside
+    $('#nav-row').inert = open;
     if (!open && refocus) $('#nav-toggle').focus({ preventScroll: true });
   }
   $('#nav-toggle').addEventListener('click', () => setNavOpen(!nav.classList.contains('open')));
   nav.addEventListener('click', (e) => { if (e.target.closest('a')) setNavOpen(false); });
-  nav.addEventListener('keydown', (e) => { if (e.key === 'Escape' && nav.classList.contains('open')) { e.stopPropagation(); setNavOpen(false, true); } });
+  // Escape closes the open sheet wherever focus is (a click on the sheet's padding, or a browser
+  // where a clicked button takes no focus, leaves it on the page), unless something else took the
+  // key first: a popover or field that handles it, a text field outside the bar, an open dialog.
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || e.defaultPrevented || !nav.classList.contains('open')) return;
+    const t = e.target;
+    if (t && t.closest && !nav.contains(t) && (t.isContentEditable || t.closest('input, textarea, select'))) return;
+    if (document.querySelector('dialog[open]')) return;
+    e.preventDefault();
+    setNavOpen(false, true);
+  });
   // A tap outside the open sheet lands on a see-through backdrop: it only closes the sheet, never
   // presses what lies under it (an answer button, say).
   $('#nav-backdrop').addEventListener('click', () => setNavOpen(false));
@@ -6290,15 +6324,45 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
   }
   $('#nav-top').addEventListener('click', () => { setNavOpen(false); toTop(); });
   $('#to-top').addEventListener('click', toTop);
-  const phoneMq = window.matchMedia ? window.matchMedia('(max-width: 860px)') : null;
-  function topButton() { $('#to-top').hidden = !(phoneMq && phoneMq.matches) || window.scrollY < window.innerHeight * 0.8; }
-  const spyLinks = [...document.querySelectorAll('[data-spy]')];
+  function topButton() { $('#to-top').hidden = window.scrollY < window.innerHeight * 0.8; }
+  // Wide screens also keep the row of links beside the button: a copy of the sheet's list (same
+  // counts, same hidden sections), patched in place whenever the list changes, so a focused link
+  // keeps its focus and the row its scroll position.
+  function syncNavRow() {
+    const row = $('#nav-row'), src = [...$('#nav-list').children];
+    const bare = (n) => { const c = n.cloneNode(true); if (c.removeAttribute) { c.removeAttribute('id'); for (const el of c.querySelectorAll('[id]')) el.removeAttribute('id'); } return c; };
+    if (row.children.length !== src.length) row.replaceChildren(...src.map(bare));
+    else src.forEach((li, i) => {
+      const mine = row.children[i], a = mine.querySelector('a'), from = li.querySelector('a');
+      mine.hidden = li.hidden;
+      if (a && from && a.innerHTML !== from.innerHTML.replace(/ id="[^"]*"/g, '')) a.replaceChildren(...[...from.childNodes].map(bare));
+    });
+    rowEdges();
+  }
+  function rowEdges() {
+    const row = $('#nav-row'), x = Math.abs(row.scrollLeft);
+    row.classList.toggle('more-l', x > 1);
+    row.classList.toggle('more-r', row.scrollWidth - row.clientWidth - x > 1);
+  }
+  $('#nav-row').addEventListener('scroll', rowEdges, { passive: true });
+  window.addEventListener('resize', rowEdges);
+  syncNavRow();
+  let spyCurrent = '';
   function spy() {
     const line = nav.getBoundingClientRect().bottom + 24;
     let current = 'decisions';
     for (const id of SECTIONS) { const el = document.getElementById(id); if (el && !el.hidden && el.getBoundingClientRect().top <= line) current = id; }
     if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4) current = 'approvals';
-    for (const a of spyLinks) a.setAttribute('aria-current', a.dataset.spy === current ? 'true' : 'false');
+    for (const a of document.querySelectorAll('#secnav [data-spy]')) a.setAttribute('aria-current', a.dataset.spy === current ? 'location' : 'false');
+    // the row keeps the current section in view (it scrolls sideways when the links do not fit)
+    const row = $('#nav-row'), cur = row.querySelector('a[aria-current="location"]');
+    if (cur && current !== spyCurrent) {
+      const r = row.getBoundingClientRect(), c = cur.getBoundingClientRect();
+      if (c.left < r.left) row.scrollLeft -= r.left - c.left + 24;
+      else if (c.right > r.right) row.scrollLeft += c.right - r.right + 24;
+    }
+    spyCurrent = current;
+    if (nav.classList.contains('open')) navBottom();
     topButton();
   }
   window.addEventListener('scroll', spy, { passive: true });
@@ -6318,7 +6382,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     if (el && unfoldFor(el)) el.scrollIntoView({ block: 'start' });
   });
   // a jump to a section lands below the sticky nav, however tall it is (it wraps on narrow screens)
-  const navHeight = () => document.documentElement.style.setProperty('--secnav-h', Math.round(nav.getBoundingClientRect().height) + 'px');
+  const navHeight = () => { document.documentElement.style.setProperty('--secnav-h', Math.round(nav.getBoundingClientRect().height) + 'px'); rowEdges(); };
   navHeight();
   if (window.ResizeObserver) new ResizeObserver(navHeight).observe(nav); else window.addEventListener('resize', navHeight);
 
@@ -6403,8 +6467,9 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     toTop();
   });
   $('#nav-unfold-all').addEventListener('click', () => { setSecFolded(SECTIONS, false); setNavOpen(false, true); });
-  // the counts beside folded headings follow the nav's badges (Messages and others update them)
-  if (window.MutationObserver) new MutationObserver(() => syncSecFolds()).observe($('#nav-list'), { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['class'] });
+  // the counts beside folded headings and the wide-screen row follow the nav's badges and hidden
+  // sections (Messages and others update them)
+  if (window.MutationObserver) new MutationObserver(() => { syncNavRow(); syncSecFolds(); }).observe($('#nav-list'), { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['class', 'hidden', 'title'] });
   navReady = true;
   syncSecFolds();
   // Opened with #section (or #anything in one): that section opens, and the jump lands on it.
@@ -7882,6 +7947,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "Account, theme, language and API keys": "帳號、主題、語言和 API 金鑰",
       "Your roles on this board": "你在這個看板的角色",
       "Sections": "區段",
+      "Section links": "區段連結",
       "Top": "回到頂端",
       "Back to top": "回到頂端",
       "Collapse all sections": "收合所有區段",

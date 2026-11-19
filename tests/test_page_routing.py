@@ -156,10 +156,10 @@ def main():
             pg.wait_for_timeout(500)
             links = pg.evaluate("() => [...document.querySelectorAll('#nav-list a')].map((a) => a.getAttribute('href'))")
             check("jump links for every section, Messages among them", "#messages" in links and "#decisions" in links and "#board" in links, links)
-            pg.click("#nav-list a[href='#messages']")
+            pg.click("#nav-row a[href='#messages']")
             settle(pg)
             r = pg.evaluate("""() => { const nav = document.getElementById('secnav').getBoundingClientRect(), hd = document.getElementById('h-messages').getBoundingClientRect();
-              return { navTop: nav.top, navBottom: nav.bottom, head: hd.top, cur: document.querySelector('#nav-list a[aria-current="true"]').getAttribute('href'),
+              return { navTop: nav.top, navBottom: nav.bottom, head: hd.top, cur: document.querySelector('#nav-row a[aria-current="location"]').getAttribute('href'),
                 sw: document.scrollingElement.scrollWidth, vw: innerWidth }; }""")
             check("  the nav stays at the top, the heading lands below it (not covered)", r["navTop"] <= 1 and r["head"] >= r["navBottom"] - 1, r)
             check("  Messages is marked as the current section", r["cur"] == "#messages", r)
@@ -167,8 +167,8 @@ def main():
             pg = new_page(viewport={"width": 390, "height": 800})
             pg.goto(PAGE + "?demo=1")
             pg.wait_for_timeout(500)
-            r = pg.evaluate("() => ({ list: getComputedStyle(document.getElementById('nav-list')).display, btn: getComputedStyle(document.getElementById('nav-toggle')).display })")
-            check("phone width: the list folds behind a Sections button", r["list"] == "none" and r["btn"] != "none", r)
+            r = pg.evaluate("() => ({ list: getComputedStyle(document.getElementById('nav-sheet')).display, row: getComputedStyle(document.getElementById('nav-row')).display, btn: getComputedStyle(document.getElementById('nav-toggle')).display })")
+            check("phone width: the list folds behind a Sections button", r["list"] == "none" and r["row"] == "none" and r["btn"] != "none", r)
             pg.click("#nav-toggle")
             pg.click("#nav-list a[href='#messages']")
             settle(pg)
