@@ -177,7 +177,7 @@ time { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .secnav ul { list-style: none; margin: 0; padding: 0; }
 .secnav a { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 5px; color: var(--muted); text-decoration: none; font-weight: 500; font-size: 14px; white-space: nowrap; }
 .secnav a:hover { color: var(--ink); background: var(--panel); }
-.secnav a[aria-current="true"] { color: var(--ink); background: var(--panel); box-shadow: inset 0 -2px 0 var(--cord); }
+.secnav a[aria-current="location"] { color: var(--ink); background: var(--panel); box-shadow: inset 0 -2px 0 var(--cord); }
 .secnav .badge { font-family: var(--f-mono); font-size: 11px; padding: 0 6px; border-radius: 9px; background: var(--off-soft); color: var(--muted); }
 .secnav .badge.hot { background: var(--lamp-soft); color: var(--lamp-ink); }
 .icon-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 34px; padding: 0 12px; border-radius: 17px; border: 1px solid var(--rule); background: var(--panel); color: var(--ink); font: inherit; font-size: 13px; font-weight: 500; cursor: pointer; white-space: nowrap; }
@@ -1319,7 +1319,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       </div>
       </div>
       <div class="nav-backdrop" id="nav-backdrop" aria-hidden="true"></div>
-      <ul class="nav-row" id="nav-row"></ul>
+      <ul class="nav-row" id="nav-row" aria-label="Section links" data-i18n-attr="aria-label"></ul>
       <button class="icon-btn" id="notif-btn" type="button" aria-haspopup="dialog" title="Push notifications: mute, triage and presence" data-i18n-attr="title"><span class="nlamp unknown" id="notif-lamp" aria-hidden="true"></span><span id="notif-label" data-i18n>Notifications</span></button>
       <button class="icon-btn" id="info-btn" type="button" aria-haspopup="dialog" title="Versions, cost and how this works" aria-label="Info" data-i18n-attr="title aria-label">ⓘ <span class="info-t" data-i18n>Info</span></button>
     </div>
@@ -6293,11 +6293,23 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     if (open) navBottom();
     nav.classList.toggle('open', open);
     $('#nav-toggle').setAttribute('aria-expanded', String(open));
+    // while the sheet is open its list is the one to read and use: the row's copy stands aside
+    $('#nav-row').inert = open;
     if (!open && refocus) $('#nav-toggle').focus({ preventScroll: true });
   }
   $('#nav-toggle').addEventListener('click', () => setNavOpen(!nav.classList.contains('open')));
   nav.addEventListener('click', (e) => { if (e.target.closest('a')) setNavOpen(false); });
-  nav.addEventListener('keydown', (e) => { if (e.key === 'Escape' && nav.classList.contains('open')) { e.stopPropagation(); setNavOpen(false, true); } });
+  // Escape closes the open sheet wherever focus is (a click on the sheet's padding, or a browser
+  // where a clicked button takes no focus, leaves it on the page), unless something else took the
+  // key first: a popover or field that handles it, a text field outside the bar, an open dialog.
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || e.defaultPrevented || !nav.classList.contains('open')) return;
+    const t = e.target;
+    if (t && t.closest && !nav.contains(t) && (t.isContentEditable || t.closest('input, textarea, select'))) return;
+    if (document.querySelector('dialog[open]')) return;
+    e.preventDefault();
+    setNavOpen(false, true);
+  });
   // A tap outside the open sheet lands on a see-through backdrop: it only closes the sheet, never
   // presses what lies under it (an answer button, say).
   $('#nav-backdrop').addEventListener('click', () => setNavOpen(false));
@@ -6341,9 +6353,9 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     let current = 'decisions';
     for (const id of SECTIONS) { const el = document.getElementById(id); if (el && !el.hidden && el.getBoundingClientRect().top <= line) current = id; }
     if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4) current = 'approvals';
-    for (const a of document.querySelectorAll('#secnav [data-spy]')) a.setAttribute('aria-current', a.dataset.spy === current ? 'true' : 'false');
+    for (const a of document.querySelectorAll('#secnav [data-spy]')) a.setAttribute('aria-current', a.dataset.spy === current ? 'location' : 'false');
     // the row keeps the current section in view (it scrolls sideways when the links do not fit)
-    const row = $('#nav-row'), cur = row.querySelector('a[aria-current="true"]');
+    const row = $('#nav-row'), cur = row.querySelector('a[aria-current="location"]');
     if (cur && current !== spyCurrent) {
       const r = row.getBoundingClientRect(), c = cur.getBoundingClientRect();
       if (c.left < r.left) row.scrollLeft -= r.left - c.left + 24;
@@ -7935,6 +7947,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "Account, theme, language and API keys": "帳號、主題、語言和 API 金鑰",
       "Your roles on this board": "你在這個看板的角色",
       "Sections": "區段",
+      "Section links": "區段連結",
       "Top": "回到頂端",
       "Back to top": "回到頂端",
       "Collapse all sections": "收合所有區段",

@@ -183,7 +183,7 @@ def main():
             pg.click("#nav-list a[href='#messages']")
             settle(pg)
             r = pg.evaluate("""() => ({ open: document.getElementById('secnav').classList.contains('open'), head: document.getElementById('h-messages').getBoundingClientRect().top,
-              nav: document.getElementById('secnav').getBoundingClientRect().bottom, cur: (document.querySelector('#nav-list a[aria-current="true"]') || {}).hash })""")
+              nav: document.getElementById('secnav').getBoundingClientRect().bottom, cur: (document.querySelector('#nav-list a[aria-current="location"]') || {}).hash })""")
             check("tap Messages: the sheet closes, the heading lands just below the bar", not r["open"] and r["nav"] - 1 <= r["head"] <= r["nav"] + 60, r)
             check("  Messages is the current section", r["cur"] == "#messages", r)
             pg.click("#nav-toggle")

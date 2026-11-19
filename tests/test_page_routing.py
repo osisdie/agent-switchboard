@@ -159,7 +159,7 @@ def main():
             pg.click("#nav-row a[href='#messages']")
             settle(pg)
             r = pg.evaluate("""() => { const nav = document.getElementById('secnav').getBoundingClientRect(), hd = document.getElementById('h-messages').getBoundingClientRect();
-              return { navTop: nav.top, navBottom: nav.bottom, head: hd.top, cur: document.querySelector('#nav-row a[aria-current="true"]').getAttribute('href'),
+              return { navTop: nav.top, navBottom: nav.bottom, head: hd.top, cur: document.querySelector('#nav-row a[aria-current="location"]').getAttribute('href'),
                 sw: document.scrollingElement.scrollWidth, vw: innerWidth }; }""")
             check("  the nav stays at the top, the heading lands below it (not covered)", r["navTop"] <= 1 and r["head"] >= r["navBottom"] - 1, r)
             check("  Messages is marked as the current section", r["cur"] == "#messages", r)

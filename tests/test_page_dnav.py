@@ -7,8 +7,9 @@ on a wide screen (demo data):
     open or closed;
   - "Sections" opens a dropdown anchored under the button (not full width, inside the screen,
     scrolling on its own when the screen is short) listing every section with its count, plus
-    Top, Collapse all and Expand all; Escape, a click outside and tabbing out close it (Escape
-    returns focus to the button); a link jumps (the heading lands below the bar), closes it and
+    Top, Collapse all and Expand all; Escape (wherever focus is, even after a click on the sheet's
+    padding), a click outside and tabbing out close it (Escape returns focus to the button); while
+    it is open the row is inert; a link jumps (the heading lands below the bar), closes it and
     marks the section current in the row, which keeps it in view;
   - "Collapse all" folds everything but what waits on you (Decisions, Board with a session that
     needs you, board-serve data); "Expand all" opens everything;
@@ -209,6 +210,17 @@ def main():
         r = pg.evaluate(BAR_JS)
         check("  a click outside closes it (and only that: the page stays put)", not r["open"] and r["y"] == y0, r)
         pg.click("#nav-toggle")
+        r = pg.evaluate("() => ({ inert: document.getElementById('nav-row').inert, label: document.getElementById('nav-row').getAttribute('aria-label') })")
+        check("  while it is open the row stands aside for screen readers (inert, labelled)", r["inert"] and r["label"] == "Section links", r)
+        box = pg.evaluate("() => { const b = document.getElementById('nav-sheet').getBoundingClientRect(); return { x: b.left + 3, y: b.top + 3 }; }")
+        pg.mouse.click(box["x"], box["y"])
+        r = pg.evaluate("() => ({ open: document.getElementById('secnav').classList.contains('open'), focus: document.activeElement.id || document.activeElement.tagName })")
+        check("  a click on the sheet's padding keeps it open, focus left on the page", r["open"] and r["focus"] == "BODY", r)
+        pg.keyboard.press("Escape")
+        r = pg.evaluate(BAR_JS)
+        check("  Escape still closes it, focus back on the button, the row usable again",
+              not r["open"] and r["focus"] == "nav-toggle" and not pg.evaluate("() => document.getElementById('nav-row').inert"), r)
+        pg.click("#nav-toggle")
         pg.focus("#nav-unfold-all")
         pg.keyboard.press("Tab")
         pg.wait_for_timeout(50)
@@ -218,7 +230,7 @@ def main():
         pg.click("#nav-list a[href='#messages']")
         settle(pg)
         r = pg.evaluate("""() => { const nav = document.getElementById('secnav').getBoundingClientRect(), hd = document.getElementById('h-messages').getBoundingClientRect(),
-            row = document.getElementById('nav-row').getBoundingClientRect(), cur = document.querySelector('#nav-row a[aria-current="true"]'), c = cur && cur.getBoundingClientRect();
+            row = document.getElementById('nav-row').getBoundingClientRect(), cur = document.querySelector('#nav-row a[aria-current="location"]'), c = cur && cur.getBoundingClientRect();
           return { open: document.getElementById('secnav').classList.contains('open'), navTop: nav.top, navBottom: nav.bottom, head: hd.top,
             cur: cur && cur.getAttribute('href'), seen: !!c && c.left >= row.left - 1 && c.right <= row.right + 1 }; }""")
         check("  a link jumps, closes it, the heading lands below the bar", not r["open"] and r["navTop"] <= 1 and r["head"] >= r["navBottom"] - 1, r)
@@ -265,9 +277,9 @@ def main():
         pg.click("#nav-toggle")
         r = pg.evaluate("""() => ({ fold: document.getElementById('nav-fold-all').textContent, unfold: document.getElementById('nav-unfold-all').textContent,
           top: document.getElementById('nav-top').textContent, up: document.getElementById('to-top').getAttribute('aria-label'),
-          row: [...document.querySelectorAll('#nav-row a')].map((a) => a.textContent).join('|'),
+          row: [...document.querySelectorAll('#nav-row a')].map((a) => a.textContent).join('|'), rowLabel: document.getElementById('nav-row').getAttribute('aria-label'),
           bg: getComputedStyle(document.getElementById('nav-sheet')).backgroundColor, panel: getComputedStyle(document.documentElement).getPropertyValue('--panel').trim() })""")
-        check("  tools, ↑ and the row in zh-TW", r["fold"] == "全部收合" and r["unfold"] == "全部展開" and "回到頂端" in r["top"] and r["up"] == "回到頂端" and "看板" in r["row"], r)
+        check("  tools, ↑ and the row in zh-TW", r["fold"] == "全部收合" and r["unfold"] == "全部展開" and "回到頂端" in r["top"] and r["up"] == "回到頂端" and "看板" in r["row"] and r["rowLabel"] == "區段連結", r)
         check("  dark theme: the dropdown is solid (the panel colour)", r["bg"] not in ("rgba(0, 0, 0, 0)", "transparent") and r["panel"] == "#161d25", r)
         pg.close()
 
