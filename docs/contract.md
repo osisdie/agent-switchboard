@@ -797,14 +797,15 @@ Extra files under `$BOARD_HOME`:
 ```
 $BOARD_HOME/
   messages/<id>.json                 # {id, to: CODE|"triage"|"all", body, by, created_at,
-                                     #  status: new|held|declined|relayed|replied, held_reason?, held_at?,
+                                     #  status: new|held|declined|desk|relayed|replied, held_reason?, held_at?,
                                      #  declined_reason?: owner_dnd|compute_low, declined_at?,
                                      #  released_by?, released_at?, relayed_to[]?, relayed_at?,
                                      #  routed_to[]?, routed_at? (triage: `board message route`),
-                                     #  kind?: "api", via?: "apikey:<name>", api?: {key_id, name, owner}}
+                                     #  kind?: "api", via?: "apikey:<name>", api?: {key_id, name, owner},
+                                     #  desk?: {session, state, queued_at, ...} (see "Local asker desk")}
                                      #  (board-serve / `board message send` create; operator updates;
                                      #  see "Secret guardrails")
-  messages/<id>/replies/<rid>.json   # {id, from: CODE, body, created_at, redacted?}
+  messages/<id>/replies/<rid>.json   # {id, from: CODE, body, created_at, redacted?, canned?, local_model?}
                                      #  (operator, through `board message reply`)
   operator.json                      # {heartbeat_at, version, operator_session, account_hint}  (operator)
   ledger.json                        # optional, same shape as meta/ledger  (operator)
@@ -2929,6 +2930,160 @@ $BOARD_HOME/owner-dnd             # {"since": <ms>, "by": "<session or board:<id
   and BOARD's reply marked as automatic, for the asker and the owner alike.
 - **The operator** never relays a declined message and has nothing to do for one
   (`prompts/board-operator.md`).
+
+## Local asker desk
+
+`lib/desk.py`, `lib/desk_mcp.py`, `bin/board-desk-mcp`, `prompts/asker-desk.md`. Askers are answered
+by a **local model** instead of Claude whenever one is available: a Claude Code session (the *desk*,
+`local_model.session`, e.g. `ASK`) that runs against a local Anthropic-compatible endpoint, read-only.
+Zero Claude tokens in the loop: board code delivers the question, the desk writes its answer straight
+into the thread, the operator (BOARD) never relays or replies for it.
+
+```yaml
+local_model:
+  enabled: true
+  session: ASK                  # the desk's session code (also listed under sessions:, autostart)
+  env_file: local-model.env     # in the config dir (gitignored): the endpoint and its token
+  health: {url: "", timeout_s: 2, cache_s: 30}   # url "": <ANTHROPIC_BASE_URL>/v1/models
+  reply_timeout_s: 600          # 30-86400
+  max_reply_chars: 2000         # 200-4000: a longer answer is cut
+  repos: [~/work/api]           # --add-dir: the only places the desk reads (its cwd is empty)
+  deny_paths: []                # more Read() deny patterns
+  allow_remote: false           # true: the endpoint may be other than loopback / private
+```
+
+`env_file` (`KEY=VALUE`, like `.env`): only `ANTHROPIC_*`, `CLAUDE_CODE_*`, `DISABLE_*`,
+`API_TIMEOUT_MS`, `MAX_THINKING_TOKENS`, `MAX_MCP_OUTPUT_TOKENS` and `BASH_DEFAULT_TIMEOUT_MS` are
+passed on, never `CLAUDE_CODE_OAUTH_TOKEN` or a `CLAUDE_CODE_USE_*` provider switch. What matters:
+`ANTHROPIC_BASE_URL` (required: without it the desk never starts), `ANTHROPIC_AUTH_TOKEN` (sent as
+`Authorization: Bearer`; `ANTHROPIC_API_KEY` is sent as `x-api-key` instead), `ANTHROPIC_MODEL` (the
+session's model), `ANTHROPIC_DEFAULT_OPUS_MODEL` / `ANTHROPIC_DEFAULT_SONNET_MODEL` /
+`ANTHROPIC_DEFAULT_HAIKU_MODEL` (what the aliases mean; haiku is used for background tasks; the
+`…_MODEL_NAME` / `…_MODEL_DESCRIPTION` variants are only labels in the model picker, not model ids),
+`API_TIMEOUT_MS` (a slow endpoint), and for a model with a small context window
+`CLAUDE_CODE_MAX_CONTEXT_TOKENS` / `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (an unknown model is assumed to
+have a large window). These are the names Claude Code 2.1.x reads. `desk.py run` also sets
+`CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0` and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` unless the
+env_file says otherwise: no extra requests on a slow endpoint. The token and URL live only in the
+config dir.
+
+- **Endpoint**: `ANTHROPIC_BASE_URL` (and `health.url`) must be loopback, `localhost`, private
+  (RFC 1918, `fc00::/7`) or link-local, unless `allow_remote: true`; host names other than
+  `localhost` count as remote. An IPv6 form that carries an IPv4 address (`::ffff:a.b.c.d`, 6to4
+  `2002::/16`, Teredo, NAT64 `64:ff9b::/96`) is judged by that IPv4 address. Otherwise the desk never starts and health is `down` (`no_url`).
+- **Health** (`desk/health.json`: `{state: up|down, checked_at, reason}`): `GET <url>`, `timeout_s`,
+  no redirect followed, no proxy; the token goes only when the URL's origin is the base URL's;
+  up = a 2xx JSON answer. Cached `cache_s`; the
+  looping collector refreshes it (a `desk.py tick` in the background) while `enabled`. Reasons:
+  `unreachable`, `http_<code>`, `not_json`, `no_url`. Audited when the state changes
+  (`{type: "desk", action: "health"}`).
+- **Alive and verified**: the desk's row in `snapshot.json` has a live pid whose registry entry is
+  named the desk code, whose arguments are **exactly** those `desk.py run` uses for the current
+  configuration (`argv[1:]`, or `argv[2:]` when `argv[0]` is `node` or `bun` and `argv[1]` a
+  `.js`/`.mjs`/`.cjs` script, as an npm install runs it; nothing added before or after), whose cwd is `$BOARD_HOME/desk/cwd` and whose
+  `ANTHROPIC_BASE_URL` is the env_file's. A session started any other way, or before the
+  configuration changed, is never given a question (restart it).
+- **Ticker**: the looping collector writes `desk/tick.json` (`{at, by}`) on every pass while
+  `enabled`, and so does each tick. Without one at most NODATA = max(60 s, 20 s + 2 ×
+  `poll_interval`) old (the collector-gap rule of "Pomodoro"),
+  nothing would deliver or time out a question, so nothing is routed to the desk.
+- **Routing** (`lib/messages.py` `create` and `release`, so the page, `board message send`,
+  `/api/v1` and MCP `send_message` alike): a message from an asker (as in "Owner availability":
+  the page's asker, a CLI `--by` asker, a key issued to one) that the secret guard did not hold
+  goes to the desk when `enabled`, the ticker is live, health is `up` and the desk is alive and
+  verified:
+  `status: "desk"`, `desk: {session, state: "queued", queued_at}`, audited `{type: "desk", action:
+  "queued"}`. This comes **before** do-not-disturb and compute-low (no canned reply then). `to` is
+  kept (a code or `triage`). Anyone else's message, and every message while the desk is not
+  available, takes the usual way. Askers still never send to `all`. Responses: 201 `{id, status:
+  "desk"}`; MCP `send_message` says it is with the local desk.
+- **Delivery** (`desk.py tick`, one at a time under `desk/tick.lock`; at most one question with the
+  desk): first `/clear` (each asker starts from an empty context; no question or answer of one
+  asker is in another's; slash commands stay enabled for this, and the model has no tool to run
+  one), counted done only when the registry shows a new session id (else the desk stays dirty and
+  the next tick tries again; a `/clear` left in the box by an earlier try just gets its Enter), then the fixed line `Answer board question <id>`. Never the asker's
+  words. Each is typed with the guards of "Session actions": the registry says idle, the pane belongs
+  to the desk process, Claude's input box is on screen and empty (dim placeholder text counts as
+  empty), nothing runs, no dialog or vim mode; the box must then show exactly the typed text and the
+  registry still idle, only then Enter. It shares the session-action lock. `desk.state` becomes
+  `delivered` (`delivered_at`).
+- **Answer** (MCP server `board-desk`, stdio, only in the desk's own `--mcp-config`, which holds a
+  token made at each launch, `desk/token` 0600; every call checks it): `desk_question(message_id)`
+  returns `{message_id, asked_of, asked_at, question, note}` (never who asked);
+  `desk_reply(message_id, answer, forward_to?)` stores a reply (absolute paths shortened first: a
+  repo's prefix becomes its name, the home directory `~`; the prompt asks for `<repo>/path:line`) `{from: <desk code>, local_model:
+  true}` through the secret guard (`[BOARD` defanged; the whole text is checked first, then cut to
+  `max_reply_chars`, default 2000, 200-4000), sets `status: "replied"`, `desk.state: "answered"`, `answered_at`. An answer in which
+  the secret guard finds anything credential-like is **never stored**: the thread gets a neutral
+  note from the desk instead ("The local model's answer was withheld…"), `desk.state: "withheld"`,
+  no forward, a high alert `desk:withheld:<id>` (no text), and the tool returns `withheld`. Both refuse (`not_yours`, `not_open`) any message that is not the one
+  delivered to this desk now: a queued one, an answered or taken-back one, someone else's.
+- **An answer left in the pane**: a local model may write its answer as plain text instead of
+  calling `desk_reply`. When the question is still `delivered`, the desk has been idle for 15 s and
+  its transcript shows the turn that began with `Answer board question <id>` ended with assistant
+  text (an entry with text and no tool call, none after it), and the desk never called
+  `desk_reply` in that turn (after a refused call the rest is chatter), the tick takes that final
+  text (never thinking or tool output) as
+  the answer, through the same checks as `desk_reply` (cut, withheld). Audited (`action:
+  "harvest"`).
+- **Forward** (escalation only by the owner): `desk_reply(..., forward_to: CODE)` adds a pending
+  decision `{kind: "desk_forward", from: "desk", question: "Forward asker message <id> to CODE?",
+  options: [approve, decline], request: {message_id, session, desk}}`. One per message. When an
+  approver or release manager answers approve, the tick sets the message `to: CODE`, `status:
+  "new"`, `desk.state: "forwarded"` (`forwarded_to`, `forwarded_by`): the operator relays it as an
+  asker's message. Any other answer, or an approve by someone else, changes nothing. The decision
+  is then `relayed` (`desk_result: forwarded|declined|not_approver|gone`). `board-serve --watch`
+  never prints a `desk_forward` decision.
+- **Fallback** (the tick's pass, and also board-serve every 15 s and `board-serve --watch`, which
+  check the ticker too, so a dead collector strands nothing): health not up (`down`), the desk not
+  alive or not verified, or restarted after the question was delivered (`offline`), `enabled`
+  turned off (`disabled`), no live ticker (`stalled`, board-serve and the watch only), or no answer
+  within `reply_timeout_s` of `queued_at` (`timeout`): the message leaves the desk (`desk.state` = why,
+  `left_at`) and takes the usual way, judged now: `declined` with the canned reply while askers are
+  declined, else `new` for the operator. Audited (`{type: "desk", action: "fallback", id, why,
+  result}`). A late answer from the desk is refused (`not_open`).
+- **Read-only, in depth.** `fleet-up` types `BOARD_HOME=… python3 lib/desk.py run` into the desk's
+  pane (no secret on any command line); `desk.py run` writes `desk/settings.json`, `desk/mcp.json`
+  and the token, then, from its own empty directory `$BOARD_HOME/desk/cwd` (with `--restricted`
+  the whole cwd is readable: never a parent of the repos), execs `claude -n <code> --restricted --tools Read,Grep,Glob --permission-mode
+  dontAsk --strict-mcp-config --mcp-config … --settings … --append-system-prompt-file
+  $BOARD_HOME/desk/prompt.md (prompts/asker-desk.md plus the list of repos) --add-dir <repo>…` with an environment of only
+  `PATH`, `HOME`, the locale, the terminal and tmux variables and the env_file's model variables.
+  Never `--dangerously-skip-permissions`, never Remote Control, never resumed.
+  - `--restricted`: no command-running tools, user/project/local settings ignored (a repo's
+    `.claude/settings.json` widens nothing; no user hooks), file tools confined to the cwd (empty)
+    and the `--add-dir`s. A repo that is not a trusted workspace (never opened in Claude Code)
+    makes the CLI ask "add this directory?" in the desk's pane at every start.
+  - `--tools Read,Grep,Glob`: the only built-in tools; `--strict-mcp-config`: the only MCP server is
+    `board-desk`.
+  - settings: `defaultMode: dontAsk` (anything not allowed is denied, never asked: no permission
+    prompt, so no board card), `allow` = Read, Grep, Glob and the two desk tools, `deny` = Bash,
+    Edit, Write, NotebookEdit, WebFetch, WebSearch, Task, Agent, SendMessage, Skill and
+    more, plus `Read(…)` for `**/.env*`, `**/*.pem`, `**/*.key`, `**/*.p12`, `**/*.pfx`,
+    `**/*.jks`, `**/*.keystore`, `**/id_*`, `**/.ssh/**`, `**/secrets/**`, `**/*secret*`,
+    `**/credentials*`, `**/*.tfvars`, `**/*.tfstate*`, `**/*kubeconfig*`, `**/.kube/**`,
+    `**/service-account*.json`, `**/.npmrc`, `**/.pypirc`, `**/.netrc`, `**/.docker/config.json`,
+    `**/database.yml`, `**/appsettings*.json`, `**/*.tfvars.json`, `**/.git-credentials`,
+    `**/.pgpass`, `**/.vault-token`, `**/*.kdbx`, `**/.htpasswd`, `**/*.ovpn`, `**/*.sql`,
+    `**/*.sqlite*`, `**/*.db`, `**/*.dump`, `**/tmp-local/**`, `**/.git/**`, `~/.ssh/**`, `~/.aws/**`, `~/.config/gcloud/**`, `~/.claude/**`,
+    `$BOARD_HOME/**`, the config dir, the env_file and `deny_paths` (Grep and Glob honour them too).
+    Deny wins over allow. `disableAllHooks: true`, `promptSuggestionEnabled: false`.
+  - The collector marks any permission or pane decision from the desk session `stale`
+    (`status_reason: "local_desk"`): never a card anyone presses.
+  - The asker's text is untrusted input to a tool-using model: what it can do is fixed by the flags
+    and settings above, never by the prompt.
+- **The board** (`/api/state`, SSE): `local_model: {state: up|down|disabled, checked_at,
+  session_alive, answering}` for everyone; owners also get `session`, `reply_timeout_s`, `reason`.
+  A message carries `desk: {session, state, queued_at, delivered_at, answered_at, left_at, suggest,
+  forwarded_to, forwarded_at}` (never the pid); a reply carries `local_model: true`. The page shows
+  owners a header pill (Local model answering / desk not running / down), askers a composer note
+  while it answers, a thread status "local model", a note while it is with the desk, after a
+  fallback, a suggestion or a forward, and "local model · may be less accurate" on its replies.
+- CLI: `desk.py status [--json]`, `desk.py health [--refresh]`, `desk.py tick [-v]`, `desk.py gen`,
+  `desk.py run`.
+- Tests: `tests/test_desk.py` (CI), `tests/test_page_desk.py` (Playwright, optional) and
+  `tests/test_desk_e2e.py` (optional: the real CLI in a private tmux server against
+  `tests/fake_anthropic.py`, a scripted endpoint that tries `.env`, `secrets/`, Bash, Grep and Edit).
 
 ## Session actions
 

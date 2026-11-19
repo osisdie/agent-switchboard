@@ -872,6 +872,51 @@ board-serve costs nothing, the asker knows where they stand, and nothing they se
 
 Details: [`docs/contract.md`](docs/contract.md), "Owner availability (do not disturb)".
 
+### Local asker desk
+
+**What.** Askers' questions are answered by a **local model** instead of Claude, whenever one is
+running: a Claude Code session (the *desk*, e.g. `ASK`) pointed at a local Anthropic-compatible
+endpoint, that may only read and search your repos. Its answers are marked "local model · may be
+less accurate" in the thread.
+
+**Why.** An asker's question otherwise wakes BOARD and a session and spends Claude tokens. The desk
+spends none: board code types a fixed line into the desk's pane, and the desk posts its answer into
+the thread itself. It also answers while you are on do-not-disturb or compute is short.
+
+- **Set it up** (`fleet.yaml`, plus a gitignored `local-model.env` in the config dir with
+  `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` and the model names; see `fleet.example.yaml`):
+
+  ```yaml
+  local_model:
+    enabled: true
+    session: ASK
+    env_file: local-model.env
+    repos: [~/work/api, ~/work/web]
+  sessions:
+    - code: ASK
+      cwd: ~                  # not used: the desk runs in its own empty directory
+      autostart: true
+  ```
+
+  `fleet-up` starts it with `lib/desk.py run`: `--restricted`, only Read/Grep/Glob, permission mode
+  `dontAsk`, in its own empty directory with only `repos` readable, a deny list for `.env`, keys,
+  credentials, database dumps, `.git`, `tmp-local/`, `~/.ssh`, `~/.claude` and the board's own files,
+  no hooks, no Remote Control, and only the env_file's model variables. The endpoint must be on this
+  machine or the local network. The first start shows Claude's "trust this folder" dialog for the
+  desk's directory: accept it once in the pane. List repos you have opened Claude Code in before,
+  or it asks to "add" each one at every start.
+- **Always local first.** While the endpoint answers (`GET /v1/models`, cached 30 s), the desk
+  runs as launched and the collector is running, every asker message goes to it, including triage. Otherwise, or when it doesn't
+  answer within 10 minutes, the message takes the usual way (BOARD, or the canned decline), and the
+  thread says so.
+- **It only answers.** It can't edit, run commands, browse or message sessions. When a question
+  needs a change or a session's judgement, it says so and may suggest a session: you get a
+  "Forward asker message … to CODE?" decision, and only your approve sends it on.
+- **On the board:** owners see a header pill (Local model answering / desk not running / down);
+  askers see a note in the composer while it answers.
+
+Details: [`docs/contract.md`](docs/contract.md), "Local asker desk".
+
 ## Alerting & escalation
 
 The board is only useful if you look at it. Alerts reach you when you aren't looking. They escalate
@@ -1680,6 +1725,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `lib/serve_api.py`, `lib/api_spec.py` | The public API `/api/v1`: key, scope and rate checks, the tunnel's service-token rule, the writes (tasks, messages, take requests) and the route table that `openapi.json` is generated from |
 | `artifact/dev.html`, `lib/serve_dev.py` | The developer portal (`/dev`) and key page (`/dev/keys`): the API reference from the live route table, MCP tools, connection snippets, and key create / request / approve / revoke through `board apikey` |
 | `bin/board-mcp`, `lib/mcp_tools.py` | The MCP server: one tool table (reads, and the writes `send_message` and `ticket_take_request`) over stdio (`board-mcp`, a client of `/api/v1`) and `POST /mcp` on board-serve |
+| `lib/desk.py`, `lib/desk_mcp.py`, `bin/board-desk-mcp`, `prompts/asker-desk.md` | The local asker desk: routing askers to a read-only Claude Code session on a local model, its health, guarded delivery, fallbacks, the launch (`desk.py run`) and its two board tools |
 | `lib/apikeys.py` | API keys: the store (peppered hashes, 0600), who may issue, approve, rotate and revoke them, and the check `/api/v1` will use (`board apikey`) |
 | `lib/away.py` | Reads owner-away mode and consensus items for the snapshot and `board-serve` |
 | `lib/tickets/` | Tickets: tracker providers (`http-json`, `fake`), routing by key, cache, rate limits, the SSRF-safe HTTP client; `board ticket get\|doctor` |

@@ -777,6 +777,48 @@ pomodoro:                 # fleet.yaml；全部選填
 
 詳見 [`docs/contract.md`](docs/contract.md) 的「Owner availability (do not disturb)」。
 
+### 本機提問服務台
+
+**是什麼。** 只要本機模型在跑，提問者的問題就改由**本機模型**回答，不用 Claude：一個指向本機
+Anthropic 相容端點的 Claude Code session（*服務台*，例如 `ASK`），只能讀取和搜尋你的 repo。它的
+回答在對話串裡會標示「本機模型 · 可能不夠準確」。
+
+**為什麼。** 否則提問者的問題會叫醒 BOARD 和某個 session，花掉 Claude token。服務台一個都不花：
+看板程式把一行固定文字打進服務台的 pane，服務台自己把回答寫進對話串。你開勿擾或運算資源吃緊時，
+它也照樣回答。
+
+- **設定**（`fleet.yaml`，再加上設定目錄裡一個不進版控的 `local-model.env`，寫
+  `ANTHROPIC_BASE_URL`、`ANTHROPIC_AUTH_TOKEN` 和模型名稱；見 `fleet.example.yaml`）：
+
+  ```yaml
+  local_model:
+    enabled: true
+    session: ASK
+    env_file: local-model.env
+    repos: [~/work/api, ~/work/web]
+  sessions:
+    - code: ASK
+      cwd: ~                  # 不使用：服務台在自己的空目錄裡執行
+      autostart: true
+  ```
+
+  `fleet-up` 用 `lib/desk.py run` 啟動它：`--restricted`、只有 Read/Grep/Glob、權限模式
+  `dontAsk`，在自己的空目錄裡執行、只讀得到 `repos`，擋掉 `.env`、金鑰、憑證、資料庫傾印、`.git`、
+  `tmp-local/`、`~/.ssh`、`~/.claude` 和看板自己檔案的拒絕清單，不跑 hook、不開 Remote Control，
+  環境變數只有 env_file 裡的模型設定。端點必須在本機或區網。第一次啟動時，Claude 會為服務台的目錄跳出
+  「信任這個資料夾」的對話框：在 pane 裡同意一次即可。`repos` 請列你開過 Claude Code 的 repo，否則
+  每次啟動都會問要不要「加入」。
+- **一律本機優先。** 端點有回應（`GET /v1/models`，快取 30 秒）、服務台照規定方式在跑、collector 也在跑時，提問者
+  的每則訊息（包括 triage）都交給它。否則，或它 10 分鐘內沒回答，訊息就走原本的流程（BOARD 轉送，
+  或自動婉拒），對話串裡也會註明。
+- **它只回答。** 它不能改檔、跑指令、上網或傳訊息給 session。需要改東西或某個 session 判斷時，它會
+  直說，也可以建議一個 session：你會收到「Forward asker message … to CODE?」的決策，只有你核准才會
+  轉過去。
+- **看板上：** 擁有者在頁首看到一個標籤（本機模型回答中／服務台未執行／離線）；本機模型回答期間，
+  提問者的輸入框會有一行說明。
+
+詳見 [`docs/contract.md`](docs/contract.md) 的「Local asker desk」。
+
 <a id="alerting--escalation"></a>
 
 ## 告警與升級
@@ -1501,6 +1543,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `lib/serve_api.py`、`lib/api_spec.py` | 公開 API `/api/v1`：金鑰、scope 與速率檢查，tunnel 的 service token 規則，寫入（任務、訊息、接手申請），以及產生 `openapi.json` 的路由表 |
 | `artifact/dev.html`、`lib/serve_dev.py` | 開發者入口（`/dev`）與金鑰頁面（`/dev/keys`）：從即時路由表產生的 API 參考、MCP 工具、連線設定片段，以及透過 `board apikey` 建立／申請／核准／撤銷金鑰 |
 | `bin/board-mcp`、`lib/mcp_tools.py` | MCP server：一張工具表（讀取，以及寫入 `send_message` 和 `ticket_take_request`），透過 stdio（`board-mcp`，`/api/v1` 的 client）和 board-serve 上的 `POST /mcp` 提供 |
+| `lib/desk.py`、`lib/desk_mcp.py`、`bin/board-desk-mcp`、`prompts/asker-desk.md` | 本機提問服務台：把提問者導向本機模型上的唯讀 Claude Code session、健康檢查、有防護的投遞、退回原流程、啟動（`desk.py run`）和它的兩個看板工具 |
 | `lib/apikeys.py` | API 金鑰：金鑰儲存（加 pepper 的雜湊，0600）、誰能發放／核准／輪替／撤銷，以及 `/api/v1` 之後會用的驗證（`board apikey`） |
 | `lib/away.py` | 為 snapshot 和 `board-serve` 讀取 owner-away 模式與共識項目 |
 | `lib/tickets/` | 工單：追蹤系統 provider（`http-json`、`fake`）、依 key 路由、快取、速率限制、防 SSRF 的 HTTP 用戶端；`board ticket get\|doctor` |

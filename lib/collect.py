@@ -68,6 +68,7 @@ import unicodedata
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import away  # noqa: E402
 import cards  # noqa: E402
+import desk  # noqa: E402
 import fleet  # noqa: E402
 import limit  # noqa: E402
 import actions  # noqa: E402
@@ -504,6 +505,7 @@ def process_decisions(cfg, home, sessions, now):
                 if a:
                     by_code.setdefault(str(a).lower(), s)
     timeout_ms = float(cfg.get("decision_timeout_hours") or 24) * 3600 * 1000
+    desk_code = desk.settings(cfg)["session"] if desk.settings(cfg)["enabled"] else None
     # What the sessions reported for their prompts (PostToolUse / PostToolUseFailure on
     # events.jsonl, read incrementally; lib/reconcile.py). The hook appends that line before it
     # writes the state file, so a state without the prompt always comes with its outcome.
@@ -521,6 +523,11 @@ def process_decisions(cfg, home, sessions, now):
             sess = by_sid.get(d.get("session_id"))
             if not d.get("from") and sess:
                 d["from"] = sess["code"]
+                changed = True
+            if desk_code and d.get("from") == desk_code and d.get("status") in ("pending", "answered"):
+                # the local asker desk never asks anyone (dontAsk, no hooks): a prompt from it is
+                # never a card anyone presses (lib/desk.py)
+                d["status"], d["status_reason"] = "stale", "local_desk"
                 changed = True
             # The session reported how the prompt ended: settle it with what really happened
             # (delivered, or answered in the pane), even when it had gone stale meanwhile.
@@ -831,6 +838,15 @@ def main(argv):
         todo = actions.auto_candidates(sessions, cfg, home, now)
         if todo and actions.spawn_auto(home, todo) and verbose:
             print("session actions: running in the background for %s" % ", ".join(todo))
+    if "--apply-rc" in argv:
+        try:  # the local asker desk (lib/desk.py): health, fallbacks, one delivery, in the background
+            if desk.settings(cfg)["enabled"]:
+                desk.beat(home, now, "collector")   # a looping collector: asker messages may go to the desk
+            if desk.needs_tick(home, cfg, now) and desk.spawn_tick(home) and verbose:
+                print("desk: tick running in the background")
+        except Exception as exc:  # noqa: BLE001 - never breaks the collector
+            if verbose:
+                print("desk: %s: %s" % (type(exc).__name__, exc))
     if "--no-notify" not in argv:
         for r in notify.tick():
             if verbose and r.get("status") not in (None, "deduped"):
