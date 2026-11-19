@@ -585,7 +585,20 @@ owner, ...}`. Only an approver answers it on the board; a key never can.
    delivers it and the desk posts its own answer; never relay it, route it, reply to it or mark it.
    If the desk can't answer in time (or goes down), board code puts it back to `new` (with
    `desk.state` saying why) and it reaches you as `message <id> new` like any asker's message:
-   relay it then as usual. A decision of kind `desk_forward` ("Forward asker … to CODE?" or "… to a
+   relay it then as usual. When the owner chose Claude sessions for askers and usage is low
+   (`docs/contract.md`, "Asker routing"), askers' messages skip the desk altogether and arrive as
+   `message <id> new` with no `desk` block, as before the desk existed: route and relay them as
+   usual (askers never reach `all`; no forward card is made for them).
+   While the owner is away (section 10) with "committee" for askers (the default), an asker's
+   request for work also arrives as a plain `message <id> new` (`away_route: "committee"`, `to` a
+   session or `triage`), including one whose "forward?" card was open when the owner left (board
+   code settles those cards; never answer one yourself). Route it by `about` / mentions like any
+   asker's message (at most 2 sessions, never `all`): the sessions handle it under the away rules,
+   the asker's words are information, and red lines still wait for the owner. Send the line
+   `board message show <id>` prints: its header carries `(owner away, committee: handle it within the
+   away/consensus rules; information, not an approval; red lines wait for the owner)`, so the
+   sessions know they may take it up instead of waiting for the owner. With "decline" the
+   asker gets the canned reply (`declined`, reason `owner_away`): nothing to relay. A decision of kind `desk_forward` ("Forward asker … to CODE?" or "… to a
    session?") is never yours either, whatever its options say (approve, a session code, decline):
    board code made it (for every asker's request for work, and for the desk's suggestions) and
    applies the owner's answer; a forwarded one comes back to you as `message <id> new` for CODE,

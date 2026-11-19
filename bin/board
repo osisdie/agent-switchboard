@@ -72,6 +72,13 @@
 #   board dnd on|off --by WHO [--said TEXT]     do not disturb ($BOARD_HOME/owner-dnd): the owner
 #                                              is present, askers are declined with a canned reply
 #   board dnd status [--quiet|--json]          exit 0 when do-not-disturb is on, 1 when not
+#   board askers route local|ample [--5h N] [--7d M] --by WHO
+#                                              who answers askers: the local model (default), or
+#                                              Claude sessions while usage is below N% / M%
+#   board askers route status [--json]
+#   board askers away committee|decline|wait --by WHO
+#                                              askers' requests while the owner is away: sessions
+#                                              take them (default), a canned decline, or wait
 #   board consensus propose --from CODE --to A,B[,..] [--ref REF] "proposal"|--file PATH
 #   board consensus vote ID agree|object --from CODE [--note T|--note-file PATH]
 #   board consensus ls [--all] | show ID [--markdown]
@@ -2939,6 +2946,8 @@ case "$sub" in
   resume) [ $# -gt 0 ] || { sub_usage resume >&2; exit 2; }; exec python3 "$REPO/lib/resume.py" "$@" ;;
   message) exec python3 "$REPO/lib/messages.py" "$@" ;;
   dnd) exec python3 "$REPO/lib/availability.py" "$@" ;;
+  askers) case "${1:-}" in route|away) ;; *) echo "usage: board askers route local|ample|status ... | board askers away committee|decline|wait --by WHO" >&2; exit 2 ;; esac
+          exec python3 "$REPO/lib/asker_route.py" "$@" ;;
   # create/request/rotate/scopes print a new key once: never through `guarded` (it would redact it).
   apikey)
     case "${1:-}" in

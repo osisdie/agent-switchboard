@@ -68,6 +68,8 @@ owners: []
 # availability:
 #   dnd_reply: "Heads down today. Please ask again tomorrow."
 #   compute_reply: "Busy right now. Please try again later."
+#   away_reply: "Away this week. Please ask again next Monday."   # while away, when the owner chose
+#                                                                 # "decline" for askers (profile menu)
 #   compute: {enabled: true, five_hour_pct: 90, seven_day_pct: 95, limit: true}
 # apikeys:
 #   request_ttl_days: 14     # a key request no owner approved by then lapses (1-90)

@@ -37,6 +37,9 @@ listeners (docs/contract.md, "Local adapter API"):
                                        via `board away on|off --by board:<identity>`)
   POST /api/dnd                        {"state": "on"|"off"}   (owners only: do not disturb; askers'
                                        messages are declined with a canned reply, lib/availability.py)
+  POST /api/asker-route                {"mode"?: "local"|"claude_when_ample", "five_hour_below"?,
+                                       "seven_day_below"?, "away_askers"?: "committee"|"decline"|"wait"}
+                                       (owners only: who answers askers, lib/asker_route.py)
   POST /api/notify-prefs               {"op": "mute"|"unmute"|"level"|"presence", ...}  (approvers
                                        only; via `board mute|unmute|notify-level|notify-presence`)
   POST /api/presence                   {"visible": bool, "idle_ms": ms}  (owners only, else 204 ignored;
@@ -109,6 +112,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import availability  # noqa: E402
+import asker_route  # noqa: E402
 import away  # noqa: E402
 import desk  # noqa: E402
 import fleet  # noqa: E402
@@ -534,6 +538,7 @@ class StateBuilder:
         paths = [self.p(n) for n in ("snapshot.json", "usage.json", "usage-samples.json", "account.json",
                                     "limit.json", "operator.json",
                                     "ledger.json", "events.jsonl", "owner-away", availability.DND_FILE, prefs.PREFS_FILE,
+                                    asker_route.FILE, asker_route.STATE_FILE,
                                     rc.PREFS_FILE, actions.QUEUE_FILE, actions.LAST_FILE)]
         paths.append(self.p("resources.json"))  # rewritten on a bucketed change, else every 60 s
         paths.append(self.p("cards.json"))      # card extras (lib/cards.py), rewritten when changed
@@ -699,6 +704,8 @@ class StateBuilder:
                 "availability": availability.view(self.home, cfg),
                 # the local asker desk (lib/desk.py): up|down|disabled; state_for adds the owner's details
                 "local_model": desk.view(self.home, cfg),
+                # who answers askers now: local model or Claude sessions (lib/asker_route.py)
+                "asker_route": asker_route.view(self.home),
                 "consensus": away.consensus_items(self.home, now_ms())[-50:],
                 "notify": notify_state(self.home),
                 "rc": rc_state(self.home),
@@ -729,7 +736,7 @@ HISTORY_MAX = 50
 # relay ones the contract documents (docs/contract.md "Messages"; ticket text is viewer-scoped).
 MESSAGE_KEYS = ("id", "to", "body", "by", "created_at", "status", "relayed_to", "relayed_at", "held_reason",
                 "held_at", "released_by", "released_at", "kind", "asker", "event", "ticket", "task_id", "api", "via",
-                "routed_to", "routed_at", "declined_reason", "declined_at")
+                "routed_to", "routed_at", "declined_reason", "declined_at", "away_route", "away_at")
 REPLY_KEYS = ("id", "from", "body", "created_at", "redacted", "canned", "local_model")
 CURSOR_RE = re.compile(r"([0-9]{1,16})\.(m-[0-9]+-[a-z0-9]+)")
 
@@ -1509,6 +1516,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # owners only, never a usage number
         state["availability"] = availability.view(self.server.home, cfg, owner=is_owner(cfg, ident))
         state["local_model"] = desk.view(self.server.home, cfg, owner=is_owner(cfg, ident))
+        # local model or Claude sessions for askers (usage-dependent: per viewer, like availability);
+        # the owner's thresholds and why only for owners
+        state["asker_route"] = asker_route.view(self.server.home, owner=is_owner(cfg, ident))
         if not is_owner(cfg, ident):
             state["operator"] = owner_only_operator(state.get("operator"))
         return self.viewer_for(state, ident, via, cfg)
@@ -1656,6 +1666,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if path == "/api/dnd":
                 body = self.read_body()
                 return self.set_dnd(body, ident, via)
+            if path == "/api/asker-route":
+                body = self.read_body()
+                return self.set_asker_route(body, ident, via)
             if path == "/api/notify-prefs":
                 body = self.read_body()
                 return self.notify_prefs(body, ident, via)
@@ -2182,6 +2195,39 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return self.send_json(200, {"dnd": state == "on", "status": state if changed else "unchanged",
                                     "availability": availability.view(self.server.home, cfg, owner=True)})
 
+    def set_asker_route(self, body, ident, via):
+        """Who answers askers, from the board's profile menu: owners only (an owner who is an approver).
+        {"mode"?: "local"|"claude_when_ample", "five_hour_below"?: 1-99, "seven_day_below"?: 1-99,
+        "away_askers"?: "committee"|"decline"|"wait"} (at least one; a field left out keeps its value).
+        lib/asker_route.py; audited."""
+        mode, away_askers = body.get("mode"), body.get("away_askers")
+        n5, n7 = body.get("five_hour_below"), body.get("seven_day_below")
+        if mode is not None and mode not in asker_route.MODES:
+            raise Refused(400, "bad_mode", "mode must be \"local\" or \"claude_when_ample\"")
+        if away_askers is not None and away_askers not in asker_route.AWAY_MODES:
+            raise Refused(400, "bad_away", "away_askers must be \"committee\", \"decline\" or \"wait\"")
+        for v in (n5, n7):
+            if v is not None and not asker_route.valid_pct(v):
+                raise Refused(400, "bad_pct", "five_hour_below and seven_day_below are integers from 1 to 99")
+        if mode is None and away_askers is None and n5 is None and n7 is None:
+            raise Refused(400, "bad_request", "give mode, five_hour_below, seven_day_below or away_askers")
+        cfg = fleet.load_fleet()
+        by = match_id(ident, fleet.id_list(cfg, "approvers"))
+        if by is None or not is_owner(cfg, ident):
+            self.audit(ident, via, "asker_route", mode=mode, away_askers=away_askers, result="refused",
+                       reason="not an owner")
+            raise Refused(403, "not_owner", "only the board's owner chooses who answers askers")
+        with self.server.write_lock:
+            try:
+                changed, _s = asker_route.set_route(self.server.home, mode, "board:%s" % by, n5, n7, away_askers)
+            except asker_route.RouteError as exc:
+                raise Refused(400 if exc.code.startswith("bad_") else 503, exc.code, exc.detail)
+            self.audit(ident, via, "asker_route", mode=_s["mode"], away_askers=_s["away_askers"],
+                       result="set" if changed else "unchanged")
+        self.hub_kick()
+        return self.send_json(200, {"status": "set" if changed else "unchanged",
+                                    "asker_route": asker_route.view(self.server.home, owner=True)})
+
     def lesson(self, lid, body, ident, via):
         """Add (lid None) or change a lesson. Approvers only; the body goes to `board lesson` by a
         0600 file, never argv; the CLI validates the rule, screens and scrubs the text."""
@@ -2548,8 +2594,14 @@ def desk_sweep(home):
     by --watch too, so a dead collector never strands an asker's message with the desk."""
     try:
         cfg = fleet.load_fleet()
+        out = []
+        # the owner is away with "committee" for askers: open forward cards go to the sessions
+        # (lib/desk.py settle_away), also when the collector is not running
+        if asker_route.away_mode(home) == "committee" and desk.open_forwards(home):
+            out += ["committee %s %s" % x for x in desk.settle_away(home, cfg)]
         if desk.desk_messages(home):
-            return desk.sweep(home, cfg, check_tick=True)
+            return out + desk.sweep(home, cfg, check_tick=True)
+        return out
     except Exception as exc:  # noqa: BLE001 - never stops the server or the watch
         sys.stderr.write("board-serve: desk sweep: %s\n" % type(exc).__name__)
     return []

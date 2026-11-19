@@ -161,7 +161,7 @@ DENY_PATHS = (
 TYPE_LINE = "Answer board question %s"
 CLEAR = "/clear"
 STATES = ("queued", "delivered", "answered", "withheld", "forwarded", "timeout", "down", "offline", "disabled",
-          "stalled", "failed")
+          "stalled", "failed", "committee")
 FORWARD_KIND = "desk_forward"
 MAX_HEALTH_BYTES = 256 * 1024
 
@@ -531,7 +531,7 @@ def view(home, cfg, owner=False, now=None):
 
 PUBLIC_KEYS = ("session", "state", "queued_at", "delivered_at", "answered_at", "left_at", "suggest",
                "forwarded_to", "forwarded_at", "work", "forward", "forward_why", "unavailable")
-FORWARD_STATES = ("pending", "forwarded", "declined", "closed")
+FORWARD_STATES = ("pending", "forwarded", "declined", "closed", "committee")
 
 
 def public(d):
@@ -1135,7 +1135,9 @@ def forward_decision(home, cfg, rec, targets, work=None, unavailable=None, sugge
         ("The local model (%s) answered this asker and suggests that %s look at it." % (desk, suggest))
     away = {"owner_dnd": " You were on do not disturb when it came in: the asker was told you are not taking "
                          "requests right now.",
-            "compute_low": " Compute was short when it came in: the asker was told so."}.get(unavailable, "")
+            "compute_low": " Compute was short when it came in: the asker was told so.",
+            "owner_away": " You were away (askers declined) when it came in: the asker was told you are not "
+                          "taking requests right now."}.get(unavailable, "")
     dec = guard.scrub_tree({
         "id": did, "kind": FORWARD_KIND, "from": "desk", "question": q, "options": options,
         "context": "\"%s\" — %s %s; decline leaves the local answer as the only one.%s%s" % (
@@ -1284,6 +1286,78 @@ def apply_forwards(home, cfg, now=None):
             audit(home, {"action": "forward", "decision": d.get("id"), "id": mid, "to": code, "result": result})
             out.append((d.get("id"), result))
     return out
+
+
+def settle_away(home, cfg, now=None):
+    """While the owner is away and chose "committee" for askers (lib/asker_route.py): every open
+    desk_forward card (pending, or bounced as unauthorized) is settled without the owner. A message
+    that can still be forwarded goes the usual way (status "new"; to = the card's session, else its
+    one target, else triage): the operator routes it and the sessions handle it under the away rules
+    (desk.forward "committee"). One that went the usual way meanwhile just closes ("gone"). The card
+    becomes "relayed" with desk_result "committee"|"gone". Audited. Returns [(decision id, result)]."""
+    import asker_route  # noqa: WPS433
+    import messages  # noqa: WPS433
+    out = []
+    if asker_route.away_mode(home) != "committee":
+        return out
+    now = now_ms() if now is None else now
+    ddir = os.path.join(home, "decisions")
+    try:
+        names = sorted(n for n in os.listdir(ddir) if n.endswith(".json"))
+    except OSError:
+        return out
+    with Lock(home) as lk:
+        if not lk.acquired:
+            return out
+        for name in names:
+            path = os.path.join(ddir, name)
+            d = _read(path)
+            if d.get("kind") != FORWARD_KIND or d.get("status") not in ("pending", "unauthorized"):
+                continue
+            req = d.get("request") if isinstance(d.get("request"), dict) else {}
+            mid = req.get("message_id")
+            rec = messages.read(home, mid) if isinstance(mid, str) and MSG_ID_RE.fullmatch(mid) else None
+            if rec and _forwardable(rec):
+                targets = [c for c in req.get("targets") or [] if isinstance(c, str)]
+                code = req.get("session") or (targets[0] if len(targets) == 1 else None) or \
+                    (rec.get("to") if rec.get("to") not in (None, "all") else messages.TRIAGE)
+                if code != messages.TRIAGE and (not CODE_RE.fullmatch(str(code)) or code not in fleet.known_codes(home, cfg)
+                                                or code == settings(cfg)["session"] or code in operator_codes(home)):
+                    code = messages.TRIAGE
+                rec["desk"] = dict(rec["desk"], state="committee", forward="committee", forward_why="owner_away",
+                                   forward_at=now, forward_decision=d.get("id"))
+                for k in ("declined_reason", "declined_at"):
+                    rec.pop(k, None)
+                rec.update({"to": code, "status": "new", "away_route": "committee", "away_at": now})
+                messages._write(messages.path_of(home, mid), rec)  # noqa: SLF001
+                result = "committee"
+            else:
+                result = "gone"
+                _close_message(home, mid, d.get("id"), "closed", "owner_away", now)
+            d.update({"status": "relayed", "relayed_at": now, "updated_at": now, "desk_result": result,
+                      "status_reason": "owner_away"})
+            _write(path, d)
+            audit(home, {"action": "committee", "decision": d.get("id"), "id": mid, "result": result})
+            out.append((d.get("id"), result))
+    return out
+
+
+def open_forwards(home):
+    """Is any desk_forward card open (pending or unauthorized)? Cheap enough for every sweep."""
+    for path in _glob(os.path.join(home, "decisions")):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                raw = fh.read(65536)
+        except OSError:
+            continue
+        if FORWARD_KIND in raw and ('"pending"' in raw or '"unauthorized"' in raw):
+            try:
+                d = json.loads(raw)
+            except ValueError:
+                continue
+            if isinstance(d, dict) and d.get("kind") == FORWARD_KIND and d.get("status") in ("pending", "unauthorized"):
+                return True
+    return False
 
 
 # ------------------------------------------------------------------ the pane
@@ -1627,6 +1701,11 @@ def tick(home, cfg, now=None):
         except OSError:
             pass
         try:
+            for did, res in settle_away(home, cfg, now):
+                out.append("committee %s %s" % (did, res))
+        except Exception as exc:  # noqa: BLE001 - the next pass (or board-serve's sweep) tries again
+            out.append("committee error %s" % type(exc).__name__)
+        try:
             out += ensure_work(home, cfg, now)
         except Exception as exc:  # noqa: BLE001 - classifying never stops a tick
             out.append("work error %s" % type(exc).__name__)
@@ -1654,6 +1733,12 @@ def needs_tick(home, cfg, now=None):
         cur = _read(os.path.join(desk_dir(home), "health.json"))
         if not isinstance(cur.get("checked_at"), int) or now - cur["checked_at"] > s["health"]["cache_s"] * 1000:
             return True
+    try:
+        import asker_route  # noqa: WPS433
+        if asker_route.away_mode(home) == "committee" and open_forwards(home):
+            return True     # the owner is away: open cards go to the sessions (settle_away)
+    except Exception:  # noqa: BLE001
+        pass
     for path in _glob(os.path.join(home, "messages")):
         try:
             with open(path, encoding="utf-8") as fh:

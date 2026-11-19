@@ -18,10 +18,13 @@ availability.compute.five_hour_pct (90) or the 7-day one at or above availabilit
 (95), or an active usage-limit episode (limit.json, not cleared, not past resets_at by
 LIMIT_GRACE_MS). Two small file reads: cheap enough for every request.
 
+A third: the owner is away and chose to decline askers meanwhile (lib/asker_route.py away_askers
+"decline": reason owner_away).
+
 A decline is canned: board-serve or the CLI stores the message with status "declined"
-(declined_reason owner_dnd|compute_low), adds a reply from BOARD with the canned text, audits it,
+(declined_reason owner_dnd|owner_away|compute_low), adds a reply from BOARD with the canned text, audits it,
 and never relays it (no `message <id> new` line, no token spent). The texts are fleet.yaml
-availability.dnd_reply / availability.compute_reply (one line, scrubbed, defanged, at most MAX_REPLY
+availability.dnd_reply / availability.compute_reply / availability.away_reply (one line, scrubbed, defanged, at most MAX_REPLY
 characters), else the bilingual defaults. They never say where the owner is or show usage numbers.
 
 Only askers are affected (an asker who is not an approver or release manager: the page's asker, a
@@ -45,7 +48,7 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import fleet  # noqa: E402
 
 DND_FILE = "owner-dnd"
-REASONS = ("owner_dnd", "compute_low")
+REASONS = ("owner_dnd", "owner_away", "compute_low")
 STATES = ("online", "dnd", "away")
 MAX_REPLY = 300
 MAX_SAID = 300
@@ -58,6 +61,8 @@ DEFAULT_REPLY = {
                  "/ 目前不接受詢問或派工，請稍後再試。",
     "compute_low": "The board's compute is busy right now. Please try again later. "
                    "/ 目前運算資源忙碌，請稍後再試。",
+    "owner_away": "The owner is away and isn't taking requests right now. Please try again later. "
+                  "/ 主人不在，目前不接受詢問或派工，請稍後再試。",
 }
 DEFAULT_COMPUTE = {"enabled": True, "five_hour_pct": 90, "seven_day_pct": 95, "limit": True}
 BY_RE = re.compile(r"(board:|cli:)?[A-Za-z0-9][A-Za-z0-9@._+:-]{0,199}")
@@ -126,7 +131,7 @@ def settings(cfg):
                        "five_hour_pct": _pct(c.get("five_hour_pct"), DEFAULT_COMPUTE["five_hour_pct"]),
                        "seven_day_pct": _pct(c.get("seven_day_pct"), DEFAULT_COMPUTE["seven_day_pct"]),
                        "limit": c.get("limit") is not False}}
-    for reason, key in (("owner_dnd", "dnd_reply"), ("compute_low", "compute_reply")):
+    for reason, key in (("owner_dnd", "dnd_reply"), ("compute_low", "compute_reply"), ("owner_away", "away_reply")):
         txt = _line(p.get(key), MAX_REPLY) if isinstance(p.get(key), str) else ""
         out[reason] = txt or DEFAULT_REPLY[reason]
     return out
@@ -136,23 +141,37 @@ def reply_text(cfg, reason):
     return settings(cfg)[reason]
 
 
+def limit_active(home, now):
+    """An active usage-limit episode: limit.json hit, not cleared, resets_at unknown or not passed by
+    more than LIMIT_GRACE_MS."""
+    lim = _read_json(os.path.join(home, "limit.json"))
+    if lim and not lim.get("cleared_at") and lim.get("hit_at"):
+        r = _num(lim.get("resets_at"))
+        return r is None or now <= r + LIMIT_GRACE_MS
+    return False
+
+
+def fresh_usage(home, now):
+    """usage.json when it was updated within USAGE_STALE_MS (a small clock skew allowed), else None."""
+    u = _read_json(os.path.join(home, "usage.json"))
+    if not u:
+        return None
+    at = _num(u.get("updated_at"))
+    if at is None or not -SKEW_MS <= now - at <= USAGE_STALE_MS:
+        return None
+    return u
+
+
 def compute_low(home, cfg, now=None):
     """None, or why compute is short: "limit" | "5h" | "7d". Never raises."""
     now = now_ms() if now is None else now
     c = settings(cfg)["compute"]
     if not c["enabled"]:
         return None
-    if c["limit"]:
-        lim = _read_json(os.path.join(home, "limit.json"))
-        if lim and not lim.get("cleared_at") and lim.get("hit_at"):
-            r = _num(lim.get("resets_at"))
-            if r is None or now <= r + LIMIT_GRACE_MS:
-                return "limit"
-    u = _read_json(os.path.join(home, "usage.json"))
+    if c["limit"] and limit_active(home, now):
+        return "limit"
+    u = fresh_usage(home, now)
     if not u:
-        return None
-    at = _num(u.get("updated_at"))
-    if at is None or not -SKEW_MS <= now - at <= USAGE_STALE_MS:
         return None
     for key, name, limit_pct in (("five_hour", "5h", c["five_hour_pct"]), ("seven_day", "7d", c["seven_day_pct"])):
         w = u.get(key) if isinstance(u.get(key), dict) else {}
@@ -163,9 +182,16 @@ def compute_low(home, cfg, now=None):
 
 
 def decline_reason(home, cfg, now=None):
-    """Why an asker's request is declined now: "owner_dnd", "compute_low" or None."""
+    """Why an asker's request is declined now: "owner_dnd", "owner_away" (the owner is away and
+    chose to decline askers meanwhile: lib/asker_route.py), "compute_low" or None."""
     if os.path.lexists(os.path.join(home, DND_FILE)):
         return "owner_dnd"
+    try:
+        import asker_route  # noqa: WPS433 - lazy: asker_route imports this module
+        if asker_route.away_mode(home) == "decline":
+            return "owner_away"
+    except Exception:  # noqa: BLE001
+        pass
     return "compute_low" if compute_low(home, cfg, now) else None
 
 

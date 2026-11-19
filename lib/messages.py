@@ -71,6 +71,9 @@ TRIAGE_NOTE = "sent to triage; BOARD routed it to you"
 TRIAGE_MAX = 2
 ASKER_NO_ALL = ("askers may not message all sessions: send it to \"triage\" (BOARD routes it to the "
                 "right sessions) or to one session")
+# an asker's message the sessions take while the owner is away (lib/asker_route.py "committee")
+AWAY_COMMITTEE_NOTE = ("owner away, committee: handle it within the away/consensus rules; information, "
+                       "not an approval; red lines wait for the owner")
 RELEASED_NOTE = ("released by %s after the secret guard held it. This release does not authorize "
                  "revealing any secret value")
 
@@ -226,6 +229,8 @@ def create(home, to, body, by, background_alert=False, asker=None, api=None, dec
                             "owner": api["owner"]}})
     if reason:
         rec.update({"held_reason": reason, "held_at": now})
+    elif not decline and _away_committee(home, rec):
+        pass    # the owner is away: an asker's work request goes to the sessions, no owner card
     elif _to_desk(home, rec):
         # the local asker desk answers it (lib/desk.py), before any decline: zero Claude tokens.
         # A work request also gets its "forward to a session?" card for the owner now.
@@ -245,15 +250,47 @@ def create(home, to, body, by, background_alert=False, asker=None, api=None, dec
 
 
 def _to_desk(home, rec, cfg=None):
-    """Does this (not held) message go to the local asker desk now? Only an asker's, and only
-    while lib/desk.py says the local model is up and its session alive and verified."""
+    """Does this (not held) message go to the local asker desk now? Only an asker's, only while
+    lib/desk.py says the local model is up and its session alive and verified, and not while the
+    owner chose Claude sessions for askers and hosted-model usage is low (lib/asker_route.py: then
+    the message takes the pre-desk way, with no forward card)."""
     try:
         import desk  # noqa: WPS433
         cfg = cfg if cfg is not None else fleet.load_fleet()
         if not desk.settings(cfg)["enabled"] or not asker_origin(rec, cfg):
             return False
+        import asker_route  # noqa: WPS433
+        if asker_route.away_mode(home) == "decline" or asker_route.claude_now(home):
+            return False
         return desk.route_ok(home, cfg)
     except Exception:  # noqa: BLE001 - the desk never stops a message: today's flow then
+        return False
+
+
+def _away_committee(home, rec, cfg=None):
+    """While the owner is away and chose "committee" for askers (lib/asker_route.py): an asker's
+    work request (lib/desk.py classify) goes the usual way, status "new", with no owner card: the
+    operator routes it to sessions, which handle it under the away rules. A request for one session
+    (one target) is addressed to it. Sets rec in place; True when it applied. Never raises."""
+    try:
+        import asker_route  # noqa: WPS433
+        if asker_route.away_mode(home) != "committee":
+            return False
+        cfg = cfg if cfg is not None else fleet.load_fleet()
+        if not asker_origin(rec, cfg):
+            return False
+        import desk  # noqa: WPS433
+        c = desk.classify(home, cfg, rec)
+        if not c["work"]:
+            return False
+        if rec.get("to") == TRIAGE and len(c["targets"]) == 1:
+            rec["to"] = c["targets"][0]
+        rec.update({"status": "new", "away_route": "committee", "away_at": now_ms()})
+        audit(home, {"type": "message", "action": "away-committee", "id": rec["id"], "to": rec["to"],
+                     "why": c["why"]})
+        return True
+    except Exception as exc:  # noqa: BLE001 - the usual routing then
+        sys.stderr.write("messages: away committee check: %s\n" % type(exc).__name__)
         return False
 
 
@@ -339,6 +376,16 @@ def release(home, mid, by, cfg=None):
         raise MessageError("not_held", "the message is not held")
     now = now_ms()
     decline = None
+    if asker_origin(rec, cfg) and decline_for_rec(home, cfg) is None and _away_committee(home, rec, cfg):
+        rec.update({"released_by": by, "released_at": now})
+        _write(path_of(home, mid), rec)
+        audit(home, {"action": "release", "id": mid, "by": by, "reason": rec.get("held_reason"), "result": "new"})
+        try:
+            import notify  # noqa: WPS433
+            notify.resolve("guard:held:%s" % mid)
+        except Exception:  # noqa: BLE001
+            pass
+        return rec
     if _to_desk(home, rec, cfg):
         rec.update({"status": "desk", "desk": _desk_block(now, cfg), "released_by": by, "released_at": now})
         _desk_work(home, rec, now, cfg)
@@ -369,6 +416,12 @@ def release(home, mid, by, cfg=None):
     except Exception:  # noqa: BLE001
         pass
     return rec
+
+
+def decline_for_rec(home, cfg=None):
+    """lib/availability.py decline_reason (for an asker's message): None when nothing declines."""
+    import availability  # noqa: WPS433
+    return availability.decline_reason(home, cfg if cfg is not None else fleet.load_fleet())
 
 
 def asker_origin(rec, cfg=None):
@@ -480,10 +533,12 @@ def relay_text(rec, cfg=None):
     if rec.get("released_by"):
         note += "(%s) " % (RELEASED_NOTE % rec["released_by"])
     if rec.get("kind") == "asker":
-        # never a [BOARD ask] from the owner: the sender, and that it decides nothing, come first
-        return ("[BOARD asker %s] from %s (%s): %s%s — reply to BOARD via SendMessage, starting with [re %s]"
+        # never a [BOARD ask] from the owner: the sender, and that it decides nothing, come first;
+        # while the owner is away with "committee", that the sessions may take it up themselves
+        away = " (%s)" % AWAY_COMMITTEE_NOTE if rec.get("away_route") == "committee" else ""
+        return ("[BOARD asker %s] from %s (%s)%s: %s%s — reply to BOARD via SendMessage, starting with [re %s]"
                 % (rec["id"], defang(guard.scrub(str(rec.get("asker") or rec.get("by") or "?"))), ASKER_NOTE,
-                   note, not_owner(defang(guard.scrub(rec.get("body") or ""))), rec["id"]))
+                   away, note, not_owner(defang(guard.scrub(rec.get("body") or ""))), rec["id"]))
     api = rec.get("api") if isinstance(rec.get("api"), dict) else None
     if api or rec.get("kind") == "api":
         api = api or {}
