@@ -83,6 +83,8 @@ jobs:
         run: python3 tests/test_press_tall.py -v
       - name: press on a boxed form of several questions (private tmux) tests
         run: python3 tests/test_press_form.py -v
+      - name: press on multi-select questions (private tmux) tests
+        run: python3 tests/test_press_multiselect.py -v
       - name: pomodoro tests
         run: python3 tests/test_pomodoro.py -v
       - name: scheduler tests

@@ -1075,7 +1075,38 @@ FAKE_TMUX_SCREEN="$(qscreen)" press CP answer --expect tu_q7
 eq "...press refused -> exit 4" "$?" "4"
 qdone tu_q7
 d="$(askq tu_q8 '[{"question":"Which tools?","header":"Tools","options":[{"label":"lint","description":""},{"label":"test","description":""}],"multiSelect":true}]')"
-eq "multiSelect -> not pressable" "$(dj "$d" .pressable)" "false"
+eq "multiSelect -> pressable (answered by its labels)" "$(dj "$d" .pressable)" "true"
+"$B" answer "$d" "lint" --by user-1 >/dev/null
+eq "...a plain answer relays by message" "$(dj "$d" .relay)" "operator"
+FAKE_TMUX_SCREEN="$(qscreen)" press CP answer --expect tu_q8
+eq "...and press refuses it -> exit 4" "$?" "4"
+"$B" answer "$d" --options 1 --by user-1 >/dev/null 2>&1
+eq "...--options refused for a multi-select question -> exit 2" "$?" "2"
+msf="$(mktemp -p "$T")"
+for bad_ms in '[{"labels":["lint","lint"]}]' '[{"labels":["Lint"]}]' '[{"labels":["lint "]}]' '[{"option":1}]' '[{"text":"lint"}]' \
+              '[{"labels":"lint"}]' '[{"labels":[1]}]' '[{"labels":["lint"],"option":1}]' '[]' '[{"labels":["lint"]},{"labels":[]}]'; do
+  printf '%s' "$bad_ms" > "$msf"
+  "$B" answer "$d" --form-file "$msf" --by user-1 >/dev/null 2>&1
+  eq "...labels $bad_ms refused -> exit 2" "$?" "2"
+done
+eq "...a refused answer leaves the plain one" "$(dj "$d" '[.answer, .relay] | join("/")')" "lint/operator"
+printf '%s' '[{"question_index":0,"labels":["test","lint"]}]' > "$msf"
+"$B" answer "$d" --form-file "$msf" --by user-1 >/dev/null
+eq "...labels -> option numbers ascending, relay by press" "$(dj "$d" '[(.answer_options | tojson), (.answer_texts | tojson), .relay] | join(" ")')" "[[1,2]] [null] press"
+eq "...answer composed in option order" "$(dj "$d" .answer)" "Tools: lint, test"
+printf '%s' '[{"labels":[]}]' > "$msf"
+"$B" answer "$d" --form-file "$msf" --by user-1 >/dev/null
+eq "...no box checked is an answer too" "$(dj "$d" '[(.answer_options | tojson), .answer] | join(" ")')" "[[]] Tools: (none)"
+QS2='[{"question":"Which color?","header":"Color","options":[{"label":"Red","description":""},{"label":"Blue","description":""}],"multiSelect":false},{"question":"Which tools?","header":"Tools","options":[{"label":"lint","description":""},{"label":"test","description":""},{"label":"docs","description":""}],"multiSelect":true}]'
+d2="$(askq tu_q8b "$QS2")"
+eq "a form with a multi-select question -> pressable" "$(dj "$d2" .pressable)" "true"
+printf '%s' '[{"labels":["Red"]},{"labels":["docs"]}]' > "$msf"
+"$B" answer "$d2" --form-file "$msf" --by user-1 >/dev/null 2>&1
+eq "...labels on a single-select question refused -> exit 2" "$?" "2"
+printf '%s' '[{"option":2},{"labels":["docs","lint"]}]' > "$msf"
+"$B" answer "$d2" --form-file "$msf" --by user-1 >/dev/null
+eq "...mixed form recorded" "$(dj "$d2" '[(.answer_options | tojson), .answer, .relay] | join(" | ")')" "[2,[1,3]] | Color: Blue · Tools: lint, docs | press"
+qdone tu_q8b
 qdone tu_q8
 tok="ghp""_abcdefghijklmnopqrstuvwxyz0123456789"
 LQ="$(jq -cn --arg q "Deploy with token $tok now? $(printf 'q%.0s' $(seq 1 400))" --arg l "$(printf 'Option\033[31m one\001 '; printf 'l%.0s' $(seq 1 100))" --arg dsc "$(printf 'x%.0s' $(seq 1 200))" \

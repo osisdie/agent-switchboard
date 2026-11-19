@@ -955,6 +955,42 @@ ls "$BOARD_HOME"/.form.* >/dev/null 2>&1 && bad "  the form file is removed" || 
 cp "$T/screen.saved" "$FAKE_TMUX_SCREEN"
 rm -f "$BOARD_HOME/decisions/d-1-pqt.json"
 rm -f "$BOARD_HOME/decisions/d-1-pqm.json"
+# Multi-select: {answers: [{question_index, labels: [...]}]}, alone or in a form.
+paneq d-1-pqt tu_qt "$Q2F" true
+eq "labels on a single-select question of a form 400" "$(post /api/decisions/d-1-pqt/answer '{"answers":[{"labels":["Red"]},{"option":1}]}')/$(body .error)" "400/bad_answers"
+rm -f "$BOARD_HOME/decisions/d-1-pqt.json"
+paneq d-1-pqs tu_qs "$Q1" true
+eq "one answer for a single single-select question 400" "$(post /api/decisions/d-1-pqs/answer '{"answers":[{"option":1}]}')/$(body .error)" "400/bad_options"
+rm -f "$BOARD_HOME/decisions/d-1-pqs.json"
+QMS='[{"question":"Which fruits should go into the basket today?","header":"Fruits","options":[{"label":"Apple","description":""},{"label":"Banana","description":""},{"label":"Cherry","description":""}],"multiSelect":true}]'
+paneq d-1-pms tu_ms "$QMS" true
+A='/api/decisions/d-1-pms/answer'
+eq "multi-select: a repeated label 400" "$(post $A '{"answers":[{"labels":["Apple","Apple"]}]}')/$(body .error)" "400/bad_answers"
+eq "multi-select: not an option label (case differs) 400" "$(post $A '{"answers":[{"labels":["apple"]}]}')/$(body .error)" "400/bad_answers"
+eq "multi-select: labels not a list 400" "$(post $A '{"answers":[{"labels":"Apple"}]}')/$(body .error)" "400/bad_answers"
+eq "multi-select: an option number 400" "$(post $A '{"answers":[{"option":1}]}')/$(body .error)" "400/bad_answers"
+eq "multi-select: free text 400" "$(post $A '{"answers":[{"text":"Apple"}]}')/$(body .error)" "400/bad_answers"
+eq "multi-select: a plain answer 400" "$(post $A '{"answer":"Apple"}')/$(body .error)" "400/bad_answers"
+eq "multi-select: options 400" "$(post $A '{"options":[1]}')/$(body .error)" "400/bad_options"
+eq "multi-select: labels with option 400" "$(post $A '{"answers":[{"labels":["Apple"],"option":1}]}')/$(body .error)" "400/bad_answers"
+eq "  nothing recorded" "$(jq -r '.status' "$BOARD_HOME/decisions/d-1-pms.json")" "pending"
+: > "$FAKE_TMUX_LOG"
+eq "multi-select: labels, a screen that is not the form -> 409 screen_not_ready" "$(post $A '{"answers":[{"question_index":0,"labels":["Cherry","Apple"]}]}')/$(body .error)" "409/screen_not_ready"
+grep -q '^send-keys' "$FAKE_TMUX_LOG" && bad "  no key sent" || ok "  no key sent"
+cp "$FAKE_TMUX_SCREEN" "$T/screen.saved"
+# The question as Claude Code draws it (tests/fixtures/multiselect), never redrawn: the first box is
+# toggled, then it never flips -> 409 partial, nothing more sent.
+printf '←  ☐ Fruits  ✔ Submit  →\n\nWhich fruits should go into the basket today?\n\n❯ 1. [ ] Apple\n  2. [✔] Banana\n  3. [ ] Cherry\n  4. [ ] Type something\n     Submit\n───\n  5. Chat about this\n\nEnter to select · ↑/↓ to navigate · Esc to cancel\n' > "$FAKE_TMUX_SCREEN"
+: > "$FAKE_TMUX_LOG"
+eq "multi-select: labels recorded, then pressed (409 partial here)" "$(post $A '{"answers":[{"question_index":0,"labels":["Cherry","Apple"]}]}')/$(body .error)" "409/partial"
+eq "  recorded by board answer --form-file" "$(jq -c '[.answer, .answer_options, .answered_by]' "$BOARD_HOME/decisions/d-1-pms.json")" '["Fruits: Apple, Cherry",[[1,3]],"local"]'
+eq "  only the first differing box was toggled" "$(grep '^send-keys' "$FAKE_TMUX_LOG" | tr '\n' '|')" "send-keys -t %42 1|"
+eq "  the box did not flip: box true, status_reason partial_box" "$(body .box)/$(jq -r '"\(.status)/\(.status_reason)"' "$BOARD_HOME/decisions/d-1-pms.json")" "true/stale/partial_box"
+grep -q 'Type something' "$T/body" && ok "  says a digit may be left in Type something" || bad "  says a digit may be left in Type something" "$(cat "$T/body")"
+eq "  state lists the code" "$(req GET /api/state >/dev/null; body '.decisions[] | select(.id=="d-1-pms") | .status_reason')" "partial_box"
+ls "$BOARD_HOME"/.form.* >/dev/null 2>&1 && bad "  the form file is removed" || ok "  the form file is removed"
+cp "$T/screen.saved" "$FAKE_TMUX_SCREEN"
+rm -f "$BOARD_HOME/decisions/d-1-pms.json"
 paneq d-1-pq1 tu_q1 "$Q1" true
 eq "state lists the pane question with its questions" "$(req GET /api/state >/dev/null; body '.decisions[] | select(.id=="d-1-pq1") | "\(.source)/\(.pressable)/\(.questions[0].options[1].description)"')" "pane/true/cool"
 jq '.labels_clipped = false' "$BOARD_HOME/decisions/d-1-pq1.json" > "$T/pq" && mv "$T/pq" "$BOARD_HOME/decisions/d-1-pq1.json"

@@ -1,0 +1,14 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Toppings  ☒ Crust  ☒ Sides  ✔ Submit  →
+
+Review your answers
+
+ ● Which toppings go on the pizza tonight?
+   → Olives, Peppers
+ ● Which crust do you want?
+   → Thick
+ ● Which sides should we order with it?
+   → Fries
+
+❯ 1. Submit answers
+  2. Cancel

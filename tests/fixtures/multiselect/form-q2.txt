@@ -1,0 +1,14 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Toppings  ☐ Crust  ☐ Sides  ✔ Submit  →
+
+Which crust do you want?
+
+❯ 1. Thin
+     Light and crispy base
+  2. Thick
+     Soft, bready and filling
+  3. Type something.
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel

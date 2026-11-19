@@ -1,0 +1,19 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☐ Toppings  ☐ Crust  ☐ Sides  ✔ Submit  →
+
+Which toppings go on the pizza tonight?
+
+❯ 1. [ ] Cheese
+         Classic mozzarella topping
+  2. [ ] Olives
+         Briny black or green olives
+  3. [ ] Peppers
+         Sweet bell peppers for crunch
+  4. [ ] Onions
+         Sharp, savory onion rings
+  5. [ ] Type something
+     Next
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  6. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel

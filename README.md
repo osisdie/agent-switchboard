@@ -188,7 +188,7 @@ your `statusLine` and removes the symlinks.
   | `remote_url_prefix` | `https://claude.ai/code/` | prefix for each session's Remote Control link |
   | `serve.enabled`, `serve.port` | `false`, `39410` | self-hosted board: `fleet-up` starts `board-serve`; the local listener (identity `local`) |
   | `serve.tunnel.*` | off | `enabled`, `port` (port + 1), `hostname`, `team_domain`, `aud`: the listener cloudflared points at; identity = the email of a verified Cloudflare Access token |
-  | `press.prompt_regex`, `press.question_regex`, `press.free_text_label`, `press.tabbar_regex`, `press.review_regex`, `press.submit_label`, `press.focus_regex`, `press.lines`, `press.allow_keys`, `press.deny_keys`, `press.scrollback_lines`, `press.turn_regex` | see example | the screen checks and keys used by `board press` (`question_regex`: the AskUserQuestion picker; `tabbar_regex`, `review_regex`, `submit_label`: a form of several questions; `scrollback_lines` (200, 0 = off), `turn_regex`: where the start of a shortened question taller than the pane may be found) |
+  | `press.prompt_regex`, `press.question_regex`, `press.free_text_label`, `press.tabbar_regex`, `press.review_regex`, `press.submit_label`, `press.next_key`, `press.focus_regex`, `press.lines`, `press.allow_keys`, `press.deny_keys`, `press.scrollback_lines`, `press.turn_regex` | see example | the screen checks and keys used by `board press` (`question_regex`: the AskUserQuestion picker; `tabbar_regex`, `review_regex`, `submit_label`: a form of several questions; `next_key` (Right or Tab): leaves a multi-select question; `scrollback_lines` (200, 0 = off), `turn_regex`: where the start of a shortened question taller than the pane may be found) |
 
 - `.env`: alert channels (Slack, email, LINE, SNS, webhook; all optional, see
   [Alerting & escalation](#alerting--escalation)). Start from `.env.example`.
@@ -505,7 +505,7 @@ to the Artifact or put in an alert. Turn the prompt off with `cards: {show_promp
   after a key was sent, Enter is not pressed and the card says to finish in the session (exit 5).
   A longer answer goes to the session as a `[BOARD decision <id>]` message instead. Option buttons
   also send the option number, which must match the label; repeated labels make the card read-only.
-  A form of several questions (up to 4, single-select) shows option buttons per question on the
+  A form of several questions (up to 4) shows option buttons per question on the
   self-hosted board, and a text box under each: pick an option or type an answer for each, then
   **Send answers**. `board press` goes question by question, checking each one on screen: an option
   is its digit; typed text picks that question's "Type something" row, types the text, and presses
@@ -513,7 +513,14 @@ to the Artifact or put in an alert. Turn the prompt off with `cards: {show_promp
   and picks **Submit answers** (never Enter there). If, before the first key, the screen shows the
   form elsewhere (another question, say) while the prompt is still open, nothing is pressed and
   the card goes back to pending (exit 7), to send again or answer in the session. Typed text becomes one line (line breaks and
-  control characters turn into spaces), at most 200 characters, and goes through the secret guard. Multi-select or a clipped option label make a read-only card: answer it in the session.
+  control characters turn into spaces), at most 200 characters, and goes through the secret guard.
+  A multi-select question (alone or in a form) shows checkboxes on the self-hosted board, no
+  typed answer; checking none is allowed. `board press` reads the boxes already checked in the pane,
+  toggles only the ones that differ (a digit toggles a box), checks each flip on screen, moves on
+  with Right, and on the review screen accepts the labels in any order (the TUI lists them in the
+  order they were checked). It never types into that question's "Type something" row, and stops
+  (exit 3) when that row is checked, edited or focused. A clipped option label makes a read-only
+  card: answer it in the session.
   When the session moves on, the card goes stale.
 
 ### Messages

@@ -1,0 +1,10 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Fruits  ✔ Submit  →
+
+Review your answers
+
+ ● Which fruits should go into the basket today?
+   → Apple, Cherry
+
+❯ 1. Submit answers
+  2. Cancel

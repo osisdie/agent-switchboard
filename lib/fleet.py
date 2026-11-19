@@ -52,6 +52,10 @@ DEFAULTS = {
         "review_regex": r"Review your answers",
         "focus_regex": r"(❯|>|›)",
         "submit_label": r"Submit answers",
+        # A multi-select question ("1. [ ] Apple" rows; a digit toggles its box, the cursor stays):
+        # the key that leaves it for the next question, or the review screen after the last one
+        # (Right or Tab; never Enter, which toggles the focused row).
+        "next_key": "Right",
         # The TUI scrolled up with a prompt open: one of its last 2 non-blank lines is, as a whole line,
         # "4 new messages (ctrl+End) ↓". board press then sends scroll_key (scroll to the bottom; never
         # submits in Claude Code's TUI) once and looks again.

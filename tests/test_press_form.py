@@ -15,6 +15,7 @@ test's temporary directory, TMUX unset); only that server is killed. Never reads
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -48,7 +49,7 @@ os.environ["PATH"] = BIN + os.pathsep + os.environ["PATH"]
 BOARD = os.path.join(REPO, "bin", "board")
 HOOK = os.path.join(REPO, "hooks", "board-hook.sh")
 sys.path.insert(0, os.path.join(REPO, "tests"))
-from fake_claude_tui import FORM  # noqa: E402
+from fake_claude_tui import FORM, Tui  # noqa: E402
 
 
 def tmux(*args):
@@ -78,7 +79,7 @@ class BoxedForm(unittest.TestCase):
     def tearDown(self):
         tmux("kill-server")   # only the private server of this test
 
-    def start(self, state, nq, answer, rows=40):
+    def start(self, state, nq, answer, rows=40, env=None):
         """The fake TUI in STATE, the hook told about the first NQ questions of FORM, and the
         decision answered with ANSWER (board answer arguments). Returns (dir, decision id)."""
         with open(os.path.join(CFG, "fleet.yaml"), "w") as fh:
@@ -86,6 +87,8 @@ class BoxedForm(unittest.TestCase):
             fh.write("approvers: [local]\npress:\n  tui_command_regex: ''\nsessions:\n  - code: CP\n    cwd: /w\n")
         d = tempfile.mkdtemp(dir=TMP)
         cmd = "%s %s %s %s" % (sys.executable, os.path.join(REPO, "tests", "fake_claude_tui.py"), d, state)
+        if env:   # the fake TUI's drawing options (FAKE_TUI_*), plain words only
+            cmd = "env %s %s" % (" ".join("%s='%s'" % kv for kv in sorted(env.items())), cmd)
         for _ in range(3):   # a server still shutting down refuses new-session
             tmux("new-session", "-d", "-s", "CP", "-x", "60", "-y", str(rows), cmd)
             for _ in range(100):
@@ -194,6 +197,70 @@ class BoxedForm(unittest.TestCase):
             lines = t.form_lines()
             tab = max(i for i, ln in enumerate(lines) if ln.startswith("←"))
             self.assertEqual(len(lines) - 1 - tab > 30, tall, state)
+
+    def test_labelled_rule_under_review(self):
+        # Claude Code 2.1.327 draws the session's name in the rule under the review screen's rows
+        # ("───── CP ─", tests/fixtures/press/review-labelled-rule.txt) and under the question
+        # screens: the review is submitted when the name is this session's
+        for state, nq, answer, keys, want in (
+                ("form2", 2, ["--options", "2,1"], ["2", "1", "1"], ["人層", "Small"]),
+                ("form4", 4, ["--options", "1,2,1,2"], ["1", "2", "1", "2", "1"], ["公司層", "Large", "Round", "Marketing"])):
+            with self.subTest(state):
+                self.setUp()
+                d, did = self.start(state, nq, answer, env={"FAKE_TUI_RULE_LABEL": "CP"})
+                screen = tmux("capture-pane", "-p", "-t", "CP")
+                self.assertRegex(screen, r"\n─+ CP ─\n?", "the question screen ends with the labelled rule")
+                rc, out = board("press", "CP", "answer", "--expect", "tu_form")
+                self.assertEqual(rc, 0, out + tmux("capture-pane", "-p", "-t", "CP"))
+                self.assertEqual(self.answers(d), want)
+                self.assertEqual(self.keys(d), keys)
+
+    def test_labelled_rule_fixture_shape(self):
+        # the fake's review tail is the live pane's, the rule's length aside
+        os.environ["FAKE_TUI_RULE_LABEL"] = "CP"
+        try:
+            t = Tui(TMP, "form2")
+            t.form_init()
+            t.answers, t.state = ["人層", "Small"], "review"
+            tail = [ln for ln in t.form_lines() if ln.strip()][-4:]
+        finally:
+            del os.environ["FAKE_TUI_RULE_LABEL"]
+        with open(os.path.join(REPO, "tests", "fixtures", "press", "review-labelled-rule.txt"), encoding="utf-8") as fh:
+            real = fh.read().rstrip("\n").split("\n")
+        squash = lambda xs: [re.sub("─+", "─", x) for x in xs]  # noqa: E731
+        self.assertEqual(squash(tail), squash(real))
+
+    def test_labelled_rule_with_another_name_or_more_words(self):
+        # a rule carrying another name, or more than one word, is not a rule: no submit (exit 5)
+        for label in ("OTHER", "CP extra"):
+            with self.subTest(label):
+                self.setUp()
+                d, did = self.start("form2", 2, ["--options", "2,1"], env={"FAKE_TUI_RULE_LABEL": label})
+                rc, out = board("press", "CP", "answer", "--expect", "tu_form", )
+                self.assertEqual(rc, 5, out)
+                self.assertIn("no single focused", out)
+                time.sleep(0.3)
+                self.assertEqual(self.keys(d), ["2", "1"])
+                self.assertIsNone(self.answers(d))
+
+    def test_review_rows_three_columns_in_are_not_answer_text(self):
+        # the rows drawn right under the last answer, 3 columns in ("   ❯ 1. Submit answers"):
+        # never joined to that answer as a wrapped line
+        d, did = self.start("form2", 2, ["--options", "2,1"], env={"FAKE_TUI_REVIEW_TIGHT": "1"})
+        rc, out = board("press", "CP", "answer", "--expect", "tu_form")
+        self.assertEqual(rc, 0, out + tmux("capture-pane", "-p", "-t", "CP"))
+        self.assertEqual(self.answers(d), ["人層", "Small"])
+
+    def test_three_column_line_under_an_answer_is_joined_to_it(self):
+        # a line 3 columns in under "→ 人層" continues that answer: "人層wood" is not the chosen
+        # label, so nothing is submitted (exit 5)
+        d, did = self.start("form2", 2, ["--options", "2,1"], env={"FAKE_TUI_REVIEW_EXTRA": "   wood"})
+        rc, out = board("press", "CP", "answer", "--expect", "tu_form")
+        self.assertEqual(rc, 5, out)
+        self.assertIn("another answer for question 1", out)
+        time.sleep(0.3)
+        self.assertEqual(self.keys(d), ["2", "1"])
+        self.assertIsNone(self.answers(d))
 
     def test_other_question_showing_no_key(self):
         # question 1 was answered in the session: question 2 shows, the board expects question 1.

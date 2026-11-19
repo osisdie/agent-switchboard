@@ -186,7 +186,7 @@ scripts/setup-dev.sh           # only if you'll commit to this repo: pre-commit 
   | `remote_url_prefix` | `https://claude.ai/code/` | 每個 session 的 Remote Control 連結前綴 |
   | `serve.enabled`、`serve.port` | `false`、`39410` | 自架看板：由 `fleet-up` 啟動 `board-serve`；本機監聽器（身分為 `local`） |
   | `serve.tunnel.*` | 關閉 | `enabled`、`port`（port + 1）、`hostname`、`team_domain`、`aud`：cloudflared 指向的監聽器；身分 = 經過驗證的 Cloudflare Access token 裡的 email |
-  | `press.prompt_regex`、`press.question_regex`、`press.free_text_label`、`press.tabbar_regex`、`press.review_regex`、`press.submit_label`、`press.focus_regex`、`press.lines`、`press.allow_keys`、`press.deny_keys`、`press.scrollback_lines`、`press.turn_regex` | 見範例 | `board press` 用的畫面檢查與按鍵（`question_regex`：AskUserQuestion 選單；`tabbar_regex`、`review_regex`、`submit_label`：多題表單；`scrollback_lines`（200，0 = 關閉）、`turn_regex`：比 pane 還高的截短問題，到哪裡找它的開頭） |
+  | `press.prompt_regex`、`press.question_regex`、`press.free_text_label`、`press.tabbar_regex`、`press.review_regex`、`press.submit_label`、`press.next_key`、`press.focus_regex`、`press.lines`、`press.allow_keys`、`press.deny_keys`、`press.scrollback_lines`、`press.turn_regex` | 見範例 | `board press` 用的畫面檢查與按鍵（`question_regex`：AskUserQuestion 選單；`tabbar_regex`、`review_regex`、`submit_label`：多題表單；`next_key`（Right 或 Tab）：離開複選題；`scrollback_lines`（200，0 = 關閉）、`turn_regex`：比 pane 還高的截短問題，到哪裡找它的開頭） |
 
 - `.env`：告警管道（Slack、email、LINE、SNS、webhook，全部選用，見
   [告警與升級](#alerting--escalation)）。從 `.env.example` 開始改。
@@ -462,13 +462,16 @@ pane 標題裡的任務、執行中或閒置、記憶體用量）、已用的 co
   那一列（`press.free_text_label`）出現這段文字才按 Enter。送出部分按鍵後檢查失敗，就不按 Enter，卡片會請你到 session
   裡完成（exit 5）。選項按鈕也會送出選項編號，必須和標籤一致；標籤重複的卡片只能看。
   更長的回答改用 `[BOARD decision <id>]` 訊息送給 session。
-  多題表單（最多 4 題、單選）在自架看板上每題都有選項按鈕，下方還有文字框：每題選一個選項或輸入回答，
+  多題表單（最多 4 題）在自架看板上每題都有選項按鈕，下方還有文字框：每題選一個選項或輸入回答，
   再按**送出回答**。`board press` 會逐題確認畫面上的題目：選項就按它的數字；輸入的文字會先選該題的
   「Type something」列、輸入文字，等那一列顯示出這段文字才按 Enter（否則就停在那裡，exit 5）。最後確認
   檢查畫面，選 **Submit answers**（這裡絕不按 Enter）。按下第一個鍵之前，如果畫面上的表單停在別處（例如
   另一題），而這個提問還開著，就什麼都不按，卡片回到待回答（exit 7），可以再送一次或到 session 裡回答。輸入的文字會變成一行（換行與控制字元換成空白），
   最多 200 字元，並經過機密防護檢查。
-  複選或選項標籤被截短的卡片只能看，請到 session 裡回答。
+  複選題（單獨一題或在表單中）在自架看板上顯示勾選框，不能輸入文字；可以一個都不勾。`board press` 會先讀出
+  pane 裡已經勾選的項目，只切換不一致的那幾格（按數字會切換勾選），每切換一格都在畫面上確認，再按 Right
+  前往下一題；確認畫面上的標籤順序不拘（TUI 依勾選先後列出）。它絕不在該題的「Type something」列輸入，
+  那一列已勾選、已輸入或游標停在上面時就停下（exit 3）。選項標籤被截短的卡片只能看，請到 session 裡回答。
   session 往下走之後，卡片會變成 stale。
 
 ### 訊息

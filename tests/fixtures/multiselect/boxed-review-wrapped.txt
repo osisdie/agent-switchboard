@@ -1,0 +1,12 @@
+────────────────────────────────────────────────────────────
+←  ☒ Checks  ✔ Submit  →
+
+Review your answers
+
+ │ ● Which checks should run before the release?
+ │   Pick every check that applies.
+   → Unit tests across every supported runtime and platform
+   combination, Docs build
+
+❯ 1. Submit answers
+  2. Cancel

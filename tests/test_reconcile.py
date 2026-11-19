@@ -40,6 +40,20 @@ Q1 = [{"question": "Which color do you prefer for the test?", "header": "Color",
 Q2 = Q1 + [{"question": "Where should it go?", "header": "Target", "multiSelect": False,
             "options": [{"label": "Production", "description": "live"}, {"label": "Nowhere", "description": "skip"}]}]
 
+# Multi-select questions, as recorded from Claude Code 2.1.32x (tests/fixtures/multiselect/
+# posttooluse-*.json): the session reports the checked boxes as their labels joined by ", " in the
+# order they were checked; "" when boxes were checked and cleared, no entry when never touched.
+FIX = os.path.join(REPO, "tests", "fixtures", "multiselect")
+
+
+def fixture(name):
+    with open(os.path.join(FIX, name + ".json"), encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+QM = fixture("posttooluse-form-cleared")["tool_input"]["questions"]   # Toppings (multi), Crust, Sides (multi)
+QF = fixture("posttooluse-single")["tool_input"]["questions"]          # Fruits (multi)
+
 
 def now_ms():
     return int(time.time() * 1000)
@@ -603,6 +617,132 @@ class Compare(unittest.TestCase):
 
 def tearDownModule():
     shutil.rmtree(TMP, ignore_errors=True)
+
+
+class MultiSelect(Base):
+    def outcome(self):
+        return [e for e in self.events() if e.get("event") == "PostToolUse"][-1]["outcome"]
+
+    def test_real_posttooluse_payloads(self):
+        # the payloads as the session sent them (only the hook's own fields set here)
+        for name, picks in (("posttooluse-single", [[1, 3]]),            # "Cherry, Apple"
+                            ("posttooluse-form-cleared", [[2, 3], 2, []]),  # "Olives, Peppers", "Thick", ""
+                            ("posttooluse-form-untouched", [[2, 4], 1, []])):  # "Onions, Olives", "Thin", (none)
+            p = fixture(name)
+            self.assertEqual(reconcile.hook_outcome(p, self.home), {"picks": picks, "text_sha": [None] * len(picks)}, name)
+            self.ask(p["tool_use_id"], p["tool_input"]["questions"])
+            self.hook(p)
+            self.assertEqual(self.outcome()["picks"], picks, name)
+
+    def test_multi_picks(self):
+        opts = [{"label": "North, East"}, {"label": "North"}, {"label": "East"}]
+        # labels holding ", ": read as a set; more than one way to read it is ambiguous
+        self.assertEqual(reconcile.multi_picks("North, East", opts), reconcile.AMBIGUOUS)   # [1] or [2, 3]
+        self.assertEqual(reconcile.multi_picks("East, North, East", opts), [1, 3])
+        self.assertEqual(reconcile.multi_picks("North, East, East", opts), [1, 3])
+        self.assertEqual(reconcile.multi_picks("North, East, North", opts), [1, 2])
+        self.assertEqual(reconcile.multi_picks("East,  North", opts), [2, 3])
+        self.assertEqual(reconcile.multi_picks("", opts), [])
+        self.assertIsNone(reconcile.multi_picks("East, East", opts))         # a label used twice
+        self.assertIsNone(reconcile.multi_picks("East, something else", opts))
+        self.assertIsNone(reconcile.multi_picks("east", opts))               # labels are exact
+
+    def test_ambiguous_labels_are_unknown_never_differs(self):
+        qs = [{"question": "Which regions should the report cover?", "header": "Regions", "multiSelect": True,
+               "options": [{"label": "North, East", "description": ""}, {"label": "North", "description": ""},
+                           {"label": "East", "description": ""}]}]
+        for tu, board_labels, pane, want in (
+                ("tu_a1", ["North", "East"], "North, East", ("answered_in_pane", "unknown")),   # [2,3] or [1]
+                ("tu_a2", ["North, East"], "North, East", ("answered_in_pane", "unknown")),
+                ("tu_a3", ["North", "East"], "East, North", ("relayed", "match")),            # one way only
+                ("tu_a4", ["North, East"], "East, North", ("answered_in_pane", "differs"))):
+            did = self.ask(tu, qs)
+            self.board_answer(did, "--form-file", self.form_file([{"labels": board_labels}]))
+            self.submit(tu, qs, {qs[0]["question"]: pane})
+            o = self.outcome()
+            self.assertNotEqual(o["picks"][0] is None and o["text_sha"][0] is not None, True, "never hashed as free text")
+            self.collect()
+            d = self.read(did)
+            self.assertEqual((d["status"], d["reconcile_result"]), want, (board_labels, pane))
+
+    def test_empty_selection_is_an_answer(self):
+        # "" (boxes checked, then cleared) and no entry at all both match an empty answer, never
+        # no_answer; a box checked in the pane differs
+        for tu, answers, want in (("tu_e1", {QF[0]["question"]: ""}, ("relayed", "match")),
+                                  ("tu_e2", {}, ("relayed", "match")),
+                                  ("tu_e3", {QF[0]["question"]: "Banana"}, ("answered_in_pane", "differs"))):
+            did = self.ask(tu, QF)
+            d = self.board_answer(did, "--form-file", self.form_file([{"labels": []}]))
+            self.assertEqual((d["answer"], d["answer_options"]), ("Fruits: (none)", [[]]))
+            self.submit(tu, QF, answers)
+            self.assertEqual(self.outcome()["picks"], [[] if want[1] == "match" else [2]])
+            self.collect()
+            d = self.read(did)
+            self.assertEqual((d["status"], d["reconcile_result"]), want, answers)
+
+    def test_free_text_in_type_something_is_hashed(self):
+        self.ask("tu_m0", QF)
+        self.submit("tu_m0", QF, {QF[0]["question"]: "Apple, " + FREE})
+        o = self.outcome()
+        self.assertEqual(o["picks"], [None])
+        self.assertTrue(o["text_sha"][0])
+
+    def test_board_labels_then_session_outcome(self):
+        # the board recorded Toppings Olives + Onions, Crust Thin, Sides none; a press stopped at
+        # Submit, then the form was submitted in the pane
+        for tu, pane, want in (
+                ("tu_m1", ("Onions, Olives", "Thin", None), ("relayed", "match")),     # any order; Sides untouched
+                ("tu_m2", ("Olives, Onions", "Thin", ""), ("relayed", "match")),       # Sides cleared
+                ("tu_m3", ("Olives", "Thin", ""), ("answered_in_pane", "differs")),    # a box less
+                ("tu_m4", ("Olives, Onions", "Thin", "Soup"), ("answered_in_pane", "differs")),
+                ("tu_m5", ("Olives, Onions, " + FREE, "Thin", ""), ("answered_in_pane", "differs"))):
+            did = self.ask(tu, QM)
+            d = self.board_answer(did, "--form-file", self.form_file(
+                [{"labels": ["Onions", "Olives"]}, {"option": 1}, {"labels": []}]))
+            self.assertEqual((d["answer"], d["answer_options"], d["answer_texts"]),
+                             ("Toppings: Olives, Onions · Crust: Thin · Sides: (none)", [[2, 4], 1, []], [None, None, None]))
+            self.patch(did, status="stale", status_reason="partial")
+            answers = {QM[0]["question"]: pane[0], QM[1]["question"]: pane[1]}
+            if pane[2] is not None:
+                answers[QM[2]["question"]] = pane[2]
+            self.submit(tu, QM, answers)
+            self.collect()
+            d = self.read(did)
+            self.assertEqual((d["status"], d["reconcile_result"]), want, pane)
+
+    def test_single_multi_select_question(self):
+        for tu, pane, want in (("tu_s1", "Cherry, Apple", ("relayed", "match")),
+                               ("tu_s2", "Apple", ("answered_in_pane", "differs"))):
+            did = self.ask(tu, QF)
+            d = self.board_answer(did, "--form-file", self.form_file([{"question_index": 0, "labels": ["Apple", "Cherry"]}]))
+            self.assertEqual((d["answer"], d["answer_options"]), ("Fruits: Apple, Cherry", [[1, 3]]))
+            self.submit(tu, QF, {QF[0]["question"]: pane})
+            self.collect()
+            d = self.read(did)
+            self.assertEqual((d["status"], d["reconcile_result"]), want, pane)
+
+    def test_plain_label_answer_to_a_multi_select_question(self):
+        # relayed by message (not pressed): one label is that one box
+        for tu, pane, want in (("tu_l1", "Banana", ("relayed", "match")),
+                               ("tu_l2", "Banana, Apple", ("answered_in_pane", "differs")),
+                               ("tu_l3", "", ("answered_in_pane", "differs"))):
+            did = self.ask(tu, QF)
+            d = self.board_answer(did, "Banana")
+            self.assertEqual((d["answer_index"], d["relay"]), (2, "operator"))
+            self.patch(did, status="stale", status_reason="moved_on")
+            self.submit(tu, QF, {QF[0]["question"]: pane})
+            self.collect()
+            d = self.read(did)
+            self.assertEqual((d["status"], d["reconcile_result"]), want, pane)
+
+    def test_inconsistent_multi_fields(self):
+        did = self.ask("tu_i1", QF)
+        self.board_answer(did, "--form-file", self.form_file([{"labels": ["Apple"]}]))
+        for bad in ([[3, 1]], [[1, 1]], [[9]], [1], [[True]]):
+            self.patch(did, answer_options=bad)
+            self.assertEqual(reconcile.board_answers(self.read(did)), reconcile.INCONSISTENT, bad)
+        self.patch(did, answer_options=[[1]], answer="Fruits: Banana")   # another answer's options
+        self.assertEqual(reconcile.board_answers(self.read(did)), reconcile.INCONSISTENT)
 
 
 if __name__ == "__main__":

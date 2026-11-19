@@ -1,0 +1,17 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Toppings  ☒ Crust  ☐ Sides  ✔ Submit  →
+
+Which sides should we order with it?
+
+❯ 1. [ ] Salad
+         Fresh green side salad
+  2. [ ] Fries
+         Crispy golden potato fries
+  3. [ ] Soup
+         Warm bowl of soup of the day
+  4. [ ] Type something
+     Submit
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel
