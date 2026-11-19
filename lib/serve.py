@@ -2202,6 +2202,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         lib/asker_route.py; audited."""
         mode, away_askers = body.get("mode"), body.get("away_askers")
         n5, n7 = body.get("five_hour_below"), body.get("seven_day_below")
+        cfg = fleet.load_fleet()
+        by = match_id(ident, fleet.id_list(cfg, "approvers"))
+        if by is None or not is_owner(cfg, ident):     # first: every refusal is audited
+            self.audit(ident, via, "asker_route", mode=str(mode)[:40] if mode is not None else None,
+                       away_askers=str(away_askers)[:40] if away_askers is not None else None,
+                       result="refused", reason="not an owner")
+            raise Refused(403, "not_owner", "only the board's owner chooses who answers askers")
         if mode is not None and mode not in asker_route.MODES:
             raise Refused(400, "bad_mode", "mode must be \"local\" or \"claude_when_ample\"")
         if away_askers is not None and away_askers not in asker_route.AWAY_MODES:
@@ -2211,12 +2218,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 raise Refused(400, "bad_pct", "five_hour_below and seven_day_below are integers from 1 to 99")
         if mode is None and away_askers is None and n5 is None and n7 is None:
             raise Refused(400, "bad_request", "give mode, five_hour_below, seven_day_below or away_askers")
-        cfg = fleet.load_fleet()
-        by = match_id(ident, fleet.id_list(cfg, "approvers"))
-        if by is None or not is_owner(cfg, ident):
-            self.audit(ident, via, "asker_route", mode=mode, away_askers=away_askers, result="refused",
-                       reason="not an owner")
-            raise Refused(403, "not_owner", "only the board's owner chooses who answers askers")
         with self.server.write_lock:
             try:
                 changed, _s = asker_route.set_route(self.server.home, mode, "board:%s" % by, n5, n7, away_askers)

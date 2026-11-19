@@ -934,8 +934,10 @@ the thread itself. It also answers while you are on do-not-disturb or compute is
   do-not-disturb), askers' messages skip the desk and go the usual way (BOARD routes them to a
   session), with the longer context of a better model. Missing or stale usage keeps the desk. It
   switches to Claude only 5 points below a level and back at the level, so it doesn't flap. Default:
-  the local model. CLI: `board askers route local|ample [--5h N] [--7d M] --by WHO`,
-  `board askers route status`.
+  the local model. While the Claude route is in effect askers skip the desk entirely, so their work
+  requests get no "forward?" card either: the operator routes them, as before the desk existed. CLI:
+  `board askers route local|ample [--5h N] [--7d M] --by WHO`, `board askers route status` (like
+  `board dnd`, the CLI has no owner check: whoever runs it on this machine is trusted).
 - **While you are away** (owner-away mode), askers are never blocked on you. Profile menu, "While
   you're away, askers' requests": **Sessions** (default): a work request skips your "forward?" card
   and goes the usual way (BOARD routes it, the sessions handle it under the away and consensus

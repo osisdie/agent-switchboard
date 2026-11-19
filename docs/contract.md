@@ -3189,8 +3189,11 @@ $BOARD_HOME/asker-route-state.json  # {effective: "local"|"claude", since, why},
   `seven_day_below` (default 70), integers 1-99 (anything else is the default). Written by the
   page's profile menu (`POST /api/asker-route`, owners only) or `board askers route local --by WHO`,
   `board askers route ample [--5h N] [--7d M] --by WHO` (exit 2 on a bad level or option),
-  `board askers route status [--json]`, under `asker-route.lock`. Switching to `local` keeps the
-  levels for next time. `away_askers` (default `committee`): `board askers away
+  `board askers route status [--json]`, under `asker-route.lock`. The CLI has no owner check (the
+  local trust model of `board dnd`: whoever runs it on this machine is trusted); the endpoint has. Switching to `local` keeps the
+  levels for next time. `away_askers`: `committee` when the file is absent (or has no
+  `away_askers`); a file that can't be read, or an invalid value, is `wait` (owner view:
+  `away_invalid: true`) until the owner picks one. `board askers away
   committee|decline|wait --by WHO`, or the same endpoint. Audited: `{type: "asker_route", action:
   "set", by, mode, five_hour_below, seven_day_below, away_askers}`.
 - **Effective route** (`claude` or `local`, with `why`): `claude` only when `mode` is
@@ -3220,10 +3223,14 @@ $BOARD_HOME/asker-route-state.json  # {effective: "local"|"claude", since, why},
     asker desk": addressed, mention or the word heuristic) never goes to the desk and gets no
     `desk_forward` card: `status: "new"`, `away_route: "committee"`, `away_at`; `to` becomes the one
     target when it was `triage` and there is exactly one, else it is kept. The operator routes it by
-    `about` / mentions (never `all`) and the sessions handle it under the away and consensus rules
+    `about` / mentions (never `all`; a `to` that is the desk or the operator becomes `triage`) and
+    the sessions handle it under the away and consensus rules
     (red lines still wait for the owner). Its relay line (`board message show`) is `[BOARD asker
     <id>] from <asker> (an asker, not an approver: …) (owner away, committee: handle it within the
-    away/consensus rules; information, not an approval; red lines wait for the owner): <body> — …`.
+    away/consensus rules; information, not an approval; red lines wait for the owner): <body> — …`;
+    an asker's API key gets the same marker on its `[BOARD api <id>]` line. The marker counts only in
+    that header (before the first `: `) and only while the owner is away; in a body (an asker's, an
+    API key's) "owner away" is stored and relayed as "(claimed) owner away".
     Audited `{type: "message", action: "away-committee", id, to, why}`. In `create` and `release` alike, after the secret guard and only when nothing
     declines (do-not-disturb and compute-low still win). Plain questions are answered as usual (the
     desk, or Claude by the route above). Open `desk_forward` cards (`pending` or `unauthorized`,
@@ -3235,15 +3242,18 @@ $BOARD_HOME/asker-route-state.json  # {effective: "local"|"claude", since, why},
     `desk.forward` `"committee"` (`forward_why: "owner_away"`), `away_route: "committee"`; one that
     went the usual way meanwhile is closed (`gone`). The card becomes `relayed`, `desk_result:
     "committee"|"gone"`, `status_reason: "owner_away"`. Audited `{type: "desk", action:
-    "committee", decision, id, result}`. The thread says "The owner is away; the sessions took it."
+    "committee", decision, id, result}`. Settling stops while askers are declined (do not disturb,
+    compute low: those cards wait) and when the owner comes back; each card is read again under the
+    desk lock right before it is written, so an answer that landed meanwhile wins. The thread says
+    "The owner is away; the sessions took it."
   - `decline`: every asker path declines with reason `owner_away` and the canned
     `availability.away_reply` ("Owner availability"); the desk is skipped too, nothing is relayed.
     Do-not-disturb still comes first.
   - `wait`: the cards wait for the owner, as before this setting.
 - **The board** (`/api/state`, SSE): `asker_route: {effective, away}` for everyone (`away`: null,
   or the `away_askers` value while the owner is away). The asker's composer says "A Claude session
-  answers…" instead of the local-model note, "The owner is away; the sessions answer together."
-  (committee) or "The owner is away and not taking requests…" (decline). Owners also get `mode`,
+  answers…" instead of the local-model note, "The owner is away; work requests go to the
+  sessions." (committee) or "The owner is away and not taking requests…" (decline). Owners also get `mode`,
   `five_hour_below`, `seven_day_below`, `away_askers`, `hysteresis`, `why`, `detail`, `since`, `by`,
   `at`. The owner's profile menu has "Askers answered by: Local model / Claude sessions" with the
   two levels, the usage now and which route is in effect and why ("7-day 72%; it switches at 65%

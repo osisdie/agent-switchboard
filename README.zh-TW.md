@@ -828,9 +828,11 @@ Anthropic 相容端點的 Claude Code session（*服務台*，例如 `ASK`），
 - **算力夠時改用 Claude（選用）。** 擁有者可以在個人選單設定「提問者由誰回答：用量低於
   [5 小時 50%]、[7 天 70%] 時交給 Claude session」。帳號的兩個用量視窗都低於水位時（用量資料是新的、
   沒碰到用量上限、沒開勿擾），提問者的訊息就不經過服務台，照原本的流程由 BOARD 轉給 session，用較好的
-  模型、較長的 context 回答。沒有用量資料或資料太舊時，照樣交給服務台。低於水位 5 個百分點才切到
+  模型、較長的 context 回答。走 Claude 時完全不經過服務台，所以派工也不會建立「要不要轉送？」卡片，
+  由 BOARD 照服務台出現之前的方式轉送。沒有用量資料或資料太舊時，照樣交給服務台。低於水位 5 個百分點才切到
   Claude，回到水位就切回來，不會來回跳。預設是本機模型。CLI：`board askers route local|ample [--5h N]
-  [--7d M] --by WHO`、`board askers route status`。
+  [--7d M] --by WHO`、`board askers route status`（跟 `board dnd` 一樣，CLI 不檢查擁有者：能在這台機器上
+  執行的人就受信任）。
 - **你不在時**（不在模式），提問者不會卡在等你。個人選單的「你不在時，提問者的請求」：**Session**
   （預設）：派工不建立「要不要轉送？」卡片，照原本流程由 BOARD 轉給 session，各 session 依不在／共識
   規則處理（紅線仍等你回來）；你離開時還沒決定的卡片也同樣交給 session。單純提問照常回答。

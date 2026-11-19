@@ -1294,13 +1294,21 @@ def settle_away(home, cfg, now=None):
     that can still be forwarded goes the usual way (status "new"; to = the card's session, else its
     one target, else triage): the operator routes it and the sessions handle it under the away rules
     (desk.forward "committee"). One that went the usual way meanwhile just closes ("gone"). The card
-    becomes "relayed" with desk_result "committee"|"gone". Audited. Returns [(decision id, result)]."""
+    becomes "relayed" with desk_result "committee"|"gone". Audited. Returns [(decision id, result)].
+    Nothing while askers are declined (do not disturb, compute low): those cards wait. Each card is
+    checked again under the lock right before it is written (an owner's answer, or the owner coming
+    back, wins)."""
     import asker_route  # noqa: WPS433
+    import availability  # noqa: WPS433
     import messages  # noqa: WPS433
     out = []
-    if asker_route.away_mode(home) != "committee":
-        return out
     now = now_ms() if now is None else now
+
+    def still_on():
+        return asker_route.away_mode(home) == "committee" and availability.decline_reason(home, cfg, now) is None
+
+    if not still_on():
+        return out
     ddir = os.path.join(home, "decisions")
     try:
         names = sorted(n for n in os.listdir(ddir) if n.endswith(".json"))
@@ -1312,6 +1320,11 @@ def settle_away(home, cfg, now=None):
         for name in names:
             path = os.path.join(ddir, name)
             d = _read(path)
+            if d.get("kind") != FORWARD_KIND or d.get("status") not in ("pending", "unauthorized"):
+                continue
+            if not still_on():
+                break               # the owner is back (or askers are declined now): the rest wait
+            d = _read(path)         # an answer may have landed since the listing
             if d.get("kind") != FORWARD_KIND or d.get("status") not in ("pending", "unauthorized"):
                 continue
             req = d.get("request") if isinstance(d.get("request"), dict) else {}

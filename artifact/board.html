@@ -1496,7 +1496,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
             </div>
           </div>
           <p class="readonly-note" id="msg-paused" role="status" hidden data-i18n>The owner isn't taking requests right now. A message sent now gets an automatic reply and doesn't reach the sessions.</p>
-          <p class="readonly-note" id="msg-away" role="status" hidden data-i18n>The owner is away; the sessions answer together.</p>
+          <p class="readonly-note" id="msg-away" role="status" hidden data-i18n>The owner is away; work requests go to the sessions.</p>
           <p class="readonly-note" id="msg-away-off" role="status" hidden data-i18n>The owner is away and not taking requests. A message sent now gets an automatic reply and doesn't reach the sessions.</p>
           <p class="readonly-note" id="msg-claude" role="status" hidden data-i18n>A Claude session answers askers' questions right now: BOARD passes your message to the right session.</p>
           <p class="readonly-note" id="msg-local" role="status" hidden data-i18n>A local model answers askers' questions right now, straight from the code. Its answers are marked and may be less accurate.</p>
@@ -4893,7 +4893,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       + (mode === 'claude_when_ample' ? ' ' + tr('It switches to Claude only {m} points below a level, and back at the level.', { m: Number(R.hysteresis) || 5 }) : '');
     const am = S.awayPick || str(R.away_askers) || 'committee';
     for (const inp of document.querySelectorAll('input[name="sb-awayaskers"]')) inp.checked = inp.value === am;
-    $('#acct-ar-away-note').textContent = (R.away ? tr('You are away now.') + ' ' : '') + tr({
+    $('#acct-ar-away-note').textContent = (R.away_invalid ? tr('The saved setting could not be read, so requests wait for you until you pick one.') + ' ' : '')
+      + (R.away ? tr('You are away now.') + ' ' : '') + tr({
       committee: 'The sessions take askers\' work requests together; no card waits for you.',
       decline: 'Askers get an automatic reply; nothing is relayed.',
       wait: 'Askers\' work requests wait for your decision until you are back.' }[am] || '');
@@ -7856,7 +7857,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "Wait for me": "等我",
       "7-day": "7 天",
       "While you're away, askers' requests:": "你不在時，提問者的請求：",
-      "The owner is away; the sessions answer together.": "主人不在；由各 session 一起回答。",
+      "The owner is away; work requests go to the sessions.": "主人不在；派工會交給各 session 處理。",
       "The owner is away and not taking requests. A message sent now gets an automatic reply and doesn't reach the sessions.": "主人不在，目前不接受詢問或派工。現在送出的訊息會收到自動回覆，不會送到任何 session。",
       "Declined automatically, not relayed: the owner was away and not taking requests. The automatic reply is below.": "已自動婉拒，沒有轉送：當時主人不在，不接受詢問或派工。自動回覆在下方。",
       "The owner is away; the sessions took it.": "主人不在；已交給各 session 處理。",
@@ -7867,6 +7868,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "Now: the local model, while compute is short.": "目前：運算資源吃緊，由本機模型回答。",
       "Now: the local model: no usage data.": "目前：本機模型（沒有用量資料）。",
       "You are away now.": "你現在不在。",
+      "The saved setting could not be read, so requests wait for you until you pick one.": "儲存的設定讀不到，所以請求會等你決定，直到你重新選一個。",
       "The sessions take askers' work requests together; no card waits for you.": "提問者的派工由各 session 一起處理，不會有卡片等你決定。",
       "Askers get an automatic reply; nothing is relayed.": "提問者會收到自動回覆，不會轉送任何訊息。",
       "Askers' work requests wait for your decision until you are back.": "提問者的派工會等你回來決定。",

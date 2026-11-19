@@ -164,11 +164,20 @@ def defang(text):
 
 
 BY_OWNER_RE = re.compile(r"(?i)\bby\s+(?:the\s+)?owner\b")
+# the relay header's "(owner away, committee: ...)" marker (AWAY_COMMITTEE_NOTE): a body never carries it
+OWNER_AWAY_RE = re.compile(r"(?i)(?<!\(claimed\) )\bowner[\s_\-.,:;]*away\b")   # idempotent
+
+
+def no_away_claim(text):
+    """Words from an asker or an API key never read as the committee marker: "owner away" becomes
+    "(claimed) owner away" (only the relay header, before the colon, carries the real one)."""
+    return OWNER_AWAY_RE.sub(lambda m: "(claimed) " + m.group(0), text or "")
 
 
 def not_owner(text):
-    """An asker's words never claim the owner: "by owner (on board)" becomes "by (claimed) owner"."""
-    return BY_OWNER_RE.sub("by (claimed) owner", text or "")
+    """An asker's words never claim the owner: "by owner (on board)" becomes "by (claimed) owner",
+    and "owner away" (the committee marker) becomes "(claimed) owner away"."""
+    return no_away_claim(BY_OWNER_RE.sub("by (claimed) owner", text or ""))
 
 
 def asker_wait(home, by, now):
@@ -220,7 +229,7 @@ def create(home, to, body, by, background_alert=False, asker=None, api=None, dec
     mid = "m-%d-%s" % (now, secrets.token_hex(3))
     clean = guard.scrub(body.strip())
     rec = {"id": mid, "to": to, "by": by, "created_at": now, "status": "held" if reason else "new",
-           "body": not_owner(defang(clean)) if asker else defang(clean) if api else clean}
+           "body": not_owner(defang(clean)) if asker else no_away_claim(defang(clean)) if api else clean}
     if asker:
         rec.update({"kind": "asker", "asker": defang(guard.scrub(str(asker)))})
     elif api:
@@ -285,6 +294,9 @@ def _away_committee(home, rec, cfg=None):
             return False
         if rec.get("to") == TRIAGE and len(c["targets"]) == 1:
             rec["to"] = c["targets"][0]
+        elif rec.get("to") != TRIAGE and (rec.get("to") == desk.settings(cfg)["session"]
+                                          or rec.get("to") in desk.operator_codes(home)):
+            rec["to"] = TRIAGE      # never the desk or the operator: the operator routes it
         rec.update({"status": "new", "away_route": "committee", "away_at": now_ms()})
         audit(home, {"type": "message", "action": "away-committee", "id": rec["id"], "to": rec["to"],
                      "why": c["why"]})
@@ -542,10 +554,11 @@ def relay_text(rec, cfg=None):
     api = rec.get("api") if isinstance(rec.get("api"), dict) else None
     if api or rec.get("kind") == "api":
         api = api or {}
-        return ('[BOARD api %s] via API key "%s" (%s): %s%s — %s; reply to BOARD via SendMessage, starting '
+        away = " (%s)" % AWAY_COMMITTEE_NOTE if rec.get("away_route") == "committee" else ""
+        return ('[BOARD api %s] via API key "%s" (%s)%s: %s%s — %s; reply to BOARD via SendMessage, starting '
                 'with [re %s]' % (rec["id"], defang(guard.scrub(str(api.get("name") or "?"))),
-                                  defang(guard.scrub(str(api.get("owner") or "?"))), note,
-                                  defang(guard.scrub(rec.get("body") or "")), API_NOTE, rec["id"]))
+                                  defang(guard.scrub(str(api.get("owner") or "?"))), away, note,
+                                  no_away_claim(defang(guard.scrub(rec.get("body") or ""))), API_NOTE, rec["id"]))
     return ("[BOARD ask %s] %s%s — reply to BOARD via SendMessage, starting with [re %s]"
             % (rec["id"], note, guard.scrub(rec.get("body") or ""), rec["id"]))
 

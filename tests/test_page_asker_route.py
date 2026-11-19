@@ -25,13 +25,13 @@ check = pd.check
 L = {"en": {"legend": "Askers answered by", "default": "Now: the local model (the default).",
             "claude": "Now: Claude sessions answer askers.", "above": "5-hour 10%; it switches at 3% or lower",
             "away_label": "While you're away, askers' requests:", "away_now": "You are away now.",
-            "away_note": "The owner is away; the sessions answer together.",
+            "away_note": "The owner is away; work requests go to the sessions.",
             "away_off": "The owner is away and not taking requests.", "took": "The owner is away; the sessions took it.",
             "pill": "Askers: Claude sessions", "note": "A Claude session answers askers"},
      "zh-TW": {"legend": "提問者由誰回答", "default": "目前：本機模型（預設）。",
                "claude": "目前：由 Claude session 回答提問者。", "above": "5 小時 10%；降到 3% 以下才會切換",
                "away_label": "你不在時，提問者的請求：", "away_now": "你現在不在。",
-               "away_note": "主人不在；由各 session 一起回答。", "away_off": "主人不在，目前不接受詢問或派工。",
+               "away_note": "主人不在；派工會交給各 session 處理。", "away_off": "主人不在，目前不接受詢問或派工。",
                "took": "主人不在；已交給各 session 處理。",
                "pill": "提問者：Claude session", "note": "目前由 Claude session 回答"}}
 
@@ -199,7 +199,7 @@ def main():
                 ctx, page = pd.open_page(browser, base, lang, width)
                 page.wait_for_function("() => !document.getElementById('msg-away').hidden", timeout=10000)
                 v = page.evaluate(VIEW_JS)
-                check("asker %s: away + committee says the sessions answer together" % lang,
+                check("asker %s: away + committee says work requests go to the sessions" % lang,
                       v["composerAway"] == L[lang]["away_note"] and v["composerAwayOff"] is None
                       and v["scrollW"] <= v["vw"], v)
                 page.wait_for_selector("#thread-" + mid, timeout=10000)

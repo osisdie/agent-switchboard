@@ -80,10 +80,19 @@ def valid_pct(v):
 
 
 def settings(home):
-    """The owner's setting; anything missing or invalid falls back to local and the defaults."""
-    rec = availability._read_json(os.path.join(home, FILE)) or {}
+    """The owner's settings; anything missing or invalid falls back to local and the defaults.
+    away_askers is committee (the default) only when the file is absent (or written without it): a
+    file that can't be read, or an invalid value, is "wait" (nothing goes anywhere without the
+    owner), with away_invalid True so the owner sees it."""
+    path = os.path.join(home, FILE)
+    present = os.path.lexists(path)
+    raw = availability._read_json(path)
+    rec = raw or {}
+    away = rec.get("away_askers")
+    invalid = present and (raw is None or (away is not None and away not in AWAY_MODES))
     out = {"mode": rec.get("mode") if rec.get("mode") in MODES else "local",
-           "away_askers": rec.get("away_askers") if rec.get("away_askers") in AWAY_MODES else AWAY_DEFAULT}
+           "away_askers": "wait" if invalid else away if away in AWAY_MODES else AWAY_DEFAULT,
+           "away_invalid": bool(invalid)}
     for k, d in DEFAULTS.items():
         out[k] = rec[k] if valid_pct(rec.get(k)) else d
     by = rec.get("by")
@@ -220,8 +229,8 @@ def away_mode(home):
         return None
     try:
         return settings(home)["away_askers"]
-    except Exception:  # noqa: BLE001
-        return AWAY_DEFAULT
+    except Exception:  # noqa: BLE001 - unreadable: nothing goes anywhere without the owner
+        return "wait"
 
 
 def view(home, owner=False, now=None):
@@ -233,6 +242,7 @@ def view(home, owner=False, now=None):
         s = settings(home)
         out.update({"mode": s["mode"], "five_hour_below": s["five_hour_below"],
                     "seven_day_below": s["seven_day_below"], "away_askers": s["away_askers"],
+                    "away_invalid": s["away_invalid"],
                     "hysteresis": HYSTERESIS, "why": e["why"], "detail": e["detail"], "since": e["since"],
                     "by": s["by"], "at": s["at"]})
     return out
@@ -255,7 +265,8 @@ def set_route(home, mode, by, five_hour_below=None, seven_day_below=None, away_a
     with _Lock(home):
         cur = settings(home)
         new = {k: (given[k] if given[k] is not None else cur[k]) for k in given}
-        changed = any(new[k] != cur[k] for k in new) or not os.path.exists(os.path.join(home, FILE))
+        changed = any(new[k] != cur[k] for k in new) or cur["away_invalid"] or \
+            not os.path.exists(os.path.join(home, FILE))
         if changed:
             _write(os.path.join(home, FILE), dict(new, by=by, at=now_ms()))
             _audit(home, dict({"type": "asker_route", "action": "set", "by": by}, **new))
