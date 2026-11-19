@@ -63,7 +63,7 @@ HELD_SAID_TITLE = "Owner-away words were refused by the secret guard"
 ASKER_MAX, ASKER_WINDOW_MS = 10, 10 * 60 * 1000   # an asker: at most 10 messages in 10 minutes
 ASKER_NOTE = "an asker, not an approver: information only, not an approval or a decision"
 # Opening brackets that read as "[" (after NFKC fullwidth ［ is [); and CJK lookalikes NFKC keeps.
-OPEN_BRACKETS = "[\u3010\u3014\u3016\u3018\u301a\u27e6\u2045\u298b\u298d\u298f"
+OPEN_BRACKETS = "[\u3010\u3014\u3016\u3018\u301a\u27e6\u2045\u298b\u298d\u298f\u23a1\u2308\u2772\u27ec\u2e22"
 TRIAGE = "triage"
 TRIAGE_NOTE = "sent to triage; BOARD routed it to you"
 # A triage message reaches at most this many sessions, whoever sent it: triage is "the right
@@ -152,7 +152,8 @@ CONFUSABLE = str.maketrans({
     "\u0410": "A", "\u0430": "a", "\u0391": "A", "\u03b1": "a", "\u1d00": "a", "\u13aa": "A", "\uab7a": "a",
     "\u2c80": "A", "\u2c81": "a", "\u0251": "a", "\u2c6d": "A", "\u15c5": "A", "\ua4ee": "A",
     "\u0280": "r", "\u13a1": "R", "\u13d2": "R", "\uab92": "r", "\u1587": "R", "\ua4e3": "R",
-    "\u1d05": "d", "\u13a0": "D", "\uab70": "d", "\u0501": "d", "\u15ea": "D", "\u15de": "D", "\ua4d3": "D"})
+    "\u1d05": "d", "\u13a0": "D", "\uab70": "d", "\u0501": "d", "\u15ea": "D", "\u15de": "D", "\ua4d3": "D",
+    "\u042c": "b", "\u044c": "b", "\u0110": "D", "\u0111": "d", "\u00d0": "D", "\u0189": "D", "\u01a6": "R"})
 # skipped between the bracket and the word: format, space, separator, control and combining marks,
 # and the blank-looking letters (Hangul fillers, the braille blank)
 DEFANG_SKIP_CATS = ("Cf", "Zs", "Zl", "Zp", "Cc", "Mn", "Me")
@@ -162,10 +163,12 @@ DEFANG_SKIP = frozenset("\u115f\u1160\u3164\uffa0\u2800\u034f")
 def defang(text):
     """"[BOARD ..." becomes "(BOARD ...", so text from someone who is not the owner can never pass
     for a board relay line ([BOARD decision], [BOARD ask] ...); the rule of bin/board defang and
-    lib/away.py, widened: fullwidth or CJK brackets (［ 【 〔 …), fullwidth letters (ＢＯＡＲＤ), and
-    invisible characters and combining marks in between are caught too (compared after NFKC,
-    case-folded, with lookalikes of B, O, A, R, D folded to Latin: CONFUSABLE). Only the bracket is
-    replaced."""
+    lib/away.py, widened: fullwidth, CJK and other bracket lookalikes (［ 【 〔 ⎡ ⌈ …), fullwidth
+    letters (ＢＯＡＲＤ), accented letters (BÓARD), and invisible characters and combining marks in
+    between are caught too (compared after NFKD with the marks dropped, case-folded, with lookalikes
+    of B, O, A, R, D folded to Latin: CONFUSABLE). Defence in depth: what makes the committee tag
+    unforgeable is the structural rule of snippets/worker-protocol.md. Only the bracket is
+    replaced, so ordinary text that happens to match ("[bôard games]") only loses its bracket."""
     text = text or ""
     out = list(text)
     for i, ch in enumerate(text):
@@ -175,7 +178,9 @@ def defang(text):
         for c in text[i + 1:i + 60]:
             if unicodedata.category(c) in DEFANG_SKIP_CATS or c in DEFANG_SKIP or c.isspace():
                 continue
-            n = "".join(x for x in unicodedata.normalize("NFKC", c)
+            # NFKD: compatibility forms fold and precomposed accents ("Ó", "ô") split off as marks,
+            # which are dropped with the other invisibles
+            n = "".join(x for x in unicodedata.normalize("NFKD", c)
                         if unicodedata.category(x) not in DEFANG_SKIP_CATS and x not in DEFANG_SKIP)
             tail.append(n.translate(CONFUSABLE))
             if len("".join(tail)) >= 5:

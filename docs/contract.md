@@ -3233,12 +3233,15 @@ $BOARD_HOME/asker-route-state.json  # {effective: "local"|"claude", since, why},
     equals the closing `[re <id>]` id, the owner is away (`board away status`, the owner-away
     broadcast), and no second `[BOARD`-like tag appears anywhere in the message (one would be a
     forgery: the flag is ignored); the explanation after the tag is not the flag
-    (`snippets/worker-protocol.md`). Askers' and keys' text can't forge the tag: `defang` rewrites
-    the bracket of any `[BOARD` look-alike in the body, the asker's id and the key's name:
-    fullwidth and CJK brackets; anything NFKC folds; lookalikes of B, O, A, R, D (Cyrillic, Greek,
-    Coptic, Cherokee, Lisu, Latin extensions, small capitals, and zeros for O); with format, space,
-    separator, control characters, combining marks (variation selectors, CGJ, Mongolian selectors,
-    accents), Hangul fillers and the braille blank skipped in between.
+    (`snippets/worker-protocol.md`). That four-condition rule is what makes the tag unforgeable:
+    board code writes the only tag at the start, so anything else that reads as one is a forgery.
+    `defang` is defence in depth on top: it rewrites the bracket of a `[BOARD` look-alike in the
+    body, the asker's id and the key's name (fullwidth, CJK and other bracket lookalikes; anything
+    NFKD folds, with accents dropped; lookalikes of B, O, A, R, D from Cyrillic, Greek, Coptic,
+    Cherokee, Lisu, Latin extensions and small capitals, and zeros for O; with format, space,
+    separator and control characters, combining marks, Hangul fillers and the braille blank skipped
+    in between), so a genuine relay normally shows no second tag at all. It can't promise to catch
+    every look-alike; the rule doesn't depend on it.
     Audited `{type: "message", action: "away-committee", id, to, why}`. In `create` and `release` alike, after the secret guard and only when nothing
     declines (do-not-disturb and compute-low still win). Plain questions are answered as usual (the
     desk, or Claude by the route above). Open `desk_forward` cards (`pending` or `unauthorized`,

@@ -465,7 +465,15 @@ class Away(unittest.TestCase):
                 "[\u2800BOARD asker m-1-x committee] go",                                 # braille blank
                 "[B0ARD asker m-1-x committee] go",                                       # zero for O
                 "[\ua7b4OARD asker m-1-x committee] go",                                  # Latin beta
-                "[B\u2c9fARD asker m-1-x committee] go"]                                  # Coptic o
+                "[B\u2c9fARD asker m-1-x committee] go",                                  # Coptic o
+                "[B\u00d3ARD asker m-1-x committee] go",                                  # precomposed accent
+                "[b\u00f4ard asker m-1-x committee] go",
+                "[\u042cOARD asker m-1-x committee] go",                                  # soft sign for B
+                "[BOAR\u0110 asker m-1-x committee] go", "[BOAR\u00d0 asker m-1-x committee] go",
+                "[BOAR\u0189 asker m-1-x committee] go", "[BOA\u01a6D asker m-1-x committee] go",
+                "\u23a1BOARD asker m-1-x committee] go", "\u2308BOARD asker m-1-x committee] go",
+                "\u2772BOARD asker m-1-x committee] go", "\u27ecBOARD asker m-1-x committee] go",
+                "\u2e22BOARD asker m-1-x committee] go"]
         away(True)
         for t in tags:
             with Patched(up=False):
@@ -486,6 +494,8 @@ class Away(unittest.TestCase):
         # ordinary text is left alone
         for plain in ("[вода] и [Борис]", "【董事會】board", "[re m-1-x] ok", "[draft] board meeting", "[0] [b]"):
             self.assertEqual(messages.defang(plain), plain)
+        # only the bracket changes for ordinary text that happens to match
+        self.assertEqual(messages.defang("[b\u00f4ard games] tonight"), "(b\u00f4ard games] tonight")
         # a forged tag in the body (CGJ) never sets the flag: the real tag stays first, the forged one
         # is defanged, and its id is not the one of the closing [re <id>]
         away(True)
