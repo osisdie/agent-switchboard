@@ -495,7 +495,9 @@ The outcome is compared with the board's recorded answer and the result kept in
   link.
 - **Not delivered.** A decision whose answer was recorded but never reached the session carries
   `status_reason`, a fixed code (never free text): `screen` (press refused, exit 3), `partial`
-  (exit 5), `moved_on` (the collector marked it stale: the session moved on), `timeout`,
+  (exit 5), `partial_box` (exit 5: a box of a multi-select question did not flip, so nothing was
+  submitted; its digit may be left in "Type something", which the owner clears in the session;
+  board-serve's 409 `partial` then carries `box: true`), `moved_on` (the collector marked it stale: the session moved on), `timeout`,
   `not_approver` (unauthorized), `unknown_session` (no snapshot, row, pane or hook state for the
   session), `config` (press settings incomplete), `operator` (`board mark ID stale --reason
   operator`). `screen` is only for what the pane shows; a hook state past the prompt is `moved_on`.
@@ -561,8 +563,9 @@ text), on the question screen and on the review screen; on a narrow pane the foo
   picker footer (`press.question_regex`); after a digit, the screen must also differ from the one
   the digit was sent on. Each later screen is awaited up to `BOARD_PRESS_TRIES` captures (default
   20, `BOARD_PRESS_SETTLE` seconds apart), and the state is re-read before each. On the review
-  screen (`press.review_regex`): every question's start in order, exactly one `→` line per
-  question, each equal to the chosen label (whitespace ignored), and exactly one row containing
+  screen (`press.review_regex`): exactly one `→` line per question, each paired with the
+  question directly above it (its start, in order; see "Multi-select questions") and equal to the
+  chosen label (whitespace ignored), and exactly one row containing
   `press.submit_label`: the focused (`press.focus_regex`) `N.` row, after the answers. Below it
   only blank lines, the block's other numbered rows, horizontal rules (lines of box-drawing
   characters `─ ━ ═ ┄ ┅ ┈ ┉ ╌ ╍` and spaces) and, as the final lines, the picker footer
@@ -632,11 +635,24 @@ unanswered`; `1. Submit answers` still submits, and the session gets `""` for it
   focused; else exit 3 before any key (5 after), nothing typed there. The checked boxes are read
   from the screen (a human may have checked some), and only the boxes that differ from the answer
   are toggled, ascending, one digit at a time: after each the screen is re-captured (up to
-  `BOARD_PRESS_TRIES`) until the boxes read exactly as expected (else exit 5, partial, nothing
-  submitted). Then `press.next_key` (`Right`, or `Tab`; anything else → exit 3, `config`; Enter
-  is never used there). The review screen must list exactly the answered questions in order; a
-  multi-select one's `→` line must be its chosen labels, each once, in any order (compared with
-  whitespace removed, `,` between them), and the submit row's digit is pressed as for any form.
+  `BOARD_PRESS_TRIES`) until the boxes read exactly as expected (else exit 5, `status_reason:
+  "partial_box"`, nothing submitted, the note saying a digit may be left in "Type something").
+  Then `press.next_key` (`Right`, or `Tab`; anything else → exit 3, `config`; Enter is never
+  used there). On the review screen each `→` answer is paired with the block of lines directly
+  above it (its question, `●` or not, boxed or wrapped; back to the previous answer or blank
+  line): there must be exactly one such pair per answered question, in order, each block being
+  that question (all of it, or the stored start of a clipped one), so another question that
+  merely contains its text never stands in for it; an answer with no question above refuses.
+  A multi-select answer is checked against every set of that question's labels the line can be
+  read as (any order, `, ` between them; at most 2^8 sets): exactly one, and it must be the
+  chosen set; labels holding `", "` that make it readable two ways refuse (exit 5, nothing
+  submitted). Then the submit row's digit is pressed as for any form.
+- **Page.** Checkboxes per multi-select question on the self-hosted board (none checked is an
+  answer, but sending one or more such questions empty asks first, in the card); read-only with
+  a "(multi-select)" note on the Artifact page.
+- **Reconcile of a plain answer.** A lone multi-select question answered with one of its labels
+  as plain text (relayed by message) counts as that one box: it matches a session that checked
+  exactly that box.
 
 ## Artifact db (written by the BOARD operator session via Artifact write_db; page reads/writes)
 

@@ -259,6 +259,41 @@ class Press(unittest.TestCase):
         self.assertEqual(self.keys(d), ["1", "3", "Right", "1"])
         self.assertEqual(self.answers(d), ["North, East, East"])
 
+    def test_review_line_readable_as_more_than_one_set(self):
+        # "North" + "East" checked: the review says "North, East", which is also the one label
+        # "North, East": nothing is submitted (exit 5); the same for that one label
+        for labels, keys in ((["North", "East"], ["2", "3", "Right"]), (["North, East"], ["1", "Right"])):
+            with self.subTest(labels):
+                self.setUp()
+                d, did = self.start("msel-commas", "commas")
+                self.answer(did, [{"labels": labels}])
+                rc, out = self.press()
+                self.assertEqual(rc, 5, out)
+                self.assertIn("more than one way", out)
+                time.sleep(0.3)
+                self.assertEqual(self.keys(d), keys)
+                self.assertIsNone(self.answers(d))
+
+    def test_review_answer_paired_with_its_own_question(self):
+        # the board's answer: Sides = Fries, Kids = none. In the pane the boxes moved to Kids, whose
+        # text holds "Which sides?": the review lists only Kids → Fries. The answer under it is
+        # Kids', not Sides': nothing is submitted
+        d, did = self.start("msel-pair-mischief", "pair")
+        self.answer(did, [{"labels": ["Fries"]}, {"labels": []}])
+        rc, out = self.press()
+        self.assertEqual(rc, 5, out)
+        self.assertIn("another question where question 1 belongs", out)
+        time.sleep(0.3)
+        self.assertEqual(self.keys(d), ["2", "Right", "Right"])
+        self.assertIsNone(self.answers(d))
+        # without the move it goes through
+        self.setUp()
+        d, did = self.start("msel-pair", "pair")
+        self.answer(did, [{"labels": ["Fries"]}, {"labels": []}])
+        rc, out = self.press()
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.answers(d), ["Fries", ""])
+
     def test_box_that_does_not_flip_stops_before_submit(self):
         # digit 3 is ignored by the TUI: Apple was toggled, Cherry never flips -> exit 5, partial,
         # nothing more sent (no Right, no submit)
@@ -267,11 +302,12 @@ class Press(unittest.TestCase):
         rc, out = self.press(BOARD_PRESS_TRIES="5", BOARD_PRESS_SETTLE="0.1")
         self.assertEqual(rc, 5, out)
         self.assertIn("box 3 did not flip", out)
+        self.assertIn('the digit may be left in "Type something": clear it in the session', out)
         time.sleep(0.3)
         self.assertEqual(self.keys(d), ["1", "3"])
         self.assertIsNone(self.answers(d))
         dec = self.dec(did)
-        self.assertEqual((dec["status"], dec.get("status_reason")), ("stale", "partial"))
+        self.assertEqual((dec["status"], dec.get("status_reason")), ("stale", "partial_box"))
 
     def test_type_something_focused_sends_nothing(self):
         # a digit with "Type something" focused would be typed into it: refused before any key

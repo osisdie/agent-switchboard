@@ -882,7 +882,8 @@ def cards_for(sessions, approver):
 from tickets.viewer import tasks_for, ticket_text_for  # noqa: E402,F401
 
 
-REASON_CODES = ("screen", "partial", "moved_on", "timeout", "not_approver", "unknown_session", "operator", "config")
+REASON_CODES = ("screen", "partial", "partial_box", "moved_on", "timeout", "not_approver", "unknown_session", "operator",
+                "config")
 UNDELIVERED = ("stale", "timeout", "unauthorized")
 # How a pane prompt was settled from the session's report (lib/reconcile.py RESULTS).
 RECONCILE_RESULTS = ("match", "differs", "unknown", "no_answer")
@@ -1953,6 +1954,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                               extra={"scrolled": scrolled, "attempts": n, "question": bool(pane_q), "elsewhere": elsewhere})
             if rc == 5:  # free text typed into the picker, Enter not pressed
                 self.audit(ident, via, "press", id=did, code=code, key=answer, result="partial")
+                after = read_json(os.path.join(self.server.home, "decisions", did + ".json"))
+                if isinstance(after, dict) and after.get("status_reason") == "partial_box":
+                    # a box of a multi-select question did not flip: its digit may be in "Type something"
+                    raise Refused(409, "partial", "a box did not flip, so nothing was submitted; a digit may be left in "
+                                  "\"Type something\": clear it in the session", extra={"box": True})
                 raise Refused(409, "partial", "keys were sent but Enter was not pressed; finish in the session")
             if rc == 4:  # board press: no matching approver answer, a truncated summary, not pressable
                 self.audit(ident, via, "press", id=did, code=code, key=answer, result="refused")

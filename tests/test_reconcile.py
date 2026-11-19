@@ -721,6 +721,20 @@ class MultiSelect(Base):
             d = self.read(did)
             self.assertEqual((d["status"], d["reconcile_result"]), want, pane)
 
+    def test_plain_label_answer_to_a_multi_select_question(self):
+        # relayed by message (not pressed): one label is that one box
+        for tu, pane, want in (("tu_l1", "Banana", ("relayed", "match")),
+                               ("tu_l2", "Banana, Apple", ("answered_in_pane", "differs")),
+                               ("tu_l3", "", ("answered_in_pane", "differs"))):
+            did = self.ask(tu, QF)
+            d = self.board_answer(did, "Banana")
+            self.assertEqual((d["answer_index"], d["relay"]), (2, "operator"))
+            self.patch(did, status="stale", status_reason="moved_on")
+            self.submit(tu, QF, {QF[0]["question"]: pane})
+            self.collect()
+            d = self.read(did)
+            self.assertEqual((d["status"], d["reconcile_result"]), want, pane)
+
     def test_inconsistent_multi_fields(self):
         did = self.ask("tu_i1", QF)
         self.board_answer(did, "--form-file", self.form_file([{"labels": ["Apple"]}]))

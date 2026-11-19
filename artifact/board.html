@@ -2340,7 +2340,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
         // Checkboxes: any number of options, none included; kept in the draft so a re-render keeps
         // them. No free text here: the press never types into the session's "Type something".
         const group = h('div', { class: 'pq-opts', role: 'group', 'aria-label': tr('Options for question {n}', { n: qi + 1 }) });
-        const none = h('p', { class: 'pq-none', text: tr('No box checked: sent as an empty answer.') });
+        const none = h('p', { class: 'pq-none', text: tr('No box checked: sent as an empty answer, after you confirm.') });
         const sync = () => { none.hidden = picks[qi].length > 0; };
         opts.forEach((o, i) => {
           const on = picks[qi].includes(i + 1);
@@ -2356,6 +2356,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
             row.classList.toggle('picked', cb.checked);
             sync();
             if (sendMulti) sendMulti.disabled = !pickedAll();
+            if (S.confirm && S.confirm.id === d.id && S.confirm.choice === EMPTY_MS) { S.confirm = null; renderDecisions(); }
           });
           group.append(row);
         });
@@ -2414,9 +2415,13 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     if (liveMulti) {
       if (appr === false) card.append(h('p', { class: 'note noappr', text: tr('You are not an approver — your answer won\'t be sent.') }));
       const label = (q, n) => { const o = (q.options || [])[n - 1]; return str(o && typeof o === 'object' ? o.label : o); };
-      sendMulti = h('button', { class: 'btn primary', type: 'button', disabled: !pickedAll(), dataset: { focus: 'send-form' },
-        onclick: () => {
+      // A multi-select question with no box checked is a real answer (an empty one), but easy to
+      // send by mistake: it asks first, in the card.
+      const emptyMs = () => qs.map((q, i) => (q.multiSelect === true && Array.isArray(picks[i]) && !picks[i].length
+        ? (str(q.header).trim() || 'Q' + (i + 1)) : null)).filter((x) => x != null);
+      const send = () => {
           if (!pickedAll()) return;
+          S.confirm = null;
           // A multi-select question goes by its labels (exact, as the session sent them).
           const parts = qs.map((q, i) => (q.multiSelect === true ? { labels: picks[i].map((n) => label(q, n)) }
             : Number.isInteger(picks[i]) ? { option: picks[i] } : { text: cleanText(texts[i]) }));
@@ -2424,10 +2429,21 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
             : parts[i].labels ? (parts[i].labels.join(', ') || '(none)') : label(q, picks[i]))).join(' · ');
           if (parts.some((x) => x.text != null || x.labels)) answerDecision(d, text, null, null, parts.map((x, i) => Object.assign({ question_index: i }, x)));
           else answerDecision(d, text, null, picks.slice());
+      };
+      sendMulti = h('button', { class: 'btn primary', type: 'button', disabled: !pickedAll(), dataset: { focus: 'send-form' },
+        onclick: () => {
+          if (!pickedAll()) return;
+          if (emptyMs().length) askConfirm(d.id, EMPTY_MS); else send();
         }, text: tr(qs.length === 1 ? 'Submit' : 'Send answers') });
       card.append(h('div', { class: 'free' }, h('span', { class: 'help', text: tr(qs.length === 1 ? 'Check any options, then submit.'
         : anyMs ? 'Answer each question (check any options where several are allowed), then send them together.'
           : 'Pick an option or type an answer for each question, then send them together.') }), sendMulti));
+      if (conf === EMPTY_MS && emptyMs().length) {
+        card.append(h('div', { class: 'confirm-row pq-empty-ask' },
+          h('span', { class: 'q', text: tr('No box is checked for {which}. Send it as an empty answer?', { which: emptyMs().join(', ') }) }),
+          h('button', { class: 'btn solid allow', type: 'button', dataset: { focus: 'confirm' }, onclick: send, text: tr('Yes, send it empty') }),
+          h('button', { class: 'btn', type: 'button', onclick: () => { S.confirm = null; renderDecisions(); }, text: tr('Cancel') })));
+      }
     } else if (multi && busy) {
       card.append(h('p', { class: 'saving', text: tr('Sending your answer…') }));
     } else if (formOk && !multi) {
@@ -2580,6 +2596,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       trKnown(lvl, LEVELS), h('span', { class: 'via', text: via.length ? tr(' · escalated → {via}', { via: via.join(', ') }) : tr(' · escalated') }));
   }
   const RESOLVE = '\u0000resolve';  // the confirm step of "Mark answered in session" (never an option)
+  const EMPTY_MS = '\u0000empty';    // the confirm step of sending a multi-select question with no box checked
   function resolveDecision(d) {
     if (S.busy.has(d.id)) return;
     S.busy.add(d.id); S.confirm = null; renderDecisions();
@@ -2612,6 +2629,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
   const REASONS = {
     screen: 'the prompt was not on the session\'s screen',
     partial: 'typed into the question, but Enter was not pressed',
+    partial_box: 'a box did not flip, so the form was not submitted; a digit may be left in "Type something": clear it in the session',
     moved_on: 'the session moved on before it arrived',
     timeout: 'it expired before it was sent',
     not_approver: 'answered by someone who is not an approver',
@@ -2649,7 +2667,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       // An answer that was recorded but never reached the session must not read as delivered.
       const nd = notDelivered(d);
       return h('li', { class: nd ? 'undelivered' : null },
-        nd ? h('span', { class: 'status undelivered', text: d.status_reason === 'partial' ? tr('partial') : tr('not delivered') })
+        nd ? h('span', { class: 'status undelivered', text: (d.status_reason === 'partial' || d.status_reason === 'partial_box') ? tr('partial') : tr('not delivered') })
           : h('span', { class: 'status ' + str(d.status), text: d.status === 'answered_in_pane' ? tr('answered in session') : viaSession(d) ? tr('delivered') : str(d.status) || 'unknown' }),
         h('span', { class: 'what' },
           h('span', { class: 'code-chip', text: str(d.from) || '?' }), ' ',
@@ -5954,7 +5972,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       let ok = true, res = null;
       try { res = await writeP; } catch (e) {
         ok = false;
-        if (e && e.code === 'partial' && isForm(d)) toast(tr('Keys were sent to the form but it was not submitted. Finish it in the session.'), true);
+        if (e && e.code === 'partial' && e.body && e.body.box === true) toast(tr('A box did not flip, so nothing was submitted. A digit may be left in "Type something": clear it in the session.'), true);
+        else if (e && e.code === 'partial' && isForm(d)) toast(tr('Keys were sent to the form but it was not submitted. Finish it in the session.'), true);
         else handleWriteError(e, !S.decisions.some((x) => x.id === d.id && isOpen(x)));
       }
       S.busy.delete(d.id);
@@ -6745,7 +6764,9 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
   function unsentWork() {
     const msg = $('#msg-input');
     if (msg && msg.value.trim()) return true;
-    return Object.entries(S.drafts).some(([k, v]) => /^d-/.test(k) && (typeof v === 'string' ? !!v.trim()
+    // only drafts of decisions still waiting (an answered or closed card's leftovers do not count)
+    const open = new Set(S.decisions.filter(isOpen).map((x) => x.id));
+    return Object.entries(S.drafts).some(([k, v]) => open.has(k.split(':')[0]) && (typeof v === 'string' ? !!v.trim()
       : Array.isArray(v) && v.some((x) => (Array.isArray(x) ? x.length > 0 : typeof x === 'string' ? !!x.trim() : x != null))));
   }
   const reloadBtn = $('#reload-btn'), reloadAsk = $('#reload-ask');
@@ -7954,7 +7975,11 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "Check any options, then submit.": "勾選任意選項後送出。",
       "Submit": "送出",
       "Answer each question (check any options where several are allowed), then send them together.": "逐題作答（可複選的題目可勾選多個），再一起送出。",
-      "No box checked: sent as an empty answer.": "沒有勾選：會送出空白回答。",
+      "No box checked: sent as an empty answer, after you confirm.": "沒有勾選：確認後會送出空白回答。",
+      "No box is checked for {which}. Send it as an empty answer?": "{which} 沒有勾選任何項目。要送出空白回答嗎？",
+      "Yes, send it empty": "是，送出空白回答",
+      "a box did not flip, so the form was not submitted; a digit may be left in \"Type something\": clear it in the session": "有一格沒有切換成功，表單沒有送出；「Type something」裡可能留下一個數字：請到 session 中清掉",
+      "A box did not flip, so nothing was submitted. A digit may be left in \"Type something\": clear it in the session.": "有一格沒有切換成功，什麼都沒送出。「Type something」裡可能留下一個數字：請到 session 中清掉。",
       "{n} item, longest first": "{n} 項，等最久的在前",
       "{n} items, longest first": "{n} 項，等最久的在前",
       "Waiting: ": "等待中：",

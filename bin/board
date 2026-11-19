@@ -318,7 +318,7 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
         echo "    $out"
         echo "  anything else (e.g. \"request changes\") records the gate as rejected." ;;
     mark) echo "usage: board mark ID relayed|stale|timeout|unauthorized [--reason CODE]"
-        echo "  CODE (why an answer was not delivered, shown on the board): screen, partial, moved_on,"
+        echo "  CODE (why an answer was not delivered, shown on the board): screen, partial, partial_box, moved_on,"
         echo "  timeout, not_approver, unknown_session, operator, config" ;;
     resolve) echo "usage: board resolve ID --in-pane --from CODE|--by WHO [--note-file F]"
         echo "  close a board ask (kind question, not a gate) that was answered in the session's pane or"
@@ -1176,7 +1176,7 @@ cmd_mark() {
   esac
   if [ "${3:-}" = --reason ]; then
     code="${4:-}"
-    case "$code" in screen|partial|moved_on|timeout|not_approver|unknown_session|operator|config) ;; *) sub_usage mark >&2; exit 2 ;; esac
+    case "$code" in screen|partial|partial_box|moved_on|timeout|not_approver|unknown_session|operator|config) ;; *) sub_usage mark >&2; exit 2 ;; esac
   fi
   [ -f "$(dec_path "$id")" ] || die "no such decision: $id"
   mark_status "$id" "$st" "" "$code" || exit 1
@@ -1992,55 +1992,72 @@ press_multi() {
   # 1-3 words of ASCII letters (12 at most each, "·" between them). No numbered row and no second
   # footer after it; any other line refuses. Sets DIGIT, or WHY when not.
   check_review() {
-    local q flat rest seg lbl
+    local q seg lbl
     raw="$(form_region)" || { why="no review screen after the last question"; return 1; }
     [ "$raw" != "$prev" ] || { why="the review screen did not appear (the screen did not change)"; return 1; }
     grep -Eq -- "$review" <<<"$raw" || { why="the review screen did not appear"; return 1; }
-    flat="$(nows <<<"$raw")"; rest="$flat"
-    # A multi-select question with no box checked is not listed (the screen says some questions
-    # are unanswered): only the others are looked for, in order.
-    for ((t = 0; t < n; t++)); do
-      [ "$(dj -r --argjson i "$t" '.answer_options[$i] == []')" = true ] && continue
-      q="$(qkey "$t")"
-      [[ $rest == *"$q"* ]] || { why="the review screen does not show question $((t + 1))"; return 1; }
-      rest="${rest#*"$q"}"
-    done
+    # The review lists each answered question (its lines: " ● …", a boxed one " │ ● …" / " │ …",
+    # a wrapped one, with or without the "●") with its answer right under it ("→" line). Each answer
+    # is paired with the block of lines directly above it, back to the previous answer or blank
+    # line, never found by a substring of the whole screen. Blocks with no answer under them (the
+    # heading, "⚠ Some questions are unanswered", "Ready to submit your answers?", the rows) are
+    # not answers. A multi-select question with no box checked is not listed: only the others are
+    # expected, in order.
     # "→ Redwood" never passes for "Red". An answer the screen wrapped continues on the next lines,
     # indented deeper than the "●" question lines (3+ spaces: Claude Code 2.1.32x draws them 3 in,
     # under the "→") and not a "●", "│" (a boxed question), "⚠", "→" or numbered row (a focused
     # one too, "❯ 1."), so the submit row is never read as part of an answer:
     # those lines are joined to it, so a long typed text or list of labels compares whole.
-    local -a shown=()
-    local cur="" inans=0
+    local -a bq=() ba=()
+    local st=0 cq="" ca=""
     while IFS= read -r seg; do
+      if [ "$st" = 2 ]; then
+        if [[ $seg =~ ^[[:space:]]{3,}[^[:space:]] ]] \
+           && ! [[ $seg =~ ^[[:space:]]*(●|│|⚠|→|((${focus})[[:space:]]*)?[1-9]\.) ]]; then
+          ca="$ca$seg"; continue
+        fi
+        cq="${cq/●/}"; bq+=("$(nows <<<"$cq")"); ba+=("$(nows <<<"$ca")"); st=0; cq=""; ca=""
+      fi
       if [[ $seg =~ ^[[:space:]]*→ ]]; then
-        [ "$inans" = 1 ] && shown+=("$(nows <<<"$cur")")
-        cur="${seg#*→}"; inans=1
-      elif [ "$inans" = 1 ] && [[ $seg =~ ^[[:space:]]{3,}[^[:space:]] ]] \
-           && ! [[ $seg =~ ^[[:space:]]*(●|│|⚠|((${focus})[[:space:]]*)?[1-9]\.) ]]; then
-        cur="$cur$seg"
+        [ "$st" = 1 ] || { why="the review screen shows an answer under no question"; return 1; }
+        st=2; ca="${seg#*→}"
+      elif [[ $seg =~ ^[[:space:]]*$ ]]; then
+        st=0; cq=""
+      elif [ "$st" = 1 ]; then
+        cq="$cq"$'\n'"$seg"
       else
-        [ "$inans" = 1 ] && shown+=("$(nows <<<"$cur")")
-        inans=0; cur=""
+        st=1; cq="$seg"
       fi
     done <<<"$raw"
-    [ "$inans" = 1 ] && shown+=("$(nows <<<"$cur")")
-    local na j=0 k labs
+    if [ "$st" = 2 ]; then cq="${cq/●/}"; bq+=("$(nows <<<"$cq")"); ba+=("$(nows <<<"$ca")"); fi
+    local na j=0 k labs qfull
     na="$(dj -r '[.answer_options[] | select(. != [])] | length')"
-    [ "${#shown[@]}" = "$na" ] || { why="the review screen shows ${#shown[@]} answers for $na answered questions"; return 1; }
+    [ "${#ba[@]}" = "$na" ] || { why="the review screen shows ${#ba[@]} answers for $na answered questions"; return 1; }
     for ((t = 0; t < n; t++)); do
+      [ "$(dj -r --argjson i "$t" '.answer_options[$i] == []')" = true ] && continue
+      # The question above the answer: all of it, or the stored start of a clipped one.
+      q="$(qkey "$t")"; qfull="$(dj -r --argjson i "$t" '.questions[$i].question // ""' | nows)"
+      if [ "$q" = "$qfull" ]; then [ "${bq[$j]}" = "$q" ]; else [ -n "$q" ] && [[ ${bq[$j]} == "$q"* ]]; fi \
+        || { why="the review screen shows another question where question $((t + 1)) belongs"; return 1; }
       if [ "$(dj -r --argjson i "$t" '.answer_options[$i] | type')" = array ]; then
-        [ "$(dj -r --argjson i "$t" '.answer_options[$i] == []')" = true ] && continue
+        # Every set of this question's labels the line could be read as (any order, ", "
+        # between them): exactly one, and it is the chosen set. Labels holding ", " can make it
+        # ambiguous ("North, East" as one label or two): then nothing is submitted.
         labs="[]"
-        for k in $(dj -r --argjson i "$t" '.answer_options[$i][]'); do
-          labs="$(jq -c --arg l "$(dj -r --argjson i "$t" --argjson k "$k" '.questions[$i].options[$k - 1].label' | nows)" '. + [$l]' <<<"$labs")"
-        done
-        jq -e --arg s "${shown[$j]}" "$JQ_ANY_ORDER"'m($s; .)' <<<"$labs" >/dev/null \
-          || { why="the review screen shows other boxes for question $((t + 1))"; return 1; }
+        while IFS= read -r k; do
+          labs="$(jq -c --arg l "$(nows <<<"$k")" '. + [$l]' <<<"$labs")"
+        done < <(dj -r --argjson i "$t" '.questions[$i].options[].label')
+        jq -e --arg s "${ba[$j]}" --argjson want "$(dj -c --argjson i "$t" '.answer_options[$i]')" "$JQ_ANY_ORDER"'
+            . as $L | ($L | length) as $nl
+            | [ range(1; pow(2; $nl)) as $mask
+                | [ range(0; $nl) | select((($mask / pow(2; .)) | floor) % 2 == 1) ] as $ks
+                | select(m($s; [ $ks[] | $L[.] ])) | [ $ks[] + 1 ] ]
+            | length == 1 and .[0] == $want' <<<"$labs" >/dev/null \
+          || { why="the review screen shows other boxes for question $((t + 1)), or boxes it could be read as more than one way"; return 1; }
       else
         lbl="$(dj -r --argjson i "$t" 'if (.answer_texts // [])[$i] != null then .answer_texts[$i]
           else .questions[$i].options[.answer_options[$i] - 1].label end')"
-        [ "${shown[$j]}" = "$(nows <<<"$lbl")" ] \
+        [ "${ba[$j]}" = "$(nows <<<"$lbl")" ] \
           || { why="the review screen shows another answer for question $((t + 1))"; return 1; }
       fi
       j=$((j + 1))
@@ -2124,7 +2141,10 @@ press_multi() {
         digit_ok "$key" "box $key of question $((i + 1))"
         tmux send-keys -t "$pane" "$key" || fail "send-keys failed (question $((i + 1)), box $key)"
         sent=1; prev="$raw"
-        await check_toggled "$i" "$exp" || partial "box $key did not flip: $why; nothing submitted" "$pane"
+        # A digit that did not toggle its box may have gone into "Type something" (the focus moved
+        # there meanwhile): the note says to check that row in the session (status_reason partial_box).
+        await check_toggled "$i" "$exp" \
+          || partial "box $key did not flip: $why; nothing submitted; the digit may be left in \"Type something\": clear it in the session" "$pane" partial_box
       done
       [ "$exp" = "$mwant" ] || fail "the boxes of question $((i + 1)) do not match the answer"
       guard " (question $((i + 1)), moving on)"

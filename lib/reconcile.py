@@ -387,8 +387,13 @@ def board_answers(d):
     idx = d.get("answer_index")
     q0 = qs[0].get("options") if qs else None
     want = label_pick(norm(str(ans)), q0) if q0 is not None else None
+    # A plain answer to a lone multi-select question (relayed as a message): one label means that
+    # one box, so it matches a session that checked exactly that box.
+    ms0 = len(qs) == 1 and qs[0].get("multiSelect") is True
     if isinstance(idx, int) and not isinstance(idx, bool) and idx >= 1:
-        return [("pick", idx)] if q0 is None or want == idx else INCONSISTENT
+        if q0 is not None and want != idx:
+            return INCONSISTENT
+        return [("multi", (idx,))] if ms0 else [("pick", idx)]
     if want is not None and len(qs) <= 1:
         return INCONSISTENT  # the answer is a label but no option number was stored with it
     return [("text", str(ans))]

@@ -985,6 +985,9 @@ printf '←  ☐ Fruits  ✔ Submit  →\n\nWhich fruits should go into the bask
 eq "multi-select: labels recorded, then pressed (409 partial here)" "$(post $A '{"answers":[{"question_index":0,"labels":["Cherry","Apple"]}]}')/$(body .error)" "409/partial"
 eq "  recorded by board answer --form-file" "$(jq -c '[.answer, .answer_options, .answered_by]' "$BOARD_HOME/decisions/d-1-pms.json")" '["Fruits: Apple, Cherry",[[1,3]],"local"]'
 eq "  only the first differing box was toggled" "$(grep '^send-keys' "$FAKE_TMUX_LOG" | tr '\n' '|')" "send-keys -t %42 1|"
+eq "  the box did not flip: box true, status_reason partial_box" "$(body .box)/$(jq -r '"\(.status)/\(.status_reason)"' "$BOARD_HOME/decisions/d-1-pms.json")" "true/stale/partial_box"
+grep -q 'Type something' "$T/body" && ok "  says a digit may be left in Type something" || bad "  says a digit may be left in Type something" "$(cat "$T/body")"
+eq "  state lists the code" "$(req GET /api/state >/dev/null; body '.decisions[] | select(.id=="d-1-pms") | .status_reason')" "partial_box"
 ls "$BOARD_HOME"/.form.* >/dev/null 2>&1 && bad "  the form file is removed" || ok "  the form file is removed"
 cp "$T/screen.saved" "$FAKE_TMUX_SCREEN"
 rm -f "$BOARD_HOME/decisions/d-1-pms.json"

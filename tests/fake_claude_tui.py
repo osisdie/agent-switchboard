@@ -44,7 +44,8 @@ Writes DIR/pid (its pid) and appends every key to DIR/keys (one JSON line {key, 
   on. The review screen lists a multi-select answer as "→ A, B" in the order the boxes were
   checked and leaves out a question with none (with "⚠ Some questions are unanswered"); "1"
   submits (DIR/answers: one string per question, as Claude Code reports them: labels joined by
-  ", " in that order, "" for none). preDIGITS: boxes of the first question checked by a human
+  ", " in that order, "" for none). mischief: on the way to the review, question 1's boxes move
+  to question 2 (as if changed in the pane meanwhile). preDIGITS: boxes of the first question checked by a human
   before the press, in that order; stuckD: digit D is ignored (its box never flips); tsfocus: the
   focus starts on "Type something"; wW: width W (default 100).
 
@@ -108,6 +109,12 @@ MS_FORMS = {
                              "description": "Run the full unit test suite on every supported runtime and platform"},
                             {"label": "Lint", "description": "Run the linter to catch style and code quality issues"},
                             {"label": "Docs build", "description": "Build the documentation to confirm it compiles"}]}],
+    # two questions with the same options, the second's text holding the first's (pairing on the
+    # review screen; -mischief moves the first's boxes to the second on the way to the review)
+    "pair": [{"question": "Which sides?", "header": "Sides", "multiSelect": True,
+              "options": [{"label": "Salad", "description": ""}, {"label": "Fries", "description": ""}]},
+             {"question": "For the kids too: Which sides?", "header": "Kids", "multiSelect": True,
+              "options": [{"label": "Salad", "description": ""}, {"label": "Fries", "description": ""}]}],
     # labels that hold ", " and one that starts another: the review screen is read as a set
     "commas": [{"question": "Which regions should the report cover this quarter?", "header": "Regions", "multiSelect": True,
                 "options": [{"label": "North, East", "description": "the northern and eastern offices"},
@@ -283,7 +290,7 @@ class Tui:
     def ms_init(self):
         parts = self.state.split("-")
         self.qs = MS_FORMS[parts[1]]
-        self.width, self.stuck, pre, tsfocus = 100, None, "", False
+        self.width, self.stuck, pre, tsfocus, self.mischief = 100, None, "", False, False
         for x in parts[2:]:
             if x.startswith("pre"):
                 pre = x[3:]
@@ -291,6 +298,8 @@ class Tui:
                 self.stuck = x[5:]
             elif x == "tsfocus":
                 tsfocus = True
+            elif x == "mischief":
+                self.mischief = True
             elif x.startswith("w"):
                 self.width = int(x[1:])
         # per question: checked option numbers in the order checked (multi), the picked label (single)
@@ -371,6 +380,8 @@ class Tui:
             self.focus = 1
         else:
             self.state = "ms-review"
+            if self.mischief:   # someone in the pane moved question 1's boxes to question 2
+                self.order[1], self.order[0] = self.order[0], []
 
     def ms_key(self, k):
         if self.state == "ms-review":

@@ -152,8 +152,15 @@ def main():
             check("one checkbox per option, label + description, none checked",
                   c["boxes"] == [False] * 3 and c["rows"] == ["1. AppleCrisp and sweet", "2. BananaSoft", "3. CherrySmall and juicy"], c)
             check("no option buttons and no free-text box (never typed into Type something)", c["toggles"] == 0 and c["texts"] == 0, c)
-            check("'Submit' ready with nothing checked, and the card says it sends an empty answer",
-                  c["send"] == {"disabled": False, "text": "Submit"} and c["none"] == ["No box checked: sent as an empty answer."], c)
+            check("'Submit' ready with nothing checked, and the card says it asks before an empty answer",
+                  c["send"] == {"disabled": False, "text": "Submit"} and c["none"] == ["No box checked: sent as an empty answer, after you confirm."], c)
+            pg.click('#dec-%s button[data-focus="send-form"]' % D1)
+            pg.wait_for_timeout(200)
+            ask = pg.evaluate("(id) => [...document.querySelectorAll('#dec-' + id + ' .pq-empty-ask')].map((x) => x.textContent)", D1)
+            check("nothing checked: Submit asks first, in the card, nothing sent",
+                  len(ask) == 1 and "No box is checked for Fruits" in ask[0] and posts == [], (ask, posts))
+            pg.click('#dec-%s .pq-empty-ask button:has-text("Cancel")' % D1)
+            check("  Cancel: no question, nothing sent", pg.locator("#dec-%s .pq-empty-ask" % D1).count() == 0 and posts == [], posts)
             check("rows are at least 44px tall, no horizontal scroll at 390px", min(c["heights"]) >= 44 and not c["wide"], c)
             pg.click('#dec-%s .pq-check:has(input[data-option="3"])' % D1)
             pg.focus('#dec-%s input[data-option="1"]' % D1)
@@ -191,10 +198,54 @@ def main():
             c = pg.evaluate(CARD_JS, D2)
             check("  enabled once it is picked (question 3 left empty)", c["send"]["disabled"] is False, c)
             pg.click('#dec-%s button[data-focus="send-form"]' % D2)
+            pg.wait_for_timeout(200)
+            ask = pg.evaluate("(id) => [...document.querySelectorAll('#dec-' + id + ' .pq-empty-ask')].map((x) => x.textContent)", D2)
+            check("question 3 empty: asks first, naming it", len(ask) == 1 and "for Sides." in ask[0] and posts == [], (ask, posts))
+            pg.click('#dec-%s .pq-empty-ask button:has-text("Yes, send it empty")' % D2)
             pg.wait_for_timeout(400)
             check("the POST: labels, option, labels ([] for none)",
                   posts == [{"answers": [{"question_index": 0, "labels": ["Olives"]}, {"question_index": 1, "option": 2},
                                          {"question_index": 2, "labels": []}]}], posts)
+            pg.close()
+
+            print("a box that did not flip:")
+            pg = new_page()
+            pg.route("**/api/decisions/*/answer", lambda r: r.fulfill(status=409, content_type="application/json", body=json.dumps(
+                {"error": "partial", "detail": "a box did not flip", "box": True})))
+            pg.goto("http://127.0.0.1:%d/" % port)
+            pg.wait_for_selector("#dec-%s .pq-check" % D1, timeout=5000)
+            pg.click('#dec-%s .pq-check:has(input[data-option="1"])' % D1)
+            pg.click('#dec-%s button[data-focus="send-form"]' % D1)
+            pg.wait_for_timeout(400)
+            toasts = pg.evaluate("() => [...document.querySelectorAll('.toast')].map((t) => t.textContent)")
+            check("the toast says to clear a digit left in \"Type something\"",
+                  any('A digit may be left in "Type something"' in t for t in toasts), toasts)
+            pg.close()
+
+            print("reload with leftover picks:")
+            pg = new_page()
+            pg.goto("http://127.0.0.1:%d/" % port)
+            pg.wait_for_selector("#dec-%s .pq-check" % D1, timeout=5000)
+            pg.click('#dec-%s .pq-check:has(input[data-option="2"])' % D1)
+            pg.click("#reload-btn")
+            pg.wait_for_timeout(200)
+            check("picks on an open card: reload asks first", pg.evaluate("() => !document.getElementById('reload-ask').hidden"))
+            pg.click("#reload-no")
+            path = os.path.join(home, "decisions", D1 + ".json")
+            with open(path, encoding="utf-8") as fh:
+                dd = json.load(fh)
+            dd.update(status="answered_in_pane", resolved_via="pane")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(dd, fh)
+            pg.wait_for_selector("#dec-%s" % D1, state="detached", timeout=15000)
+            pg.evaluate("() => { window.__mark = 1; }")
+            with pg.expect_navigation(timeout=5000):
+                pg.click("#reload-btn")
+            check("the card closed elsewhere: its leftover picks do not hold the reload", pg.evaluate("() => window.__mark === undefined"))
+            dd.update(status="pending")
+            dd.pop("resolved_via", None)
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(dd, fh)
             pg.close()
 
             print("dark theme:")
