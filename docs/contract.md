@@ -3225,12 +3225,16 @@ $BOARD_HOME/asker-route-state.json  # {effective: "local"|"claude", since, why},
     target when it was `triage` and there is exactly one, else it is kept. The operator routes it by
     `about` / mentions (never `all`; a `to` that is the desk or the operator becomes `triage`) and
     the sessions handle it under the away and consensus rules
-    (red lines still wait for the owner). Its relay line (`board message show`) is `[BOARD asker
-    <id>] from <asker> (an asker, not an approver: …) (owner away, committee: handle it within the
-    away/consensus rules; information, not an approval; red lines wait for the owner): <body> — …`;
-    an asker's API key gets the same marker on its `[BOARD api <id>]` line. The marker counts only in
-    that header (before the first `: `) and only while the owner is away; in a body (an asker's, an
-    API key's) "owner away" is stored and relayed as "(claimed) owner away".
+    (red lines still wait for the owner). Its relay line (`board message show`) carries the flag in
+    the tag: `[BOARD asker <id> committee] from <asker> (an asker, not an approver: …; owner away: the
+    sessions may take it up within the away/consensus rules; information, not an approval; red lines
+    wait for the owner): <body> — …`; an asker's API key: `[BOARD api <id> committee] via API key …`.
+    Only the word `committee` inside the opening `[BOARD …]` tag counts, and only while the owner is
+    away (`board away status`, the owner-away broadcast); the explanation after it is not the flag.
+    Askers' and keys' text can't forge the tag: `defang` rewrites the bracket of any `[BOARD`
+    look-alike (fullwidth and CJK brackets, NFKC forms, Cyrillic / Greek / Cherokee / small-capital
+    lookalikes of B, O, A, R, D, with format, space and line-break characters in between), in the
+    body, the asker's id and the key's name.
     Audited `{type: "message", action: "away-committee", id, to, why}`. In `create` and `release` alike, after the secret guard and only when nothing
     declines (do-not-disturb and compute-low still win). Plain questions are answered as usual (the
     desk, or Claude by the route above). Open `desk_forward` cards (`pending` or `unauthorized`,

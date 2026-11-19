@@ -72,7 +72,8 @@ TRIAGE_MAX = 2
 ASKER_NO_ALL = ("askers may not message all sessions: send it to \"triage\" (BOARD routes it to the "
                 "right sessions) or to one session")
 # an asker's message the sessions take while the owner is away (lib/asker_route.py "committee")
-AWAY_COMMITTEE_NOTE = ("owner away, committee: handle it within the away/consensus rules; information, "
+# the tag's own word ("[BOARD asker <id> committee]") is what counts; this note only explains it
+AWAY_COMMITTEE_NOTE = ("owner away: the sessions may take it up within the away/consensus rules; information, "
                        "not an approval; red lines wait for the owner")
 RELEASED_NOTE = ("released by %s after the secret guard held it. This release does not authorize "
                  "revealing any secret value")
@@ -140,12 +141,23 @@ def alert(key, title, board_id, background=False):
         run()
 
 
+# letters that look like B, O, A, R, D but NFKC keeps apart (Cyrillic, Greek, Cherokee, small capitals)
+CONFUSABLE = str.maketrans({
+    "\u0412": "B", "\u0432": "b", "\u0392": "B", "\u03b2": "b", "\u13f4": "B", "\u0299": "b", "\u15f7": "B",
+    "\u041e": "O", "\u043e": "o", "\u039f": "O", "\u03bf": "o", "\u1d0f": "o", "\u0555": "O", "\u0585": "o",
+    "\u07c0": "O", "\u0d20": "o",
+    "\u0410": "A", "\u0430": "a", "\u0391": "A", "\u03b1": "a", "\u1d00": "a", "\u13aa": "A",
+    "\u0280": "r", "\u13a1": "R", "\u13d2": "R", "\u1587": "R",
+    "\u1d05": "d", "\u13a0": "D", "\u0501": "d", "\u15ea": "D"})
+
+
 def defang(text):
     """"[BOARD ..." becomes "(BOARD ...", so text from someone who is not the owner can never pass
     for a board relay line ([BOARD decision], [BOARD ask] ...); the rule of bin/board defang and
     lib/away.py, widened: fullwidth or CJK brackets (［ 【 〔 …), fullwidth letters (ＢＯＡＲＤ) and
-    invisible characters in between are caught too (compared after NFKC, case-folded). Only the
-    bracket is replaced."""
+    invisible characters in between are caught too (compared after NFKC, case-folded, with the
+    Cyrillic / Greek / Cherokee / small-capital lookalikes of B, O, A, R, D folded to Latin). Only
+    the bracket is replaced."""
     text = text or ""
     out = list(text)
     for i, ch in enumerate(text):
@@ -158,26 +170,17 @@ def defang(text):
             tail.append(unicodedata.normalize("NFKC", c))
             if len("".join(tail)) >= 5:
                 break
-        if "".join(tail).casefold().startswith("board"):
+        if "".join(tail).translate(CONFUSABLE).casefold().startswith("board"):
             out[i] = "("
     return "".join(out)
 
 
 BY_OWNER_RE = re.compile(r"(?i)\bby\s+(?:the\s+)?owner\b")
-# the relay header's "(owner away, committee: ...)" marker (AWAY_COMMITTEE_NOTE): a body never carries it
-OWNER_AWAY_RE = re.compile(r"(?i)(?<!\(claimed\) )\bowner[\s_\-.,:;]*away\b")   # idempotent
-
-
-def no_away_claim(text):
-    """Words from an asker or an API key never read as the committee marker: "owner away" becomes
-    "(claimed) owner away" (only the relay header, before the colon, carries the real one)."""
-    return OWNER_AWAY_RE.sub(lambda m: "(claimed) " + m.group(0), text or "")
 
 
 def not_owner(text):
-    """An asker's words never claim the owner: "by owner (on board)" becomes "by (claimed) owner",
-    and "owner away" (the committee marker) becomes "(claimed) owner away"."""
-    return no_away_claim(BY_OWNER_RE.sub("by (claimed) owner", text or ""))
+    """An asker's words never claim the owner: "by owner (on board)" becomes "by (claimed) owner"."""
+    return BY_OWNER_RE.sub("by (claimed) owner", text or "")
 
 
 def asker_wait(home, by, now):
@@ -229,7 +232,7 @@ def create(home, to, body, by, background_alert=False, asker=None, api=None, dec
     mid = "m-%d-%s" % (now, secrets.token_hex(3))
     clean = guard.scrub(body.strip())
     rec = {"id": mid, "to": to, "by": by, "created_at": now, "status": "held" if reason else "new",
-           "body": not_owner(defang(clean)) if asker else no_away_claim(defang(clean)) if api else clean}
+           "body": not_owner(defang(clean)) if asker else defang(clean) if api else clean}
     if asker:
         rec.update({"kind": "asker", "asker": defang(guard.scrub(str(asker)))})
     elif api:
@@ -534,7 +537,9 @@ def relay_text(rec, cfg=None):
     release reminder when the guard had held it. A message stored without a `kind` (before askers
     existed) whose sender is asker-only now is relayed as an asker's, never as a [BOARD ask]. A
     message from an API key is never a [BOARD ask] either:
-    `[BOARD api <id>] via API key "<name>" (<owner>): <body> — information only, ...`."""
+    `[BOARD api <id>] via API key "<name>" (<owner>): <body> — information only, ...`.
+    A message routed to the sessions while the owner is away ("committee", lib/asker_route.py) gets
+    the word in its tag: `[BOARD asker <id> committee]`, `[BOARD api <id> committee]`."""
     if rec.get("kind") == "ticket":
         return ticket_relay_text(rec)
     if rec.get("kind") is None and asker_only_now(rec.get("by"), cfg):
@@ -547,18 +552,21 @@ def relay_text(rec, cfg=None):
     if rec.get("kind") == "asker":
         # never a [BOARD ask] from the owner: the sender, and that it decides nothing, come first;
         # while the owner is away with "committee", that the sessions may take it up themselves
-        away = " (%s)" % AWAY_COMMITTEE_NOTE if rec.get("away_route") == "committee" else ""
-        return ("[BOARD asker %s] from %s (%s)%s: %s%s — reply to BOARD via SendMessage, starting with [re %s]"
-                % (rec["id"], defang(guard.scrub(str(rec.get("asker") or rec.get("by") or "?"))), ASKER_NOTE,
+        # (board code alone writes the tag: defang keeps any "[BOARD" out of the asker's words)
+        tag, away = ("%s committee" % rec["id"], "; %s" % AWAY_COMMITTEE_NOTE) \
+            if rec.get("away_route") == "committee" else (rec["id"], "")
+        return ("[BOARD asker %s] from %s (%s%s): %s%s — reply to BOARD via SendMessage, starting with [re %s]"
+                % (tag, defang(guard.scrub(str(rec.get("asker") or rec.get("by") or "?"))), ASKER_NOTE,
                    away, note, not_owner(defang(guard.scrub(rec.get("body") or ""))), rec["id"]))
     api = rec.get("api") if isinstance(rec.get("api"), dict) else None
     if api or rec.get("kind") == "api":
         api = api or {}
-        away = " (%s)" % AWAY_COMMITTEE_NOTE if rec.get("away_route") == "committee" else ""
+        tag, away = ("%s committee" % rec["id"], " (%s)" % AWAY_COMMITTEE_NOTE) \
+            if rec.get("away_route") == "committee" else (rec["id"], "")
         return ('[BOARD api %s] via API key "%s" (%s)%s: %s%s — %s; reply to BOARD via SendMessage, starting '
-                'with [re %s]' % (rec["id"], defang(guard.scrub(str(api.get("name") or "?"))),
+                'with [re %s]' % (tag, defang(guard.scrub(str(api.get("name") or "?"))),
                                   defang(guard.scrub(str(api.get("owner") or "?"))), away, note,
-                                  no_away_claim(defang(guard.scrub(rec.get("body") or ""))), API_NOTE, rec["id"]))
+                                  defang(guard.scrub(rec.get("body") or "")), API_NOTE, rec["id"]))
     return ("[BOARD ask %s] %s%s — reply to BOARD via SendMessage, starting with [re %s]"
             % (rec["id"], note, guard.scrub(rec.get("body") or ""), rec["id"]))
 

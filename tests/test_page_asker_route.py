@@ -145,6 +145,15 @@ def owner_checks(browser, base, home, lang, width, dark):
     page.click("#acct-askroute label:has(input[value=committee])")
     check("%s: committee is saved again" % tag, wait(lambda: setting(home).get("away_askers") == "committee"),
           setting(home))
+    # an unreadable setting: nothing picked, so picking "wait" saves it and clears the warning
+    with open(os.path.join(home, "asker-route.json"), "w") as fh:
+        fh.write("{broken")
+    usage(home, 10, 11)        # a change, so the page gets a new state frame
+    page.wait_for_function("() => !document.querySelector('input[name=\"sb-awayaskers\"]:checked')", timeout=10000)
+    open_menu(page)
+    page.click("#acct-askroute label:has(input[value=wait])")
+    check("%s: picking wait over an unreadable setting saves it" % tag,
+          wait(lambda: setting(home).get("away_askers") == "wait"), setting(home))
     os.unlink(os.path.join(home, "owner-away"))
     ctx.close()
 

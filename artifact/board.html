@@ -4891,13 +4891,14 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     const note = $('#acct-ar-note');
     note.textContent = why + use
       + (mode === 'claude_when_ample' ? ' ' + tr('It switches to Claude only {m} points below a level, and back at the level.', { m: Number(R.hysteresis) || 5 }) : '');
-    const am = S.awayPick || str(R.away_askers) || 'committee';
+    // an unreadable setting (away_invalid) shows nothing picked: any pick, "wait" included, saves and clears it
+    const am = S.awayPick || (R.away_invalid ? '' : str(R.away_askers) || 'committee');
     for (const inp of document.querySelectorAll('input[name="sb-awayaskers"]')) inp.checked = inp.value === am;
     $('#acct-ar-away-note').textContent = (R.away_invalid ? tr('The saved setting could not be read, so requests wait for you until you pick one.') + ' ' : '')
       + (R.away ? tr('You are away now.') + ' ' : '') + tr({
       committee: 'The sessions take askers\' work requests together; no card waits for you.',
       decline: 'Askers get an automatic reply; nothing is relayed.',
-      wait: 'Askers\' work requests wait for your decision until you are back.' }[am] || '');
+      wait: 'Askers\' work requests wait for your decision until you are back.' }[am || 'wait'] || '');
     note.classList.toggle('on', R.effective === 'claude');
   }
   function setAskerRoute(mode, withLevels) {
