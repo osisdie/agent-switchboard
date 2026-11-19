@@ -226,15 +226,39 @@ def create(home, to, body, by, background_alert=False, asker=None, api=None, dec
                             "owner": api["owner"]}})
     if reason:
         rec.update({"held_reason": reason, "held_at": now})
+    elif _to_desk(home, rec):
+        # the local asker desk answers it (lib/desk.py), before any decline: zero Claude tokens
+        rec.update({"status": "desk", "desk": _desk_block(now)})
     elif decline:
         rec.update({"status": "declined", "declined_reason": decline[0], "declined_at": now})
     _write(path_of(home, mid), rec)
+    if rec["status"] == "desk":
+        audit(home, {"type": "desk", "action": "queued", "id": mid, "to": to})
     if reason:
         audit(home, {"action": "held", "id": mid, "to": to, "by": by, "reason": reason})
         alert("guard:held:%s" % mid, HELD_TITLE, mid, background=background_alert)
-    elif decline:
+    elif rec["status"] == "declined":
         _canned(home, rec, decline, now)
     return rec
+
+
+def _to_desk(home, rec, cfg=None):
+    """Does this (not held) message go to the local asker desk now? Only an asker's, and only
+    while lib/desk.py says the local model is up and its session alive and verified."""
+    try:
+        import desk  # noqa: WPS433
+        cfg = cfg if cfg is not None else fleet.load_fleet()
+        if not desk.settings(cfg)["enabled"] or not asker_origin(rec, cfg):
+            return False
+        return desk.route_ok(home, cfg)
+    except Exception:  # noqa: BLE001 - the desk never stops a message: today's flow then
+        return False
+
+
+def _desk_block(now, cfg=None):
+    import desk  # noqa: WPS433
+    cfg = cfg if cfg is not None else fleet.load_fleet()
+    return {"session": desk.settings(cfg)["session"], "state": "queued", "queued_at": now}
 
 
 def _canned(home, rec, decline, now):
@@ -302,6 +326,16 @@ def release(home, mid, by, cfg=None):
         raise MessageError("not_held", "the message is not held")
     now = now_ms()
     decline = None
+    if _to_desk(home, rec, cfg):
+        rec.update({"status": "desk", "desk": _desk_block(now, cfg), "released_by": by, "released_at": now})
+        _write(path_of(home, mid), rec)
+        audit(home, {"action": "release", "id": mid, "by": by, "reason": rec.get("held_reason"), "result": "desk"})
+        try:
+            import notify  # noqa: WPS433
+            notify.resolve("guard:held:%s" % mid)
+        except Exception:  # noqa: BLE001
+            pass
+        return rec
     if asker_origin(rec, cfg):
         import availability  # noqa: WPS433
         cfg = cfg if cfg is not None else fleet.load_fleet()
@@ -374,8 +408,9 @@ def route(home, mid, codes, by="operator"):
     return rec
 
 
-def reply(home, mid, frm, text):
-    """Store a session's reply, scrubbed. Returns (reply record, redacted?)."""
+def reply(home, mid, frm, text, extra=None):
+    """Store a session's reply, scrubbed. Returns (reply record, redacted?). extra: fixed fields
+    for the reply row (lib/desk.py: {"local_model": True})."""
     rec = read(home, mid)
     if rec is None:
         raise MessageError("not_found", "no such message")
@@ -388,6 +423,7 @@ def reply(home, mid, frm, text):
     now = now_ms()
     rid = "r-%d-%s" % (now, secrets.token_hex(3))
     row = {"id": rid, "from": frm, "body": clean, "created_at": now}
+    row.update({k: v for k, v in (extra or {}).items() if k in ("local_model",)})
     if redacted:
         row["redacted"] = True
     _write(os.path.join(_dir(home), mid, "replies", rid + ".json"), row)
@@ -516,6 +552,8 @@ def main(argv):
             elif rec["status"] == "declined":
                 sys.stderr.write("board message: declined (%s): the canned reply is in the thread; it is "
                                  "never relayed\n" % rec["declined_reason"])
+            elif rec["status"] == "desk":
+                sys.stderr.write("board message: with the local asker desk (lib/desk.py); never relay it\n")
             return 0
         if args.cmd == "reply":
             row, redacted = reply(home, args.id, args.frm, _text(args.text, args.file))
@@ -537,6 +575,9 @@ def main(argv):
             print("%s held (%s): never relay it" % (rec["id"], rec.get("held_reason")))
         elif rec.get("status") == "declined":
             print("%s declined (%s): answered with a canned reply; never relay it" % (rec["id"], rec.get("declined_reason")))
+        elif rec.get("status") == "desk":
+            print("%s with the local asker desk (%s): board code delivers it and the desk answers; never relay it"
+                  % (rec["id"], (rec.get("desk") or {}).get("state")))
         else:
             print(relay_text(rec))
             if rec.get("to") == TRIAGE and rec.get("status") == "new":

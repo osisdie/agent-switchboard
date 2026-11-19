@@ -121,6 +121,8 @@ jobs:
         run: python3 tests/test_routing.py -v
       - name: owner availability tests (do not disturb, compute low, canned declines)
         run: python3 tests/test_presence.py -v
+      - name: local asker desk tests (routing, health, fallbacks, reply path, read-only launch)
+        run: python3 tests/test_desk.py -v
       - name: PII masking tests (who sees whose email)
         env:
           PII_REQUIRE_CRYPTO: "1"

@@ -580,6 +580,14 @@ owner, ...}`. Only an approver answers it on the board; a key never can.
    answered an asker with a canned reply because the owner is on do-not-disturb or compute is short
    (`docs/contract.md`, "Owner availability"). Never relay it, never route it, never reply to it or
    tell the owner about it; there is nothing to do.
+   A message with `status: "desk"` never shows up either: the **local asker desk** has it (an
+   asker's question answered by a local model, `docs/contract.md` "Local asker desk"). Board code
+   delivers it and the desk posts its own answer; never relay it, route it, reply to it or mark it.
+   If the desk can't answer in time (or goes down), board code puts it back to `new` (with
+   `desk.state` saying why) and it reaches you as `message <id> new` like any asker's message:
+   relay it then as usual. A decision of kind `desk_forward` ("Forward asker message … to CODE?")
+   is never yours either: board code applies the owner's answer, and an approved one comes back to
+   you as `message <id> new` for CODE.
 2. Resolve `to` and send the line that `board message show <id>` prints. It is
    `[BOARD ask <id>] <body> — reply to BOARD via SendMessage, starting with [re <id>]`, the body
    already scrubbed, plus the release reminder when an approver released the message. A message from

@@ -324,6 +324,11 @@ class Server:
         elif tool["name"] == "send_message" and isinstance(body, dict) and body.get("status") == "declined":
             # a success too (201: stored, audited), but nobody gets it: the canned reply says why
             text = "declined, not relayed: %s (message %s). %s" % (body.get("reply") or "", body.get("id"), text)
+        elif tool["name"] == "send_message" and isinstance(body, dict) and body.get("status") == "desk":
+            # a key issued to an asker while the local asker desk is up (lib/desk.py)
+            text = ("with the local asker desk: a local model answers in the thread (marked as a local-model "
+                    "answer, possibly less accurate); no Claude session gets it (message %s). %s"
+                    % (body.get("id"), text))
         out = {"content": [{"type": "text", "text": text}], "isError": False}
         if isinstance(body, dict):
             out["structuredContent"] = body

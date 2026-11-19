@@ -2368,6 +2368,21 @@ printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "$@"' > "$T/bin/fake-claude";
 got="$(sh -c "$T/bin/fake-claude ${fresh_cmd#claude }")"
 want="$(printf '%s\n' -n FRESH --remote-control FRESH --verbose "You're the \$OPERATOR; read \`x\` and \"go\"")"
 eq "initial_prompt passed as one shell-safe argument" "$got" "$want"
+# The local asker desk (local_model.session): started by lib/desk.py run, read-only, nothing else.
+cat >> "$BOARD_CONFIG_DIR/fleet.yaml" <<EOF
+  - code: ASK
+    cwd: $T
+    autostart: true
+    resume_name: ASK
+    extra_args: "--dangerously-skip-permissions"
+local_model:
+  enabled: true
+  session: ASK
+EOF
+out="$(PATH="$T/bin:$PATH" "$REPO/bin/fleet-up" --dry-run)"
+desk_cmd="$(sed -n 's/^.*ASK: starting the local asker desk: //p' <<<"$out")"
+case "$desk_cmd" in *"/lib/desk.py' run") ok "desk: started by desk.py run" ;; *) bad "desk: started by desk.py run" "$out" ;; esac
+case "$desk_cmd" in *claude*|*skip-permissions*|*remote-control*|*" -r "*) bad "desk: no claude flags of its own" "$desk_cmd" ;; *) ok "desk: no claude flags of its own" ;; esac
 # Lost race: new-session fails (session created meanwhile) -> no keys typed into that pane.
 cat > "$T/bin/tmux" <<'EOF'
 #!/usr/bin/env bash

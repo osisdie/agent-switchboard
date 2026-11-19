@@ -22,6 +22,12 @@
 # alias or function.
 # `initial_prompt` is single-line (newlines become spaces, since the command is typed into the
 # pane) and single-quoted for the shell; it is also used when a resume falls back to fresh.
+# The local asker desk (fleet.yaml `local_model`, enabled, and its `session`): that session is
+# started with `python3 lib/desk.py run` instead (never resumed, no Remote Control): it writes the
+# desk's read-only settings, MCP config and token into $BOARD_HOME/desk/, then runs claude with
+# --restricted --tools Read,Grep,Glob --permission-mode dontAsk against the local endpoint, in its
+# own empty directory with local_model.repos as --add-dir, with only the env_file's model variables
+# in its environment (docs/contract.md "Local asker desk").
 # With `collector: true` (default) it also makes sure a tmux session `switchboard` runs
 # board-collect, after `board-collect --baseline` when $BOARD_HOME/alerts.json does not exist
 # yet (no alert storm for conditions already open).
@@ -80,6 +86,8 @@ unset_dnt="$(python3 "$FLEET" get rc.unset_do_not_track false)"
 # POSIX single-quoting (the pane's shell may not be bash, so no $'...' from printf %q).
 sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 fallback_s="$(python3 "$FLEET" get resume_fallback_seconds 15)"
+desk_code=""
+[ "$(python3 "$FLEET" get local_model.enabled false)" = true ] && desk_code="$(python3 "$FLEET" get local_model.session ASK)"
 case "$fallback_s" in ''|*[!0-9]*) fallback_s=15 ;; esac
 started=0
 while IFS= read -r line; do
@@ -99,6 +107,20 @@ while IFS= read -r line; do
   fi
   if tmux has-session -t "=$code" 2>/dev/null 8>&-; then
     log "$code: tmux session exists — skip"
+    continue
+  fi
+  if [ -n "$desk_code" ] && [ "$code" = "$desk_code" ]; then
+    # the local asker desk: read-only, against the local endpoint (lib/desk.py run); no secret is typed.
+    # It runs in its own empty directory ($BOARD_HOME/desk/cwd); the session's cwd is not used.
+    # typed into the pane's shell: POSIX single quotes (sq), like initial_prompt
+    cmd="BOARD_HOME=$(sq "$BOARD_HOME")"
+    [ -n "${BOARD_CONFIG_DIR:-}" ] && cmd="$cmd BOARD_CONFIG_DIR=$(sq "$BOARD_CONFIG_DIR")"
+    cmd="$cmd python3 $(sq "$REPO/lib/desk.py") run"
+    log "$code: starting the local asker desk: $cmd"
+    run tmux new-session -d -s "$code" -c "$BOARD_HOME" || { log "$code: tmux new-session failed — skip"; continue; }
+    run tmux send-keys -t "=$code:" -l "$cmd"
+    run tmux send-keys -t "=$code:" Enter
+    started=$((started + 1))
     continue
   fi
   if [ -z "$cwd" ] || [ ! -d "$cwd" ]; then

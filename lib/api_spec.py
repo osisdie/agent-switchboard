@@ -142,12 +142,14 @@ ROUTES = [
                 "by the secret guard (a secret request is held, never relayed); relayed as `[BOARD api <id>] "
                 "via API key \"<name>\" (<owner>): …`, information only, never a [BOARD ask] or a decision. "
                 "A key issued to an asker, while the owner is on do-not-disturb or compute is short: 201 with "
-                "status \"declined\", reason owner_dnd|compute_low and the canned reply (never relayed).",
+                "status \"declined\", reason owner_dnd|compute_low and the canned reply (never relayed). A key "
+                "issued to an asker while the local asker desk is up: status \"desk\" (a local model answers "
+                "it in the thread, marked as such; no Claude session gets it).",
      "body": {"type": "object", "required": ["to", "body"], "additionalProperties": False,
               "properties": {"to": {"anyOf": [_CODE, {"const": "triage"}, {"const": "all"}]},
                              "body": {"type": "string", "minLength": 1, "maxLength": 4000}}},
      "schema": {"type": "object", "properties": {"id": {"type": "string"},
-                                                 "status": {"enum": ["new", "held", "declined"]},
+                                                 "status": {"enum": ["new", "held", "declined", "desk"]},
                                                  "reason": {"type": "string"}, "reply": {"type": "string"}}}},
     {"method": "POST", "path": "/api/v1/tickets/{ref}/take", "scope": "tickets:take", "handler": "ticket_take",
      "tag": "tickets", "ok": 202,

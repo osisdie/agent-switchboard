@@ -513,6 +513,13 @@ dialog.notif { width: min(720px, calc(100vw - 24px)); }
 .status.declined { background: var(--off-soft); color: var(--muted); }
 .thread .held.declined { background: var(--off-soft); color: var(--muted); }
 .replies li.canned .auto { font-weight: 500; color: var(--muted); }
+/* the local asker desk (lib/desk.py): a local model answers askers; its answers are labelled */
+.status.desk { background: var(--off-soft); color: var(--cord); }
+.thread .held.desk { background: var(--off-soft); color: var(--muted); }
+.replies .auto.local { font-weight: 500; color: var(--lamp-ink); background: var(--lamp-soft); border-radius: 999px; padding: 0 8px; font-size: 12px; }
+.pill.lm .lamp { background: var(--muted); }
+.pill.lm.up .lamp { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+.pill.lm.down .lamp { background: var(--deny); }
 .thread .held { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 0; padding: 8px 10px; border-radius: 6px; background: var(--lamp-soft); color: var(--lamp-ink); font-size: 13px; }
 .thread .held .held-confirm { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .thread .held .held-confirm p { margin: 0; flex-basis: 100%; }
@@ -1221,6 +1228,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
         <span class="pill unknown" id="op-pill" tabindex="0"><span class="lamp"></span><span id="op-text">Connecting…</span></span>
         <span class="pill hpill away" id="away-pill" tabindex="0" hidden><span class="lamp working" aria-hidden="true"></span><span data-i18n>Owner away</span></span>
         <span class="pill hpill" id="notif-pill" tabindex="0" hidden><span class="nlamp" id="notif-pill-lamp" aria-hidden="true"></span><span id="notif-pill-t"></span></span>
+        <span class="pill hpill lm" id="lm-pill" tabindex="0" role="status" hidden><span class="lamp" aria-hidden="true"></span><span id="lm-pill-t"></span></span>
       </div>
       <p data-i18n>Every Claude Code session on one panel. Answer what is waiting, see who is working, and send a note to any session.</p>
     </div>
@@ -1441,6 +1449,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
             </div>
           </div>
           <p class="readonly-note" id="msg-paused" role="status" hidden data-i18n>The owner isn't taking requests right now. A message sent now gets an automatic reply and doesn't reach the sessions.</p>
+          <p class="readonly-note" id="msg-local" role="status" hidden data-i18n>A local model answers askers' questions right now, straight from the code. Its answers are marked and may be less accurate.</p>
           <p class="readonly-note" id="msg-asker-note" hidden data-i18n>You are an asker: your messages reach the session as information from you, never as a decision. You cannot answer decisions.</p>
           <div class="row">
             <span class="help"><span data-i18n>Type</span> <span class="mono">@</span> <span data-i18n>to pick a session,</span> <span class="mono">@triage</span> <span data-i18n>to let BOARD route it</span><span id="msg-help-all"><span data-i18n>, or</span> <span class="mono">@all</span></span>. <span data-i18n>Ctrl+Enter sends.</span></span>
@@ -2063,6 +2072,19 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     const state = !muted.length ? tr('Push on') : muted.some((m) => m.target === 'all') ? tr('All muted') : tr('{n} muted', { n: muted.length });
     $('#notif-pill-t').textContent = state;
     np.setAttribute('aria-label', tr('Notifications: {state}', { state }));
+    // the local asker desk (owners only): is a local model answering askers now?
+    const lm = S.localModel, lp = $('#lm-pill');
+    lp.hidden = !(S.isOwner && lm && lm.state && lm.state !== 'disabled');
+    if (!lp.hidden) {
+      const st = lm.answering ? 'up' : 'down';
+      lp.className = 'pill hpill lm ' + st;
+      const t = lm.answering ? tr('Local model answering') : lm.state === 'up' ? tr('Local model: desk not running') : tr('Local model down');
+      $('#lm-pill-t').textContent = t;
+      lp.title = tr(lm.answering ? 'Askers are answered by the local model (no Claude tokens).'
+        : 'Askers take the usual way (BOARD, or the automatic reply) until the local model is back.')
+        + (lm.checked_at ? ' · ' + tr('checked {at}', { at: hhmm(ts(lm.checked_at)) }) : '');
+      lp.setAttribute('aria-label', t);
+    }
   }
   const popLine = (k, ...v) => h('p', null, h('span', { class: 'k', text: k }), ...v);
   const sinceOf = (s) => (s.card && ts(s.card.state_since)) || ts(s.updated_at) || 0;
@@ -3519,6 +3541,19 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       ? 'Declined automatically, not relayed: compute was busy. The automatic reply is below.'
       : 'Declined automatically, not relayed: the owner wasn\'t taking requests. The automatic reply is below.') });
   }
+  // The local asker desk (lib/desk.py): the message is with a local model, or left it, or the
+  // local model suggested a session and the owner decides.
+  function deskNote(m) {
+    const d = m.desk && typeof m.desk === 'object' ? m.desk : null;
+    if (!d) return null;
+    const st = str(d.state), note = (text) => h('p', { class: 'held desk', role: 'note', text });
+    if (str(m.status) === 'desk') return note(tr('With the local model: it answers here shortly. No Claude session gets it. A local model answer may be less accurate.'));
+    if (st === 'timeout') return note(tr('The local model didn\'t answer in time, so the message went the usual way.'));
+    if (st === 'down' || st === 'offline' || st === 'disabled' || st === 'stalled' || st === 'failed') return note(tr('The local model became unavailable, so the message went the usual way.'));
+    if (st === 'forwarded') return note(tr('The owner forwarded it to {who}.', { who: str(d.forwarded_to) || '?' }));
+    if (st === 'answered' && d.suggest) return note(tr('The local model suggests that {who} look at it; the owner decides whether to forward it.', { who: str(d.suggest) }));
+    return null;
+  }
   // A long text shows its first lines; "Show more" opens it in place (the choice is kept, so a
   // re-render keeps it open).
   function clampText(key, text, cls) {
@@ -3583,7 +3618,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       h('div', { class: 'thread-top' },
         fold,
         h('span', { class: 'to', text: '→ @' + (str(m.to) || '?') }),
-        h('span', { class: 'status ' + str(m.status), text: str(m.status) || 'new' }),
+        h('span', { class: 'status ' + str(m.status), text: str(m.status) === 'desk' ? tr('local model') : str(m.status) || 'new' }),
         unread ? h('span', { class: 'new-chip', text: tr('New reply') }) : null,
         h('span', { text: tr('from {who}', { who: whoLabel(m.by) }) }),
         h('span', { class: 'preview', text: str(m.body).replace(/\s+/g, ' ').slice(0, 160) + (replies.length ? ' · ' + tr(replies.length === 1 ? '1 reply' : '{n} replies', { n: replies.length }) : '') }),
@@ -3591,13 +3626,15 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       clampText(id, str(m.body), 'body'),
       guardNote(m),
       declinedNote(m),
+      deskNote(m),
       relayLine].flat().filter(Boolean));
     syncFold();
     if (replies.length) {
       // Only the latest replies; the earlier ones open in place.
       const hide = replies.length > MSG_REPLIES_SHOWN && !S.msgOpen.has(id + '#r') ? replies.length - MSG_REPLIES_SHOWN : 0;
       const items = replies.map((r, i) => h('li', { hidden: i < hide, class: r.canned ? 'canned' : null },
-        h('span', { class: 'from' }, h('span', { text: str(r.from) || '?' }), r.canned ? h('span', { class: 'auto', text: tr('automatic reply') }) : null, timeEl(r.created_at)),
+        h('span', { class: 'from' }, h('span', { text: str(r.from) || '?' }), r.canned ? h('span', { class: 'auto', text: tr('automatic reply') }) : null,
+          r.local_model ? h('span', { class: 'auto local', text: tr('local model · may be less accurate') }) : null, timeEl(r.created_at)),
         clampText(id + ':' + str(r.id || i), str(r.body), 'rbody')));
       if (replies.length > MSG_REPLIES_SHOWN) {
         const n = replies.length - MSG_REPLIES_SHOWN;
@@ -4504,7 +4541,10 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     const an = $('#msg-asker-note');
     if (an) an.hidden = !(ok && S.askerOnly);
     // do not disturb, or compute is short: an asker's message gets a canned reply (never the reason's numbers)
-    $('#msg-paused').hidden = !(ok && S.askerOnly && S.avail && S.avail.declining);
+    // the local asker desk answers now (lib/desk.py): before any decline, so no "paused" note then
+    const local = !!(S.localModel && S.localModel.answering);
+    $('#msg-local').hidden = !(ok && S.askerOnly && local);
+    $('#msg-paused').hidden = !(ok && S.askerOnly && S.avail && S.avail.declining && !local);
   }
   function histMatch(m, to, q) {
     if (to && !sessionsOf(m).includes(to)) return false;   // the same rule as the top picker and board-serve
@@ -6488,6 +6528,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       S.ledger = st.ledger && typeof st.ledger === 'object' ? st.ledger : null;
       S.away = st.owner_away && typeof st.owner_away === 'object' ? st.owner_away : null;
       S.avail = st.availability && typeof st.availability === 'object' ? st.availability : null;
+      S.localModel = st.local_model && typeof st.local_model === 'object' ? st.local_model : null;
       S.consensus = arr(st.consensus);
       S.notify = st.notify && typeof st.notify === 'object' ? st.notify : null;
       S.rc = st.rc && typeof st.rc === 'object' ? st.rc : null;
@@ -7580,6 +7621,20 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "Do not disturb: askers get an automatic reply until you turn it off.": "勿擾：在你關閉之前，提問者都會收到自動回覆。",
       "You are online: sessions and askers reach you as usual.": "你在線上：session 和提問者照常可以找你。",
       "automatic reply": "自動回覆",
+      "local model": "本機模型",
+      "local model · may be less accurate": "本機模型 · 可能不夠準確",
+      "Local model answering": "本機模型回答中",
+      "Local model: desk not running": "本機模型：服務台未執行",
+      "Local model down": "本機模型離線",
+      "Askers are answered by the local model (no Claude tokens).": "提問者由本機模型回答（不花 Claude token）。",
+      "Askers take the usual way (BOARD, or the automatic reply) until the local model is back.": "本機模型恢復前，提問者照原本的流程（BOARD 轉送，或自動回覆）。",
+      "checked {at}": "{at} 檢查",
+      "With the local model: it answers here shortly. No Claude session gets it. A local model answer may be less accurate.": "交給本機模型：稍後會在這裡回答，不會送到任何 Claude session。本機模型的回答可能不夠準確。",
+      "The local model didn't answer in time, so the message went the usual way.": "本機模型沒有及時回答，所以訊息改走原本的流程。",
+      "The local model became unavailable, so the message went the usual way.": "本機模型無法使用，所以訊息改走原本的流程。",
+      "The owner forwarded it to {who}.": "主人已把它轉給 {who}。",
+      "The local model suggests that {who} look at it; the owner decides whether to forward it.": "本機模型建議由 {who} 看看；是否轉送由主人決定。",
+      "A local model answers askers' questions right now, straight from the code. Its answers are marked and may be less accurate.": "目前由本機模型直接根據程式碼回答提問者的問題。它的回答會標示出來，可能不夠準確。",
       "Declined automatically, not relayed: compute was busy. The automatic reply is below.": "已自動婉拒，沒有轉送：當時運算資源忙碌。自動回覆在下方。",
       "Declined automatically, not relayed: the owner wasn't taking requests. The automatic reply is below.": "已自動婉拒，沒有轉送：當時不接受詢問或派工。自動回覆在下方。",
       "Saved, not relayed: the owner isn't taking requests right now. The automatic reply is in the thread.": "已保存但沒有轉送：目前不接受詢問或派工。自動回覆在對話串裡。",

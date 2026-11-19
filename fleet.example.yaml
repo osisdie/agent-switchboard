@@ -72,6 +72,38 @@ owners: []
 # apikeys:
 #   request_ttl_days: 14     # a key request no owner approved by then lapses (1-90)
 
+# Local asker desk (lib/desk.py; docs/contract.md "Local asker desk"): askers are answered by a Claude
+# Code session that runs against a LOCAL Anthropic-compatible model endpoint, whenever it answers and
+# that session is alive: zero Claude tokens (board code types a fixed line into the desk's pane, the
+# desk posts its answer into the thread, marked "local model"). It goes before do-not-disturb and
+# compute-low. Endpoint down, desk not running, no looping collector, or no answer in
+# reply_timeout_s: today's flow. The desk is read-only: fleet-up starts it with `lib/desk.py run`
+# (--restricted, only Read/Grep/Glob, permission mode dontAsk, a generated deny list for secret-ish
+# paths, no hooks, only the env_file's model variables), in its own EMPTY directory
+# ($BOARD_HOME/desk/cwd): it reads only `repos`, never a parent directory. Add its session below
+# (code = `session`, autostart; its cwd is not used). Each repo should be a folder you have opened
+# Claude Code in before (trusted), or the desk's pane asks "add this directory?" at every start.
+# The endpoint must be loopback or a private address (allow_remote: true to allow another).
+# env_file lives in the config dir (gitignored) and holds the endpoint and its token, never this file:
+#   ANTHROPIC_BASE_URL=http://127.0.0.1:8080
+#   ANTHROPIC_AUTH_TOKEN=<token>
+#   ANTHROPIC_MODEL=<model name>                 # the session's model
+#   ANTHROPIC_DEFAULT_SONNET_MODEL=<model name>  # what the "sonnet"/"opus"/"haiku" aliases mean
+#   ANTHROPIC_DEFAULT_OPUS_MODEL=<model name>
+#   ANTHROPIC_DEFAULT_HAIKU_MODEL=<model name>   # background tasks (titles, summaries)
+#   API_TIMEOUT_MS=600000                        # a slow first prompt
+#   CLAUDE_CODE_MAX_CONTEXT_TOKENS=65536         # a small context window (unknown models count as large)
+# local_model:
+#   enabled: true
+#   session: ASK
+#   env_file: local-model.env   # relative to the config dir
+#   health: {url: "", timeout_s: 2, cache_s: 30}   # url "": <ANTHROPIC_BASE_URL>/v1/models
+#   reply_timeout_s: 600        # no answer by then (queued time counts): the usual way
+#   max_reply_chars: 2000       # a longer answer is cut
+#   repos: [~/work/api, ~/work/web]   # --add-dir: the only places the desk reads (list each repo)
+#   deny_paths: ["**/customer-data/**"]   # never readable, on top of the built-in deny list
+#   allow_remote: false         # true: the endpoint may be a public address or a host name
+
 # Self-hosted board (bin/board-serve, 127.0.0.1 only); fleet-up starts it when enabled.
 # Its approvers / release_managers are emails (verified by Cloudflare Access) and "local"
 # (any process on this machine, other OS users included: only list it on a single-user host);
@@ -215,6 +247,10 @@ sessions:
     about: "frontend app"
     autostart: false
     remote_control: false     # fleet-up starts it without --remote-control
+  # - code: ASK                 # the local asker desk (local_model.session): started by lib/desk.py run
+  #   cwd: ~                    # not used: the desk runs in $BOARD_HOME/desk/cwd
+  #   about: "answers askers from the repos (local model, read-only)"
+  #   autostart: true
 
 # Pomodoro tally (lib/pomodoro.py; README "Pomodoro"): each session runs a pomodoro while it works.
 # pomodoro:

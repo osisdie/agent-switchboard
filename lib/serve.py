@@ -110,6 +110,7 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import availability  # noqa: E402
 import away  # noqa: E402
+import desk  # noqa: E402
 import fleet  # noqa: E402
 import guard  # noqa: E402
 import lessons  # noqa: E402
@@ -537,6 +538,7 @@ class StateBuilder:
         paths.append(self.p("pomodoro.json"))   # pomodoro tallies (lib/pomodoro.py)
         paths.append(self.p(lessons.FILE))      # lessons (lib/lessons.py), append-only
         paths.append(self.p("scheduler.json"))  # rewritten only when the decision changes
+        paths.append(self.p("desk", "health.json"))   # the local asker desk's endpoint (lib/desk.py)
         paths.append(os.path.join(fleet.config_dir(), "fleet.yaml"))   # sessions' `about`, approver lists
         for sub in ("decisions", "tasks", "consensus"):
             paths.append(self.p(sub))
@@ -693,6 +695,8 @@ class StateBuilder:
                 "owner_away": away.away_record(self.home),
                 # online / dnd / away; state_for computes it again per viewer (the clock, the dnd record)
                 "availability": availability.view(self.home, cfg),
+                # the local asker desk (lib/desk.py): up|down|disabled; state_for adds the owner's details
+                "local_model": desk.view(self.home, cfg),
                 "consensus": away.consensus_items(self.home, now_ms())[-50:],
                 "notify": notify_state(self.home),
                 "rc": rc_state(self.home),
@@ -724,7 +728,7 @@ HISTORY_MAX = 50
 MESSAGE_KEYS = ("id", "to", "body", "by", "created_at", "status", "relayed_to", "relayed_at", "held_reason",
                 "held_at", "released_by", "released_at", "kind", "asker", "event", "ticket", "task_id", "api", "via",
                 "routed_to", "routed_at", "declined_reason", "declined_at")
-REPLY_KEYS = ("id", "from", "body", "created_at", "redacted", "canned")
+REPLY_KEYS = ("id", "from", "body", "created_at", "redacted", "canned", "local_model")
 CURSOR_RE = re.compile(r"([0-9]{1,16})\.(m-[0-9]+-[a-z0-9]+)")
 
 
@@ -751,6 +755,8 @@ def message_threads(home):
             continue
         at = max([as_int(m.get("created_at")), as_int(m.get("released_at"))] + _reply_times(home, m["id"]))
         row = {k: m[k] for k in MESSAGE_KEYS if k in m}
+        if isinstance(m.get("desk"), dict):     # the local asker desk's progress (lib/desk.py)
+            row["desk"] = desk.public(m["desk"])
         row["last_activity_at"] = at
         out.append({"m": row, "at": at})
     out.sort(key=lambda t: (t["at"], t["m"]["id"]), reverse=True)
@@ -1500,6 +1506,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # compute-low check is two small file reads and depends on the clock); the dnd record for
         # owners only, never a usage number
         state["availability"] = availability.view(self.server.home, cfg, owner=is_owner(cfg, ident))
+        state["local_model"] = desk.view(self.server.home, cfg, owner=is_owner(cfg, ident))
         if not is_owner(cfg, ident):
             state["operator"] = owner_only_operator(state.get("operator"))
         return self.viewer_for(state, ident, via, cfg)
@@ -2490,6 +2497,8 @@ def actionable(home):
     for path in glob.glob(os.path.join(home, "decisions", "*.json")):
         d = read_json(path)
         # board-serve presses permission prompts and pane questions itself (relay "press").
+        if isinstance(d, dict) and d.get("kind") == desk.FORWARD_KIND:
+            continue    # the local desk's "forward to CODE?": lib/desk.py applies it, never relayed
         if isinstance(d, dict) and d.get("status") == "answered" and d.get("kind") == serve_api.TAKE_KIND:
             # an API take request: never relayed as a [BOARD decision]; the operator runs the take
             # on approve (prompts/board-operator.md, "Take requests from the API")
@@ -2527,14 +2536,37 @@ def actionable(home):
     return [(line, key) for _, line, key in out]
 
 
+DESK_SWEEP_S = 15
+
+
+def desk_sweep(home):
+    """The local asker desk's fallback pass (lib/desk.py sweep, check_tick): run by board-serve and
+    by --watch too, so a dead collector never strands an asker's message with the desk."""
+    try:
+        cfg = fleet.load_fleet()
+        if desk.desk_messages(home):
+            return desk.sweep(home, cfg, check_tick=True)
+    except Exception as exc:  # noqa: BLE001 - never stops the server or the watch
+        sys.stderr.write("board-serve: desk sweep: %s\n" % type(exc).__name__)
+    return []
+
+
+def desk_sweeper(home, stop):
+    while not stop.wait(DESK_SWEEP_S):
+        desk_sweep(home)
+
+
 def watch(home, once=False, tick_s=480):
     """Print one line per new actionable item (oldest first), and "tick" every tick_s seconds.
 
     Meant for the operator's Monitor: waiting costs no tokens, and a line is only printed when
     there is something to relay (or a heartbeat is due)."""
     seen = set()
-    last_tick = time.time()
+    last_tick, last_sweep = time.time(), 0.0
     while True:
+        if time.time() - last_sweep >= DESK_SWEEP_S:
+            desk_sweep(home)     # before listing: a message it puts back to "new" shows at once
+            last_sweep = time.time()
         items = actionable(home)
         for line, key in items:
             if key not in seen:
@@ -2610,6 +2642,8 @@ def main(argv):
     if cfg["tunnel"]:
         servers.append(Server("tunnel", cfg["tunnel_port"], home, cfg, hub, lock, quiet=args.quiet))
     threading.Thread(target=hub.run, daemon=True).start()
+    sweep_stop = threading.Event()
+    threading.Thread(target=desk_sweeper, args=(home, sweep_stop), daemon=True).start()
     for srv in servers[1:]:
         threading.Thread(target=srv.serve_forever, daemon=True).start()
     sys.stderr.write("board-serve: " + "\nboard-serve: ".join(info) + "\n")
@@ -2619,6 +2653,7 @@ def main(argv):
         pass
     finally:
         hub.stop()
+        sweep_stop.set()
         for srv in servers[1:]:
             srv.shutdown()
         for srv in servers:
