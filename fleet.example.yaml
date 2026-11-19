@@ -115,6 +115,9 @@ owners: []
 #     requests: ["could we"]    # asking words ("please", "請"); a verb must follow, no question word between
 #     questions: []             # words that make it a question ("explain", "怎麼")
 #     refs: ['TICKET-\d+']      # references that, with a verb, make it a request (MR/PR links built in)
+#     done: ["shipped it"]      # words that make a sentence a report, not a request ("thanks", "已經")
+#   # A regex here is yours to keep sane: one that backtracks badly can be slow on long messages
+#   # (only the first 2000 characters are classified).
 
 # Self-hosted board (bin/board-serve, 127.0.0.1 only); fleet-up starts it when enabled.
 # Its approvers / release_managers are emails (verified by Cloudflare Access) and "local"

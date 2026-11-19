@@ -190,12 +190,17 @@ L = {"en": {"answering": "Local model answering", "down": "Local model down", "s
             "label": "local model · may be less accurate", "local": "A local model answers",
             "waiting": "Waiting for the owner to forward this to a session.",
             "declined": "The owner declined to forward it to a session.", "forwarded": "The owner forwarded it to API.",
-            "away": "The owner isn't taking requests right now"},
+            "away": "The owner isn't taking requests right now",
+            "bad_target": "That session is no longer on the board: pick another or decline.",
+            "not_approver": "That answer came from someone who isn't an approver, so it wasn't applied.",
+            "no_target": "Pick a session to forward it to, or decline."},
      "zh-TW": {"answering": "本機模型回答中", "down": "本機模型離線", "status": "本機模型",
                "with": "交給本機模型", "timeout": "沒有及時回答", "suggest": "建議由 API",
                "label": "本機模型 · 可能不夠準確", "local": "目前由本機模型",
                "waiting": "等待主人決定是否轉給某個 session 處理。", "declined": "主人決定不轉給 session 處理。",
-               "forwarded": "主人已把它轉給 API。", "away": "目前不接受詢問或派工"}}
+               "forwarded": "主人已把它轉給 API。", "away": "目前不接受詢問或派工",
+               "bad_target": "看板上已經沒有那個 session：請改選另一個，或拒絕。",
+               "not_approver": "那個回答來自非核准者，所以沒有套用。", "no_target": "請選一個要轉給的 session，或拒絕。"}}
 
 
 def open_page(browser, base, lang, width):
@@ -246,6 +251,27 @@ def main():
                       and t["label"] == T["label"], t)
                 t = page.evaluate(THREAD_JS, ids["fdeclined"])
                 check("%s: the owner's decline is shown" % tag, t and T["declined"] in (t["note"] or ""), t)
+                ctx.close()
+            # forward cards an answer bounced off: the card says why (en, zh-TW)
+            for why in ("bad_target", "not_approver", "no_target"):
+                wj(os.path.join(home, "decisions", "d-1-%s.json" % why.replace("_", "")), {
+                    "id": "d-1-%s" % why.replace("_", ""), "kind": "desk_forward", "from": "desk",
+                    "question": "Forward asker ann@example.invalid's request to a session? (%s)" % why,
+                    "options": ["API", "decline"], "context": "\"please review !7\"", "status": "pending",
+                    "created_at": int(time.time() * 1000), "ignored_why": why,
+                    "ignored": {"by": "board:someone@example.invalid", "answer": "x", "why": why, "at": 1},
+                    "request": {"kind": "desk_forward", "message_id": "m-1-abc", "session": None}})
+            subprocess.run([os.path.join(REPO, "bin", "board-collect"), "--once", "--no-notify"],
+                           env=env, check=True, stdout=subprocess.DEVNULL)
+            for lang in ("en", "zh-TW"):
+                ctx, page = open_page(browser, base, lang, 390 if lang == "zh-TW" else 1280)
+                page.wait_for_selector("#dec-d-1-badtarget", timeout=10000)
+                got = page.evaluate("""() => Object.fromEntries(['badtarget', 'notapprover', 'notarget'].map((k) => {
+                  const n = document.querySelector('#dec-d-1-' + k + ' .note.bounced');
+                  return [k, n ? n.textContent : null]; }))""")
+                check("owner %s: each bounced forward card says why" % lang,
+                      got["badtarget"] == L[lang]["bad_target"] and got["notapprover"] == L[lang]["not_approver"]
+                      and got["notarget"] == L[lang]["no_target"], got)
                 ctx.close()
             # the owner forwarded one (newest, so it is among the threads shown at first)
             now = int(time.time() * 1000) + 5000

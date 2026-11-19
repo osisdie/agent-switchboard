@@ -982,6 +982,8 @@ class WorkRequests(unittest.TestCase):
         ("Kindly investigate the outage", "request"),
         ("PTAL !2215", "request"),
         ("!2215 please", "request"),
+        ("PR 45 is ready for review", "reference"),
+        ("!12 needs approval", "reference"),
     ]
     # not flagged on purpose: an imperative needs an asking word or a merge request in the message
     MISSED = ["Run the integration tests on the release branch.", "fix the typo in the README"]
@@ -1021,6 +1023,12 @@ class WorkRequests(unittest.TestCase):
         "Can you explain what !12 changes?",
         "!12 上線了嗎",
         "合併 !42 了嗎",
+        # reports, not requests (a reference with a past tense, thanks, FYI, 已經)
+        "Thanks for the review on !12!",
+        "I already merged !12, thanks",
+        "FYI I merged !12 yesterday",
+        "!12 was deployed to staging",
+        "!12 已經合併了，謝謝",
     ]
 
     def setUp(self):
@@ -1257,9 +1265,14 @@ class WorkRequests(unittest.TestCase):
             self.assertTrue(desk.needs_tick(HOME, cfg()), answer)
             self.assertEqual(desk.apply_forwards(HOME, cfg()), [(d["id"], why)], answer)
             back = rj(path)
-            self.assertEqual((back["status"], back["answer"], back["ignored"]["why"]), ("pending", None, why), answer)
+            self.assertEqual((back["status"], back["answer"], back["ignored"]["why"], back["ignored_why"]),
+                             ("pending", None, why, why), answer)
             self.assertEqual(messages.read(HOME, rec["id"])["desk"]["forward"], "pending", answer)
         self.assertFalse(desk.needs_tick(HOME, cfg()) and desk.apply_forwards(HOME, cfg()))
+        # the board serves why (a fixed code), never who or what was answered
+        import serve  # noqa: WPS433
+        self.assertIn("ignored_why", serve.DECISION_KEYS)
+        self.assertNotIn("ignored", serve.DECISION_KEYS)
 
     def test_the_operator_is_never_a_forward_target(self):
         wj(os.path.join(HOME, "operator.json"), {"operator_session": "WEB"})

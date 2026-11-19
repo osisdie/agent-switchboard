@@ -3047,15 +3047,18 @@ config dir.
   a verb (after greetings or `@CODE`; never a single CJK character), is not a question, has no
   question word and is not a heading (`Update: …`). `reference`: a merge/pull request reference
   (`/merge_requests/<n>`, `/pull/<n>`, `!<n>`, `MR <n>`, `PR <n>`) in the message and a verb (never a
-  single CJK character) in a sentence that is not a question and has no question word ("!42 needs a
-  review", "…/merge_requests/12 needs approval"). So "上線了嗎", "部署流程在哪裡", "跑步", "Run time of
+  single CJK character, never ending in -ed: "merged", "was deployed") in a sentence that is not a
+  question, has no question word and does not report (`thanks`, `thx`, `fyi`, `already`, `謝謝`,
+  `感謝`, `已`, `已經`, `剛剛` …): "!42 needs a review", "PR 45 is ready for review", "…/merge_requests/12
+  needs approval", but not "Thanks for the review on !12!", "FYI I merged !12" or "!12 已經合併了". So "上線了嗎", "部署流程在哪裡", "跑步", "Run time of
   the job is 2h" or "Merge conflicts keep happening, is that normal" are not work requests, and
   neither is a bare imperative with no asking word or merge request ("fix the typo").
-  `local_model.work_patterns: {enabled, defaults, verbs, requests, questions, refs}` tunes it:
+  `local_model.work_patterns: {enabled, defaults, verbs, requests, questions, refs, done}` tunes it:
   `enabled: false` leaves only addressed and mention, lists add to the built-in ones (`defaults:
   false` drops those); an ASCII word or phrase matches as a word (verbs with endings), anything else
   is a regex. Each entry is compiled on its own: one that does not compile is ignored, the rest keep
-  working.
+  working. A regex there is the owner's responsibility: one that backtracks catastrophically can
+  still be slow on the 2000-character cap (classifying runs under board-serve's write lock).
   Classified when the message is routed to the desk (`create`, `release`), and by the tick for one
   that was not (an error then): `desk.work` (true|false), `work_why`. A message sent to a session
   (or with `@CODE`) whose words are a plain question still gets the card, marked `request.plain`. A work request gets its
@@ -3092,7 +3095,10 @@ config dir.
   closes the card: one by anyone who is not an approver (decline included, or a decision `board
   answer` marked `unauthorized`), `approve` on a card without a target, or a target that is the
   desk, the operator or no session on the board: the decision goes back to `pending` (`ignored: {by,
-  answer, why: not_approver|no_target|bad_target, at}`). Only a card that ended unanswered (status
+  answer, why: not_approver|no_target|bad_target, at}`, and `ignored_why` = the same code, which the
+  board serves; never `ignored` itself). The pending card then says why (en, zh-TW): "That session
+  is no longer on the board: pick another or decline.", "That answer came from someone who isn't
+  an approver, so it wasn't applied.", "Pick a session to forward it to, or decline.". Only a card that ended unanswered (status
   `timeout` or `stale`) sets `desk.forward: "closed"` (`forward_why`: its reason) and `desk_result:
   "closed"`, its status kept. `board-serve --watch` never prints a
   `desk_forward` decision.

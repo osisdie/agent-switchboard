@@ -555,11 +555,12 @@ def public(d):
 # fleet.yaml local_model.work_patterns (all optional):
 #   enabled: false      only messages addressed to a session or @mentioning one count
 #   defaults: false     drop the built-in lists below (yours only)
-#   verbs, requests, questions, refs: lists added to the built-in ones. An entry that is a plain
+#   verbs, requests, questions, refs, done: lists added to the built-in ones. An entry that is a plain
 #     ASCII word or phrase ("triage", "roll out") matches as a word (verbs with -s/-ed/-ing
 #     endings); anything else is a Python regular expression, compiled on its own (one that does
 #     not compile is dropped, never the list). All match case-insensitively on the NFKC-normalized
-#     text. The rules are work_kind's.
+#     text. The rules are work_kind's. A regex is the owner's responsibility: one that backtracks
+#     catastrophically can still be slow on MAX_WORK_CHARS (this runs under board-serve's lock).
 _A = r"(?<![a-z0-9_])"      # an ASCII word boundary that works next to CJK text (\b does not)
 _Z = r"(?![a-z0-9_])"
 _SUFFIX = r"(?:s|es|ed|d|ing|ning|ping|ped)?"
@@ -588,6 +589,10 @@ WORK_DEFAULTS = {
                   "whether", "clarify", "understand", "know", "mean", "meaning", "difference", "normal", "any idea",
                   "怎麼", "怎么", "如何", "為什麼", "为什么", "為何", "为何", "什麼", "什么", "哪", "解釋", "解释",
                   "說明", "说明", "介紹", "介绍", "告訴", "告诉", "是否", "幾點", "几点", "多少", "誰", "谁"],
+    # a sentence that reports, not asks ("thanks for the review on !12", "FYI I merged !12",
+    # "!12 已經合併了"): the reference path skips it
+    "done": ["thanks", "thank you", "thx", "fyi", "already", "謝謝", "谢谢", "感謝", "感谢", "多謝", "多谢",
+             "已經", "已经", "已", "剛剛", "刚刚"],
     # a merge/pull request reference
     "refs": [r"/merge_requests/\d+", r"/pulls?/\d+", r"(?<![\w&!])!\d+(?!\w)", _A + r"(?:mr|pr)\s*[#!]?\d+" + _Z],
 }
@@ -635,7 +640,7 @@ def work_settings(cfg):
     w = p.get("work_patterns") if isinstance(p.get("work_patterns"), dict) else {}
     use_defaults = w.get("defaults") is not False
     out = {"enabled": w.get("enabled") is not False, "weak": []}
-    for key in ("verbs", "requests", "questions", "refs"):
+    for key in ("verbs", "requests", "questions", "refs", "done"):
         mine = [x for x in (w.get(key) if isinstance(w.get(key), list) else []) if isinstance(x, str)]
         items = (list(WORK_DEFAULTS[key]) if use_defaults else []) + mine
         pats = []
@@ -696,13 +701,15 @@ def work_kind(cfg, text):
       imperative only in a message with an asking word or a merge request: a sentence that starts
                  with a verb (never a single CJK character), is not a question (?, 嗎 ...), has no
                  question word and is not a heading ("Update: ...").
-      reference  a merge request in the message and a verb (never a single CJK character) in a
-                 sentence that is not a question and has no question word ("!42 needs a review")."""
+      reference  a merge request in the message and a verb (never a single CJK character, never in
+                 the past tense) in a sentence that is not a question, has no question word and does
+                 not report ("thanks", "FYI", "已經" ...): "!42 needs a review"."""
     w = work_settings(cfg)
     if not w["enabled"] or not (w["verbs"] or w["weak"]):
         return None
     t = _norm(text)
     verbs, weak, reqs, qs, refs = w["verbs"], w["weak"], w["requests"], w["questions"], w["refs"]
+    done = w["done"]
     sents = _sentences(t)
     has_ref = _any(refs, t)
     has_req = False
@@ -732,8 +739,11 @@ def work_kind(cfg, text):
                 v = rx.match(rest)
                 if v and not rest[v.end():].lstrip().startswith((":", "：")):     # not "Update: ..."
                     return "imperative"
-        if has_ref and _first(verbs, s):
-            return "reference"
+        if has_ref and not _any(done, s):
+            # a past tense ("merged", "was deployed") reports what happened: not a request
+            for rx in verbs:
+                if any(not v.group(0).lower().endswith("ed") for v in rx.finditer(s)):
+                    return "reference"
     return None
 
 
@@ -1248,7 +1258,7 @@ def apply_forwards(home, cfg, now=None):
                 # never applied: the card waits for an approver's usable answer again
                 d.update({"status": "pending", "answer": None, "answered_by": None, "answered_at": None,
                           "ignored": {"by": d.get("answered_by"), "answer": ans[:100], "why": why, "at": now},
-                          "updated_at": now})
+                          "ignored_why": why, "updated_at": now})
                 _write(path, d)
                 audit(home, {"action": "forward", "decision": d.get("id"), "id": mid, "to": code, "result": why})
                 out.append((d.get("id"), why))

@@ -409,6 +409,7 @@ dialog.notif { width: min(720px, calc(100vw - 24px)); }
 .status.stale, .status.timeout { background: var(--off-soft); color: var(--muted); }
 .status.answered_in_pane { background: var(--ok-soft); color: var(--ok); }
 .dcard .note.maybe { color: var(--lamp-ink); }
+.dcard .note.bounced { color: var(--lamp-ink); }   /* a forward answer that was not applied */
 /* a board ask that may have been answered in its session: still open, but quieter and last */
 .dcard.maybe { opacity: .72; box-shadow: none; border-style: dashed; }
 .dcard.maybe:hover, .dcard.maybe:focus-within { opacity: 1; }
@@ -2562,6 +2563,14 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
         h('span', { class: 'q', text: tr('Close this question as answered in the session? Nothing is sent to {who}.', { who: str(d.from) || tr('the session') }) }),
         h('button', { class: 'btn solid allow', type: 'button', dataset: { focus: 'confirm' }, onclick: () => resolveDecision(d), text: tr('Yes, close it') }),
         h('button', { class: 'btn', type: 'button', onclick: () => { S.confirm = null; renderDecisions(); }, text: tr('Cancel') })));
+    }
+    // the local desk's "forward to a session?" (lib/desk.py): an answer that couldn't be applied
+    // put the card back; say why, so the owner picks again
+    const BOUNCED = { bad_target: 'That session is no longer on the board: pick another or decline.',
+      not_approver: 'That answer came from someone who isn\'t an approver, so it wasn\'t applied.',
+      no_target: 'Pick a session to forward it to, or decline.' };
+    if (d.kind === 'desk_forward' && str(d.status) === 'pending' && BOUNCED[str(d.ignored_why)]) {
+      card.append(h('p', { class: 'note bounced', role: 'note', text: tr(BOUNCED[str(d.ignored_why)]) }));
     }
     if (busy) {
       card.append(h('p', { class: 'saving', text: tr('Saving your answer…') }));
@@ -7652,6 +7661,9 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "The owner forwarded it to {who}.": "主人已把它轉給 {who}。",
       "The local model suggests that {who} look at it; the owner decides whether to forward it.": "本機模型建議由 {who} 看看；是否轉送由主人決定。",
       "Waiting for the owner to forward this to a session.": "等待主人決定是否轉給某個 session 處理。",
+      "That session is no longer on the board: pick another or decline.": "看板上已經沒有那個 session：請改選另一個，或拒絕。",
+      "That answer came from someone who isn't an approver, so it wasn't applied.": "那個回答來自非核准者，所以沒有套用。",
+      "Pick a session to forward it to, or decline.": "請選一個要轉給的 session，或拒絕。",
       "The owner isn't taking requests right now; they will see it when they are back.": "目前不接受詢問或派工；主人回來後會看到。",
       "Compute is busy right now, so it may take a while.": "目前運算資源忙碌，可能要等一陣子。",
       "The owner declined to forward it to a session.": "主人決定不轉給 session 處理。",

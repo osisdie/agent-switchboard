@@ -207,6 +207,8 @@ DECISION_KEYS = ("id", "kind", "from", "question", "options", "context", "tool_u
                  "escalation_level", "notified_via", "summary_truncated",
                  "labels_clipped", "answer_options", "press_note", "press_note_code", "press_not_visible",
                  "status_reason",
+                 # the local desk's forward card: why an answer was not applied (a fixed code)
+                 "ignored_why",
                  # settled from the session's own report (lib/reconcile.py)
                  "delivered_via", "reconciled_from", "reconcile_result",
                  # pane questions (an AskUserQuestion picker): source "pane"
