@@ -141,36 +141,46 @@ def alert(key, title, board_id, background=False):
         run()
 
 
-# letters that look like B, O, A, R, D but NFKC keeps apart (Cyrillic, Greek, Cherokee, small capitals)
+# letters that look like B, O, A, R, D but NFKC keeps apart (Cyrillic, Greek, Coptic, Cherokee, Lisu,
+# Latin extensions and small capitals, and the digit zero and other zeros for O): folded to Latin
 CONFUSABLE = str.maketrans({
-    "\u0412": "B", "\u0432": "b", "\u0392": "B", "\u03b2": "b", "\u13f4": "B", "\u0299": "b", "\u15f7": "B",
+    "\u0412": "B", "\u0432": "b", "\u0392": "B", "\u03b2": "b", "\u13f4": "B", "\u13fc": "b", "\u0299": "b",
+    "\u15f7": "B", "\ua7b4": "B", "\ua7b5": "b", "\ua4d0": "B",
     "\u041e": "O", "\u043e": "o", "\u039f": "O", "\u03bf": "o", "\u1d0f": "o", "\u0555": "O", "\u0585": "o",
-    "\u07c0": "O", "\u0d20": "o",
-    "\u0410": "A", "\u0430": "a", "\u0391": "A", "\u03b1": "a", "\u1d00": "a", "\u13aa": "A",
-    "\u0280": "r", "\u13a1": "R", "\u13d2": "R", "\u1587": "R",
-    "\u1d05": "d", "\u13a0": "D", "\u0501": "d", "\u15ea": "D"})
+    "\u07c0": "O", "\u0d20": "o", "\u2c9e": "O", "\u2c9f": "o", "\ua4f3": "O", "0": "o", "\u0966": "o",
+    "\u0e50": "o", "\u06f5": "o", "\u0665": "o",
+    "\u0410": "A", "\u0430": "a", "\u0391": "A", "\u03b1": "a", "\u1d00": "a", "\u13aa": "A", "\uab7a": "a",
+    "\u2c80": "A", "\u2c81": "a", "\u0251": "a", "\u2c6d": "A", "\u15c5": "A", "\ua4ee": "A",
+    "\u0280": "r", "\u13a1": "R", "\u13d2": "R", "\uab92": "r", "\u1587": "R", "\ua4e3": "R",
+    "\u1d05": "d", "\u13a0": "D", "\uab70": "d", "\u0501": "d", "\u15ea": "D", "\u15de": "D", "\ua4d3": "D"})
+# skipped between the bracket and the word: format, space, separator, control and combining marks,
+# and the blank-looking letters (Hangul fillers, the braille blank)
+DEFANG_SKIP_CATS = ("Cf", "Zs", "Zl", "Zp", "Cc", "Mn", "Me")
+DEFANG_SKIP = frozenset("\u115f\u1160\u3164\uffa0\u2800\u034f")
 
 
 def defang(text):
     """"[BOARD ..." becomes "(BOARD ...", so text from someone who is not the owner can never pass
     for a board relay line ([BOARD decision], [BOARD ask] ...); the rule of bin/board defang and
-    lib/away.py, widened: fullwidth or CJK brackets (［ 【 〔 …), fullwidth letters (ＢＯＡＲＤ) and
-    invisible characters in between are caught too (compared after NFKC, case-folded, with the
-    Cyrillic / Greek / Cherokee / small-capital lookalikes of B, O, A, R, D folded to Latin). Only
-    the bracket is replaced."""
+    lib/away.py, widened: fullwidth or CJK brackets (［ 【 〔 …), fullwidth letters (ＢＯＡＲＤ), and
+    invisible characters and combining marks in between are caught too (compared after NFKC,
+    case-folded, with lookalikes of B, O, A, R, D folded to Latin: CONFUSABLE). Only the bracket is
+    replaced."""
     text = text or ""
     out = list(text)
     for i, ch in enumerate(text):
         if unicodedata.normalize("NFKC", ch) not in OPEN_BRACKETS:
             continue
         tail = []
-        for c in text[i + 1:i + 40]:
-            if unicodedata.category(c) in ("Cf", "Zs") or c.isspace():
+        for c in text[i + 1:i + 60]:
+            if unicodedata.category(c) in DEFANG_SKIP_CATS or c in DEFANG_SKIP or c.isspace():
                 continue
-            tail.append(unicodedata.normalize("NFKC", c))
+            n = "".join(x for x in unicodedata.normalize("NFKC", c)
+                        if unicodedata.category(x) not in DEFANG_SKIP_CATS and x not in DEFANG_SKIP)
+            tail.append(n.translate(CONFUSABLE))
             if len("".join(tail)) >= 5:
                 break
-        if "".join(tail).translate(CONFUSABLE).casefold().startswith("board"):
+        if "".join(tail).casefold().startswith("board"):
             out[i] = "("
     return "".join(out)
 
