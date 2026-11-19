@@ -2043,10 +2043,11 @@ press_multi() {
         # Every set of this question's labels the line could be read as (any order, ", "
         # between them): exactly one, and it is the chosen set. Labels holding ", " can make it
         # ambiguous ("North, East" as one label or two): then nothing is submitted.
+        # one entry per option, by index (a label holding a newline stays one label)
         labs="[]"
-        while IFS= read -r k; do
-          labs="$(jq -c --arg l "$(nows <<<"$k")" '. + [$l]' <<<"$labs")"
-        done < <(dj -r --argjson i "$t" '.questions[$i].options[].label')
+        for ((k = 0; k < $(dj -r --argjson i "$t" '.questions[$i].options | length'); k++)); do
+          labs="$(jq -c --arg l "$(dj -r --argjson i "$t" --argjson k "$k" '.questions[$i].options[$k].label | tostring' | nows)" '. + [$l]' <<<"$labs")"
+        done
         jq -e --arg s "${ba[$j]}" --argjson want "$(dj -c --argjson i "$t" '.answer_options[$i]')" "$JQ_ANY_ORDER"'
             . as $L | ($L | length) as $nl
             | [ range(1; pow(2; $nl)) as $mask
