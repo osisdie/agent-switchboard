@@ -227,8 +227,10 @@ def create(home, to, body, by, background_alert=False, asker=None, api=None, dec
     if reason:
         rec.update({"held_reason": reason, "held_at": now})
     elif _to_desk(home, rec):
-        # the local asker desk answers it (lib/desk.py), before any decline: zero Claude tokens
+        # the local asker desk answers it (lib/desk.py), before any decline: zero Claude tokens.
+        # A work request also gets its "forward to a session?" card for the owner now.
         rec.update({"status": "desk", "desk": _desk_block(now)})
+        _desk_work(home, rec, now)
     elif decline:
         rec.update({"status": "declined", "declined_reason": decline[0], "declined_at": now})
     _write(path_of(home, mid), rec)
@@ -259,6 +261,17 @@ def _desk_block(now, cfg=None):
     import desk  # noqa: WPS433
     cfg = cfg if cfg is not None else fleet.load_fleet()
     return {"session": desk.settings(cfg)["session"], "state": "queued", "queued_at": now}
+
+
+def _desk_work(home, rec, now, cfg=None):
+    """lib/desk.py mark_work: is it a work request (then its desk_forward card is created now)?
+    Never stops the message: on an error it stays unclassified and the desk's tick does it."""
+    try:
+        import desk  # noqa: WPS433
+        desk.mark_work(home, cfg if cfg is not None else fleet.load_fleet(), rec, now)
+    except Exception as exc:  # noqa: BLE001
+        rec["desk"].pop("work", None)
+        sys.stderr.write("messages: desk work check: %s\n" % type(exc).__name__)
 
 
 def _canned(home, rec, decline, now):
@@ -328,6 +341,7 @@ def release(home, mid, by, cfg=None):
     decline = None
     if _to_desk(home, rec, cfg):
         rec.update({"status": "desk", "desk": _desk_block(now, cfg), "released_by": by, "released_at": now})
+        _desk_work(home, rec, now, cfg)
         _write(path_of(home, mid), rec)
         audit(home, {"action": "release", "id": mid, "by": by, "reason": rec.get("held_reason"), "result": "desk"})
         try:

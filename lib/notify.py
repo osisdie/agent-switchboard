@@ -766,6 +766,14 @@ def decision_alert(d):
                 "title": "API key %s asks to start %s in %s" % (req.get("key_name") or "?", req.get("ref") or "?",
                                                                  req.get("session") or "?"),
                 "body": "approve or decline on the board", "url": None}
+    if d.get("kind") == "desk_forward":
+        # an asker waits for the owner (lib/desk.py): like any question, but the alert never
+        # echoes the asker or their words
+        req = d.get("request") if isinstance(d.get("request"), dict) else {}
+        to = req.get("session")
+        return {"level": "warn", "key": "decision:%s" % d.get("id"), "kind": "decision", "escalate": True,
+                "title": "An asker's request waits for you: forward it to %s?" % (to or "a session"),
+                "body": "decide on the board (forward or decline)", "url": None}
     if d.get("kind") == "permission":
         title = "%s asks permission" % who
         body = "%s: %s" % (d.get("tool_name") or "tool", (d.get("summary") or "")[:200])

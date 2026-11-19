@@ -103,6 +103,18 @@ owners: []
 #   repos: [~/work/api, ~/work/web]   # --add-dir: the only places the desk reads (list each repo)
 #   deny_paths: ["**/customer-data/**"]   # never readable, on top of the built-in deny list
 #   allow_remote: false         # true: the endpoint may be a public address or a host name
+#   # A WORK request (asks someone to review, merge, deploy, fix, run ...) always gets a "forward to
+#   # a session?" card for the owner (lib/desk.py classify). A message sent to one session or with
+#   # @CODE always counts; these tune the word heuristic for the rest. Lists ADD to the built-in
+#   # ones; an ASCII word or phrase matches as a word (verbs also with -s/-ed/-ing), anything else
+#   # is a Python regex.
+#   work_patterns:
+#     enabled: true             # false: only "sent to a session" and @CODE count
+#     defaults: true            # false: drop the built-in lists (yours only)
+#     verbs: ["take a look"]    # what someone is asked to do
+#     requests: ["could we"]    # asking words ("please", "請"); a verb must follow, no question word between
+#     questions: []             # words that make it a question ("explain", "怎麼")
+#     refs: ['TICKET-\d+']      # references that, with a verb, make it a request (MR/PR links built in)
 
 # Self-hosted board (bin/board-serve, 127.0.0.1 only); fleet-up starts it when enabled.
 # Its approvers / release_managers are emails (verified by Cloudflare Access) and "local"

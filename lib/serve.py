@@ -2026,6 +2026,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             out["reason"] = rec["held_reason"]
         elif rec["status"] == "declined":
             out.update({"reason": rec["declined_reason"], "reply": decline[1]})
+        elif rec["status"] == "desk" and (rec.get("desk") or {}).get("forward") == "pending":
+            out["forward"] = "pending"      # a work request: the owner decides whether a session takes it
         return self.send_json(201, out)
 
     def release(self, mid, body, ident, via):

@@ -911,7 +911,16 @@ the thread itself. It also answers while you are on do-not-disturb or compute is
   thread says so.
 - **It only answers.** It can't edit, run commands, browse or message sessions. When a question
   needs a change or a session's judgement, it says so and may suggest a session: you get a
-  "Forward asker message … to CODE?" decision, and only your approve sends it on.
+  "Forward asker … to CODE?" decision, and only your approve sends it on.
+- **Work requests always reach you.** A message that asks someone to *do* something (sent to one
+  session, `@CODE` in it, or words like review / merge / deploy / fix / run / rebase / please …,
+  請 / 麻煩 / 審 / 合併 / 部署 …, or a merge-request link with such a verb) gets that decision the moment
+  it reaches the desk, made by board code, not by the model. With no session named you pick one
+  from the card's buttons (or decline). The desk still answers for information. The asker's thread
+  says "Waiting for the owner to forward this to a session", then "forwarded" or "declined"; on
+  do-not-disturb it also says you aren't taking requests, and the card waits until you are back.
+  Nothing is ever forwarded without you. Tune the words with `local_model.work_patterns`
+  (`fleet.example.yaml`).
 - **On the board:** owners see a header pill (Local model answering / desk not running / down);
   askers see a note in the composer while it answers.
 

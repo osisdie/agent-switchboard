@@ -3547,11 +3547,28 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     const d = m.desk && typeof m.desk === 'object' ? m.desk : null;
     if (!d) return null;
     const st = str(d.state), note = (text) => h('p', { class: 'held desk', role: 'note', text });
-    if (str(m.status) === 'desk') return note(tr('With the local model: it answers here shortly. No Claude session gets it. A local model answer may be less accurate.'));
-    if (st === 'timeout') return note(tr('The local model didn\'t answer in time, so the message went the usual way.'));
-    if (st === 'down' || st === 'offline' || st === 'disabled' || st === 'stalled' || st === 'failed') return note(tr('The local model became unavailable, so the message went the usual way.'));
-    if (st === 'forwarded') return note(tr('The owner forwarded it to {who}.', { who: str(d.forwarded_to) || '?' }));
-    if (st === 'answered' && d.suggest) return note(tr('The local model suggests that {who} look at it; the owner decides whether to forward it.', { who: str(d.suggest) }));
+    const fwd = forwardNote(m, d);
+    let base = null;
+    if (str(m.status) === 'desk') base = note(tr('With the local model: it answers here shortly. No Claude session gets it. A local model answer may be less accurate.'));
+    else if (st === 'timeout') base = note(tr('The local model didn\'t answer in time, so the message went the usual way.'));
+    else if (st === 'down' || st === 'offline' || st === 'disabled' || st === 'stalled' || st === 'failed') base = note(tr('The local model became unavailable, so the message went the usual way.'));
+    else if (st === 'forwarded') base = note(tr('The owner forwarded it to {who}.', { who: str(d.forwarded_to) || '?' }));
+    else if (st === 'answered' && d.suggest && !d.forward) base = note(tr('The local model suggests that {who} look at it; the owner decides whether to forward it.', { who: str(d.suggest) }));
+    return [base, fwd].filter(Boolean);
+  }
+  // A work request with the desk (lib/desk.py): board code asked the owner whether to forward it to
+  // a session; the asker sees that it waits, and later what the owner decided. While the owner is on
+  // do not disturb (or compute is short) the card still waits for them, and the note says so.
+  function forwardNote(m, d) {
+    const f = str(d.forward), note = (text) => h('p', { class: 'held desk fwd', role: 'note', text });
+    if (f === 'pending') {
+      const busy = S.avail ? str(S.avail.declining) : str(d.unavailable);
+      return note(tr('Waiting for the owner to forward this to a session.') + (busy === 'owner_dnd'
+        ? ' ' + tr('The owner isn\'t taking requests right now; they will see it when they are back.')
+        : busy === 'compute_low' ? ' ' + tr('Compute is busy right now, so it may take a while.') : ''));
+    }
+    if (f === 'declined') return note(tr('The owner declined to forward it to a session.'));
+    if (f === 'closed' && str(d.forward_why) !== 'fallback') return note(tr('Not forwarded: the owner didn\'t decide on it.'));
     return null;
   }
   // A long text shows its first lines; "Show more" opens it in place (the choice is kept, so a
@@ -7634,6 +7651,11 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "The local model became unavailable, so the message went the usual way.": "本機模型無法使用，所以訊息改走原本的流程。",
       "The owner forwarded it to {who}.": "主人已把它轉給 {who}。",
       "The local model suggests that {who} look at it; the owner decides whether to forward it.": "本機模型建議由 {who} 看看；是否轉送由主人決定。",
+      "Waiting for the owner to forward this to a session.": "等待主人決定是否轉給某個 session 處理。",
+      "The owner isn't taking requests right now; they will see it when they are back.": "目前不接受詢問或派工；主人回來後會看到。",
+      "Compute is busy right now, so it may take a while.": "目前運算資源忙碌，可能要等一陣子。",
+      "The owner declined to forward it to a session.": "主人決定不轉給 session 處理。",
+      "Not forwarded: the owner didn't decide on it.": "沒有轉送：主人沒有做決定。",
       "A local model answers askers' questions right now, straight from the code. Its answers are marked and may be less accurate.": "目前由本機模型直接根據程式碼回答提問者的問題。它的回答會標示出來，可能不夠準確。",
       "Declined automatically, not relayed: compute was busy. The automatic reply is below.": "已自動婉拒，沒有轉送：當時運算資源忙碌。自動回覆在下方。",
       "Declined automatically, not relayed: the owner wasn't taking requests. The automatic reply is below.": "已自動婉拒，沒有轉送：當時不接受詢問或派工。自動回覆在下方。",
