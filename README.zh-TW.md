@@ -771,6 +771,7 @@ pomodoro:                 # fleet.yaml；全部選填
   availability:
     dnd_reply: "Heads down today. Please ask again tomorrow."   # 預設：English + 繁體中文
     compute_reply: "Busy right now. Please try again later."
+    away_reply: "Away this week. Please ask again next Monday."  # 不在時，若選了「婉拒」
     compute: {enabled: true, five_hour_pct: 90, seven_day_pct: 95, limit: true}
   ```
 
@@ -824,10 +825,23 @@ Anthropic 相容端點的 Claude Code session（*服務台*，例如 `ASK`），
   的按鈕讓你挑一個（或拒絕）。服務台照樣回答，僅供參考。提問者的對話串會顯示「等待主人決定是否轉給某個
   session 處理」，之後顯示已轉送或已拒絕；你開勿擾時還會註明目前不接受詢問或派工，卡片會等你回來。
   沒有你核准，絕不轉送。判斷用的字詞可用 `local_model.work_patterns` 調整（見 `fleet.example.yaml`）。
-- **看板上：** 擁有者在頁首看到一個標籤（本機模型回答中／服務台未執行／離線）；本機模型回答期間，
-  提問者的輸入框會有一行說明。
+- **算力夠時改用 Claude（選用）。** 擁有者可以在個人選單設定「提問者由誰回答：用量低於
+  [5 小時 50%]、[7 天 70%] 時交給 Claude session」。帳號的兩個用量視窗都低於水位時（用量資料是新的、
+  沒碰到用量上限、沒開勿擾），提問者的訊息就不經過服務台，照原本的流程由 BOARD 轉給 session，用較好的
+  模型、較長的 context 回答。走 Claude 時完全不經過服務台，所以派工也不會建立「要不要轉送？」卡片，
+  由 BOARD 照服務台出現之前的方式轉送。沒有用量資料或資料太舊時，照樣交給服務台。低於水位 5 個百分點才切到
+  Claude，回到水位就切回來，不會來回跳。預設是本機模型。CLI：`board askers route local|ample [--5h N]
+  [--7d M] --by WHO`、`board askers route status`（跟 `board dnd` 一樣，CLI 不檢查擁有者：能在這台機器上
+  執行的人就受信任）。
+- **你不在時**（不在模式），提問者不會卡在等你。個人選單的「你不在時，提問者的請求」：**Session**
+  （預設）：派工不建立「要不要轉送？」卡片，照原本流程由 BOARD 轉給 session，各 session 依不在／共識
+  規則處理（紅線仍等你回來）；你離開時還沒決定的卡片也同樣交給 session。單純提問照常回答。
+  **婉拒**：提問者收到自動回覆（`availability.away_reply`），不轉送任何訊息。**等我**：卡片等你回來決定，
+  跟以前一樣。CLI：`board askers away committee|decline|wait --by WHO`。
+- **看板上：** 擁有者在頁首看到一個標籤（本機模型回答中／服務台未執行／離線／提問者：Claude
+  session）；提問者的輸入框會有一行說明現在由誰回答。
 
-詳見 [`docs/contract.md`](docs/contract.md) 的「Local asker desk」。
+詳見 [`docs/contract.md`](docs/contract.md) 的「Local asker desk」和「Asker routing」。
 
 <a id="alerting--escalation"></a>
 
@@ -1554,6 +1568,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `artifact/dev.html`、`lib/serve_dev.py` | 開發者入口（`/dev`）與金鑰頁面（`/dev/keys`）：從即時路由表產生的 API 參考、MCP 工具、連線設定片段，以及透過 `board apikey` 建立／申請／核准／撤銷金鑰 |
 | `bin/board-mcp`、`lib/mcp_tools.py` | MCP server：一張工具表（讀取，以及寫入 `send_message` 和 `ticket_take_request`），透過 stdio（`board-mcp`，`/api/v1` 的 client）和 board-serve 上的 `POST /mcp` 提供 |
 | `lib/desk.py`、`lib/desk_mcp.py`、`bin/board-desk-mcp`、`prompts/asker-desk.md` | 本機提問服務台：把提問者導向本機模型上的唯讀 Claude Code session、健康檢查、有防護的投遞、退回原流程、啟動（`desk.py run`）和它的兩個看板工具 |
+| `lib/asker_route.py` | 提問者由誰回答：本機服務台（預設），或用量低於擁有者設定的水位時照原本流程交給 Claude session（有遲滯區間）；`board askers route` |
 | `lib/apikeys.py` | API 金鑰：金鑰儲存（加 pepper 的雜湊，0600）、誰能發放／核准／輪替／撤銷，以及 `/api/v1` 之後會用的驗證（`board apikey`） |
 | `lib/away.py` | 為 snapshot 和 `board-serve` 讀取 owner-away 模式與共識項目 |
 | `lib/tickets/` | 工單：追蹤系統 provider（`http-json`、`fake`）、依 key 路由、快取、速率限制、防 SSRF 的 HTTP 用戶端；`board ticket get\|doctor` |

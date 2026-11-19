@@ -781,6 +781,14 @@ table.log { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 
 .pres-chip.dnd { background: var(--deny); color: #fff; }
 .pres-chip.away { background: var(--lamp-soft); color: var(--lamp-ink); }
 .pres-note.warn { color: var(--deny); }
+/* who answers askers (lib/asker_route.py): the owner's usage thresholds, in the profile menu */
+.ar-th { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 12px; }
+.ar-th label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+.ar-th .ar-in { display: inline-flex; align-items: center; gap: 4px; color: var(--ink); }
+.ar-th input { width: 4.2em; min-height: 36px; padding: 4px 6px; font: inherit; font-size: 14px; border: 1px solid var(--rule); border-radius: 5px; background: var(--paper); color: var(--ink); }
+.ar-th .btn { min-height: 36px; }
+.ar-note.on { color: var(--ok); }
+.ar-sub { margin: 6px 0 0; font-size: 13px; color: var(--ink); }
 .acct-panel { position: absolute; right: 0; top: calc(100% + 8px); width: min(340px, calc(100vw - 32px)); max-height: calc(100vh - 120px); max-height: calc(100dvh - 120px); overflow: auto; display: grid; gap: 16px; padding: 16px; border-radius: 10px; border: 1px solid var(--rule); background: var(--panel); color: var(--ink); box-shadow: 0 10px 30px rgb(0 0 0 / .18); }
 .acct-panel:focus { outline: none; }
 /* Reload (header, under the profile button): an installed app (a home-screen PWA) has no browser
@@ -1195,6 +1203,26 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
           <p class="acct-note pres-note" id="acct-pres-note"></p>
           <p class="acct-note pres-note warn" id="acct-pres-compute" hidden data-i18n>Compute is short: askers get an automatic "try again later" reply for now.</p>
         </fieldset>
+        <fieldset class="acct-sec" id="acct-askroute" hidden>
+          <legend data-i18n>Askers answered by</legend>
+          <div class="seg seg2">
+            <label><input type="radio" name="sb-askroute" value="local"><span data-i18n>Local model</span></label>
+            <label><input type="radio" name="sb-askroute" value="claude_when_ample"><span data-i18n>Claude sessions</span></label>
+          </div>
+          <div class="ar-th" id="ar-th" hidden>
+            <label for="ar-5h"><span data-i18n>while 5-hour usage is below</span><span class="ar-in"><input type="number" id="ar-5h" min="1" max="99" step="1" inputmode="numeric">%</span></label>
+            <label for="ar-7d"><span data-i18n>and 7-day usage is below</span><span class="ar-in"><input type="number" id="ar-7d" min="1" max="99" step="1" inputmode="numeric">%</span></label>
+            <button class="btn" type="button" id="ar-save" data-i18n>Save</button>
+          </div>
+          <p class="acct-note ar-note" id="acct-ar-note" role="status"></p>
+          <p class="ar-sub" id="ar-away-label" data-i18n>While you're away, askers' requests:</p>
+          <div class="seg" role="radiogroup" aria-labelledby="ar-away-label">
+            <label><input type="radio" name="sb-awayaskers" value="committee"><span data-i18n>Sessions</span></label>
+            <label><input type="radio" name="sb-awayaskers" value="decline"><span data-i18n>Declined</span></label>
+            <label><input type="radio" name="sb-awayaskers" value="wait"><span data-i18n>Wait for me</span></label>
+          </div>
+          <p class="acct-note" id="acct-ar-away-note"></p>
+        </fieldset>
         <fieldset class="acct-sec" id="acct-theme">
           <legend data-i18n>Theme</legend>
           <div class="seg">
@@ -1468,6 +1496,9 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
             </div>
           </div>
           <p class="readonly-note" id="msg-paused" role="status" hidden data-i18n>The owner isn't taking requests right now. A message sent now gets an automatic reply and doesn't reach the sessions.</p>
+          <p class="readonly-note" id="msg-away" role="status" hidden data-i18n>The owner is away; work requests go to the sessions.</p>
+          <p class="readonly-note" id="msg-away-off" role="status" hidden data-i18n>The owner is away and not taking requests. A message sent now gets an automatic reply and doesn't reach the sessions.</p>
+          <p class="readonly-note" id="msg-claude" role="status" hidden data-i18n>A Claude session answers askers' questions right now: BOARD passes your message to the right session.</p>
           <p class="readonly-note" id="msg-local" role="status" hidden data-i18n>A local model answers askers' questions right now, straight from the code. Its answers are marked and may be less accurate.</p>
           <p class="readonly-note" id="msg-asker-note" hidden data-i18n>You are an asker: your messages reach the session as information from you, never as a decision. You cannot answer decisions.</p>
           <div class="row">
@@ -1608,6 +1639,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     sessions: [], decisions: [], messages: [], tasks: [], approvals: [],
     operator: null, ledger: null,
     away: null, consensus: [],   // owner-away record ({since, by, said}) | null; consensus items
+    arPick: null, arDirty: false, awayPick: null, // the asker-route control: a mode being saved; levels being edited
+    askerRoute: null,            // board-serve state.asker_route: {effective: local|claude[, mode, five_hour_below, seven_day_below, why, since]} | null
     avail: null,                 // board-serve state.availability: {state: online|dnd|away, declining: null|owner_dnd|compute_low[, dnd]} | null
     notify: null,                // notification controls (board-serve state.notify / meta/notify) | null
     rc: null,                    // Remote Control choices (board-serve state.rc: {all, sessions}) | null
@@ -2094,7 +2127,13 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     // the local asker desk (owners only): is a local model answering askers now?
     const lm = S.localModel, lp = $('#lm-pill');
     lp.hidden = !(S.isOwner && lm && lm.state && lm.state !== 'disabled');
-    if (!lp.hidden) {
+    if (!lp.hidden && S.askerRoute && S.askerRoute.effective === 'claude') {
+      lp.className = 'pill hpill lm up';
+      const t = tr('Askers: Claude sessions');
+      $('#lm-pill-t').textContent = t;
+      lp.title = tr('Usage is below your levels, so askers are answered the usual way by the Claude sessions.');
+      lp.setAttribute('aria-label', t);
+    } else if (!lp.hidden) {
       const st = lm.answering ? 'up' : 'down';
       lp.className = 'pill hpill lm ' + st;
       const t = lm.answering ? tr('Local model answering') : lm.state === 'up' ? tr('Local model: desk not running') : tr('Local model down');
@@ -3566,10 +3605,17 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     if (str(m.status) !== 'declined') return null;
     return h('p', { class: 'held declined', role: 'note', text: tr(m.declined_reason === 'compute_low'
       ? 'Declined automatically, not relayed: compute was busy. The automatic reply is below.'
-      : 'Declined automatically, not relayed: the owner wasn\'t taking requests. The automatic reply is below.') });
+      : m.declined_reason === 'owner_away' ? 'Declined automatically, not relayed: the owner was away and not taking requests. The automatic reply is below.'
+        : 'Declined automatically, not relayed: the owner wasn\'t taking requests. The automatic reply is below.') });
   }
   // The local asker desk (lib/desk.py): the message is with a local model, or left it, or the
   // local model suggested a session and the owner decides.
+  // The owner is away and chose "committee" for askers (lib/asker_route.py): a work request went to
+  // the sessions without an owner card.
+  function awayNote(m) {
+    if (str(m.away_route) !== 'committee' || (m.desk && str(m.desk.forward) === 'committee')) return null;
+    return h('p', { class: 'held desk fwd', role: 'note', text: tr('The owner is away; the sessions took it.') });
+  }
   function deskNote(m) {
     const d = m.desk && typeof m.desk === 'object' ? m.desk : null;
     if (!d) return null;
@@ -3590,10 +3636,13 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     const f = str(d.forward), note = (text) => h('p', { class: 'held desk fwd', role: 'note', text });
     if (f === 'pending') {
       const busy = S.avail ? str(S.avail.declining) : str(d.unavailable);
-      return note(tr('Waiting for the owner to forward this to a session.') + (busy === 'owner_dnd'
+      const awayWait = S.askerRoute && str(S.askerRoute.away) === 'wait';
+      return note(tr('Waiting for the owner to forward this to a session.') + (busy === 'owner_dnd' || busy === 'owner_away'
         ? ' ' + tr('The owner isn\'t taking requests right now; they will see it when they are back.')
-        : busy === 'compute_low' ? ' ' + tr('Compute is busy right now, so it may take a while.') : ''));
+        : busy === 'compute_low' ? ' ' + tr('Compute is busy right now, so it may take a while.')
+          : awayWait ? ' ' + tr('The owner is away; it waits until they are back.') : ''));
     }
+    if (f === 'committee') return note(tr('The owner is away; the sessions took it.'));
     if (f === 'declined') return note(tr('The owner declined to forward it to a session.'));
     if (f === 'closed' && str(d.forward_why) !== 'fallback') return note(tr('Not forwarded: the owner didn\'t decide on it.'));
     return null;
@@ -3671,6 +3720,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       guardNote(m),
       declinedNote(m),
       deskNote(m),
+      awayNote(m),
       relayLine].flat().filter(Boolean));
     syncFold();
     if (replies.length) {
@@ -4586,9 +4636,16 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     if (an) an.hidden = !(ok && S.askerOnly);
     // do not disturb, or compute is short: an asker's message gets a canned reply (never the reason's numbers)
     // the local asker desk answers now (lib/desk.py): before any decline, so no "paused" note then
-    const local = !!(S.localModel && S.localModel.answering);
-    $('#msg-local').hidden = !(ok && S.askerOnly && local);
-    $('#msg-paused').hidden = !(ok && S.askerOnly && S.avail && S.avail.declining && !local);
+    // or, when the owner chose it and usage is low (lib/asker_route.py), the Claude sessions as before the desk
+    const claude = !!(S.askerRoute && S.askerRoute.effective === 'claude');
+    const local = !claude && !!(S.localModel && S.localModel.answering);
+    const declining = S.avail ? str(S.avail.declining) : '', awayAsk = S.askerRoute ? str(S.askerRoute.away) : '';
+    $('#msg-claude').hidden = !(ok && S.askerOnly && claude && !declining);
+    $('#msg-local').hidden = !(ok && S.askerOnly && local && declining !== 'owner_away');
+    // the owner is away: the sessions answer together, or askers are declined meanwhile
+    $('#msg-away').hidden = !(ok && S.askerOnly && awayAsk === 'committee' && !declining);
+    $('#msg-away-off').hidden = !(ok && S.askerOnly && declining === 'owner_away');
+    $('#msg-paused').hidden = !(ok && S.askerOnly && declining && declining !== 'owner_away' && !local);
   }
   function histMatch(m, to, q) {
     if (to && !sessionsOf(m).includes(to)) return false;   // the same rule as the top picker and board-serve
@@ -4800,6 +4857,81 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
           : 'You are online: sessions and askers reach you as usual.'));
     }).catch((e) => handleWriteError(e)).finally(() => { S.busy.delete('presence'); renderAll(); renderProfile(); });
   }
+
+  /* -------------------------------------------- who answers askers (profile menu) */
+  // The local model (default), or the Claude sessions the usual way (BOARD routes) while hosted
+  // usage is below the owner's 5-hour and 7-day levels (docs/contract.md "Asker routing"). Owners
+  // only: the levels and why come only in an owner's state.
+  const askRouteEditor = () => awayEditor() && !S.demo && !!adapter && typeof adapter.setAskerRoute === 'function'
+    && !!(S.askerRoute && S.askerRoute.mode);
+  const pctOf = (w) => (w && Number.isFinite(w.pct) ? Math.round(w.pct) : null);
+  function renderAskerRoute() {
+    const box = $('#acct-askroute'), own = askRouteEditor();
+    box.hidden = !own;
+    if (!own) return;
+    const R = S.askerRoute, busy = S.busy.has('askroute');
+    box.disabled = busy;
+    const mode = S.arPick || R.mode;
+    for (const inp of document.querySelectorAll('input[name="sb-askroute"]')) inp.checked = inp.value === mode;
+    $('#ar-th').hidden = mode !== 'claude_when_ample';
+    const i5 = $('#ar-5h'), i7 = $('#ar-7d');
+    if (document.activeElement !== i5 && !S.arDirty) i5.value = R.five_hour_below;
+    if (document.activeElement !== i7 && !S.arDirty) i7.value = R.seven_day_below;
+    const u = (S.operator && S.operator.usage) || {}, p5 = pctOf(u.five_hour), p7 = pctOf(u.seven_day);
+    const D = R.detail && typeof R.detail === 'object' ? R.detail : {};
+    const WIN = { '5h': '5-hour', '7d': '7-day' };
+    let why;
+    if (R.effective === 'claude') why = tr('Now: Claude sessions answer askers.');
+    else if (R.why === 'above' && D.window) why = tr(D.rule === 'margin' ? 'Now: the local model: {w} {pct}%; it switches at {level}% or lower.'
+      : 'Now: the local model: {w} {pct}% ≥ {level}%.', { w: tr(WIN[D.window] || D.window), pct: Math.round(Number(D.pct)), level: D.level });
+    else if (R.why === 'stale') why = tr('Now: the local model: the usage data is stale (updated {at}).', { at: D.updated_at ? hhmm(ts(D.updated_at)) : '?' });
+    else why = tr({ dnd: 'Now: the local model, while do not disturb is on.', limit: 'Now: the local model, while a usage limit is active.',
+      compute_low: 'Now: the local model, while compute is short.', no_usage: 'Now: the local model: no usage data.' }[R.why] || 'Now: the local model (the default).');
+    const use = p5 != null && p7 != null && R.why !== 'stale' ? ' ' + tr('Usage now: 5-hour {a}%, 7-day {b}%.', { a: p5, b: p7 }) : '';
+    const note = $('#acct-ar-note');
+    note.textContent = why + use
+      + (mode === 'claude_when_ample' ? ' ' + tr('It switches to Claude only {m} points below a level, and back at the level.', { m: Number(R.hysteresis) || 5 }) : '');
+    // an unreadable setting (away_invalid) shows nothing picked: any pick, "wait" included, saves and clears it
+    const am = S.awayPick || (R.away_invalid ? '' : str(R.away_askers) || 'committee');
+    for (const inp of document.querySelectorAll('input[name="sb-awayaskers"]')) inp.checked = inp.value === am;
+    $('#acct-ar-away-note').textContent = (R.away_invalid ? tr('The saved setting could not be read, so requests wait for you until you pick one.') + ' ' : '')
+      + (R.away ? tr('You are away now.') + ' ' : '') + tr({
+      committee: 'The sessions take askers\' work requests together; no card waits for you.',
+      decline: 'Askers get an automatic reply; nothing is relayed.',
+      wait: 'Askers\' work requests wait for your decision until you are back.' }[am || 'wait'] || '');
+    note.classList.toggle('on', R.effective === 'claude');
+  }
+  function setAskerRoute(mode, withLevels) {
+    if (!askRouteEditor() || S.busy.has('askroute')) return;
+    const body = { mode };
+    if (mode === 'claude_when_ample') {
+      const n5 = Number($('#ar-5h').value), n7 = Number($('#ar-7d').value);
+      const okp = (n) => Number.isInteger(n) && n >= 1 && n <= 99;
+      if (withLevels) {
+        if (!okp(n5) || !okp(n7)) { toast(tr('Usage levels are whole numbers from 1 to 99.')); return; }
+        body.five_hour_below = n5; body.seven_day_below = n7;
+      }
+    }
+    S.busy.add('askroute'); S.arPick = mode; renderAskerRoute();
+    adapter.setAskerRoute(body).then((r) => {
+      if (r && r.asker_route && typeof r.asker_route === 'object') S.askerRoute = r.asker_route;
+      S.arDirty = false;
+      toast(tr(mode === 'local' ? 'Askers are answered by the local model.'
+        : 'Askers are answered by Claude sessions while usage is below your levels.'));
+    }).catch((e) => handleWriteError(e)).finally(() => { S.busy.delete('askroute'); S.arPick = null; renderAll(); renderProfile(); });
+  }
+  function setAwayAskers(v) {
+    if (!askRouteEditor() || S.busy.has('askroute')) return;
+    S.busy.add('askroute'); S.awayPick = v; renderAskerRoute();
+    adapter.setAskerRoute({ away_askers: v }).then((r) => {
+      if (r && r.asker_route && typeof r.asker_route === 'object') S.askerRoute = r.asker_route;
+      toast(tr({ committee: 'While you are away, the sessions take askers\' work requests.',
+        decline: 'While you are away, askers get an automatic reply.',
+        wait: 'While you are away, askers\' work requests wait for you.' }[v]));
+    }).catch((e) => handleWriteError(e)).finally(() => { S.busy.delete('askroute'); S.awayPick = null; renderAll(); renderProfile(); });
+  }
+  $('#ar-save').addEventListener('click', () => setAskerRoute('claude_when_ample', true));
+  for (const id of ['#ar-5h', '#ar-7d']) $(id).addEventListener('input', () => { S.arDirty = true; });
 
   /* ------------------------------------------------- notification controls */
   // Mutes, per-channel and global min levels and the presence policy (docs/contract.md,
@@ -6620,6 +6752,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       S.away = st.owner_away && typeof st.owner_away === 'object' ? st.owner_away : null;
       S.avail = st.availability && typeof st.availability === 'object' ? st.availability : null;
       S.localModel = st.local_model && typeof st.local_model === 'object' ? st.local_model : null;
+      S.askerRoute = st.asker_route && typeof st.asker_route === 'object' ? st.asker_route : null;
       S.consensus = arr(st.consensus);
       S.notify = st.notify && typeof st.notify === 'object' ? st.notify : null;
       S.rc = st.rc && typeof st.rc === 'object' ? st.rc : null;
@@ -6686,6 +6819,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       setAway(state, said) { return post('/api/away', { state, said }); },
       // Owners only: do not disturb (lib/availability.py); askers get a canned reply while it is on.
       setDnd(state) { return post('/api/dnd', { state }); },
+      // Owners only: who answers askers (lib/asker_route.py): the local model, or Claude sessions while usage is low.
+      setAskerRoute(body) { return post('/api/asker-route', body); },
       // Approvers only; board-serve runs `board mute|unmute|notify-level|notify-presence --by board:<identity>`.
       setNotify(body) { return post('/api/notify-prefs', body); },
       // Approvers only; board-serve runs `board ack --by board:<identity> '*'` (the Deck's HITL key).
@@ -6889,6 +7024,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     renderTheme();
     renderLang();
     renderPresence();
+    renderAskerRoute();
   }
 
   // Reload: an installed app (a home-screen PWA) has no reload control of its own. Unsent work (a
@@ -6952,6 +7088,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     else if (e.target.name === 'sb-lang') setLang(e.target.value);
     else if (e.target.name === 'sb-deck') setDeckCollapsed(e.target.value === 'collapsed');
     else if (e.target.name === 'sb-presence') setPresence(e.target.value);
+    else if (e.target.name === 'sb-askroute') setAskerRoute(e.target.value);
+    else if (e.target.name === 'sb-awayaskers') setAwayAskers(e.target.value);
   });
   function renderLang() {
     for (const inp of document.querySelectorAll('input[name="sb-lang"]')) inp.checked = inp.value === LANG;
@@ -7715,6 +7853,45 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "local model": "本機模型",
       "local model · may be less accurate": "本機模型 · 可能不夠準確",
       "Local model answering": "本機模型回答中",
+      "Askers answered by": "提問者由誰回答",
+      "Declined": "婉拒",
+      "Wait for me": "等我",
+      "7-day": "7 天",
+      "While you're away, askers' requests:": "你不在時，提問者的請求：",
+      "The owner is away; work requests go to the sessions.": "主人不在；派工會交給各 session 處理。",
+      "The owner is away and not taking requests. A message sent now gets an automatic reply and doesn't reach the sessions.": "主人不在，目前不接受詢問或派工。現在送出的訊息會收到自動回覆，不會送到任何 session。",
+      "Declined automatically, not relayed: the owner was away and not taking requests. The automatic reply is below.": "已自動婉拒，沒有轉送：當時主人不在，不接受詢問或派工。自動回覆在下方。",
+      "The owner is away; the sessions took it.": "主人不在；已交給各 session 處理。",
+      "The owner is away; it waits until they are back.": "主人不在；會等主人回來再決定。",
+      "Now: the local model: {w} {pct}%; it switches at {level}% or lower.": "目前：本機模型（{w} {pct}%；降到 {level}% 以下才會切換）。",
+      "Now: the local model: {w} {pct}% ≥ {level}%.": "目前：本機模型（{w} {pct}% ≥ {level}%）。",
+      "Now: the local model: the usage data is stale (updated {at}).": "目前：本機模型（用量資料太舊，{at} 更新）。",
+      "Now: the local model, while compute is short.": "目前：運算資源吃緊，由本機模型回答。",
+      "Now: the local model: no usage data.": "目前：本機模型（沒有用量資料）。",
+      "You are away now.": "你現在不在。",
+      "The saved setting could not be read, so requests wait for you until you pick one.": "儲存的設定讀不到，所以請求會等你決定，直到你重新選一個。",
+      "The sessions take askers' work requests together; no card waits for you.": "提問者的派工由各 session 一起處理，不會有卡片等你決定。",
+      "Askers get an automatic reply; nothing is relayed.": "提問者會收到自動回覆，不會轉送任何訊息。",
+      "Askers' work requests wait for your decision until you are back.": "提問者的派工會等你回來決定。",
+      "While you are away, the sessions take askers' work requests.": "你不在時，提問者的派工由各 session 處理。",
+      "While you are away, askers get an automatic reply.": "你不在時，提問者會收到自動回覆。",
+      "While you are away, askers' work requests wait for you.": "你不在時，提問者的派工會等你回來。",
+      "Local model": "本機模型",
+      "Claude sessions": "Claude session",
+      "while 5-hour usage is below": "5 小時用量低於",
+      "and 7-day usage is below": "且 7 天用量低於",
+      "A Claude session answers askers' questions right now: BOARD passes your message to the right session.": "目前由 Claude session 回答提問者的問題：BOARD 會把你的訊息轉給合適的 session。",
+      "Askers: Claude sessions": "提問者：Claude session",
+      "Usage is below your levels, so askers are answered the usual way by the Claude sessions.": "用量低於你設定的水位，所以提問者照原本的流程由 Claude session 回答。",
+      "Usage now: 5-hour {a}%, 7-day {b}%.": "目前用量：5 小時 {a}%，7 天 {b}%。",
+      "Now: the local model (the default).": "目前：本機模型（預設）。",
+      "Now: the local model, while do not disturb is on.": "目前：勿擾開啟中，由本機模型回答。",
+      "Now: the local model, while a usage limit is active.": "目前：正碰到用量上限，由本機模型回答。",
+      "Now: Claude sessions answer askers.": "目前：由 Claude session 回答提問者。",
+      "It switches to Claude only {m} points below a level, and back at the level.": "低於水位 {m} 個百分點才會切到 Claude，用量回到水位就切回本機模型。",
+      "Usage levels are whole numbers from 1 to 99.": "用量水位是 1 到 99 的整數。",
+      "Askers are answered by the local model.": "提問者改由本機模型回答。",
+      "Askers are answered by Claude sessions while usage is below your levels.": "用量低於你設定的水位時，提問者由 Claude session 回答。",
       "Local model: desk not running": "本機模型：服務台未執行",
       "Local model down": "本機模型離線",
       "Askers are answered by the local model (no Claude tokens).": "提問者由本機模型回答（不花 Claude token）。",

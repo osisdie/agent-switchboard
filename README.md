@@ -866,6 +866,7 @@ board-serve costs nothing, the asker knows where they stand, and nothing they se
   availability:
     dnd_reply: "Heads down today. Please ask again tomorrow."   # default: English + 繁體中文
     compute_reply: "Busy right now. Please try again later."
+    away_reply: "Away this week. Please ask again next Monday."  # while away, if you chose "decline"
     compute: {enabled: true, five_hour_pct: 90, seven_day_pct: 95, limit: true}
   ```
 
@@ -927,10 +928,27 @@ the thread itself. It also answers while you are on do-not-disturb or compute is
   do-not-disturb it also says you aren't taking requests, and the card waits until you are back.
   Nothing is ever forwarded without you. Tune the words with `local_model.work_patterns`
   (`fleet.example.yaml`).
-- **On the board:** owners see a header pill (Local model answering / desk not running / down);
-  askers see a note in the composer while it answers.
+- **Claude when quota is ample (optional).** In the profile menu the owner can choose "Askers
+  answered by: Claude sessions while usage is below [5-hour 50%] [7-day 70%]". While both
+  windows of the account's usage are below those levels (fresh usage data, no usage limit, not on
+  do-not-disturb), askers' messages skip the desk and go the usual way (BOARD routes them to a
+  session), with the longer context of a better model. Missing or stale usage keeps the desk. It
+  switches to Claude only 5 points below a level and back at the level, so it doesn't flap. Default:
+  the local model. While the Claude route is in effect askers skip the desk entirely, so their work
+  requests get no "forward?" card either: the operator routes them, as before the desk existed. CLI:
+  `board askers route local|ample [--5h N] [--7d M] --by WHO`, `board askers route status` (like
+  `board dnd`, the CLI has no owner check: whoever runs it on this machine is trusted).
+- **While you are away** (owner-away mode), askers are never blocked on you. Profile menu, "While
+  you're away, askers' requests": **Sessions** (default): a work request skips your "forward?" card
+  and goes the usual way (BOARD routes it, the sessions handle it under the away and consensus
+  rules; red lines still wait for you), and cards still open when you leave are handed to the
+  sessions the same way; plain questions are answered as usual. **Declined**: askers get an
+  automatic reply (`availability.away_reply`) and nothing is relayed. **Wait for me**: the cards
+  wait for you, as before. CLI: `board askers away committee|decline|wait --by WHO`.
+- **On the board:** owners see a header pill (Local model answering / desk not running / down /
+  Askers: Claude sessions); askers see a note in the composer saying who answers now.
 
-Details: [`docs/contract.md`](docs/contract.md), "Local asker desk".
+Details: [`docs/contract.md`](docs/contract.md), "Local asker desk" and "Asker routing".
 
 ## Alerting & escalation
 
@@ -1741,6 +1759,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `artifact/dev.html`, `lib/serve_dev.py` | The developer portal (`/dev`) and key page (`/dev/keys`): the API reference from the live route table, MCP tools, connection snippets, and key create / request / approve / revoke through `board apikey` |
 | `bin/board-mcp`, `lib/mcp_tools.py` | The MCP server: one tool table (reads, and the writes `send_message` and `ticket_take_request`) over stdio (`board-mcp`, a client of `/api/v1`) and `POST /mcp` on board-serve |
 | `lib/desk.py`, `lib/desk_mcp.py`, `bin/board-desk-mcp`, `prompts/asker-desk.md` | The local asker desk: routing askers to a read-only Claude Code session on a local model, its health, guarded delivery, fallbacks, the launch (`desk.py run`) and its two board tools |
+| `lib/asker_route.py` | Who answers askers: the local desk (default), or the Claude sessions the usual way while hosted-model usage is below the owner's levels (with hysteresis); `board askers route` |
 | `lib/apikeys.py` | API keys: the store (peppered hashes, 0600), who may issue, approve, rotate and revoke them, and the check `/api/v1` will use (`board apikey`) |
 | `lib/away.py` | Reads owner-away mode and consensus items for the snapshot and `board-serve` |
 | `lib/tickets/` | Tickets: tracker providers (`http-json`, `fake`), routing by key, cache, rate limits, the SSRF-safe HTTP client; `board ticket get\|doctor` |

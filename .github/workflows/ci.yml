@@ -123,6 +123,8 @@ jobs:
         run: python3 tests/test_presence.py -v
       - name: local asker desk tests (routing, health, fallbacks, reply path, read-only launch)
         run: python3 tests/test_desk.py -v
+      - name: asker routing tests (local model or Claude sessions while usage is low)
+        run: python3 tests/test_asker_route.py -v
       - name: PII masking tests (who sees whose email)
         env:
           PII_REQUIRE_CRYPTO: "1"

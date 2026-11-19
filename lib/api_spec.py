@@ -101,7 +101,7 @@ ROUTES = [
     {"method": "POST", "path": "/api/v1/tasks", "scope": "tasks:write", "handler": "task_new", "tag": "tasks",
      "summary": "Create a task (board task new) in %s (default plan); a later stage needs a person: 403 "
                 "needs_approver. A key issued to an asker, while the owner is on do-not-disturb or compute is "
-                "short: 409 declined (reason owner_dnd|compute_low, the canned reply as detail), nothing created."
+                "short: 409 declined (reason owner_dnd|owner_away|compute_low, the canned reply as detail), nothing created."
                 % ", ".join(API_STAGES), "ok": 201,
      "body": {"type": "object", "required": ["title", "owner"], "additionalProperties": False,
               "properties": {"title": {"type": "string", "minLength": 1, "maxLength": 200}, "owner": _CODE,
@@ -142,7 +142,7 @@ ROUTES = [
                 "by the secret guard (a secret request is held, never relayed); relayed as `[BOARD api <id>] "
                 "via API key \"<name>\" (<owner>): …`, information only, never a [BOARD ask] or a decision. "
                 "A key issued to an asker, while the owner is on do-not-disturb or compute is short: 201 with "
-                "status \"declined\", reason owner_dnd|compute_low and the canned reply (never relayed). A key "
+                "status \"declined\", reason owner_dnd|owner_away|compute_low and the canned reply (never relayed). A key "
                 "issued to an asker while the local asker desk is up: status \"desk\" (a local model answers "
                 "it in the thread, marked as such; no Claude session gets it); when it asks for work, also "
                 "forward \"pending\": the owner is asked on the board whether to forward it to a session.",
@@ -159,7 +159,7 @@ ROUTES = [
                 "ticket_take_request from \"api\" (\"Start KEY in CODE?\", approve/decline), never relayed to the "
                 "session. On approve the operator runs the take; a key can never answer it. At most 3 pending "
                 "per key (429). A key issued to an asker, while the owner is on do-not-disturb or compute is "
-                "short: 409 declined (reason owner_dnd|compute_low, the canned reply as detail), nothing created.",
+                "short: 409 declined (reason owner_dnd|owner_away|compute_low, the canned reply as detail), nothing created.",
      "body": {"type": "object", "required": ["session"], "additionalProperties": False,
               "properties": {"session": _CODE, "note": {"type": "string", "maxLength": 500}}},
      "schema": {"type": "object", "properties": {"decision_id": {"type": "string"},
