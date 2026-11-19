@@ -913,8 +913,9 @@ the thread itself. It also answers while you are on do-not-disturb or compute is
   needs a change or a session's judgement, it says so and may suggest a session: you get a
   "Forward asker … to CODE?" decision, and only your approve sends it on.
 - **Work requests always reach you.** A message that asks someone to *do* something (sent to one
-  session, `@CODE` in it, or words like review / merge / deploy / fix / run / rebase / please …,
-  請 / 麻煩 / 審 / 合併 / 部署 …, or a merge-request link with such a verb) gets that decision the moment
+  session, `@CODE` in it, or an asking word with an action: please / can you / PTAL … review /
+  merge / deploy / fix / take a look …, 請 / 麻煩 / 幫忙 … 審 / 合併 / 部署 / 看一下 …, or a merge-request
+  link with such a verb; plain questions such as "上線了嗎" or "how do I deploy?" are not) gets that decision the moment
   it reaches the desk, made by board code, not by the model. With no session named you pick one
   from the card's buttons (or decline). The desk still answers for information. The asker's thread
   says "Waiting for the owner to forward this to a session", then "forwarded" or "declined"; on

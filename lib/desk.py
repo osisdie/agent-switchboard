@@ -556,22 +556,28 @@ def public(d):
 #   enabled: false      only messages addressed to a session or @mentioning one count
 #   defaults: false     drop the built-in lists below (yours only)
 #   verbs, requests, questions, refs: lists added to the built-in ones. An entry that is a plain
-#     ASCII word or phrase ("triage", "roll out") matches as a word, with -s/-ed/-ing endings;
-#     anything else is a Python regular expression. All are matched case-insensitively on the
-#     NFKC-normalized text.
+#     ASCII word or phrase ("triage", "roll out") matches as a word (verbs with -s/-ed/-ing
+#     endings); anything else is a Python regular expression, compiled on its own (one that does
+#     not compile is dropped, never the list). All match case-insensitively on the NFKC-normalized
+#     text. The rules are work_kind's.
 _A = r"(?<![a-z0-9_])"      # an ASCII word boundary that works next to CJK text (\b does not)
 _Z = r"(?![a-z0-9_])"
 _SUFFIX = r"(?:s|es|ed|d|ing|ning|ping|ped)?"
 WORK_DEFAULTS = {
-    # what someone is asked to do (English words get the endings above)
-    "verbs": ["review", "approve", "lgtm", "merge", "deploy", "redeploy", "release", "fix", "hotfix", "change",
-              "update", "run", "rerun", "re-run", "dispatch", "rebase", "test", "retest", "re-test", "revert",
-              "roll back", "rollback", "retry", "restart", "ship", "push", "cherry-pick", "bump", "upgrade",
+    # what someone is asked to do (English words get the endings above). A single CJK character
+    # (修, 改, 跑, 派, 審, 看) only counts right after an asking word: alone it is too often part of
+    # another word (修改密碼, 跑步, 派對, 審計).
+    "verbs": ["review", "approve", "approval", "lgtm", "ptal", "merge", "deploy", "redeploy", "release", "fix",
+              "hotfix", "change", "update", "run", "rerun", "re-run", "dispatch", "rebase", "test", "retest",
+              "re-test", "revert", "roll back", "rollback", "retry", "restart", "ship", "push", "cherry-pick",
+              "bump", "upgrade", "look", "look at", "look into", "take a look", "check", "handle", "investigate",
+              "take care",
               "審", "审", "核准", "批准", "合併", "合并", "部署", "上線", "上线", "發布", "发布", "發佈", "修", "改(?!天)",
               "跑", "執行", "执行", "運行", "运行", "派", "指派", "分派", "測試", "测试", "重跑", "回滾", "回滚",
-              "重啟", "重启", "升級", "升级"],
-    # asking someone (a verb must follow in the same sentence, with no question word between)
-    "requests": ["please", "pls", "plz", "kindly", "could you", "can you", "would you", "will you",
+              "重啟", "重启", "升級", "升级", "看", "看一下", "看看", "確認", "确认", "檢查", "检查", "處理", "处理",
+              "協助", "协助"],
+    # asking someone: a verb or a merge request must follow, with no question word between
+    "requests": ["please", "pls", "plz", "kindly", "ptal", "could you", "can you", "would you", "will you",
                  "could someone", "can someone", "could somebody", "can somebody", "i need you to",
                  "we need you to", "i'd like you to", "i want you to", "need someone to", "need somebody to",
                  "have someone", "get someone",
@@ -579,18 +585,23 @@ WORK_DEFAULTS = {
                  "煩請", "烦请"],
     # a question about something, not a request: "can you explain how we deploy?"
     "questions": ["explain", "tell", "show", "describe", "what", "how", "why", "where", "which", "when", "who",
-                  "whether", "clarify", "understand", "know", "mean", "meaning", "difference",
+                  "whether", "clarify", "understand", "know", "mean", "meaning", "difference", "normal", "any idea",
                   "怎麼", "怎么", "如何", "為什麼", "为什么", "為何", "为何", "什麼", "什么", "哪", "解釋", "解释",
-                  "說明", "说明", "介紹", "介绍", "告訴", "告诉", "是否"],
-    # a merge/pull request: with a verb anywhere (not after a question word) it is a request
+                  "說明", "说明", "介紹", "介绍", "告訴", "告诉", "是否", "幾點", "几点", "多少", "誰", "谁"],
+    # a merge/pull request reference
     "refs": [r"/merge_requests/\d+", r"/pulls?/\d+", r"(?<![\w&!])!\d+(?!\w)", _A + r"(?:mr|pr)\s*[#!]?\d+" + _Z],
 }
-# what may come before an imperative verb at the start of a sentence ("hi, review !12")
+# what may come before an imperative verb at the start of a sentence ("hi, review !12"); one
+# character at a time in the repeated group, so a long run of spaces never backtracks
 _LEAD_RE = re.compile(r"^(?:(?:hi|hey|hello|ok|okay|also|then|and|now|so|team|all|嗨|你好|哈囉|好|另外|然後|然后|再)"
-                      r"(?![a-z0-9_])[\s,，:：、!！]*|@[a-z0-9][a-z0-9_.-]*[\s,，:：]*|[\s,，:：、\-*>•]+)+")
+                      r"(?![a-z0-9_])|@[a-z0-9][a-z0-9_.-]{0,63}|[\s,，:：、!！\-*>•])+")
 _SENT_RE = re.compile(r"[\n。！？；;?]+|!(?!\d)|\.(?=\s|$)")
+_QEND_RE = re.compile(r"[嗎吗呢麼么嘛][\s~～.。…!！]*$")     # a Chinese question ending
+_CJK_ONE_RE = re.compile(r"[^\x00-\x7f](?:\(\?[!=<][^)]*\))*")   # one CJK character, maybe with a lookaround
 MENTION_RE = re.compile(r"(?<![A-Za-z0-9_.@])@([A-Za-z0-9][A-Za-z0-9_.-]{0,63})")
-MAX_GAP = 80                 # characters between "please" and its verb
+MAX_GAP = 80                 # characters between "please" and its verb or merge request
+MAX_WORK_CHARS = 2000        # only this much of a message is classified (it runs under the server's lock)
+MAX_REQUESTS = 20            # asking words looked at per sentence
 MAX_FORWARD_OPTIONS = 8      # session codes offered on a card without a target
 OPERATOR_CODE = "BOARD"      # the operator's usual code (operator.json operator_session counts too)
 
@@ -603,86 +614,126 @@ def _word(x, endings):
     return _A + re.escape(x.lower()).replace(r"\ ", r"\s+") + (_SUFFIX if endings else "") + _Z
 
 
-def _frag(x, endings=True):
-    """One work_patterns entry as a regex: a plain ASCII word or phrase matches as a word (verbs
-    with their endings), anything else is taken as a regular expression (None when it does not
-    compile)."""
+def _compile(x, endings):
+    """One work_patterns entry, compiled on its own (a bad one is dropped, never the list): a
+    plain ASCII word or phrase matches as a word (verbs with their endings), anything else is a
+    regular expression. None when unusable."""
     x = unicodedata.normalize("NFKC", str(x)).strip()
     if not x or len(x) > 200:
         return None
-    w = _word(x, endings)
-    if w:
-        return w
     try:
-        re.compile(x)
-    except re.error:
+        return re.compile(_word(x, endings) or x, re.IGNORECASE)
+    except (re.error, ValueError, TypeError, OverflowError, RecursionError):
         return None
-    return x
 
 
 def work_settings(cfg):
-    """local_model.work_patterns, compiled: {enabled, verbs, requests, questions, refs} (regexes,
-    None when a list is empty)."""
+    """local_model.work_patterns, compiled: {enabled, verbs, weak, requests, questions, refs}, each a
+    list of compiled patterns (one per entry). weak: the verbs that are a single CJK character
+    (only after an asking word)."""
     p = cfg.get("local_model") if isinstance(cfg, dict) and isinstance(cfg.get("local_model"), dict) else {}
     w = p.get("work_patterns") if isinstance(p.get("work_patterns"), dict) else {}
     use_defaults = w.get("defaults") is not False
-    out = {"enabled": w.get("enabled") is not False}
+    out = {"enabled": w.get("enabled") is not False, "weak": []}
     for key in ("verbs", "requests", "questions", "refs"):
         mine = [x for x in (w.get(key) if isinstance(w.get(key), list) else []) if isinstance(x, str)]
-        parts = (list(WORK_DEFAULTS[key]) if use_defaults else []) + mine
-        if key != "refs" or not use_defaults:
-            parts = [_frag(x, endings=key == "verbs") for x in parts]
-        else:
-            parts = WORK_DEFAULTS["refs"] + [_frag(x, endings=False) for x in mine]
-        parts = [x for x in parts if x]
-        out[key] = re.compile("|".join("(?:%s)" % x for x in parts), re.IGNORECASE) if parts else None
+        items = (list(WORK_DEFAULTS[key]) if use_defaults else []) + mine
+        pats = []
+        for x in items:
+            rx = _compile(x, endings=key == "verbs")
+            if rx is None:
+                continue
+            if key == "verbs" and _CJK_ONE_RE.fullmatch(unicodedata.normalize("NFKC", x).strip()):
+                out["weak"].append(rx)
+            else:
+                pats.append(rx)
+        out[key] = pats
     return out
 
 
 def _norm(text):
-    return unicodedata.normalize("NFKC", str(text or "")).lower()
+    return unicodedata.normalize("NFKC", str(text or ""))[:MAX_WORK_CHARS].lower()
 
 
 def _sentences(text):
     """[(sentence, is a question?)]: split at line ends and sentence marks (a "!" before a digit is
-    a merge request, "." only before a space)."""
+    a merge request, "." only before a space). A question ends in ?, ？ or 嗎/吗/呢/麼/么/嘛."""
     out, pos = [], 0
     for m in list(_SENT_RE.finditer(text)) + [None]:
         end = m.start() if m else len(text)
         s = text[pos:end].strip()
         if s:
-            out.append((s, bool(m) and ("?" in m.group(0) or "？" in m.group(0))))
+            out.append((s, (bool(m) and ("?" in m.group(0) or "？" in m.group(0))) or bool(_QEND_RE.search(s))))
         if m:
             pos = m.end()
     return out
 
 
+def _first(pats, s, pos=0, endpos=None):
+    """The earliest match of any of PATS in s[pos:endpos], or None."""
+    endpos = len(s) if endpos is None else endpos
+    best = None
+    for rx in pats:
+        m = rx.search(s, pos, endpos)
+        if m and (best is None or m.start() < best.start()):
+            best = m
+    return best
+
+
+def _any(pats, s, pos=0, endpos=None):
+    endpos = len(s) if endpos is None else endpos
+    return pos < endpos and any(rx.search(s, pos, endpos) for rx in pats)
+
+
 def work_kind(cfg, text):
-    """Why TEXT asks someone to do something ("request" | "imperative" | "reference"), or None.
-    Conservative: a plain question ("how does X work?", "can you explain how we deploy?") is not."""
+    """Why TEXT asks someone to do something, or None. Conservative: a plain question ("how does X
+    work?", "can you explain how we deploy?", "上線了嗎") is not.
+
+      request    an asking word ("please", "can you", "請", "麻煩") followed within MAX_GAP characters
+                 of its sentence by a verb or a merge request, with no question word between; or an
+                 asking word and a merge request in a sentence with no question word. Wins over a
+                 "?" ("Can you check !12?").
+      imperative only in a message with an asking word or a merge request: a sentence that starts
+                 with a verb (never a single CJK character), is not a question (?, 嗎 ...), has no
+                 question word and is not a heading ("Update: ...").
+      reference  a merge request in the message and a verb (never a single CJK character) in a
+                 sentence that is not a question and has no question word ("!42 needs a review")."""
     w = work_settings(cfg)
-    if not w["enabled"] or not w["verbs"]:
+    if not w["enabled"] or not (w["verbs"] or w["weak"]):
         return None
     t = _norm(text)
-    verbs, reqs, qs = w["verbs"], w["requests"], w["questions"]
-    for s, asked in _sentences(t):
-        # "please / could you / 請 / 麻煩 ... <verb>", no question word in between
-        for m in (reqs.finditer(s) if reqs else ()):
-            v = verbs.search(s, m.end())
-            if v and v.start() - m.end() <= MAX_GAP and not (qs and qs.search(s, m.end(), v.start())):
+    verbs, weak, reqs, qs, refs = w["verbs"], w["weak"], w["requests"], w["questions"], w["refs"]
+    sents = _sentences(t)
+    has_ref = _any(refs, t)
+    has_req = False
+    for s, _asked in sents:
+        starts = []
+        for rx in reqs:
+            for i, m in enumerate(rx.finditer(s)):
+                if i >= MAX_REQUESTS:
+                    break
+                starts.append(m)
+        starts.sort(key=lambda m: m.start())
+        for m in starts[:MAX_REQUESTS]:
+            has_req = True
+            bound = min(len(s), m.end() + MAX_GAP + 64)
+            hit = _first(verbs + weak + refs, s, m.end(), bound)
+            if hit and hit.start() - m.end() <= MAX_GAP and not _any(qs, s, m.end(), hit.start()):
                 return "request"
-        # an imperative: the sentence starts with a verb ("Review !12", "合併 !42"), not a question
-        lead = _LEAD_RE.match(s)
-        rest = s[lead.end():] if lead else s
-        v = verbs.match(rest) if rest else None
-        if v and not asked and not rest[v.end():].lstrip().startswith((":", "：")):   # not "Update: ..."
-            return "imperative"
-    # a merge/pull request reference, and a verb not after a question word in its sentence
-    if w["refs"] and w["refs"].search(t):
-        for s, asked in _sentences(t):
-            for v in (() if asked else verbs.finditer(s)):
-                if not (qs and qs.search(s, 0, v.start())):
-                    return "reference"
+        if starts and _any(refs, s) and not _any(qs, s):
+            return "request"
+    for s, asked in sents:
+        if asked or _any(qs, s):
+            continue
+        if has_req or has_ref:
+            lead = _LEAD_RE.match(s)
+            rest = s[lead.end():] if lead else s
+            for rx in (verbs if rest else ()):
+                v = rx.match(rest)
+                if v and not rest[v.end():].lstrip().startswith((":", "：")):     # not "Update: ..."
+                    return "imperative"
+        if has_ref and _first(verbs, s):
+            return "reference"
     return None
 
 
@@ -712,9 +763,10 @@ def mentions(home, cfg, text):
 
 
 def classify(home, cfg, rec):
-    """Is the asker's message REC a work request? {work, why, targets}: why is "addressed" (sent
-    to one session), "mention" (@CODE in the text), or the kind work_kind found; targets are the
-    sessions it is meant for, in order (empty: the owner picks)."""
+    """Is the asker's message REC a work request? {work, why, words, targets}: why is "addressed"
+    (sent to one session), "mention" (@CODE in the text), or the kind work_kind found; words is
+    work_kind's answer alone (None: worded as a plain question); targets are the sessions it is
+    meant for, in order (empty: the owner picks)."""
     to = rec.get("to")
     desk_code = settings(cfg)["session"]
     targets, why = [], None
@@ -725,9 +777,9 @@ def classify(home, cfg, rec):
         if c not in targets:
             targets.append(c)
             why = why or "mention"
-    if not why:
-        why = work_kind(cfg, rec.get("body"))
-    return {"work": why is not None, "why": why, "targets": targets[:MAX_FORWARD_OPTIONS]}
+    words = work_kind(cfg, rec.get("body"))
+    why = why or words
+    return {"work": why is not None, "why": why, "words": words, "targets": targets[:MAX_FORWARD_OPTIONS]}
 
 
 def forward_options(home, cfg):
@@ -763,7 +815,10 @@ def mark_work(home, cfg, rec, now=None):
         return rec
     d["work_why"] = c["why"]
     reason = availability.decline_reason(home, cfg, now)
-    did = forward_decision(home, cfg, rec, c["targets"], work=c["why"], unavailable=reason)
+    # sent to a session (or @CODE) but worded as a plain question: the card is made all the same,
+    # its alert only informs (lib/notify.py); a request for work alerts like any question
+    did = forward_decision(home, cfg, rec, c["targets"], work=c["why"], unavailable=reason,
+                           plain=c["words"] is None)
     d.update({"forward": "pending", "forward_decision": did})
     if reason:
         d["unavailable"] = reason
@@ -861,9 +916,9 @@ def fallback(home, cfg, rec, why, now=None):
             desk["unavailable"] = reason    # the card still waits for the owner
     else:
         rec["status"] = "new"
-        if desk.get("forward") == "pending":
-            # the operator relays it the usual way now: the "forward?" card has nothing left to do
-            close_forward(home, rec, "fallback", now)
+        if desk.get("forward") == "pending" and close_forward(home, rec, "fallback", now):
+            # the operator relays it the usual way now: the "forward?" card has nothing left to do.
+            # (A card answered meanwhile stays: apply_forwards settles it, as "gone" or "declined".)
             desk.update({"forward": "closed", "forward_why": "fallback", "forward_at": now})
     messages._write(messages.path_of(home, rec["id"]), rec)  # noqa: SLF001
     audit(home, {"action": "fallback", "id": rec["id"], "why": why, "result": rec["status"]})
@@ -940,6 +995,8 @@ def reply(home, cfg, mid, text, forward_to=None):
             raise DeskError("bad_forward", "forward_to must be one session's code (not all, triage or the desk)")
         if forward_to not in fleet.known_codes(home, cfg):
             raise DeskError("bad_forward", "no session %s on this board" % forward_to)
+        if forward_to in operator_codes(home):
+            raise DeskError("bad_forward", "forward_to must be a working session, not the board's operator")
         fwd = forward_to
     import guard  # noqa: WPS433
     text = local_paths(cfg, text.strip())
@@ -1024,7 +1081,7 @@ def _asker_label(rec):
     return messages.defang(guard.scrub(str(who)))[:200]
 
 
-def forward_decision(home, cfg, rec, targets, work=None, unavailable=None, suggest=None):
+def forward_decision(home, cfg, rec, targets, work=None, unavailable=None, suggest=None, plain=False):
     """The message's pending decision of kind desk_forward ("Forward asker X's request to CODE?"):
     only an approver's answer hands the message to a session (apply_forwards). One per message:
     when it exists, a suggestion from the local model is merged into it (put first among the
@@ -1078,6 +1135,7 @@ def forward_decision(home, cfg, rec, targets, work=None, unavailable=None, sugge
         "created_at": now,
         "request": dict({"kind": FORWARD_KIND, "message_id": rec["id"], "session": code, "desk": desk, "at": now,
                          "asker": who}, **({"work": work} if work else {}), **({"suggest": suggest} if suggest else {}),
+                        **({"plain": True} if work and plain else {}),
                         **({"targets": targets} if len(targets) > 1 else {}))})
     path = os.path.join(home, "decisions", did + ".json")
     os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
@@ -1087,6 +1145,7 @@ def forward_decision(home, cfg, rec, targets, work=None, unavailable=None, sugge
 
 
 APPROVE_WORDS = ("approve", "approved", "yes", "forward")
+ENDED = ("timeout", "stale")      # a card that ended without an answer
 # where a message may be forwarded from: still with the desk, answered (or withheld) by it, or
 # declined while the owner was away (the card waited for them)
 FORWARDABLE_STATUS = ("desk", "replied", "declined")
@@ -1116,19 +1175,21 @@ def _close_message(home, mid, did, state, why, now, by=None):
 
 
 def close_forward(home, rec, why, now=None):
-    """REC left the desk the usual way (fallback to the operator): its pending card is closed, the
-    operator relays the message as before (call under Lock). Returns the decision id or None."""
+    """REC left the desk the usual way (fallback to the operator): its open card is closed, the
+    operator relays the message as before (call under Lock). True when nothing waits on the card
+    any more (closed now, or none); False when it was answered meanwhile (apply_forwards settles
+    that one)."""
     path, d = _find_forward(home, rec)
-    if not d or d.get("status") != "pending":
-        return None
+    if not d:
+        return True
     now = now_ms() if now is None else now
     fresh = _read(path)
-    if fresh.get("status") != "pending":
-        return None
+    if fresh.get("status") not in ("pending", "unauthorized"):
+        return fresh.get("status") in ENDED or (fresh.get("status") == "relayed")
     fresh.update({"status": "stale", "status_reason": "desk_" + why, "desk_result": why, "updated_at": now})
     _write(path, fresh)
     audit(home, {"action": "forward-closed", "id": rec["id"], "decision": fresh.get("id"), "why": why})
-    return fresh.get("id")
+    return True
 
 
 def apply_forwards(home, cfg, now=None):
@@ -1159,39 +1220,42 @@ def apply_forwards(home, cfg, now=None):
                 continue
             req = d.get("request") if isinstance(d.get("request"), dict) else {}
             mid = req.get("message_id")
-            if d.get("status") not in ("pending", "answered", "relayed") and not d.get("desk_result"):
+            status = d.get("status")
+            if status in ENDED and not d.get("desk_result"):
                 # ended unanswered (the collector's timeout, ...): the asker stops waiting
-                _close_message(home, mid, d.get("id"), "closed", str(d.get("status") or "ended"), now)
+                _close_message(home, mid, d.get("id"), "closed", str(d.get("status_reason") or status), now)
                 d.update({"desk_result": "closed", "updated_at": now})
                 _write(path, d)
                 out.append((d.get("id"), "closed"))
                 continue
-            if d.get("status") != "answered":
+            if status not in ("answered", "unauthorized"):
                 continue
             by = re.sub(r"^(board|cli):", "", str(d.get("answered_by") or "")).strip().lower()
             ans = str(d.get("answer") or "").strip()
             opts = [str(o) for o in d.get("options") or []]
-            code = None
-            if ans.lower() in APPROVE_WORDS:
-                code = req.get("session") or "?"
+            code, why = None, None
+            if status == "unauthorized" or by not in approvers:
+                why = "not_approver"            # whatever it says, decline included
+            elif ans.lower() in APPROVE_WORDS:
+                code = req.get("session")
+                why = None if code else "no_target"     # a card without a target is answered with a code
             elif ans in opts and ans.lower() != "decline":
                 code = ans
+            if code and not why and (not CODE_RE.fullmatch(code) or fleet.is_reserved(code) or code == desk_code
+                                     or code in operator_codes(home) or code not in fleet.known_codes(home, cfg)):
+                why = "bad_target"
+            if why:
+                # never applied: the card waits for an approver's usable answer again
+                d.update({"status": "pending", "answer": None, "answered_by": None, "answered_at": None,
+                          "ignored": {"by": d.get("answered_by"), "answer": ans[:100], "why": why, "at": now},
+                          "updated_at": now})
+                _write(path, d)
+                audit(home, {"action": "forward", "decision": d.get("id"), "id": mid, "to": code, "result": why})
+                out.append((d.get("id"), why))
+                continue
             if code is None:
                 result = "declined"
                 _close_message(home, mid, d.get("id"), "declined", "owner", now, d.get("answered_by"))
-            elif by not in approvers:
-                # never applied: the card waits for an approver again
-                d.update({"status": "pending", "answer": None, "answered_by": None, "answered_at": None,
-                          "ignored": {"by": d.get("answered_by"), "at": now}, "updated_at": now})
-                _write(path, d)
-                audit(home, {"action": "forward", "decision": d.get("id"), "id": mid, "to": code,
-                             "result": "not_approver"})
-                out.append((d.get("id"), "not_approver"))
-                continue
-            elif not CODE_RE.fullmatch(code) or fleet.is_reserved(code) or code == desk_code \
-                    or code not in fleet.known_codes(home, cfg):
-                result = "bad_target"
-                _close_message(home, mid, d.get("id"), "closed", "bad_target", now)
             else:
                 rec = messages.read(home, mid) if isinstance(mid, str) and MSG_ID_RE.fullmatch(mid) else None
                 if rec and _forwardable(rec):
@@ -1202,7 +1266,9 @@ def apply_forwards(home, cfg, now=None):
                     messages._write(messages.path_of(home, mid), rec)  # noqa: SLF001
                     result = "forwarded"
                 else:
+                    # it went the usual way meanwhile (the operator has it): the asker stops waiting
                     result = "gone"
+                    _close_message(home, mid, d.get("id"), "closed", "fallback", now)
             d.update({"status": "relayed", "relayed_at": now, "updated_at": now, "desk_result": result})
             _write(path, d)
             audit(home, {"action": "forward", "decision": d.get("id"), "id": mid, "to": code, "result": result})
@@ -1598,8 +1664,8 @@ def needs_tick(home, cfg, now=None):
             except ValueError:
                 continue
             # an answer to apply, or a card that ended unanswered (timeout) the asker still waits on
-            if isinstance(d, dict) and (d.get("status") == "answered" or (
-                    d.get("status") not in ("pending", "relayed") and not d.get("desk_result"))):
+            if isinstance(d, dict) and (d.get("status") in ("answered", "unauthorized") or (
+                    d.get("status") in ENDED and not d.get("desk_result"))):
                 return True
     return False
 

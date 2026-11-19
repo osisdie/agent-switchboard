@@ -3030,23 +3030,35 @@ config dir.
   that reaches the desk is a work request when it is sent to one session (`to` a code: not
   `triage`, the desk or the operator; why `addressed`), or `@mentions` a session on the board
   (case-insensitive; never all, triage, the desk or the operator; why `mention`), or the word
-  heuristic finds a request in it (`work_kind`; text NFKC-normalized and lowercased, split into
-  sentences at line ends, `。！？；;?`, `!` not before a digit and `.` before a space):
-  `request`: an asking word (`please`, `could you`, `can someone`, `請` but not `請問/請教`, `麻煩`,
-  `幫我` …) followed within 80 characters of the same sentence by an action verb (`review`, `approve`,
-  `lgtm`, `merge`, `deploy`, `fix`, `change`, `update`, `run`, `rerun`, `dispatch`, `rebase`, `test`,
-  `revert`, `retry`, `restart` … with -s/-ed/-ing; `審`, `合併`, `部署`, `修`, `改`, `跑`, `執行`, `派`,
-  `測試`, `回滾` … in both scripts), with no question word between (`explain`, `tell`, `how`, `what`,
-  `why`, `怎麼`, `如何`, `為什麼`, `什麼`, `解釋`, `說明` …); `imperative`: a sentence that starts with a
-  verb (after greetings or `@CODE`), is not a question and is not a heading (`Update: …`);
-  `reference`: a merge/pull request reference (`/merge_requests/<n>`, `/pull/<n>`, `!<n>`, `MR <n>`,
-  `PR <n>`) and a verb in a sentence that is not a question, with no question word before it.
+  heuristic finds a request in it (`work_kind`; the first 2000 characters, NFKC-normalized and
+  lowercased, split into sentences at line ends, `。！？；;?`, `!` not before a digit and `.` before a
+  space; a sentence is a question when it ends in `?`, `？` or `嗎/吗/呢/麼/么/嘛`):
+  `request`: an asking word (`please`, `ptal`, `could you`, `can someone`, `請` but not `請問/請教`,
+  `麻煩`, `幫我` …; at most 20 per sentence) followed within 80 characters of the same sentence by an
+  action verb or a merge request, with no question word between (this wins over a `?`: "Can you
+  check !12?"), or an asking word and a merge request in a sentence with no question word. Verbs:
+  `review`, `approve`, `approval`, `lgtm`, `merge`, `deploy`, `fix`, `change`, `run`, `rebase`,
+  `test`, `look at`, `look into`, `take a look`, `check`, `handle`, `investigate`, `take care` … with
+  -s/-ed/-ing; `審`, `合併`, `部署`, `上線`, `修`, `改`, `跑`, `派`, `看`, `看一下`, `確認`, `檢查`, `處理`,
+  `協助`, `測試`, `回滾` … in both scripts; a single CJK character (`修 改 跑 派 審 看`) counts only
+  here, after an asking word. Question words: `explain`, `tell`, `how`, `what`, `why`, `where`,
+  `normal`, `any idea`, `怎麼`, `如何`, `為什麼`, `什麼`, `哪`, `幾點`, `解釋`, `說明` ….
+  `imperative`: only in a message with an asking word or a merge request: a sentence that starts with
+  a verb (after greetings or `@CODE`; never a single CJK character), is not a question, has no
+  question word and is not a heading (`Update: …`). `reference`: a merge/pull request reference
+  (`/merge_requests/<n>`, `/pull/<n>`, `!<n>`, `MR <n>`, `PR <n>`) in the message and a verb (never a
+  single CJK character) in a sentence that is not a question and has no question word ("!42 needs a
+  review", "…/merge_requests/12 needs approval"). So "上線了嗎", "部署流程在哪裡", "跑步", "Run time of
+  the job is 2h" or "Merge conflicts keep happening, is that normal" are not work requests, and
+  neither is a bare imperative with no asking word or merge request ("fix the typo").
   `local_model.work_patterns: {enabled, defaults, verbs, requests, questions, refs}` tunes it:
   `enabled: false` leaves only addressed and mention, lists add to the built-in ones (`defaults:
   false` drops those); an ASCII word or phrase matches as a word (verbs with endings), anything else
-  is a regex; one that does not compile is ignored.
+  is a regex. Each entry is compiled on its own: one that does not compile is ignored, the rest keep
+  working.
   Classified when the message is routed to the desk (`create`, `release`), and by the tick for one
-  that was not (an error then): `desk.work` (true|false), `work_why`. A work request gets its
+  that was not (an error then): `desk.work` (true|false), `work_why`. A message sent to a session
+  (or with `@CODE`) whose words are a plain question still gets the card, marked `request.plain`. A work request gets its
   `desk_forward` decision right then (`desk.forward: "pending"`, `forward_decision`), audited
   `{type: "desk", action: "work", id, why, targets, decision}`. The desk still answers; its
   `desk_question` result carries `forward: {proposed: true, to}` and a note that the owner decides.
@@ -3065,18 +3077,24 @@ config dir.
   answered or closed card is left alone); on a message without one it makes the card. On
   do-not-disturb or compute-low the card is made all the same (`desk.unavailable: owner_dnd |
   compute_low`, and its context says the asker was told). Never forwarded without an approver.
-  Alert: `warn`, escalating, like any question, titled "An asker's request waits for you: forward it
-  to CODE?" (never the asker or their words). The tick applies an answer by an approver or release
-  manager: `approve` (the card's CODE) or a session code among its options sets the message `to:
+  Alert: `warn`, escalating, like any question (`info`, not escalating, for a `request.plain` card),
+  titled "An asker's request waits for you: forward it to CODE?" (never the asker or their words).
+  The operator (`BOARD`, `operator.json` `operator_session`) is never a target: not from `to`, a
+  mention, `forward_to` (refused `bad_forward`) or an answer. The tick applies an answer by an
+  approver or release manager: `approve` (the card's CODE) or a session code among its options sets the message `to:
   CODE`, `status: "new"`, `desk.state: "forwarded"`, `desk.forward: "forwarded"` (`forwarded_to`,
   `forwarded_by`, `forwarded_at`): the operator relays it as an asker's message. That works while
   the message is still with the desk (the desk's late answer is then refused), after its answer,
   and after it was declined on do-not-disturb (the card waited for the owner); not once it went the
   usual way (`gone`). `decline` (or any other answer) sets `desk.forward: "declined"`. Either way the
-  decision is then `relayed` (`desk_result: forwarded|declined|gone|bad_target`). An approve by
-  anyone else is never applied: the decision goes back to `pending` (`ignored: {by, at}`). A card
-  that ended unanswered (the collector's `timeout`, …) sets `desk.forward: "closed"` (`forward_why`:
-  its status) and `desk_result: "closed"`, its status kept. `board-serve --watch` never prints a
+  decision is then `relayed` (`desk_result: forwarded|declined|gone`; `gone` also ends the asker's
+  wait, `desk.forward: "closed"`, `forward_why: "fallback"`). An answer that can't be applied never
+  closes the card: one by anyone who is not an approver (decline included, or a decision `board
+  answer` marked `unauthorized`), `approve` on a card without a target, or a target that is the
+  desk, the operator or no session on the board: the decision goes back to `pending` (`ignored: {by,
+  answer, why: not_approver|no_target|bad_target, at}`). Only a card that ended unanswered (status
+  `timeout` or `stale`) sets `desk.forward: "closed"` (`forward_why`: its reason) and `desk_result:
+  "closed"`, its status kept. `board-serve --watch` never prints a
   `desk_forward` decision.
 - **Fallback** (the tick's pass, and also board-serve every 15 s and `board-serve --watch`, which
   check the ticker too, so a dead collector strands nothing): health not up (`down`), the desk not
@@ -3085,9 +3103,10 @@ config dir.
   within `reply_timeout_s` of `queued_at` (`timeout`): the message leaves the desk (`desk.state` = why,
   `left_at`) and takes the usual way, judged now: `declined` with the canned reply while askers are
   declined, else `new` for the operator. A pending forward card stays pending when it is declined (`desk.unavailable`
-  set: the owner decides when back); when it goes to the operator the card is closed (`status:
-  "stale"`, `status_reason: "desk_fallback"`, `desk_result: "fallback"`; `desk.forward: "closed"`,
-  `forward_why: "fallback"`): the operator relays it the usual way. Audited (`{type: "desk", action: "fallback", id, why,
+  set: the owner decides when back); when it goes to the operator an open card (pending or
+  unauthorized) is closed (`status: "stale"`, `status_reason: "desk_fallback"`, `desk_result:
+  "fallback"`; `desk.forward: "closed"`, `forward_why: "fallback"`): the operator relays it the usual
+  way. A card already answered is left for the tick, which settles it (`gone`, or `declined`). Audited (`{type: "desk", action: "fallback", id, why,
   result}`). A late answer from the desk is refused (`not_open`).
 - **Read-only, in depth.** `fleet-up` types `BOARD_HOME=… python3 lib/desk.py run` into the desk's
   pane (no secret on any command line); `desk.py run` writes `desk/settings.json`, `desk/mcp.json`

@@ -815,8 +815,8 @@ Anthropic 相容端點的 Claude Code session（*服務台*，例如 `ASK`），
   直說，也可以建議一個 session：你會收到「Forward asker … to CODE?」的決策，只有你核准才會
   轉過去。
 - **派工一定會送到你面前。** 要人*做*事的訊息（指定傳給某個 session、內文有 `@CODE`，或有
-  review / merge / deploy / fix / run / rebase / please …、請 / 麻煩 / 審 / 合併 / 部署 … 這類字眼，或 MR
-  連結加上這類動詞），一交給服務台，看板程式就建立這張決策卡，不靠模型判斷。沒指定 session 時，卡片上
+  please / can you / PTAL … 加上 review / merge / deploy / fix / take a look …，或請 / 麻煩 / 幫忙 …
+  加上審 / 合併 / 部署 / 看一下 …，或 MR 連結加上這類動詞；「上線了嗎」、"how do I deploy?" 這類單純提問不算），一交給服務台，看板程式就建立這張決策卡，不靠模型判斷。沒指定 session 時，卡片上
   的按鈕讓你挑一個（或拒絕）。服務台照樣回答，僅供參考。提問者的對話串會顯示「等待主人決定是否轉給某個
   session 處理」，之後顯示已轉送或已拒絕；你開勿擾時還會註明目前不接受詢問或派工，卡片會等你回來。
   沒有你核准，絕不轉送。判斷用的字詞可用 `local_model.work_patterns` 調整（見 `fleet.example.yaml`）。

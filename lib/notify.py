@@ -771,7 +771,11 @@ def decision_alert(d):
         # echoes the asker or their words
         req = d.get("request") if isinstance(d.get("request"), dict) else {}
         to = req.get("session")
-        return {"level": "warn", "key": "decision:%s" % d.get("id"), "kind": "decision", "escalate": True,
+        # a plain question sent to a session (request.plain): the card only informs; a request for
+        # work waits on the owner like any question (warn, escalating)
+        plain = req.get("plain") is True
+        return {"level": "info" if plain else "warn", "key": "decision:%s" % d.get("id"), "kind": "decision",
+                "escalate": not plain,
                 "title": "An asker's request waits for you: forward it to %s?" % (to or "a session"),
                 "body": "decide on the board (forward or decline)", "url": None}
     if d.get("kind") == "permission":
