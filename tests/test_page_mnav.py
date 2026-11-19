@@ -14,7 +14,8 @@ on a phone (demo data):
   - long cards: a task's stage rail shows only its current stage with "Show all stages", a long
     decision context is clamped with "Show more";
   - zh-TW strings; the dark theme gives the sheet a solid background;
-  - desktop (1280 px): the row of links is unchanged, no menu button, no "↑", no sheet tools.
+  - desktop (1280 px): the row of links stays below the Deck, long cards show in full (the
+    desktop Sections dropdown and "↑" are tests/test_page_dnav.py).
 
 Needs python playwright and a Chromium it can launch; without them it prints "skipped" and
 exits 0, so it never blocks anyone. CI does not run it.
@@ -378,20 +379,16 @@ def main():
 
         print("desktop 1280 px:")
         pg = new_page(width=1280, height=900)
-        r = pg.evaluate("""() => ({ toggle: getComputedStyle(document.getElementById('nav-toggle')).display, list: getComputedStyle(document.getElementById('nav-list')).display,
-          tools: getComputedStyle(document.getElementById('nav-tools')).display, navTop: document.getElementById('secnav').getBoundingClientRect().top,
+        r = pg.evaluate("""() => ({ row: getComputedStyle(document.getElementById('nav-row')).display, navTop: document.getElementById('secnav').getBoundingClientRect().top,
           deck: document.getElementById('deck').getBoundingClientRect().bottom, rail: getComputedStyle(document.querySelector('.rail-more')).display,
           stages: [...document.querySelectorAll('#tasks .tcard:first-child .rail .stage')].filter((s) => s.getBoundingClientRect().height > 0).length,
-          links: [...document.querySelectorAll('#nav-list a')].filter((a) => a.getBoundingClientRect().height > 0).length,
+          links: [...document.querySelectorAll('#nav-row a')].filter((a) => a.getBoundingClientRect().height > 0).length,
           ctx: document.querySelector('#dec-d-2-demo .ctx').getBoundingClientRect().height, ctxFull: document.querySelector('#dec-d-2-demo .ctx').scrollHeight,
           more: getComputedStyle(document.querySelector('#dec-d-2-demo > .more')).display })""")
-        check("the row of links as before: no menu button, no sheet tools, below the Deck",
-              r["toggle"] == "none" and r["list"] == "flex" and r["tools"] == "none" and r["navTop"] > r["deck"] and r["links"] >= 8, r)
+        check("the row of links stays, below the Deck (its Sections dropdown: tests/test_page_dnav.py)",
+              r["row"] == "flex" and r["navTop"] > r["deck"] and r["links"] >= 8, r)
         check("  task rails show all five stages, no Show all stages", r["rail"] == "none" and r["stages"] == 5, r)
         check("  a long decision context shows in full, no Show more", r["ctx"] >= r["ctxFull"] - 1 and r["more"] == "none", r)
-        pg.evaluate("() => window.scrollTo({ top: 3000, behavior: 'instant' })")
-        pg.wait_for_timeout(200)
-        check("  no floating ↑ on desktop", pg.evaluate(TOP_JS)["hidden"])
         pg.close()
 
         print("board-serve, phone: what waits on you is never folded away:")
