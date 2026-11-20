@@ -103,10 +103,12 @@
 #                                              prompt typed (fleet.yaml limit_resume); nothing sent
 #                                              when the screen is no known limit state
 #   board resume --scan [--json]               the limit state of every running pane (read-only)
-#   board message send --to CODE|triage|all [--by WHO] "text"|-
+#   board message send --to CODE|triage|all [--by WHO] [--attach IMAGE]... "text"|-
 #                                              create a board message (screened by the secret
 #                                              guard: a secret request is held, not relayed;
-#                                              triage: BOARD routes it; askers: never all)
+#                                              triage: BOARD routes it; askers: never all;
+#                                              --attach IMAGE (repeatable, at most 4): the relay
+#                                              lists the image's path for the session)
 #   board message reply MSG_ID --from CODE "text"|-
 #                                              store a session's reply (secrets redacted)
 #   board message show MSG_ID [--json]         the relay text, or "held" (never relay it)
