@@ -60,6 +60,7 @@ TYPES = tuple(EXT)
 NAME_STRIP_RE = re.compile("[\x00-\x1f\x7f-\x9f\u00a0\u061c\u180e\u2028\u2029\u200b-\u200f\u202a-\u202e"
                            "\u2060-\u2069\ufeff]+")
 LOCK = ".lock"
+LOCK_TIMEOUT_S = 5.0        # waiting longer for uploads/.lock: Bad("busy", 503), never a hang
 
 
 class Bad(Exception):
@@ -132,9 +133,21 @@ class Locked:
         self.fd = None
 
     def __enter__(self):
+        """Wait at most LOCK_TIMEOUT_S: a holder that stopped (a suspended CLI) must never freeze
+        board-serve, which waits here holding its write lock. Raises Bad("busy", 503)."""
         self.fd = os.open(self.path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
-        fcntl.flock(self.fd, fcntl.LOCK_EX)
-        return self
+        deadline = time.monotonic() + LOCK_TIMEOUT_S
+        while True:
+            try:
+                fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return self
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    os.close(self.fd)
+                    self.fd = None
+                    raise Bad("busy", "the image store is busy (another board command holds its lock); "
+                                      "try again in a moment", 503) from None
+                time.sleep(0.05)
 
     def __exit__(self, *exc):
         try:
@@ -237,12 +250,23 @@ def _prune(home, now=None):
     return gone
 
 
-def check_quota(home, by, size, now=None, asker=False):
+def check_quota(home, by, size, now=None, asker=False, asker_of=None):
     """Raise Bad when storing SIZE more bytes for BY would pass a cap (429 for the uploader's own
     caps, 507 when the disk budget is spent). asker: BY is an asker (a smaller share, and askers
-    together never fill DECIDER_RESERVE)."""
+    together never fill DECIDER_RESERVE). asker_of(by) -> bool: who is an asker NOW (fleet.yaml),
+    for the askers' pool; without it, the flag stored at upload time (a decider demoted to asker
+    since would escape the pool)."""
     now = now_ms() if now is None else now
     metas = all_meta(home)
+    roles = {}
+
+    def in_pool(m):
+        if asker_of is None:
+            return bool(m.get("asker"))
+        b = m.get("by")
+        if b not in roles:
+            roles[b] = bool(asker_of(b))
+        return roles[b]
     mine = [m for m in metas if m.get("by") == by]
     held = ASKER_HELD_BYTES if asker else USER_HELD_BYTES
     if sum(1 for m in mine if not m.get("messages")) >= MAX_PENDING:
@@ -254,20 +278,20 @@ def check_quota(home, by, size, now=None, asker=False):
     if sum(int(m.get("size") or 0) for m in mine) + size > held:
         raise Bad("quota", "at most %d MiB of your images are kept at a time; older ones go after %d days"
                   % (held // (1024 * 1024), MAX_AGE_MS // DAY_MS), 429)
-    if asker and sum(int(m.get("size") or 0) for m in metas if m.get("asker")) + size > TOTAL_BYTES - DECIDER_RESERVE:
+    if asker and sum(int(m.get("size") or 0) for m in metas if in_pool(m)) + size > TOTAL_BYTES - DECIDER_RESERVE:
         raise Bad("storage_full", "the board's image storage for askers is full; try again later", 507)
     if sum(int(m.get("size") or 0) for m in metas) + size > TOTAL_BYTES:
         raise Bad("storage_full", "the board's image storage is full; try again later", 507)
 
 
-def precheck(home, by, size, asker=False):
+def precheck(home, by, size, asker=False, asker_of=None):
     """board-serve, before it reads an upload's body: prune, then the caps (raises Bad)."""
     with Locked(home):
         _prune(home)
-        check_quota(home, by, size, asker=asker)
+        check_quota(home, by, size, asker=asker, asker_of=asker_of)
 
 
-def store(home, data, name, by, now=None, asker=False):
+def store(home, data, name, by, now=None, asker=False, asker_of=None):
     """Check and store one image from BY (asker: BY is an asker, for the caps). Returns its public
     record {id, name, size, type}."""
     now = now_ms() if now is None else now
@@ -281,7 +305,7 @@ def store(home, data, name, by, now=None, asker=False):
     d = udir(home)
     with Locked(home):
         _prune(home, now)
-        check_quota(home, by, len(data), now, asker=asker)
+        check_quota(home, by, len(data), now, asker=asker, asker_of=asker_of)
         return _store(home, d, data, ctype, name, by, now, asker)
 
 

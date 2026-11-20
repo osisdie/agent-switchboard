@@ -673,15 +673,32 @@ def _cli_attach(home, paths, by):
             raise MessageError("bad_attachments", "--attach %s: only PNG, JPEG, GIF and WebP images"
                                % safe_line(p, 200))
         blobs.append((data, os.path.basename(p)))
-    asker = asker_only_now(re.sub(r"^(board|cli):", "", str(by or "")))
+    cfg = fleet.load_fleet()
+
+    def asker_of(who):     # who is an asker now (the askers' storage pool, lib/uploads.py)
+        return asker_only_now(re.sub(r"^(board|cli):", "", str(who or "")), cfg)
+    asker = asker_of(by)
     done = []
     try:
         for data, name in blobs:   # each store holds the uploads lock (shared with board-serve)
-            done.append(uploads.store(home, data, name, by, asker=asker))
+            done.append(uploads.store(home, data, name, by, asker=asker, asker_of=asker_of))
     except uploads.Bad as exc:
-        uploads.discard(home, [a["id"] for a in done])     # all or nothing
+        _discard(home, done)       # all or nothing
         raise MessageError("bad_attachments", "--attach: %s" % exc.detail) from None
     return done
+
+
+def _discard(home, atts):
+    """Delete images this command stored (best effort: a busy lock leaves them to age out within
+    the hour as unsent)."""
+    if not atts:
+        return
+    import uploads  # noqa: WPS433
+    try:
+        uploads.discard(home, [a["id"] for a in atts])
+    except uploads.Bad as exc:
+        sys.stderr.write("board message: could not delete the stored images now (%s); they go within the "
+                         "hour\n" % exc.detail)
 
 
 def main(argv):
@@ -736,9 +753,7 @@ def main(argv):
             try:
                 rec = create(home, args.to, text, args.by, api=api, decline=decline, attachments=atts)
             except MessageError:
-                if atts:
-                    import uploads  # noqa: WPS433
-                    uploads.discard(home, [a["id"] for a in atts])
+                _discard(home, atts)
                 raise
             print("%s %s" % (rec["id"], rec["status"]))
             if rec["status"] == "held":

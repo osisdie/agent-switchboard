@@ -11,6 +11,7 @@
 
   python3 tests/test_uploads.py [-v]
 """
+import fcntl
 import http.client
 import json
 import os
@@ -285,6 +286,55 @@ class Store(unittest.TestCase):
             self.assertTrue(uploads.read_meta(HOME, a["id"])["asker"])
         finally:
             uploads.USER_HELD_BYTES, uploads.ASKER_HELD_BYTES, uploads.TOTAL_BYTES, uploads.DECIDER_RESERVE = old
+
+    def test_pool_counts_askers_by_role_now(self):
+        """A decider later demoted to asker: their images count in the askers' pool from then on
+        (the role now, not the flag stored at upload time); one promoted out of it no longer does."""
+        n = len(png())
+        old = (uploads.TOTAL_BYTES, uploads.DECIDER_RESERVE)
+        try:
+            uploads.TOTAL_BYTES, uploads.DECIDER_RESERVE = 10 * n, 7 * n      # askers' pool: 3 images
+            for i in range(3):
+                uploads.store(HOME, png(), "d%d.png" % i, "dee@example.com")   # a decider then
+            now_askers = {"dee@example.com", "ann@example.com"}
+            asker_of = now_askers.__contains__
+            self.assertIsNone(uploads.check_quota(HOME, "ann@example.com", n, asker=True))   # stored flags: pool empty
+            with self.assertRaises(uploads.Bad) as c:
+                uploads.check_quota(HOME, "ann@example.com", n, asker=True, asker_of=asker_of)
+            self.assertEqual((c.exception.code, c.exception.status), ("storage_full", 507))
+            # and the other way: images flagged asker, by someone who is a decider now
+            clear_uploads()
+            for i in range(3):
+                uploads.store(HOME, png(), "a%d.png" % i, "pro@example.com", asker=True)
+            with self.assertRaises(uploads.Bad):
+                uploads.check_quota(HOME, "ann@example.com", n, asker=True)
+            self.assertIsNone(uploads.check_quota(HOME, "ann@example.com", n, asker=True,
+                                                  asker_of={"ann@example.com"}.__contains__))
+        finally:
+            uploads.TOTAL_BYTES, uploads.DECIDER_RESERVE = old
+
+    def test_lock_wait_is_bounded(self):
+        """A holder that stopped (a suspended CLI) never freezes the store: Bad busy (503) after
+        LOCK_TIMEOUT_S, and the lock is usable again once it is free."""
+        uploads.udir(HOME)
+        fd = os.open(os.path.join(udir(), uploads.LOCK), os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)          # another open file: conflicts like another process
+        old = uploads.LOCK_TIMEOUT_S
+        try:
+            uploads.LOCK_TIMEOUT_S = 0.3
+            t0 = time.monotonic()
+            with self.assertRaises(uploads.Bad) as c:
+                uploads.store(HOME, png(), "a.png", "local")
+            self.assertEqual((c.exception.code, c.exception.status), ("busy", 503))
+            self.assertGreaterEqual(time.monotonic() - t0, 0.3)
+            self.assertLess(time.monotonic() - t0, 3)
+            self.assertEqual(serve.upload_sweep(HOME, threading.Lock()), 0)      # the sweep skips the round
+            self.assertEqual(ufiles(), [])
+        finally:
+            uploads.LOCK_TIMEOUT_S = old
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+        self.assertEqual(uploads.store(HOME, png(), "b.png", "local")["type"], "image/png")
 
     def test_delete_pending(self):
         a = uploads.store(HOME, png(), "a.png", "local")
@@ -563,6 +613,43 @@ class Http(unittest.TestCase):
         post_msg({"to": "API", "body": "with b", "attachments": [b["id"]]})
         st, js = call("POST", "/api/uploads/%s/delete" % b["id"], b"{}", {"Content-Type": "application/json"})
         self.assertEqual((st, js["error"]), (409, "in_use"))
+
+    def test_busy_lock_answers_503_and_cli_exits(self):
+        """Another process holds uploads/.lock (as a stopped `board message send --attach` would):
+        board-serve answers 503 busy within its 5 s wait instead of hanging, other routes still
+        answer, and the CLI exits 2 with a clear message."""
+        uploads.udir(HOME)
+        holder = subprocess.Popen([sys.executable, "-c", (
+            "import fcntl, os, sys, time\n"
+            "fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)\n"
+            "fcntl.flock(fd, fcntl.LOCK_EX)\nprint('held', flush=True)\ntime.sleep(60)\n"),
+            os.path.join(udir(), uploads.LOCK)], stdout=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(holder.stdout.readline().strip(), "held")
+            t0 = time.monotonic()
+            st, js = upload(png())
+            self.assertEqual((st, js["error"]), (503, "busy"))
+            self.assertLess(time.monotonic() - t0, 15)
+            st, _ = call("GET", "/api/state", csrf=False)        # the server is not frozen
+            self.assertEqual(st, 200)
+            img = os.path.join(TMP, "busy.png")
+            with open(img, "wb") as fh:
+                fh.write(png())
+            r = board("message", "send", "--to", "API", "--attach", img, "busy?")
+            self.assertEqual(r.returncode, 2, r.stderr)
+            self.assertIn("the image store is busy", r.stderr)
+        finally:
+            holder.kill()
+            holder.wait(10)
+            holder.stdout.close()
+        self.assertEqual(upload(png())[0], 201)
+
+    def test_viewer_may_not_delete(self):
+        _, a = upload(png())
+        write_fleet(local_role=None)
+        st, js = call("POST", "/api/uploads/%s/delete" % a["id"], b"{}", {"Content-Type": "application/json"})
+        self.assertEqual((st, js["error"]), (403, "not_approver"))
+        self.assertIsNotNone(uploads.read_meta(HOME, a["id"]))
 
     def test_viewer_may_not_upload(self):
         write_fleet(local_role=None)

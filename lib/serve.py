@@ -2034,10 +2034,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             raise Refused(413, "too_large", "an image is at most %d MiB" % (uploads.MAX_BYTES // (1024 * 1024)))
         home = self.server.home
         asker = asker_only(cfg, ident)
+
+        def asker_of(who):     # who is an asker now, not when they uploaded (the askers' pool)
+            return asker_only(cfg, who)
         try:
             with self.server.write_lock:     # before the body: a refused upload costs no read
                 uploads.udir(home)
-                uploads.precheck(home, ident, n, asker=asker)
+                uploads.precheck(home, ident, n, asker=asker, asker_of=asker_of)
         except uploads.Bad as exc:
             self.audit(ident, via, "upload", result="refused", reason=exc.code)
             raise Refused(exc.status, exc.code, exc.detail,
@@ -2055,7 +2058,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             raise Refused(400, "short_body", "the body is shorter than its Content-Length")
         try:
             with self.server.write_lock:
-                rec = uploads.store(home, b"".join(chunks), self.headers.get("X-Filename"), ident, asker=asker)
+                rec = uploads.store(home, b"".join(chunks), self.headers.get("X-Filename"), ident, asker=asker,
+                                    asker_of=asker_of)
         except uploads.Bad as exc:
             self.audit(ident, via, "upload", result="refused", reason=exc.code)
             raise Refused(exc.status, exc.code, exc.detail) from exc
@@ -2065,7 +2069,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def upload_delete(self, uid, ident, via):
         """POST /api/uploads/<id>/delete: the page's ✕ frees the caller's own unsent upload at once
         (else it would count against their pending cap for an hour). Unknown and someone else's
-        ids answer alike (404)."""
+        ids answer alike (404). Who may send messages only, refused like an upload."""
+        if match_id(ident, sorted(messagers(fleet.load_fleet()))) is None:
+            self.audit(ident, via, "upload-delete", result="refused", reason="not an approver or asker")
+            raise Refused(403, "not_approver", "only approvers, release managers and askers attach images")
         try:
             with self.server.write_lock:
                 uploads.delete_pending(self.server.home, uid, ident)
