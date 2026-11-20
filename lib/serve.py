@@ -28,9 +28,18 @@ listeners (docs/contract.md, "Local adapter API"):
   POST /api/decisions/<id>/answer      {"answer": "..."}   (via `board answer` / `board press`)
   POST /api/decisions/<id>/resolve     {"confirm": "resolve", "note": "..."}  (approvers only: a
                                        board ask answered in the session; `board resolve --in-pane`)
-  POST /api/messages                   {"to": "CODE"|"triage"|"all", "body": "..."}  (screened by the
-                                       secret guard: a secret request is stored "held", never relayed;
-                                       "triage": BOARD routes it; an asker may not send to "all")
+  POST /api/messages                   {"to": "CODE"|"triage"|"all", "body": "...", "attachments"?:
+                                       ["u-...", ...]}  (screened by the secret guard: a secret request
+                                       is stored "held", never relayed; "triage": BOARD routes it; an
+                                       asker may not send to "all"; attachments: the sender's own
+                                       uploads, at most 4, else 400 bad_attachments)
+  POST /api/uploads                    the raw bytes of one image (Content-Type image/png|jpeg|gif|webp,
+                                       X-Filename: the percent-encoded file name, display text only;
+                                       at most 5 MiB; the type is taken from the bytes): who may send
+                                       messages only; 201 {id, name, size, type}; stored 0600 under
+                                       $BOARD_HOME/uploads (lib/uploads.py), never served back
+  POST /api/uploads/<id>/delete        {}  the page's ✕: the caller's own upload that no message
+                                       carries yet (204); unknown or someone else's: 404 not_found
   POST /api/messages/<id>/release      {"confirm": "release"}  (owners only: release a held
                                        message after a false positive; audited)
   POST /api/away                       {"state": "on"|"off", "said": "..."}   (owners only;
@@ -133,6 +142,7 @@ import serve_dev  # noqa: E402
 
 _SELF = sys.modules[__name__]   # handed to serve_api for its helpers (no second import of this file)
 import tickets  # noqa: E402
+import uploads  # noqa: E402
 
 REPO = fleet.REPO
 BOARD = os.path.join(REPO, "bin", "board")
@@ -736,7 +746,8 @@ HISTORY_MAX = 50
 # relay ones the contract documents (docs/contract.md "Messages"; ticket text is viewer-scoped).
 MESSAGE_KEYS = ("id", "to", "body", "by", "created_at", "status", "relayed_to", "relayed_at", "held_reason",
                 "held_at", "released_by", "released_at", "kind", "asker", "event", "ticket", "task_id", "api", "via",
-                "routed_to", "routed_at", "declined_reason", "declined_at", "away_route", "away_at")
+                "routed_to", "routed_at", "declined_reason", "declined_at", "away_route", "away_at",
+                "attachments")
 REPLY_KEYS = ("id", "from", "body", "created_at", "redacted", "canned", "local_model")
 CURSOR_RE = re.compile(r"([0-9]{1,16})\.(m-[0-9]+-[a-z0-9]+)")
 
@@ -1660,6 +1671,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if path == "/api/messages":
                 body = self.read_body()
                 return self.message(body, ident, via)
+            if path == "/api/uploads":      # raw image bytes, not JSON: its own body reader
+                return self.upload(ident, via)
+            m = re.fullmatch(r"/api/uploads/([^/]+)/delete", path)
+            if m:
+                self.read_body()
+                return self.upload_delete(m.group(1), ident, via)
             if path == "/api/away":
                 body = self.read_body()
                 return self.set_away(body, ident, via)
@@ -1994,6 +2011,75 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except Exception:  # noqa: BLE001
             pass
 
+    def upload(self, ident, via):
+        """POST /api/uploads: one image for a message the sender is about to send (lib/uploads.py).
+        Who may send messages only, checked before the body is read; the declared type must be an
+        image type, but what is stored is decided from the bytes."""
+        cfg = fleet.load_fleet()
+        if match_id(ident, sorted(messagers(cfg))) is None:
+            self.audit(ident, via, "upload", result="refused", reason="not an approver or asker")
+            raise Refused(403, "not_approver", "only approvers, release managers and askers attach images")
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype not in uploads.TYPES:
+            raise Refused(415, "image_only", "Content-Type must be image/png, image/jpeg, image/gif or image/webp")
+        try:
+            n = int(self.headers.get("Content-Length") or "-1")
+        except ValueError:
+            n = -1
+        if n < 0:
+            raise Refused(411, "length_required", "Content-Length required")
+        if n == 0:
+            raise Refused(400, "empty", "the image is empty")
+        if n > uploads.MAX_BYTES:
+            raise Refused(413, "too_large", "an image is at most %d MiB" % (uploads.MAX_BYTES // (1024 * 1024)))
+        home = self.server.home
+        asker = asker_only(cfg, ident)
+        asker_of = upload_asker_of(cfg)
+        try:
+            with self.server.write_lock:     # before the body: a refused upload costs no read
+                uploads.udir(home)
+                uploads.precheck(home, ident, n, asker=asker, asker_of=asker_of)
+        except uploads.Bad as exc:
+            self.audit(ident, via, "upload", result="refused", reason=exc.code)
+            raise Refused(exc.status, exc.code, exc.detail,
+                          headers={"Retry-After": "600"} if exc.status in (429, 507) else None) from exc
+        chunks, left = [], n
+        while left > 0:
+            chunk = self.rfile.read(min(left, 65536))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            left -= len(chunk)
+        self.body_read = True
+        if left:
+            self.close_connection = True
+            raise Refused(400, "short_body", "the body is shorter than its Content-Length")
+        try:
+            with self.server.write_lock:
+                rec = uploads.store(home, b"".join(chunks), self.headers.get("X-Filename"), ident, asker=asker,
+                                    asker_of=asker_of)
+        except uploads.Bad as exc:
+            self.audit(ident, via, "upload", result="refused", reason=exc.code)
+            raise Refused(exc.status, exc.code, exc.detail) from exc
+        self.audit(ident, via, "upload", id=rec["id"], size=rec["size"], type=rec["type"], result="stored")
+        return self.send_json(201, rec)
+
+    def upload_delete(self, uid, ident, via):
+        """POST /api/uploads/<id>/delete: the page's ✕ frees the caller's own unsent upload at once
+        (else it would count against their pending cap for an hour). Unknown and someone else's
+        ids answer alike (404). Who may send messages only, refused like an upload."""
+        if match_id(ident, sorted(messagers(fleet.load_fleet()))) is None:
+            self.audit(ident, via, "upload-delete", result="refused", reason="not an approver or asker")
+            raise Refused(403, "not_approver", "only approvers, release managers and askers attach images")
+        try:
+            with self.server.write_lock:
+                uploads.delete_pending(self.server.home, uid, ident)
+        except uploads.Bad as exc:
+            self.audit(ident, via, "upload-delete", result="refused", reason=exc.code)
+            raise Refused(exc.status, exc.code, exc.detail) from exc
+        self.audit(ident, via, "upload-delete", id=uid, result="deleted")
+        return self.send_empty(204)
+
     def message(self, body, ident, via):
         to, text = body.get("to"), body.get("body")
         if not messages.valid_to(to):     # "ALL", "Triage" ...: refused, never a session code
@@ -2030,8 +2116,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 reason = availability.decline_reason(self.server.home, cfg)
                 if reason:
                     decline = (reason, availability.reply_text(cfg, reason))
-            rec = messages.create(self.server.home, to, text, ident, background_alert=True, asker=asker,
-                                  decline=decline)
+            try:    # only the sender's own uploads (lib/uploads.py); an unknown id and another's look alike
+                atts = uploads.resolve(self.server.home, body.get("attachments"), ident)
+            except uploads.Bad as exc:
+                self.audit(ident, via, "message", to=to, result="refused", reason=exc.code)
+                raise Refused(400, exc.code, exc.detail) from exc
+            try:    # the image store busy (lib/uploads.py: 503): nothing was written, the page retries
+                rec = messages.create(self.server.home, to, text, ident, background_alert=True, asker=asker,
+                                      decline=decline, attachments=atts)
+            except uploads.Bad as exc:
+                self.audit(ident, via, "message", to=to, result="refused", reason=exc.code)
+                raise Refused(exc.status, exc.code, exc.detail,
+                              headers={"Retry-After": "5"} if exc.status == 503 else None) from exc
             self.audit(ident, via, "message", id=rec["id"], to=to, result=rec["status"],
                        **dict({"asker": True} if asker is not None else {},
                               **({"reason": rec["declined_reason"]} if rec["status"] == "declined" else {})))
@@ -2613,6 +2709,32 @@ def desk_sweeper(home, stop):
         desk_sweep(home)
 
 
+UPLOAD_SWEEP_S = 3600
+
+
+def upload_asker_of(cfg):
+    """who -> is an asker now (fleet.yaml), for the askers' share of the image store; the id as the
+    CLI's would be matched (lib/uploads.py plain_id: no board:/cli: prefix)."""
+    return lambda who: asker_only(cfg, uploads.plain_id(who))
+
+
+def upload_sweep(home, lock):
+    """lib/uploads.py prune, under the server's write lock: unsent and old images go even when
+    nobody uploads (also run once at start). Never raises."""
+    try:
+        with lock:
+            return uploads.prune(home)
+    except Exception as exc:  # noqa: BLE001 - never stops the server
+        sys.stderr.write("board-serve: upload sweep: %s\n" % type(exc).__name__)
+    return 0
+
+
+def upload_sweeper(home, lock, stop):
+    upload_sweep(home, lock)
+    while not stop.wait(UPLOAD_SWEEP_S):
+        upload_sweep(home, lock)
+
+
 def watch(home, once=False, tick_s=480):
     """Print one line per new actionable item (oldest first), and "tick" every tick_s seconds.
 
@@ -2701,6 +2823,7 @@ def main(argv):
     threading.Thread(target=hub.run, daemon=True).start()
     sweep_stop = threading.Event()
     threading.Thread(target=desk_sweeper, args=(home, sweep_stop), daemon=True).start()
+    threading.Thread(target=upload_sweeper, args=(home, lock, sweep_stop), daemon=True).start()
     for srv in servers[1:]:
         threading.Thread(target=srv.serve_forever, daemon=True).start()
     sys.stderr.write("board-serve: " + "\nboard-serve: ".join(info) + "\n")

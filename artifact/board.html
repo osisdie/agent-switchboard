@@ -591,6 +591,18 @@ dialog.notif { width: min(720px, calc(100vw - 24px)); }
 .msg-to { margin: 0; font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
 .msg-all-confirm { display: grid; gap: 8px; padding: 10px 12px; border-radius: 6px; background: var(--lamp-soft); color: var(--lamp-ink); font-size: 14px; }
 .msg-all-confirm p { margin: 0; }
+/* attached images: chips with the name and size, never a preview (POST /api/uploads, local mode) */
+.msg-atts-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-width: 0; }
+.msg-atts-row[hidden] { display: none; }
+.att-help { font-size: 13px; color: var(--muted); }
+.att-chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; flex-basis: 100%; min-width: 0; }
+.att-chips:empty { display: none; }
+.att-chip { display: inline-flex; align-items: center; gap: 2px; max-width: 100%; min-width: 0; padding: 2px 10px; border-radius: 999px; border: 1px solid var(--rule); background: var(--off-soft); color: var(--ink); font-size: 13px; }
+.att-chip .n { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.att-chip.busy .n { color: var(--muted); }
+.att-chip .x { font: inherit; font-size: 13px; min-width: 28px; min-height: 28px; margin: -2px -8px -2px 0; padding: 0; border: 0; border-radius: 999px; background: transparent; color: var(--muted); cursor: pointer; }
+.att-chip .x:hover, .att-chip .x:focus-visible { color: var(--deny); }
+.composer.dropping { outline: 2px dashed var(--cord); outline-offset: 2px; }
 .mention-list .d { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 70%; }
 .readonly-note { font-size: 14px; color: var(--muted); padding: 12px 14px; border: 1px dashed var(--rule); border-radius: var(--r); }
 
@@ -1486,6 +1498,12 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
           <label for="msg-input" data-i18n>New message</label>
           <textarea id="msg-input" placeholder="@API please rebase on main and rerun the tests" data-i18n-attr="placeholder" aria-autocomplete="list" aria-controls="mention-list" aria-expanded="false"></textarea>
           <ul class="mention-list" id="mention-list" role="listbox" aria-label="Sessions" data-i18n-attr="aria-label" hidden></ul>
+          <div class="msg-atts-row" id="msg-atts-row" hidden>
+            <input type="file" id="msg-file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
+            <button class="btn" id="msg-attach" type="button" aria-describedby="msg-attach-help"><span aria-hidden="true">📎</span> <span data-i18n>Attach image</span></button>
+            <span class="att-help" id="msg-attach-help" data-i18n>PNG, JPEG, GIF or WebP, up to 5 MB each, at most 4. You can also paste or drop images.</span>
+            <ul class="att-chips" id="msg-atts" aria-label="Attached images" data-i18n-attr="aria-label"></ul>
+          </div>
           <p class="msg-to" id="msg-to-line" aria-live="polite"></p>
           <p class="err" id="msg-err" role="alert"></p>
           <div class="msg-all-confirm" id="msg-all-confirm" role="group" aria-labelledby="msg-all-q" hidden>
@@ -1657,6 +1675,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     hist: { open: false, to: '', q: '', items: [], replies: new Map(), next: null, loading: false, err: null, count: 20, seq: 0, timer: 0 },
     msgQ: '', msgTo: '', msgChip: '',  // Messages: search text, session, filter chip ('' | unread | waiting | held)
     allConfirm: null,            // the composer's pending "send to all" ({raw}) until confirmed or changed
+    atts: [],                    // the composer's attached images [{name, size, id}] (id null while uploading)
     got: { sessions: false, decisions: false, messages: false, tasks: false, approvals: false, operator: false, consensus: false },
     slow: false, feedError: null, offlineDetail: null,
     me: null, userReady: false, writable: null,   // writable: true | false | null (unknown → let writes decide)
@@ -3695,6 +3714,15 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     return [b, sync];
   }
   const listOf = (v) => (Array.isArray(v) ? v.map(str).filter(Boolean) : []);
+  // A message's attached images: their names and sizes only (no preview; the image itself is never
+  // served to the page: the session opens it from the path in the relay).
+  const sizeText = (n) => { n = Number(n) || 0; return n < 1024 ? n + ' B' : n < 1048576 ? Math.round(n / 1024) + ' KB' : (n / 1048576).toFixed(1) + ' MB'; };
+  const attLabel = (a) => '📎 ' + (str(a.name) || 'image') + ' · ' + sizeText(a.size);
+  function attChips(m) {
+    const atts = Array.isArray(m.attachments) ? m.attachments.filter((a) => a && typeof a === 'object') : [];
+    if (!atts.length) return null;
+    return h('ul', { class: 'att-chips', 'aria-label': tr('Attached images') }, atts.map((a) => h('li', { class: 'att-chip' }, h('span', { class: 'n', text: attLabel(a), title: str(a.name) }))));
+  }
   function buildThread(m) {
     const id = str(m.id), replies = threadReplies(id);
     const relayedTo = listOf(m.relayed_to), routedTo = listOf(m.routed_to);
@@ -3717,6 +3745,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
         h('span', { class: 'preview', text: str(m.body).replace(/\s+/g, ' ').slice(0, 160) + (replies.length ? ' · ' + tr(replies.length === 1 ? '1 reply' : '{n} replies', { n: replies.length }) : '') }),
         timeEl(m.created_at)),
       clampText(id, str(m.body), 'body'),
+      attChips(m),
       guardNote(m),
       declinedNote(m),
       deskNote(m),
@@ -4624,6 +4653,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     if (!isLocal() && !S.demo && [...S.msgVisible].join() !== was) syncReplySubs();
     const ok = canMessage();
     $('#composer').hidden = !ok;
+    $('#msg-atts-row').hidden = !canAttach();
     // an asker never messages @all: triage (BOARD routes it) is their default recipient
     $('#msg-help-all').hidden = S.askerOnly;
     $('#msg-input').placeholder = tr(S.askerOnly ? 'Ask your question. BOARD routes it to the right session, or start with @ and a session code.'
@@ -6120,6 +6150,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     const code = e && e.code;
     // Local adapter (board-serve) answers; never produced by the claude.ai db.
     if (code === 'not_approver') { toast(tr('Not recorded: you are not an approver for this.'), true); return; }
+    if (code === 'busy') { toast(tr('The board server is busy. Nothing was sent: try again in a moment.'), true); return; }
+    if (code === 'bad_attachments') { toast(tr('Not sent: an attached image is no longer on the board server. Attach it again.'), true); return; }
     if (code === 'review_in_session') { toast(tr('Only part of this request is shown here, so it can only be allowed in the session.'), true); return; }
     if (code === 'no_approvers') { toast(tr('Nobody is listed as an approver on this board, so no answer is accepted.'), true); return; }
     if (code === 'away_failed') { toast(tr('The board server could not change owner-away mode.'), true); return; }
@@ -6328,6 +6360,64 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
   $('#ls-filter').addEventListener('change', (e) => { S.lsFilter = e.target.value; renderLessons(); });
   $('#ls-add').addEventListener('click', () => openLessonForm(null));
 
+  // Attached images (local mode): each goes to board-serve first (POST /api/uploads, lib/uploads.py),
+  // the message then names their ids. No preview: a chip shows the name and size, with a remove ✕.
+  const ATT_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'], ATT_MAX = 4, ATT_BYTES = 5 * 1024 * 1024;
+  function canAttach() { return !!(adapter && typeof adapter.upload === 'function' && canMessage()); }
+  function renderAtts() {
+    const ul = $('#msg-atts');
+    ul.textContent = '';
+    for (const a of S.atts) {
+      const label = tr('Remove {name}', { name: a.name });
+      const x = h('button', { type: 'button', class: 'x', 'aria-label': label, title: label, text: '✕' });
+      x.addEventListener('click', () => { S.atts = S.atts.filter((b) => b !== a); renderAtts(); dropUpload(a); $('#msg-attach').focus(); });
+      ul.append(h('li', { class: 'att-chip' + (a.id ? '' : ' busy') }, h('span', { class: 'n', title: a.name, text: attLabel(a) + (a.id ? '' : ' · ' + tr('uploading…')) }), x));
+    }
+  }
+  // ✕ frees the server's copy at once (best effort: an unsent image goes within the hour anyway)
+  function dropUpload(a) {
+    if (!a.id || !adapter || typeof adapter.deleteUpload !== 'function') return;
+    Promise.resolve().then(() => adapter.deleteUpload(a.id)).catch(() => {});
+  }
+  function addFiles(list) {
+    if (!canAttach()) return;
+    merr.textContent = '';
+    for (const f of [...(list || [])]) {
+      if (S.atts.length >= ATT_MAX) { merr.textContent = tr('At most {n} images per message.', { n: ATT_MAX }); break; }
+      if (!ATT_TYPES.includes(f.type)) { merr.textContent = tr('Only PNG, JPEG, GIF and WebP images can be attached.'); continue; }
+      if (f.size > ATT_BYTES) { merr.textContent = tr('{name} is over 5 MB.', { name: f.name || 'image' }); continue; }
+      const a = { name: str(f.name) || 'image', size: f.size, id: null };
+      S.atts.push(a);
+      Promise.resolve().then(() => adapter.upload(f)).then((r) => {
+        a.id = str(r && r.id);
+        if (!S.atts.includes(a)) { dropUpload(a); return; }   // removed while uploading
+        a.name = str(r && r.name) || a.name; a.size = Number(r && r.size) || a.size;
+        renderAtts();
+      }).catch((e) => {
+        S.atts = S.atts.filter((b) => b !== a); renderAtts();
+        merr.textContent = tr('Could not attach {name}: {why}', { name: a.name, why: (e && e.message) || tr('the board server refused it.') });
+      });
+    }
+    renderAtts();
+  }
+  $('#msg-attach').addEventListener('click', () => $('#msg-file').click());
+  $('#msg-file').addEventListener('change', (e) => { addFiles(e.target.files); e.target.value = ''; });
+  // a pasted screenshot attaches; pasted text stays text
+  ta.addEventListener('paste', (e) => {
+    const cd = e.clipboardData, fs = cd ? [...cd.files].filter((f) => /^image\//.test(f.type)) : [];
+    if (!fs.length || !canAttach()) return;
+    if (!cd.getData('text/plain')) e.preventDefault();
+    addFiles(fs);
+  });
+  const hasFiles = (e) => !!(e.dataTransfer && [...e.dataTransfer.types].includes('Files'));
+  $('#composer').addEventListener('dragover', (e) => { if (!hasFiles(e) || !canAttach()) return; e.preventDefault(); $('#composer').classList.add('dropping'); });
+  $('#composer').addEventListener('dragleave', (e) => { if (!$('#composer').contains(e.relatedTarget)) $('#composer').classList.remove('dropping'); });
+  $('#composer').addEventListener('drop', (e) => {
+    $('#composer').classList.remove('dropping');
+    if (!hasFiles(e) || !canAttach()) return;
+    e.preventDefault(); addFiles(e.dataTransfer.files);
+  });
+
   // @all interrupts every live session: the first Send asks, the confirm button sends.
   $('#msg-all-cancel').addEventListener('click', () => { closeAllConfirm(); ta.focus(); });
   $('#msg-all-yes').addEventListener('click', () => sendMessage(true));
@@ -6335,6 +6425,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
   function sendMessage(allConfirmed) {
     if (!canMessage()) return;
     const raw = ta.value;
+    if (S.atts.some((a) => !a.id)) { merr.textContent = tr('Wait until the images finish uploading.'); return; }
     const p = parseMentions(raw);
     if (p.error) { merr.textContent = p.error; closeAllConfirm(); ta.focus(); return; }
     if (p.targets.includes('all') && !(allConfirmed === true && S.allConfirm && S.allConfirm.raw === raw)) {
@@ -6354,15 +6445,20 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       return;
     }
     let writeP, declined = false;
-    try { writeP = adapter.sendMessage(ids, p.targets, p.body, now); } catch (e) { writeP = Promise.reject(e); }
-    writeP = Promise.resolve(writeP).then((rs) => { declined = (Array.isArray(rs) ? rs : [rs]).some((r) => r && r.status === 'declined'); return rs; });
+    const atts = S.atts.slice();
+    try { writeP = adapter.sendMessage(ids, p.targets, p.body, now, atts.map((a) => a.id)); } catch (e) { writeP = Promise.reject(e); }
+    let attGone = false;    // bad_attachments: the images are no longer on the server; their chips are not restored
+    writeP = Promise.resolve(writeP).then((rs) => { declined = (Array.isArray(rs) ? rs : [rs]).some((r) => r && r.status === 'declined'); return rs; },
+      (e) => { attGone = !!(e && e.code === 'bad_attachments'); throw e; });
     const sendP = operatorOffline() ? null : adapter.fastPath('message', ids[0], ids.length > 1 ? { also: ids.slice(1) } : null);
     ta.value = ''; closeMentions(); renderRecipients();
+    S.atts = []; renderAtts();
     const btn = $('#msg-send'); btn.disabled = true; btn.textContent = tr('Sending…');
     const okText = ids.length > 1 ? tr('{n} messages saved', { n: ids.length }) : tr('Message saved');
     settle(writeP, sendP, () => (declined ? null : okText)).then((ok) => {
       btn.disabled = false; btn.textContent = tr('Send');
       if (!ok && !ta.value) { ta.value = raw; renderRecipients(); }
+      if (!ok && !attGone && !S.atts.length && atts.length) { S.atts = atts; renderAtts(); }
       if (ok && declined) toast(tr('Saved, not relayed: the owner isn\'t taking requests right now. The automatic reply is in the thread.'));
     });
   }
@@ -6810,7 +6906,17 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       answer(d, answer, option, options, answers) {
         return post('/api/decisions/' + encodeURIComponent(d.id) + '/answer', answers ? { answers } : options ? { options } : option ? { answer, option } : { answer });
       },
-      sendMessage(ids, targets, body) { return Promise.all(targets.map((to) => post('/api/messages', { to, body }))); },
+      sendMessage(ids, targets, body, now, attachments) {
+        const extra = Array.isArray(attachments) && attachments.length ? { attachments } : {};
+        return Promise.all(targets.map((to) => post('/api/messages', Object.assign({ to, body }, extra))));
+      },
+      // The composer's ✕: delete an own upload no message carries yet.
+      deleteUpload(id) { return post('/api/uploads/' + encodeURIComponent(id) + '/delete', {}); },
+      // One image for the next message (raw bytes; board-serve checks the type from the bytes).
+      upload(file) {
+        return call('/api/uploads', { method: 'POST', body: file, headers: { 'Content-Type': file.type, 'X-Board': '1',
+          'X-Filename': encodeURIComponent(str(file.name).slice(0, 200) || 'image') } });
+      },
       // Approvers only, after the second (confirm) click: a message the secret guard held.
       releaseMessage(id) { return post('/api/messages/' + encodeURIComponent(id) + '/release', { confirm: 'release' }); },
       // Approvers only; board-serve runs `board resolve ID --in-pane --by <identity>`.
@@ -7817,6 +7923,19 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "Sending…": "傳送中…",
       "{n} messages saved": "已保存 {n} 則訊息",
       "Message saved": "訊息已保存",
+      "Attach image": "附加圖片",
+      "PNG, JPEG, GIF or WebP, up to 5 MB each, at most 4. You can also paste or drop images.": "PNG、JPEG、GIF 或 WebP，每張最多 5 MB，最多 4 張。也可以直接貼上或拖放圖片。",
+      "Attached images": "附加的圖片",
+      "Remove {name}": "移除 {name}",
+      "uploading…": "上傳中…",
+      "At most {n} images per message.": "每則訊息最多 {n} 張圖片。",
+      "Only PNG, JPEG, GIF and WebP images can be attached.": "只能附加 PNG、JPEG、GIF 和 WebP 圖片。",
+      "{name} is over 5 MB.": "{name} 超過 5 MB。",
+      "Could not attach {name}: {why}": "無法附加 {name}：{why}",
+      "the board server refused it.": "看板伺服器拒絕了。",
+      "Wait until the images finish uploading.": "請等圖片上傳完成。",
+      "The board server is busy. Nothing was sent: try again in a moment.": "看板伺服器忙碌中，沒有送出任何東西，請稍後再試。",
+      "Not sent: an attached image is no longer on the board server. Attach it again.": "未送出：附加的圖片已不在看板伺服器上，請重新附加。",
       "Consensus {id}": "共識 {id}",
       "from": "提案者",
       "{n}/{of} agreed": "{n}/{of} 同意",

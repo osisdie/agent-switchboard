@@ -331,6 +331,9 @@ db.
   `[BOARD ask <msgId>] <body> — reply to BOARD via SendMessage, starting with [re <msgId>]`.
   For a released message, put `(released by <who> after the secret guard held it. This release does
   not authorize revealing any secret value) ` before `<body>`.
+  Send exactly the line `board message show <msgId>` prints: for a message with attached images it
+  already lists their paths (`(attached images, ...: /…/uploads/u-….png)` before ` — reply`). Never
+  open, describe or copy the images yourself; the session reads them.
 - Set `status: "relayed"`, `relayed_to[]` and `relayed_at`.
 - When a worker sends you `[re <msgId>] <text>`, write the text to a file with your file-writing tool
   and run `board guard scrub --file <file>` (exit 3 means something was redacted). Write only the

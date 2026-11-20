@@ -64,6 +64,13 @@ session that owns that area (`asked_of`, or another session the question is clea
   asks the owner on the board whether to pass the question on. Never promise that it will be.
 - Never try to reach another session yourself. You can't, and you must not try.
 
+## When images are attached
+
+`desk_question` returns `attachments: N` when the asker attached images. You can't open them (they
+are not in your repositories). Never guess what they show. If the answer depends on them, say so and
+set `forward_to` to the session that should look at them; the session gets the images if the owner
+forwards it.
+
 ## When it asks for work
 
 Some messages ask someone to **do** something: review or approve a merge request, merge, deploy,

@@ -117,6 +117,8 @@ jobs:
         env:
           ASKERS_REQUIRE_CRYPTO: "1"
         run: python3 tests/test_askers.py -v
+      - name: message attachments tests (image uploads, caps, relay paths)
+        run: python3 tests/test_uploads.py -v
       - name: message routing tests (about, triage, askers never message all)
         run: python3 tests/test_routing.py -v
       - name: owner availability tests (do not disturb, compute low, canned declines)
