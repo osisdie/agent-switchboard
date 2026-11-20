@@ -267,17 +267,21 @@ def create(home, to, body, by, background_alert=False, asker=None, api=None, dec
         pass    # the owner is away: an asker's work request goes to the sessions, no owner card
     elif _to_desk(home, rec):
         # the local asker desk answers it (lib/desk.py), before any decline: zero Claude tokens.
-        # A work request also gets its "forward to a session?" card for the owner now.
+        # A work request also gets its "forward to a session?" card for the owner (below).
         rec.update({"status": "desk", "desk": _desk_block(now)})
-        _desk_work(home, rec, now)
     elif decline:
         rec.update({"status": "declined", "declined_reason": decline[0], "declined_at": now})
-    _write(path_of(home, mid), rec)
     if attachments and rec["status"] != "declined":
-        # a declined message is never relayed: its images stay unsent and go within the hour (a
-        # held one may still be released, so its images are kept)
+        # Before anything is written: when the image store is busy (lib/uploads.py Bad "busy", 503)
+        # no message and no desk card exist, and the sender retries cleanly. A declined message is
+        # never relayed: its images stay unsent and go within the hour (a held one may still be
+        # released, so its images are kept). Should _write fail after this, the images stay marked
+        # by a message id that does not exist and age out after uploads.MAX_AGE_MS: acceptable.
         import uploads  # noqa: WPS433
         uploads.mark_attached(home, [a["id"] for a in attachments], mid, now)
+    if rec["status"] == "desk":
+        _desk_work(home, rec, now)
+    _write(path_of(home, mid), rec)
     if rec["status"] == "desk":
         audit(home, {"type": "desk", "action": "queued", "id": mid, "to": to})
     if reason:
@@ -676,7 +680,7 @@ def _cli_attach(home, paths, by):
     cfg = fleet.load_fleet()
 
     def asker_of(who):     # who is an asker now (the askers' storage pool, lib/uploads.py)
-        return asker_only_now(re.sub(r"^(board|cli):", "", str(who or "")), cfg)
+        return asker_only_now(uploads.plain_id(who), cfg)
     asker = asker_of(by)
     done = []
     try:
@@ -755,6 +759,12 @@ def main(argv):
             except MessageError:
                 _discard(home, atts)
                 raise
+            except Exception as exc:
+                import uploads  # noqa: WPS433
+                if not isinstance(exc, uploads.Bad):
+                    raise
+                _discard(home, atts)        # nothing was written (create marks before it writes)
+                raise MessageError("bad_attachments", "--attach: %s" % exc.detail) from None
             print("%s %s" % (rec["id"], rec["status"]))
             if rec["status"] == "held":
                 sys.stderr.write("board message: held by the secret guard (%s); an approver can release "

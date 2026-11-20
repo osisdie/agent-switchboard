@@ -2034,9 +2034,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             raise Refused(413, "too_large", "an image is at most %d MiB" % (uploads.MAX_BYTES // (1024 * 1024)))
         home = self.server.home
         asker = asker_only(cfg, ident)
-
-        def asker_of(who):     # who is an asker now, not when they uploaded (the askers' pool)
-            return asker_only(cfg, who)
+        asker_of = upload_asker_of(cfg)
         try:
             with self.server.write_lock:     # before the body: a refused upload costs no read
                 uploads.udir(home)
@@ -2123,8 +2121,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             except uploads.Bad as exc:
                 self.audit(ident, via, "message", to=to, result="refused", reason=exc.code)
                 raise Refused(400, exc.code, exc.detail) from exc
-            rec = messages.create(self.server.home, to, text, ident, background_alert=True, asker=asker,
-                                  decline=decline, attachments=atts)
+            try:    # the image store busy (lib/uploads.py: 503): nothing was written, the page retries
+                rec = messages.create(self.server.home, to, text, ident, background_alert=True, asker=asker,
+                                      decline=decline, attachments=atts)
+            except uploads.Bad as exc:
+                self.audit(ident, via, "message", to=to, result="refused", reason=exc.code)
+                raise Refused(exc.status, exc.code, exc.detail,
+                              headers={"Retry-After": "5"} if exc.status == 503 else None) from exc
             self.audit(ident, via, "message", id=rec["id"], to=to, result=rec["status"],
                        **dict({"asker": True} if asker is not None else {},
                               **({"reason": rec["declined_reason"]} if rec["status"] == "declined" else {})))
@@ -2707,6 +2710,12 @@ def desk_sweeper(home, stop):
 
 
 UPLOAD_SWEEP_S = 3600
+
+
+def upload_asker_of(cfg):
+    """who -> is an asker now (fleet.yaml), for the askers' share of the image store; the id as the
+    CLI's would be matched (lib/uploads.py plain_id: no board:/cli: prefix)."""
+    return lambda who: asker_only(cfg, uploads.plain_id(who))
 
 
 def upload_sweep(home, lock):

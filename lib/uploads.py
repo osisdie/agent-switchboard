@@ -110,6 +110,12 @@ def clean_name(raw):
     return s or "image"
 
 
+def plain_id(by):
+    """An uploader's id without the board:/cli: prefix the CLI's --by may carry: the form the role
+    lists (fleet.yaml askers / approvers) are matched against, by board-serve and the CLI alike."""
+    return re.sub(r"^(board|cli):", "", str(by or "")).strip().lower()
+
+
 def udir(home):
     """$BOARD_HOME/uploads, 0700; refused when it is a symlink or not a directory."""
     d = os.path.join(home, "uploads")

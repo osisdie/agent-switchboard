@@ -6150,6 +6150,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     const code = e && e.code;
     // Local adapter (board-serve) answers; never produced by the claude.ai db.
     if (code === 'not_approver') { toast(tr('Not recorded: you are not an approver for this.'), true); return; }
+    if (code === 'busy') { toast(tr('The board server is busy. Nothing was sent: try again in a moment.'), true); return; }
     if (code === 'bad_attachments') { toast(tr('Not sent: an attached image is no longer on the board server. Attach it again.'), true); return; }
     if (code === 'review_in_session') { toast(tr('Only part of this request is shown here, so it can only be allowed in the session.'), true); return; }
     if (code === 'no_approvers') { toast(tr('Nobody is listed as an approver on this board, so no answer is accepted.'), true); return; }
@@ -7933,6 +7934,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "Could not attach {name}: {why}": "無法附加 {name}：{why}",
       "the board server refused it.": "看板伺服器拒絕了。",
       "Wait until the images finish uploading.": "請等圖片上傳完成。",
+      "The board server is busy. Nothing was sent: try again in a moment.": "看板伺服器忙碌中，沒有送出任何東西，請稍後再試。",
       "Not sent: an attached image is no longer on the board server. Attach it again.": "未送出：附加的圖片已不在看板伺服器上，請重新附加。",
       "Consensus {id}": "共識 {id}",
       "from": "提案者",

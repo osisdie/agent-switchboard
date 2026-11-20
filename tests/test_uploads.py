@@ -162,6 +162,36 @@ def clear_uploads():
     shutil.rmtree(udir(), ignore_errors=True)
 
 
+class LockHolder:
+    """Another process holding uploads/.lock until it is killed or its stdin closes (never on a
+    timer: a slow runner must not see the lock released mid-test)."""
+
+    def __enter__(self):
+        uploads.udir(HOME)
+        self.p = subprocess.Popen([sys.executable, "-c", (
+            "import fcntl, os, sys\n"
+            "fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)\n"
+            "fcntl.flock(fd, fcntl.LOCK_EX)\nprint('held', flush=True)\nsys.stdin.read()\n"),
+            os.path.join(udir(), uploads.LOCK)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        if self.p.stdout.readline().strip() != "held":
+            raise RuntimeError("lock holder did not start")
+        return self
+
+    def __exit__(self, *exc):
+        self.p.stdin.close()
+        try:
+            self.p.wait(10)
+        except subprocess.TimeoutExpired:
+            self.p.kill()
+            self.p.wait(10)
+        self.p.stdout.close()
+
+
+def msg_files():
+    d = os.path.join(HOME, "messages")
+    return sorted(f for f in os.listdir(d) if f.endswith(".json")) if os.path.isdir(d) else []
+
+
 def board(*args):
     return subprocess.run([os.path.join(REPO, "bin", "board")] + list(args), capture_output=True, text=True)
 
@@ -509,6 +539,26 @@ class Cli(unittest.TestCase):
         self.assertEqual(r.returncode, 2, r.stderr)
         self.assertEqual(sorted(ufiles()), before)        # create refused: the stored image is deleted
 
+    def test_send_attach_busy_at_create_writes_nothing(self):
+        """create marks the images before it writes anything: busy there → exit 2, no message, and
+        the images this command stored are deleted again (CLI, in-process)."""
+        img = os.path.join(TMP, "late.png")
+        with open(img, "wb") as fh:
+            fh.write(png())
+        before, files = msg_files(), ufiles()
+        real = uploads.mark_attached
+
+        def busy(*a, **kw):
+            raise uploads.Bad("busy", "the image store is busy (test)", 503)
+        uploads.mark_attached = busy
+        try:
+            rc = messages.main(["messages.py", "send", "--to", "API", "--attach", img, "late"])
+        finally:
+            uploads.mark_attached = real
+        self.assertEqual(rc, 2)
+        self.assertEqual(msg_files(), before)
+        self.assertEqual(ufiles(), files)
+
     def test_send_attach_refuses_non_images(self):
         txt = os.path.join(TMP, "notes.png")
         with open(txt, "w") as fh:
@@ -618,14 +668,7 @@ class Http(unittest.TestCase):
         """Another process holds uploads/.lock (as a stopped `board message send --attach` would):
         board-serve answers 503 busy within its 5 s wait instead of hanging, other routes still
         answer, and the CLI exits 2 with a clear message."""
-        uploads.udir(HOME)
-        holder = subprocess.Popen([sys.executable, "-c", (
-            "import fcntl, os, sys, time\n"
-            "fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)\n"
-            "fcntl.flock(fd, fcntl.LOCK_EX)\nprint('held', flush=True)\ntime.sleep(60)\n"),
-            os.path.join(udir(), uploads.LOCK)], stdout=subprocess.PIPE, text=True)
-        try:
-            self.assertEqual(holder.stdout.readline().strip(), "held")
+        with LockHolder():
             t0 = time.monotonic()
             st, js = upload(png())
             self.assertEqual((st, js["error"]), (503, "busy"))
@@ -638,11 +681,30 @@ class Http(unittest.TestCase):
             r = board("message", "send", "--to", "API", "--attach", img, "busy?")
             self.assertEqual(r.returncode, 2, r.stderr)
             self.assertIn("the image store is busy", r.stderr)
-        finally:
-            holder.kill()
-            holder.wait(10)
-            holder.stdout.close()
         self.assertEqual(upload(png())[0], 201)
+
+    def test_message_busy_writes_nothing(self):
+        """The store is busy when a message with images is created: 503 busy, no message file, the
+        upload still unsent; the same message goes through once the lock is free (no duplicate)."""
+        _, a = upload(png())
+        before = msg_files()
+        with LockHolder():
+            st, js = post_msg({"to": "API", "body": "busy now?", "attachments": [a["id"]]})
+            self.assertEqual((st, js["error"]), (503, "busy"))
+            self.assertEqual(msg_files(), before)
+            self.assertEqual(uploads.read_meta(HOME, a["id"])["messages"], [])
+        st, js = post_msg({"to": "API", "body": "busy now?", "attachments": [a["id"]]})
+        self.assertEqual(st, 201, js)
+        self.assertEqual(len(msg_files()), len(before) + 1)
+        self.assertEqual(uploads.read_meta(HOME, a["id"])["messages"], [js["id"]])
+
+    def test_upload_asker_of_strips_prefix(self):
+        write_fleet(local_role="askers")
+        cfg = fleet.load_fleet()
+        f = serve.upload_asker_of(cfg)
+        self.assertTrue(f("local") and f("cli:local") and f("board:LOCAL"))
+        self.assertFalse(f("boss@example.com") or f("cli:boss@example.com"))
+        self.assertEqual(uploads.plain_id("cli:Ann@Example.com"), "ann@example.com")
 
     def test_viewer_may_not_delete(self):
         _, a = upload(png())

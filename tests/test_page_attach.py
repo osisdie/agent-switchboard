@@ -14,6 +14,7 @@ exits 0, so it never blocks anyone. CI does not run it.
 
   python3 tests/test_page_attach.py [-v]
 """
+import fcntl
 import json
 import os
 import shutil
@@ -176,7 +177,8 @@ def main():
             pg.wait_for_function("() => document.querySelectorAll('#msg-atts .att-chip').length === 3 && !document.querySelector('#msg-atts .att-chip.busy')")
             check("a dropped image attaches too (outlined while dragging over)", dropped == {"on": True, "prevented": True, "off": True}
                   and pg.evaluate(CHIPS, "#msg-atts")[2].startswith("📎 dropped.png · "), (dropped, pg.evaluate(CHIPS, "#msg-atts")))
-            pg.locator("#msg-atts .att-chip").nth(2).locator("button.x").click()
+            with pg.expect_response(lambda r: "/api/uploads/" in r.url and r.url.endswith("/delete")):
+                pg.locator("#msg-atts .att-chip").nth(2).locator("button.x").click()
             x = pg.locator("#msg-atts .att-chip").nth(1).locator("button.x")
             check("  each chip has a ✕ button named for the file", x.get_attribute("aria-label") == "Remove pasted.png")
             def pending():
@@ -237,6 +239,34 @@ def main():
             check("a send refused with bad_attachments: the text is restored, the gone image's chip is not",
                   mr.value.status == 400 and pg.input_value("#msg-input") == "@API one more" and pg.evaluate(CHIPS, "#msg-atts") == [],
                   (mr.value.status, pg.input_value("#msg-input"), pg.evaluate(CHIPS, "#msg-atts")))
+            # the image store busy when the message is created (503 busy): nothing is sent, the text and
+            # the chips come back with a retryable error; Send again goes through once
+            pg.fill("#msg-input", "")
+            pg.set_input_files("#msg-file", files=[{"name": "retry.png", "mimeType": "image/png", "buffer": png()}])
+            pg.wait_for_function("() => document.querySelector('#msg-atts .att-chip') && !document.querySelector('#msg-atts .att-chip.busy')")
+            pg.fill("#msg-input", "@API try again")
+            nmsg = len([f for f in os.listdir(os.path.join(home, "messages")) if f.endswith(".json")])
+            lfd = os.open(os.path.join(home, "uploads", ".lock"), os.O_RDWR | os.O_CREAT, 0o600)
+            fcntl.flock(lfd, fcntl.LOCK_EX)
+            try:
+                with pg.expect_response(lambda r: r.url.endswith("/api/messages") and r.request.method == "POST", timeout=20000) as mr:
+                    pg.click("#msg-send")
+                pg.wait_for_function("() => document.getElementById('msg-input').value !== ''")
+                pg.wait_for_timeout(200)
+                r = pg.evaluate("() => ({ toast: [...document.querySelectorAll('#toasts .toast.bad')].map((t) => t.textContent) })")
+                check("503 busy on send: text and chip restored, a try-again error, no message written",
+                      mr.value.status == 503 and pg.input_value("#msg-input") == "@API try again"
+                      and pg.evaluate(CHIPS, "#msg-atts") == ["📎 retry.png · %d B" % len(png())]
+                      and "The board server is busy. Nothing was sent: try again in a moment." in r["toast"]
+                      and len([f for f in os.listdir(os.path.join(home, "messages")) if f.endswith(".json")]) == nmsg,
+                      (mr.value.status, pg.input_value("#msg-input"), pg.evaluate(CHIPS, "#msg-atts"), r))
+            finally:
+                fcntl.flock(lfd, fcntl.LOCK_UN)
+                os.close(lfd)
+            with pg.expect_response(lambda r: r.url.endswith("/api/messages") and r.request.method == "POST") as mr:
+                pg.click("#msg-send")
+            check("  and Send again goes through once", mr.value.status == 201
+                  and len([f for f in os.listdir(os.path.join(home, "messages")) if f.endswith(".json")]) == nmsg + 1, mr.value.status)
             pg.close()
 
             for theme in ("light", "dark"):
