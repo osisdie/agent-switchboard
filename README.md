@@ -549,7 +549,8 @@ sessions"), and askers can't use it at all: their messages default to triage, an
 up to 4 images (PNG, JPEG, GIF or WebP, at most 5 MB each) to a message; the thread shows each as
 a chip with its name and size, never a preview. board-serve checks the type from the file's bytes
 and keeps the image in `$BOARD_HOME/uploads/` (0600, a name of its own; unsent images go after an
-hour, all after two weeks). The relay line lists the images' paths, so the session opens them
+hour, all after two weeks, checked hourly by board-serve; ✕ deletes an unsent one at once; each
+person has a storage share, smaller for askers). The relay line lists the images' paths, so the session opens them
 with its file tool; `board message send --attach IMAGE` does the same from the CLI. The local
 asker desk is only told that images are attached (it reads no file outside its repositories) and
 asks the owner to forward the message when they matter. See

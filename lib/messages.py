@@ -273,7 +273,9 @@ def create(home, to, body, by, background_alert=False, asker=None, api=None, dec
     elif decline:
         rec.update({"status": "declined", "declined_reason": decline[0], "declined_at": now})
     _write(path_of(home, mid), rec)
-    if attachments:
+    if attachments and rec["status"] != "declined":
+        # a declined message is never relayed: its images stay unsent and go within the hour (a
+        # held one may still be released, so its images are kept)
         import uploads  # noqa: WPS433
         uploads.mark_attached(home, [a["id"] for a in attachments], mid, now)
     if rec["status"] == "desk":
@@ -450,12 +452,24 @@ def release(home, mid, by, cfg=None):
                      **({"result": "declined", "declined_reason": decline[0]} if decline else {})))
     if decline:
         _canned(home, rec, decline, now)
+        _unmark(home, rec)
     try:
         import notify  # noqa: WPS433
         notify.resolve("guard:held:%s" % mid)
     except Exception:  # noqa: BLE001
         pass
     return rec
+
+
+def _unmark(home, rec):
+    """A message released into "declined" no longer keeps its images (lib/uploads.py unmark)."""
+    ids = [a.get("id") for a in rec.get("attachments") or [] if isinstance(a, dict)]
+    if ids:
+        try:
+            import uploads  # noqa: WPS433
+            uploads.unmark(home, ids, rec["id"])
+        except Exception as exc:  # noqa: BLE001 - never stops a release; prune takes them at MAX_AGE_MS
+            sys.stderr.write("messages: unmark attachments: %s\n" % type(exc).__name__)
 
 
 def decline_for_rec(home, cfg=None):
@@ -638,7 +652,8 @@ def _text(arg, path=None):
 
 def _cli_attach(home, paths, by):
     """--attach PATH...: store each image (lib/uploads.py, the same checks as the page's upload)
-    and return their records for create. Every file is checked before any is stored."""
+    and return their records for create. Every file is read and type-checked before any is stored;
+    when a cap refuses one, those already stored by this command are deleted again."""
     if not paths:
         return []
     import uploads  # noqa: WPS433
@@ -658,10 +673,15 @@ def _cli_attach(home, paths, by):
             raise MessageError("bad_attachments", "--attach %s: only PNG, JPEG, GIF and WebP images"
                                % safe_line(p, 200))
         blobs.append((data, os.path.basename(p)))
+    asker = asker_only_now(re.sub(r"^(board|cli):", "", str(by or "")))
+    done = []
     try:
-        return [uploads.store(home, data, name, by) for data, name in blobs]
+        for data, name in blobs:   # each store holds the uploads lock (shared with board-serve)
+            done.append(uploads.store(home, data, name, by, asker=asker))
     except uploads.Bad as exc:
+        uploads.discard(home, [a["id"] for a in done])     # all or nothing
         raise MessageError("bad_attachments", "--attach: %s" % exc.detail) from None
+    return done
 
 
 def main(argv):
@@ -713,7 +733,13 @@ def main(argv):
             decline = decline_for(home, api["owner"] if api else args.by)
             text = _text(args.text, args.file)
             atts = _cli_attach(home, args.attach, args.by)
-            rec = create(home, args.to, text, args.by, api=api, decline=decline, attachments=atts)
+            try:
+                rec = create(home, args.to, text, args.by, api=api, decline=decline, attachments=atts)
+            except MessageError:
+                if atts:
+                    import uploads  # noqa: WPS433
+                    uploads.discard(home, [a["id"] for a in atts])
+                raise
             print("%s %s" % (rec["id"], rec["status"]))
             if rec["status"] == "held":
                 sys.stderr.write("board message: held by the secret guard (%s); an approver can release "

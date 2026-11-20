@@ -495,7 +495,7 @@ pane 標題裡的任務、執行中或閒置、記憶體用量）、已用的 co
 **圖片。** 在自架看板上，訊息輸入框的 **📎 附加圖片**（或直接貼上、拖放）可以替一則訊息附上最多 4 張圖片
 （PNG、JPEG、GIF 或 WebP，每張最多 5 MB）；對話串只以標籤顯示檔名和大小，不顯示預覽。board-serve
 依檔案內容判斷類型，把圖片存在 `$BOARD_HOME/uploads/`（0600，檔名由伺服器產生；沒送出的圖片一小時後刪除，
-所有圖片兩週後刪除）。轉送的訊息會列出圖片的路徑，session 用自己的檔案工具開啟；CLI 用
+所有圖片兩週後刪除，board-serve 每小時檢查一次；按 ✕ 會立刻刪除沒送出的圖片；每人有儲存上限，提問者的較小）。轉送的訊息會列出圖片的路徑，session 用自己的檔案工具開啟；CLI 用
 `board message send --attach IMAGE`。本機提問者窗口只會被告知訊息附有圖片（它不能讀 repo 以外的檔案），
 圖片重要時會請主人轉給 session。詳見
 [docs/contract.md 的「Message attachments」](docs/contract.md#message-attachments)。

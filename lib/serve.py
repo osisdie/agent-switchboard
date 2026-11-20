@@ -38,6 +38,8 @@ listeners (docs/contract.md, "Local adapter API"):
                                        at most 5 MiB; the type is taken from the bytes): who may send
                                        messages only; 201 {id, name, size, type}; stored 0600 under
                                        $BOARD_HOME/uploads (lib/uploads.py), never served back
+  POST /api/uploads/<id>/delete        {}  the page's ✕: the caller's own upload that no message
+                                       carries yet (204); unknown or someone else's: 404 not_found
   POST /api/messages/<id>/release      {"confirm": "release"}  (owners only: release a held
                                        message after a false positive; audited)
   POST /api/away                       {"state": "on"|"off", "said": "..."}   (owners only;
@@ -1671,6 +1673,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.message(body, ident, via)
             if path == "/api/uploads":      # raw image bytes, not JSON: its own body reader
                 return self.upload(ident, via)
+            m = re.fullmatch(r"/api/uploads/([^/]+)/delete", path)
+            if m:
+                self.read_body()
+                return self.upload_delete(m.group(1), ident, via)
             if path == "/api/away":
                 body = self.read_body()
                 return self.set_away(body, ident, via)
@@ -2027,11 +2033,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if n > uploads.MAX_BYTES:
             raise Refused(413, "too_large", "an image is at most %d MiB" % (uploads.MAX_BYTES // (1024 * 1024)))
         home = self.server.home
+        asker = asker_only(cfg, ident)
         try:
             with self.server.write_lock:     # before the body: a refused upload costs no read
                 uploads.udir(home)
-                uploads.prune(home)
-                uploads.check_quota(home, ident, n)
+                uploads.precheck(home, ident, n, asker=asker)
         except uploads.Bad as exc:
             self.audit(ident, via, "upload", result="refused", reason=exc.code)
             raise Refused(exc.status, exc.code, exc.detail,
@@ -2049,12 +2055,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
             raise Refused(400, "short_body", "the body is shorter than its Content-Length")
         try:
             with self.server.write_lock:
-                rec = uploads.store(home, b"".join(chunks), self.headers.get("X-Filename"), ident)
+                rec = uploads.store(home, b"".join(chunks), self.headers.get("X-Filename"), ident, asker=asker)
         except uploads.Bad as exc:
             self.audit(ident, via, "upload", result="refused", reason=exc.code)
             raise Refused(exc.status, exc.code, exc.detail) from exc
         self.audit(ident, via, "upload", id=rec["id"], size=rec["size"], type=rec["type"], result="stored")
         return self.send_json(201, rec)
+
+    def upload_delete(self, uid, ident, via):
+        """POST /api/uploads/<id>/delete: the page's ✕ frees the caller's own unsent upload at once
+        (else it would count against their pending cap for an hour). Unknown and someone else's
+        ids answer alike (404)."""
+        try:
+            with self.server.write_lock:
+                uploads.delete_pending(self.server.home, uid, ident)
+        except uploads.Bad as exc:
+            self.audit(ident, via, "upload-delete", result="refused", reason=exc.code)
+            raise Refused(exc.status, exc.code, exc.detail) from exc
+        self.audit(ident, via, "upload-delete", id=uid, result="deleted")
+        return self.send_empty(204)
 
     def message(self, body, ident, via):
         to, text = body.get("to"), body.get("body")
@@ -2680,6 +2699,26 @@ def desk_sweeper(home, stop):
         desk_sweep(home)
 
 
+UPLOAD_SWEEP_S = 3600
+
+
+def upload_sweep(home, lock):
+    """lib/uploads.py prune, under the server's write lock: unsent and old images go even when
+    nobody uploads (also run once at start). Never raises."""
+    try:
+        with lock:
+            return uploads.prune(home)
+    except Exception as exc:  # noqa: BLE001 - never stops the server
+        sys.stderr.write("board-serve: upload sweep: %s\n" % type(exc).__name__)
+    return 0
+
+
+def upload_sweeper(home, lock, stop):
+    upload_sweep(home, lock)
+    while not stop.wait(UPLOAD_SWEEP_S):
+        upload_sweep(home, lock)
+
+
 def watch(home, once=False, tick_s=480):
     """Print one line per new actionable item (oldest first), and "tick" every tick_s seconds.
 
@@ -2768,6 +2807,7 @@ def main(argv):
     threading.Thread(target=hub.run, daemon=True).start()
     sweep_stop = threading.Event()
     threading.Thread(target=desk_sweeper, args=(home, sweep_stop), daemon=True).start()
+    threading.Thread(target=upload_sweeper, args=(home, lock, sweep_stop), daemon=True).start()
     for srv in servers[1:]:
         threading.Thread(target=srv.serve_forever, daemon=True).start()
     sys.stderr.write("board-serve: " + "\nboard-serve: ".join(info) + "\n")

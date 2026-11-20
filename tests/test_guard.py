@@ -707,7 +707,7 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(routes, {
             "/", "/index.html", "/api/state", "/api/events", "/api/me",
             "/api/messages", "/api/uploads", "/api/away", "/api/dnd", "/api/asker-route", "/api/notify-prefs", "/api/presence", "/api/alerts/ack", "/api/rc", "/api/resume",
-            "/api/decisions/([^/]+)/answer", "/api/decisions/([^/]+)/resolve", "/api/messages/([^/]+)/release",
+            "/api/decisions/([^/]+)/answer", "/api/decisions/([^/]+)/resolve", "/api/messages/([^/]+)/release", "/api/uploads/([^/]+)/delete",
             "/api/sessions/([^/]+)/action", "/api/lessons", "/api/lessons/([^/]+)", "/api/pomodoro/day",
             "/api/tickets/([^/]+)", "/api/tickets/take", "/api/tickets/([^/]+)/(comment|transition|assign|release)", "/api/reminders", "/api/reminders/([^/]+)"})
         self.assertIn("if path in STATIC:", get_src)

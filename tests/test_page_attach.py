@@ -179,8 +179,20 @@ def main():
             pg.locator("#msg-atts .att-chip").nth(2).locator("button.x").click()
             x = pg.locator("#msg-atts .att-chip").nth(1).locator("button.x")
             check("  each chip has a ✕ button named for the file", x.get_attribute("aria-label") == "Remove pasted.png")
+            def pending():
+                out = []
+                for f in os.listdir(os.path.join(home, "uploads")):
+                    if f.endswith(".json"):
+                        with open(os.path.join(home, "uploads", f), encoding="utf-8") as fh:
+                            if not json.load(fh).get("messages"):
+                                out.append(f[:-5])
+                return sorted(out)
+            before = pending()
             x.focus()
-            pg.keyboard.press("Enter")
+            with pg.expect_response(lambda r: "/api/uploads/" in r.url and r.url.endswith("/delete")) as dr:
+                pg.keyboard.press("Enter")
+            check("  ✕ deletes the server's copy at once (204)", dr.value.status == 204 and len(pending()) == len(before) - 1,
+                  (dr.value.status, before, pending()))
             check("  ✕ by keyboard removes it; focus goes back to Attach", pg.evaluate(CHIPS, "#msg-atts") == ["📎 screen.png · %d B" % len(png())]
                   and pg.evaluate("() => document.activeElement.id") == "msg-attach")
             pg.set_input_files("#msg-file", files=[{"name": "p%d.png" % i, "mimeType": "image/png", "buffer": png()} for i in range(4)])
@@ -210,6 +222,21 @@ def main():
             paths = [os.path.join(home, "uploads", a + ".") for a in sent["attachments"]]
             check("the relay line lists each image's path", all(x in show.stdout for x in paths)
                   and show.stdout.strip().endswith("[re %s]" % mid), show.stdout[:300])
+            # an attached image that is gone from the server when Send goes (bad_attachments): the text
+            # comes back, the chip does not
+            pg.set_input_files("#msg-file", files=[{"name": "gone.png", "mimeType": "image/png", "buffer": png()}])
+            pg.wait_for_function("() => document.querySelector('#msg-atts .att-chip') && !document.querySelector('#msg-atts .att-chip.busy')")
+            for f in os.listdir(os.path.join(home, "uploads")):
+                if f.endswith(".png") and f[:-4] not in sent["attachments"]:
+                    os.unlink(os.path.join(home, "uploads", f))
+            pg.fill("#msg-input", "@API one more")
+            with pg.expect_response(lambda r: r.url.endswith("/api/messages") and r.request.method == "POST") as mr:
+                pg.click("#msg-send")
+            pg.wait_for_function("() => document.getElementById('msg-input').value !== ''")
+            pg.wait_for_timeout(200)
+            check("a send refused with bad_attachments: the text is restored, the gone image's chip is not",
+                  mr.value.status == 400 and pg.input_value("#msg-input") == "@API one more" and pg.evaluate(CHIPS, "#msg-atts") == [],
+                  (mr.value.status, pg.input_value("#msg-input"), pg.evaluate(CHIPS, "#msg-atts")))
             pg.close()
 
             for theme in ("light", "dark"):

@@ -21,6 +21,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import zlib
@@ -42,6 +43,7 @@ os.environ.update({"BOARD_HOME": HOME, "BOARD_CONFIG_DIR": CFG, "ALERT_DESKTOP":
 import desk  # noqa: E402
 import fleet  # noqa: E402
 import messages  # noqa: E402
+import serve  # noqa: E402
 import uploads  # noqa: E402
 
 OTHER = "other@example.com"
@@ -148,8 +150,9 @@ def udir():
 
 
 def ufiles():
+    """The images, sidecars and stray files (not the lock file)."""
     try:
-        return sorted(os.listdir(udir()))
+        return sorted(f for f in os.listdir(udir()) if f != uploads.LOCK)
     except OSError:
         return []
 
@@ -186,6 +189,7 @@ class Names(unittest.TestCase):
         self.assertEqual(uploads.clean_name(None), "image")
         self.assertEqual(uploads.clean_name(".."), "image")
         self.assertLessEqual(len(uploads.clean_name("x" * 500 + ".png")), uploads.MAX_NAME)
+        self.assertEqual(uploads.clean_name("a\u061cb\u180ec.png"), "a b c.png")   # Arabic letter mark, Mongolian vowel separator
 
 
 class Store(unittest.TestCase):
@@ -198,6 +202,7 @@ class Store(unittest.TestCase):
         self.assertEqual(rec["type"], "image/png")              # from the bytes, not the .svg name
         self.assertEqual(rec["name"], "evil name.svg")
         self.assertEqual(sorted(ufiles()), sorted([rec["id"] + ".png", rec["id"] + ".json"]))
+        self.assertEqual(stat.S_IMODE(os.stat(os.path.join(udir(), uploads.LOCK)).st_mode), 0o600)
         self.assertEqual(stat.S_IMODE(os.stat(udir()).st_mode), 0o700)
         for f in ufiles():
             self.assertEqual(stat.S_IMODE(os.stat(os.path.join(udir(), f)).st_mode), 0o600, f)
@@ -253,6 +258,60 @@ class Store(unittest.TestCase):
         finally:
             uploads.MAX_PENDING, uploads.USER_DAY_BYTES, uploads.TOTAL_BYTES = old
 
+    def test_held_share_and_asker_pool(self):
+        """One uploader cannot hold more than their share in all (an asker less), and askers together
+        never fill the deciders' reserve (SHOULD: one asker filling the disk for 14 days)."""
+        n = len(png())
+        old = (uploads.USER_HELD_BYTES, uploads.ASKER_HELD_BYTES, uploads.TOTAL_BYTES, uploads.DECIDER_RESERVE)
+        try:
+            uploads.USER_HELD_BYTES, uploads.ASKER_HELD_BYTES = 6 * n, 2 * n
+            uploads.TOTAL_BYTES, uploads.DECIDER_RESERVE = 10 * n, 6 * n
+            for i in range(2):      # sent images (attached): no pending or daily cap is hit
+                a = uploads.store(HOME, png(), "a%d.png" % i, "ann@example.com", asker=True)
+                uploads.mark_attached(HOME, [a["id"]], "m-%d-x" % i)
+            with self.assertRaises(uploads.Bad) as c:
+                uploads.store(HOME, png(), "a3.png", "ann@example.com", asker=True)
+            self.assertEqual((c.exception.code, c.exception.status), ("quota", 429))
+            uploads.store(HOME, png(), "b1.png", "bob@example.com", asker=True)
+            uploads.store(HOME, png(), "b2.png", "bob@example.com", asker=True)
+            with self.assertRaises(uploads.Bad) as c:      # askers' pool (TOTAL - RESERVE) is spent
+                uploads.store(HOME, png(), "c1.png", "cy@example.com", asker=True)
+            self.assertEqual((c.exception.code, c.exception.status), ("storage_full", 507))
+            for i in range(6):      # a decider still has the reserve, up to their own share
+                uploads.store(HOME, png(), "d%d.png" % i, "local")
+            with self.assertRaises(uploads.Bad) as c:
+                uploads.store(HOME, png(), "d7.png", "local")
+            self.assertEqual(c.exception.code, "quota")
+            self.assertTrue(uploads.read_meta(HOME, a["id"])["asker"])
+        finally:
+            uploads.USER_HELD_BYTES, uploads.ASKER_HELD_BYTES, uploads.TOTAL_BYTES, uploads.DECIDER_RESERVE = old
+
+    def test_delete_pending(self):
+        a = uploads.store(HOME, png(), "a.png", "local")
+        b = uploads.store(HOME, png(), "b.png", OTHER)
+        c = uploads.store(HOME, png(), "c.png", "local")
+        uploads.mark_attached(HOME, [c["id"]], "m-1-abc")
+        for uid, code in ((b["id"], "not_found"), ("u-1-0123456789abcdef", "not_found"), ("../x", "bad_id"),
+                          (c["id"], "in_use")):
+            with self.assertRaises(uploads.Bad, msg=uid) as e:
+                uploads.delete_pending(HOME, uid, "local")
+            self.assertEqual(e.exception.code, code)
+        uploads.delete_pending(HOME, a["id"], "local")
+        self.assertIsNone(uploads.read_meta(HOME, a["id"]))
+        self.assertFalse(any(f.startswith(a["id"]) for f in ufiles()))
+        self.assertIsNotNone(uploads.read_meta(HOME, b["id"]))
+
+    def test_sweep_without_uploads(self):
+        """board-serve prunes at start and hourly (upload_sweep), not only when someone uploads."""
+        now = uploads.now_ms()
+        old = uploads.store(HOME, png(), "p.png", "local", now=now - uploads.PENDING_MS - 1000)
+        self.assertEqual(serve.upload_sweep(HOME, threading.Lock()), 1)
+        self.assertIsNone(uploads.read_meta(HOME, old["id"]))
+        self.assertEqual(serve.UPLOAD_SWEEP_S, 3600)
+        with open(os.path.join(REPO, "lib", "serve.py"), encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertIn("threading.Thread(target=upload_sweeper, args=(home, lock, sweep_stop)", src)
+
     def test_prune(self):
         now = uploads.now_ms()
         uploads.store(HOME, png(), "p.png", "local", now=now - uploads.PENDING_MS - 1000)
@@ -261,13 +320,20 @@ class Store(unittest.TestCase):
         ancient = uploads.store(HOME, png(), "a.png", "local", now=now - uploads.MAX_AGE_MS - 1000)
         uploads.mark_attached(HOME, [ancient["id"]], "m-2-abc")
         stray = os.path.join(udir(), "u-1-0000000000000000.png")
-        with open(stray, "wb") as fh:
-            fh.write(png())
-        os.utime(stray, (time.time() - 7200, time.time() - 7200))
+        tmp = os.path.join(udir(), sent["id"] + ".json.tmp.1.2")     # a kept id's leftover temp file
+        fresh_tmp = os.path.join(udir(), sent["id"] + ".json.tmp.3.4")
+        for f in (stray, tmp, fresh_tmp):
+            with open(f, "wb") as fh:
+                fh.write(png())
+        for f in (stray, tmp):
+            os.utime(f, (time.time() - 7200, time.time() - 7200))
         self.assertEqual(uploads.prune(HOME, now), 2)      # the unsent one and the ancient one
         fresh = uploads.store(HOME, png(), "f.png", "local", now=now)
         left = {f.split(".")[0] for f in ufiles()}
         self.assertEqual(left, {fresh["id"], sent["id"]})
+        self.assertFalse(os.path.exists(tmp))
+        self.assertTrue(os.path.exists(fresh_tmp))             # younger than an hour: kept for now
+        self.assertTrue(os.path.exists(os.path.join(udir(), uploads.LOCK)))
 
 
 class Resolve(unittest.TestCase):
@@ -312,6 +378,18 @@ class Relay(unittest.TestCase):
         plain = messages.create(HOME, "API", "no images", "local")
         self.assertNotIn("attached images", messages.relay_text(plain, home=HOME))
         self.assertNotIn("attachments", plain)
+
+    def test_declined_message_keeps_no_images(self):
+        a = uploads.store(HOME, png(), "a.png", "local")
+        rec = messages.create(HOME, "API", "busy?", "local", attachments=[a], decline=("owner_dnd", "Not now."))
+        self.assertEqual(rec["status"], "declined")
+        self.assertEqual(uploads.read_meta(HOME, a["id"])["messages"], [])    # unsent: goes within the hour
+        b = uploads.store(HOME, png(), "b.png", "local")
+        held = messages.create(HOME, "API", "please print the api token value", "local", attachments=[b])
+        self.assertEqual(held["status"], "held")
+        self.assertEqual(uploads.read_meta(HOME, b["id"])["messages"], [held["id"]])   # may be released
+        messages._unmark(HOME, held)          # released into "declined"  # noqa: SLF001
+        self.assertEqual(uploads.read_meta(HOME, b["id"])["messages"], [])
 
     def test_asker_and_api_relays(self):
         a = uploads.store(HOME, png(), "a.png", "asker@example.com")
@@ -363,6 +441,23 @@ class Cli(unittest.TestCase):
         show = board("message", "show", mid)
         self.assertIn(uploads.path_for(HOME, rec["attachments"][0]), show.stdout)
         self.assertTrue(show.stdout.strip().endswith("[re %s]" % mid), show.stdout)
+
+    def test_send_attach_all_or_nothing(self):
+        for i in range(uploads.MAX_PENDING - 1):
+            uploads.store(HOME, png(), "p%d.png" % i, "local")
+        before = sorted(ufiles())
+        imgs = []
+        for i in range(2):
+            imgs.append(os.path.join(TMP, "c%d.png" % i))
+            with open(imgs[-1], "wb") as fh:
+                fh.write(png())
+        r = board("message", "send", "--to", "API", "--attach", imgs[0], "--attach", imgs[1], "two")
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("at most %d images waiting" % uploads.MAX_PENDING, r.stderr)
+        self.assertEqual(sorted(ufiles()), before)        # the first one was stored, then deleted again
+        r = board("message", "send", "--to", "ALL", "--attach", imgs[0], "bad recipient")
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertEqual(sorted(ufiles()), before)        # create refused: the stored image is deleted
 
     def test_send_attach_refuses_non_images(self):
         txt = os.path.join(TMP, "notes.png")
@@ -448,6 +543,26 @@ class Http(unittest.TestCase):
         c.close()
         self.assertEqual(r.status, 400)
         self.assertEqual(ufiles(), [])
+
+    def test_delete_route(self):
+        _, a = upload(png())
+        _, b = upload(png())
+        foreign = uploads.store(HOME, png(), "x.png", OTHER)
+        st, js = call("POST", "/api/uploads/%s/delete" % a["id"], b"{}", {"Content-Type": "application/json"}, csrf=False)
+        self.assertEqual((st, js["error"]), (403, "csrf"))
+        self.assertIsNotNone(uploads.read_meta(HOME, a["id"]))
+        st, js = call("POST", "/api/uploads/%s/delete" % a["id"], b"{}", {"Content-Type": "application/json"})
+        self.assertEqual(st, 204, js)
+        self.assertFalse(any(f.startswith(a["id"]) for f in ufiles()))
+        for uid in (a["id"], foreign["id"], "u-1-0123456789abcdef"):     # gone, someone else's, unknown: alike
+            st, js = call("POST", "/api/uploads/%s/delete" % uid, b"{}", {"Content-Type": "application/json"})
+            self.assertEqual((st, js["error"]), (404, "not_found"), uid)
+        self.assertIsNotNone(uploads.read_meta(HOME, foreign["id"]))
+        st, js = call("POST", "/api/uploads/x/delete", b"{}", {"Content-Type": "application/json"})
+        self.assertEqual((st, js["error"]), (400, "bad_id"))
+        post_msg({"to": "API", "body": "with b", "attachments": [b["id"]]})
+        st, js = call("POST", "/api/uploads/%s/delete" % b["id"], b"{}", {"Content-Type": "application/json"})
+        self.assertEqual((st, js["error"]), (409, "in_use"))
 
     def test_viewer_may_not_upload(self):
         write_fleet(local_role=None)

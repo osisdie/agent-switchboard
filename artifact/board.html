@@ -6369,9 +6369,14 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     for (const a of S.atts) {
       const label = tr('Remove {name}', { name: a.name });
       const x = h('button', { type: 'button', class: 'x', 'aria-label': label, title: label, text: '✕' });
-      x.addEventListener('click', () => { S.atts = S.atts.filter((b) => b !== a); renderAtts(); $('#msg-attach').focus(); });
+      x.addEventListener('click', () => { S.atts = S.atts.filter((b) => b !== a); renderAtts(); dropUpload(a); $('#msg-attach').focus(); });
       ul.append(h('li', { class: 'att-chip' + (a.id ? '' : ' busy') }, h('span', { class: 'n', title: a.name, text: attLabel(a) + (a.id ? '' : ' · ' + tr('uploading…')) }), x));
     }
+  }
+  // ✕ frees the server's copy at once (best effort: an unsent image goes within the hour anyway)
+  function dropUpload(a) {
+    if (!a.id || !adapter || typeof adapter.deleteUpload !== 'function') return;
+    Promise.resolve().then(() => adapter.deleteUpload(a.id)).catch(() => {});
   }
   function addFiles(list) {
     if (!canAttach()) return;
@@ -6383,8 +6388,9 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       const a = { name: str(f.name) || 'image', size: f.size, id: null };
       S.atts.push(a);
       Promise.resolve().then(() => adapter.upload(f)).then((r) => {
-        if (!S.atts.includes(a)) return;      // removed while uploading: the server drops it within the hour
-        a.id = str(r && r.id); a.name = str(r && r.name) || a.name; a.size = Number(r && r.size) || a.size;
+        a.id = str(r && r.id);
+        if (!S.atts.includes(a)) { dropUpload(a); return; }   // removed while uploading
+        a.name = str(r && r.name) || a.name; a.size = Number(r && r.size) || a.size;
         renderAtts();
       }).catch((e) => {
         S.atts = S.atts.filter((b) => b !== a); renderAtts();
@@ -6440,7 +6446,9 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     let writeP, declined = false;
     const atts = S.atts.slice();
     try { writeP = adapter.sendMessage(ids, p.targets, p.body, now, atts.map((a) => a.id)); } catch (e) { writeP = Promise.reject(e); }
-    writeP = Promise.resolve(writeP).then((rs) => { declined = (Array.isArray(rs) ? rs : [rs]).some((r) => r && r.status === 'declined'); return rs; });
+    let attGone = false;    // bad_attachments: the images are no longer on the server; their chips are not restored
+    writeP = Promise.resolve(writeP).then((rs) => { declined = (Array.isArray(rs) ? rs : [rs]).some((r) => r && r.status === 'declined'); return rs; },
+      (e) => { attGone = !!(e && e.code === 'bad_attachments'); throw e; });
     const sendP = operatorOffline() ? null : adapter.fastPath('message', ids[0], ids.length > 1 ? { also: ids.slice(1) } : null);
     ta.value = ''; closeMentions(); renderRecipients();
     S.atts = []; renderAtts();
@@ -6449,7 +6457,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     settle(writeP, sendP, () => (declined ? null : okText)).then((ok) => {
       btn.disabled = false; btn.textContent = tr('Send');
       if (!ok && !ta.value) { ta.value = raw; renderRecipients(); }
-      if (!ok && !S.atts.length && atts.length) { S.atts = atts; renderAtts(); }
+      if (!ok && !attGone && !S.atts.length && atts.length) { S.atts = atts; renderAtts(); }
       if (ok && declined) toast(tr('Saved, not relayed: the owner isn\'t taking requests right now. The automatic reply is in the thread.'));
     });
   }
@@ -6901,6 +6909,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
         const extra = Array.isArray(attachments) && attachments.length ? { attachments } : {};
         return Promise.all(targets.map((to) => post('/api/messages', Object.assign({ to, body }, extra))));
       },
+      // The composer's ✕: delete an own upload no message carries yet.
+      deleteUpload(id) { return post('/api/uploads/' + encodeURIComponent(id) + '/delete', {}); },
       // One image for the next message (raw bytes; board-serve checks the type from the bytes).
       upload(file) {
         return call('/api/uploads', { method: 'POST', body: file, headers: { 'Content-Type': file.type, 'X-Board': '1',
