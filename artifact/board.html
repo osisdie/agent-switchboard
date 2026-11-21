@@ -429,6 +429,26 @@ dialog.notif { width: min(720px, calc(100vw - 24px)); }
 .dcard .note.bounced { color: var(--lamp-ink); }   /* a forward answer that was not applied */
 /* a board ask that may have been answered in its session: still open, but quieter and last */
 .dcard.maybe { opacity: .72; box-shadow: none; border-style: dashed; }
+/* committee advice: what sessions recommend while the owner is away; never an answer */
+.advice { display: grid; gap: 6px; min-width: 0; padding: 10px 12px; border-radius: 6px; border: 1px dashed color-mix(in srgb, var(--cord) 55%, var(--rule)); background: color-mix(in srgb, var(--cord-soft) 55%, var(--panel)); font-size: 14px; }
+.advice.frozen { border-style: dotted; background: var(--panel); }
+.advice .adv-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; font-size: 13px; color: var(--muted); }
+.advice .adv-head strong { color: var(--cord); font-size: 14px; }
+.advice .adv-tag { font-family: var(--f-mono); font-size: 11px; letter-spacing: .04em; padding: 1px 7px; border-radius: 9px; border: 1px solid var(--rule); color: var(--muted); }
+.advice .adv-red { font-family: var(--f-mono); font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 9px; background: var(--deny-soft); color: var(--deny); }
+.advice .adv-frozen { font-size: 12px; font-style: italic; }
+.advice p { margin: 0; }
+.advice .adv-sum { font-weight: 600; color: var(--ink); overflow-wrap: anywhere; }
+.advice .adv-by { color: var(--muted); }
+.advice .adv-text { color: var(--ink); overflow-wrap: anywhere; }
+.advice > .more { display: none; justify-self: start; }
+@media (max-width: 860px) { .advice > .more { display: inline-flex; } }
+.advice .votes li { min-width: 0; }
+.advice .adv-note { flex-basis: 100%; min-width: 0; color: var(--muted); overflow-wrap: anywhere; }
+.advice .adv-foot { margin: 0; font-size: 12px; color: var(--muted); }
+.btn.advised { outline: 2px dashed color-mix(in srgb, var(--cord) 70%, transparent); outline-offset: 2px; }
+.btn .adv-mark { margin-left: 6px; font-family: var(--f-mono); font-size: 10px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--cord); }
+#dec-history li .adv-past { color: var(--muted); }
 .dcard.maybe:hover, .dcard.maybe:focus-within { opacity: 1; }
 .dcard .resolve-row { display: flex; justify-content: flex-end; }
 .btn.linkish { min-height: 32px; padding: 4px 10px; font-size: 13px; border-style: dashed; color: var(--muted); }
@@ -1657,6 +1677,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     sessions: [], decisions: [], messages: [], tasks: [], approvals: [],
     operator: null, ledger: null,
     away: null, consensus: [],   // owner-away record ({since, by, said}) | null; consensus items
+    advice: [],                  // committee advice on board asks (lib/advice.py): information, never an answer
     arPick: null, arDirty: false, awayPick: null, // the asker-route control: a mode being saved; levels being edited
     askerRoute: null,            // board-serve state.asker_route: {effective: local|claude[, mode, five_hour_below, seven_day_below, why, since]} | null
     avail: null,                 // board-serve state.availability: {state: online|dnd|away, declining: null|owner_dnd|compute_low[, dnd]} | null
@@ -2578,6 +2599,56 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     return card;
   }
 
+  /* committee advice (lib/advice.py): what sessions recommended while the owner was away. Shown on
+     the card as information; it never answers, and the answer buttons stay the owner's. */
+  const ADV_FROZEN = { answered: 'frozen when the question was answered', owner_back: 'frozen when the owner came back', away_changed: 'frozen: from an earlier away period' };
+  const adviceFor = (id) => S.advice.find((a) => str(a.decision_id) === str(id)) || null;
+  function adviceLast(a) {
+    const last = new Map();
+    for (const x of objs(a.stances)) if (str(x.by)) last.set(str(x.by), x);
+    return last;
+  }
+  // "Committee recommends "A" (CP, INFRA agree; AI objects)": one line, for the card and the history
+  function adviceSummary(a) {
+    const last = adviceLast(a);
+    const by = (st) => [...last.entries()].filter(([, x]) => str(x.stance) === st).map(([b]) => b);
+    const agree = by('agree'), object = by('object');
+    const tally = [agree.length ? tr('{who} agree', { who: agree.join(', ') }) : '', object.length ? tr('{who} object', { who: object.join(', ') }) : ''].filter(Boolean).join('; ');
+    const head = str(a.option) ? tr('Committee recommends "{option}"', { option: str(a.option) }) : tr('Committee recommendation');
+    return head + (tally ? ' (' + tally + ')' : '');
+  }
+  function buildAdvice(d, a) {
+    const last = adviceLast(a);
+    const from = str(a.from);
+    // who was asked, and anyone else who weighed in; the recommender is on its own line above
+    const parts = (Array.isArray(a.participants) ? a.participants.map(str) : []).filter(Boolean);
+    for (const b of last.keys()) if (!parts.includes(b)) parts.push(b);
+    const others = parts.filter((p) => p !== from);
+    const frozen = str(a.status) === 'frozen';
+    const red = a.red_line === true || isProdGate(d);
+    const text = clampText('adv:' + d.id, str(a.recommendation), 'adv-text');
+    return h('section', { id: 'adv-' + d.id, class: 'advice' + (frozen ? ' frozen' : ''), role: 'note', 'aria-label': tr('Committee advice (not a decision)') },
+      h('div', { class: 'adv-head' },
+        h('strong', { text: tr('Committee advice') }),
+        h('span', { class: 'adv-tag', text: tr('advice only · not a decision') }),
+        red ? h('span', { class: 'adv-red', text: tr('red line — owner only') }) : null,
+        frozen ? h('span', { class: 'adv-frozen', text: Object.hasOwn(ADV_FROZEN, str(a.frozen_reason)) ? tr(ADV_FROZEN[str(a.frozen_reason)]) : tr('frozen') }) : null,
+        timeEl(a.updated_at || a.created_at)),
+      h('p', { class: 'adv-sum', text: adviceSummary(a) }),
+      h('p', { class: 'adv-by' }, h('span', { class: 'code-chip', text: from || '?' }), ' ', tr('recommends:')),
+      text,
+      others.length ? h('ul', { class: 'votes', 'aria-label': tr('Who weighed in') }, others.map((p) => {
+        const x = last.get(p), st = x ? str(x.stance) : '';
+        const cls = st === 'agree' || st === 'object' ? st : 'silent';
+        const label = st === 'agree' ? tr('✓ agrees') : st === 'object' ? tr('✗ objects') : tr('… no opinion');
+        return h('li', { class: cls }, h('span', { class: 'code-chip', text: p }), h('span', { text: label }),
+          x && x.at ? timeEl(x.at) : null,
+          x && x.note ? h('span', { class: 'adv-note', text: str(x.note) }) : null);
+      })) : null,
+      h('p', { class: 'adv-foot', text: tr(frozen ? 'Kept as it was when it froze. Advice is not an answer.'
+        : 'Sessions weighed in while the owner was away; silence is no opinion. Advice is not an answer: the buttons below are yours.') }));
+  }
+
   function buildDecision(d) {
     if (d.source === 'pane') return buildPaneQuestion(d);
     const isPerm = d.kind === 'permission';
@@ -2612,6 +2683,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     if (isPerm) {
       card.append(h('pre', { class: 'cmd' }, h('b', { text: str(d.tool_name) || 'tool' }), d.summary ? '\n' + str(d.summary) : ''));
     }
+    const adv = isPerm ? null : adviceFor(d.id);
+    if (adv) card.append(buildAdvice(d, adv));
     if (d.status === 'unauthorized') {
       card.append(h('p', { class: 'note unauth', text: tr('Answered by someone who is not an approver, so the operator did not relay it. An approver can still answer.') }));
     }
@@ -2670,9 +2743,13 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
         // the confirm row above
       } else if (opts.length) {
         card.append(h('div', { class: 'opts', role: 'group', 'aria-label': tr('Options') },
-          opts.map((o) => h('button', { class: 'btn ' + optionClass(o), type: 'button',
-            onclick: () => (needsConfirm ? askConfirm(d.id, o) : answerDecision(d, o)),
-            text: isPerm ? tr(o === 'allow' ? 'Allow' : 'Deny') : o }))));
+          opts.map((o) => {
+            const advised = !!adv && !isPerm && str(adv.option) !== '' && str(adv.option) === o;
+            return h('button', { class: 'btn ' + optionClass(o) + (advised ? ' advised' : ''), type: 'button',
+              onclick: () => (needsConfirm ? askConfirm(d.id, o) : answerDecision(d, o)),
+              'aria-describedby': advised ? 'adv-' + d.id : null, title: advised ? tr('Committee advice recommends this (not a decision)') : null,
+              text: isPerm ? tr(o === 'allow' ? 'Allow' : 'Deny') : o }, advised ? [' ', h('span', { class: 'adv-mark', 'aria-hidden': 'true', text: tr('advised') })] : null);
+          })));
       }
       if (!isPerm && !conf) {
         const input = h('input', { id: 'ans-' + d.id, type: 'text', placeholder: tr(opts.length ? (isGate ? 'Or write what to change' : 'Or type a different answer') : 'Type your answer'), 'aria-label': tr('Answer for {who}', { who: str(d.from) }), dataset: { focus: 'answer' } });
@@ -2682,7 +2759,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
         input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } });
         card.append(h('div', { class: 'free' }, input, h('button', { class: 'btn primary', type: 'button', onclick: submit, text: tr('Send answer') })));
       }
-      if (tip) for (const b of card.querySelectorAll('.opts .btn, .free .btn, .confirm-row .btn')) b.title = tip;
+      if (tip) for (const b of card.querySelectorAll('.opts .btn, .free .btn, .confirm-row .btn')) b.title = tip + (b.classList.contains('advised') ? ' · ' + tr('Committee advice recommends this (not a decision)') : '');
     }
     if (canResolve && conf !== RESOLVE) {
       card.append(h('div', { class: 'resolve-row' }, h('button', { class: 'btn linkish', type: 'button', onclick: () => askConfirm(d.id, RESOLVE), text: tr('Mark answered in session') })));
@@ -2762,7 +2839,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     }
     const ctx = [canAnswer() ? 'w' : 'r', operatorOffline() ? 'off' : 'on', String(approverState())].join('|');
     reconcile($('#dec-list'), pend, (d) => d.id,
-      (d) => JSON.stringify(d) + '|' + JSON.stringify(S.myAnswers.get(d.id) || null) + '|' + ctx + '|' + (S.busy.has(d.id) ? 'b' : '') + '|' + (S.confirm && S.confirm.id === d.id ? S.confirm.choice : '') + '|' + str(findSession(d.from) && findSession(d.from).remote_url) + '|' + str((S.tasks.find((t) => t.id === d.task_id) || {}).title),
+      (d) => JSON.stringify(d) + '|' + JSON.stringify(adviceFor(d.id)) + '|' + JSON.stringify(S.myAnswers.get(d.id) || null) + '|' + ctx + '|' + (S.busy.has(d.id) ? 'b' : '') + '|' + (S.confirm && S.confirm.id === d.id ? S.confirm.choice : '') + '|' + str(findSession(d.from) && findSession(d.from).remote_url) + '|' + str((S.tasks.find((t) => t.id === d.task_id) || {}).title),
       buildDecision);
 
     const past = S.decisions.filter((d) => !isOpen(d))
@@ -2770,9 +2847,10 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     const hist = $('#dec-history');
     hist.hidden = past.length === 0;
     $('#dec-history-sum').textContent = tr('Recent decisions ({n}) · answered, relayed or expired', { n: past.length });
-    reconcile($('#dec-history-list'), past, (d) => d.id, (d) => JSON.stringify(d), (d) => {
+    reconcile($('#dec-history-list'), past, (d) => d.id, (d) => JSON.stringify(d) + '|' + JSON.stringify(adviceFor(d.id)), (d) => {
       // An answer that was recorded but never reached the session must not read as delivered.
       const nd = notDelivered(d);
+      const adv = d.kind === 'permission' ? null : adviceFor(d.id);
       return h('li', { class: nd ? 'undelivered' : null },
         nd ? h('span', { class: 'status undelivered', text: (d.status_reason === 'partial' || d.status_reason === 'partial_box') ? tr('partial') : tr('not delivered') })
           : h('span', { class: 'status ' + str(d.status), text: d.status === 'answered_in_pane' ? tr('answered in session') : viaSession(d) ? tr('delivered') : str(d.status) || 'unknown' }),
@@ -2781,7 +2859,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
           str(d.question) || (d.kind === 'permission' ? tr('{tool} permission', { tool: str(d.tool_name) || 'tool' }) : isGateDecision(d) ? tr('{stage} gate', { stage: stageName(d.stage || d.gate) }) : tr('Question')),
           nd ? h('span', { class: 'undeliv' }, ' ', tr('Not delivered: {why}', { why: reasonText(d) })) : null,
           d.answer != null && d.answer !== '' ? h('span', null, ' → ', h('span', { class: 'ans', text: str(d.answer) })) : null,
-          sessionNote(d) ? h('span', { class: 'via-session' }, ' · ', sessionNote(d)) : null),
+          sessionNote(d) ? h('span', { class: 'via-session' }, ' · ', sessionNote(d)) : null,
+          adv ? h('span', { class: 'adv-past', text: ' · ' + tr('advice: {summary}', { summary: adviceSummary(adv) }) }) : null),
         timeEl(d.answered_at || d.relayed_at || d.created_at));
     });
   }
@@ -4820,6 +4899,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       else {
         S.away = null;
         S.consensus = S.consensus.map((c) => (c.status === 'pending' ? Object.assign({}, c, { status: 'owner_back', decided_at: now }) : c));
+        S.advice = S.advice.map((a) => (a.status === 'open' ? Object.assign({}, a, { status: 'frozen', frozen_reason: 'owner_back', frozen_at: now }) : a));
       }
       renderAll(); toast(tr('Demo: shown on this page only. Nothing was saved or sent.'));
       return;
@@ -6760,6 +6840,10 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       db.collection('consensus').orderBy('created_at', 'desc').limit(50).onSnapshot((snap) => {
         S.consensus = docs(snap); S.got.consensus = true; renderConsensus(); openLinked();
       }, () => {});
+      // Committee advice on board asks (doc id = the decision id): mirrored by the operator, read-only.
+      db.collection('advice').orderBy('updated_at', 'desc').limit(200).onSnapshot((snap) => {
+        S.advice = docs(snap); renderDecisions();
+      }, () => {});
       // System resources: mirrored by the operator when the level changes; the page never writes it.
       db.doc('meta/resources').onSnapshot((snap) => { S.resources = snap.exists ? snap.data() : null; renderBanners(); renderResources(); renderDeck(); }, () => {});
       // Pomodoro tallies: daily totals mirrored by the operator (board pomodoro --mirror); read-only here.
@@ -6850,6 +6934,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       S.localModel = st.local_model && typeof st.local_model === 'object' ? st.local_model : null;
       S.askerRoute = st.asker_route && typeof st.asker_route === 'object' ? st.asker_route : null;
       S.consensus = arr(st.consensus);
+      S.advice = arr(st.advice);
       S.notify = st.notify && typeof st.notify === 'object' ? st.notify : null;
       S.rc = st.rc && typeof st.rc === 'object' ? st.rc : null;
       S.resources = st.resources && typeof st.resources === 'object' ? st.resources : null;
@@ -7318,6 +7403,18 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
         votes: [{ by: 'API', vote: 'agree', note: 'proposer', at: now - 20 * min }, { by: 'WEB', vote: 'agree', note: 'Fixture diff reviewed.', at: now - 14 * min }] },
       { id: 'c-1-demo', from: 'DATA', participants: ['DATA', 'OPS'], ref: null, proposal: 'Rename the staging queue to match the new naming scheme.', status: 'objected', created_at: now - 70 * min, decided_at: now - 61 * min,
         votes: [{ by: 'DATA', vote: 'agree', note: 'proposer', at: now - 70 * min }, { by: 'OPS', vote: 'object', note: 'A consumer still reads the old name.', at: now - 61 * min }] },
+    ];
+    // Committee advice while the owner is away: on a gate, on a production gate (a red line), and frozen in the history
+    S.advice = [
+      { id: 'd-5-demo', decision_id: 'd-5-demo', from: 'WEB', participants: ['WEB', 'API', 'QA'], option: 'approve', red_line: false, status: 'open',
+        recommendation: 'Both regressions are within the eval set\'s run-to-run noise; approve, and watch them on the next nightly run.', created_at: now - 5 * min, updated_at: now - 3 * min,
+        stances: [{ by: 'WEB', stance: 'recommend', at: now - 5 * min }, { by: 'QA', stance: 'agree', note: 'The same two evals moved last week too.', at: now - 3 * min }] },
+      { id: 'd-6-demo', decision_id: 'd-6-demo', from: 'DATA', participants: ['DATA', 'OPS', 'API'], option: 'request changes', red_line: true, status: 'open',
+        recommendation: 'Wait: the rollback for the old certificate is not written down yet.', created_at: now - 12 * min, updated_at: now - 8 * min,
+        stances: [{ by: 'DATA', stance: 'recommend', at: now - 12 * min }, { by: 'API', stance: 'object', note: 'The rollback is in the runbook, section 4.', at: now - 8 * min }] },
+      { id: 'd-3-demo', decision_id: 'd-3-demo', from: 'API', participants: ['API', 'QA'], option: 'Yes', red_line: false, status: 'frozen', frozen_reason: 'answered', frozen_at: now - 30 * min,
+        recommendation: 'Quarantine it and open a ticket for the race in the upload handler.', created_at: now - 33 * min, updated_at: now - 32 * min,
+        stances: [{ by: 'API', stance: 'recommend', at: now - 33 * min }, { by: 'QA', stance: 'agree', at: now - 32 * min }] },
     ];
     S.lessons = [
       { id: 'l-1-0000demo', status: 'active', source: 'auto', rule_kind: 'J5', title: 'Memory ran out with heavy jobs running', occurrences: 3,
@@ -8731,6 +8828,28 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "Ticket assigned.": "工單已指派。",
       "Taken, but the tracker refused: {ops}.": "已接手，但追蹤系統拒絕了：{ops}。",
       "Not done: {why}": "沒有完成：{why}",
+      "frozen when the question was answered": "問題已回覆，建議已凍結",
+      "frozen when the owner came back": "主人回來時已凍結",
+      "frozen: from an earlier away period": "已凍結：來自先前的不在期間",
+      "{who} agree": "{who} 同意",
+      "{who} object": "{who} 反對",
+      "Committee recommends \"{option}\"": "委員會建議「{option}」",
+      "Committee recommendation": "委員會建議",
+      "Committee advice (not a decision)": "委員會建議（不是決定）",
+      "Committee advice": "委員會建議",
+      "advice only · not a decision": "僅供參考 · 不是決定",
+      "red line — owner only": "紅線：只有主人能決定",
+      "frozen": "已凍結",
+      "recommends:": "建議：",
+      "Who weighed in": "誰表達了意見",
+      "✓ agrees": "✓ 同意",
+      "✗ objects": "✗ 反對",
+      "… no opinion": "… 沒有表示意見",
+      "Kept as it was when it froze. Advice is not an answer.": "保留凍結當下的內容。建議不是回覆。",
+      "Sessions weighed in while the owner was away; silence is no opinion. Advice is not an answer: the buttons below are yours.": "主人不在時各 session 提出的意見；沒回應就是沒有意見。建議不是回覆：下面的按鈕由你決定。",
+      "Committee advice recommends this (not a decision)": "委員會建議選這個（不是決定）",
+      "advised": "建議",
+      "advice: {summary}": "建議：{summary}",
     };
   }
 })();

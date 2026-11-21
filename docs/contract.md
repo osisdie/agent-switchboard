@@ -23,7 +23,9 @@ $BOARD_HOME/
   asker-route.json          # who answers askers: local model or Claude sessions while usage is low (see "Asker routing")
   asker-route-state.json    # its effective route now (the hysteresis memory); asker-route.lock: its flock
   consensus/<id>.json       # written by `board consensus` while the owner is away
-  consensus.lock            # flock held by `board away on|off` and `board consensus propose|vote`
+  consensus.lock            # flock held by `board away on|off`, `board consensus propose|vote` and `board advise`
+  advice/<decision id>.json # committee advice on a board ask, written by `board advise` (see "Committee advice")
+  advice-digest.json        # what the advice digest printed and sent, per session; advice-digest.lock: its flock
   resources.json            # system resources, sampled by the collector (see "Resources")
   resources-state.json      # the sampler's memory: previous counters, dwell state, teammate activity
   usage-samples.json        # the collector's 5h usage samples and burn rate (see "Usage meter")
@@ -688,6 +690,7 @@ Rules:
 | `meta/operator` | operator | `heartbeat_at, version, owner_id`. The page shows "operator offline" if the heartbeat is older than 10 minutes. |
 | `meta/away` | operator | `{active: true, since, by, said, legacy?, updated_at}` while the owner is away, `{active: false, updated_at}` otherwise. The page shows the away banner only for `active: true`. |
 | `consensus/{id}` | operator | a `snapshot.consensus` item as it is. Read-only on the page: no page write path, never relayed as a `[BOARD decision]`. |
+| `advice/{decisionId}` | operator | an item of `board mirror state` → `advice` as it is (see "Committee advice"). Read-only on the page: no page write path, never an answer and never relayed as a `[BOARD decision]`. |
 | `meta/notify` | operator | the notification controls, read-only on the page: `board-notify status --json` → `.controls` without `presence.present`, plus `channels` (`{slack: true, ...}`, booleans only). See "Notification controls". |
 | `meta/resources` | operator | `board resources --mirror`: the `/api/state` `resources` block with percentages bucketed to 5% and sizes to 100 MB. Written only when `snapshot.resources` changes, at most every 10 minutes. Read-only on the page. |
 | `meta/pomodoro` | operator (optional) | `board pomodoro --mirror`: today's fleet and per-stream (session and teammate) pomodoro counts and focus, and 14 days of totals. Written when today's fleet count changes or the day rolls over. Read-only on the page; no running clock. See "Pomodoro". |
@@ -818,6 +821,7 @@ $BOARD_HOME/
   operator.json                      # {heartbeat_at, version, operator_session, account_hint}  (operator)
   ledger.json                        # optional, same shape as meta/ledger  (operator)
   owner-away, consensus/<id>.json    # see "Owner away & consensus"  (bin/board)
+  advice/<decision id>.json          # see "Committee advice"  (bin/board; lib/advice.py reads it)
 ```
 
 | endpoint | does |
@@ -2914,6 +2918,105 @@ prompt, and the operator never relays it as `[BOARD decision …]`. The page sho
 Artifact mode the operator mirrors `owner_away` to `meta/away` and each item to `consensus/{id}`;
 when the away state changes it broadcasts it to every live session and reports, per session, who
 received and who acknowledged it (`prompts/board-operator.md` section 10).
+
+## Committee advice
+
+While the owner is away, a board ask (a question or a gate) still waits for the owner: consensus
+never answers it, and neither does this. What sessions can do is discuss it and attach **advice**
+to the card, so the owner, back, reads "committee recommends A (QA agrees; OPS objects: …)" and
+clicks once. Advice is information only: it never becomes an answer, a gate approval, a `[BOARD
+decision]` or a notification, and nothing answers automatically because of it.
+
+```
+$BOARD_HOME/advice/<decision id>.json   # one record per decision, 0600 (bin/board writes it)
+$BOARD_HOME/advice-digest.json          # the digest's memory: printed / sent per session, last digest time
+```
+
+**Record:**
+
+```json
+{ "decision_id": "d-<epoch>-<rand>", "kind": "advice", "from": "WEB",
+  "participants": ["WEB", "QA", "OPS", "API"], "option": "Keep redirect"|null,
+  "recommendation": "...", "red_line": false,
+  "stances": [ { "by": "WEB", "stance": "recommend", "note": null, "at": 0 },
+               { "by": "QA", "stance": "agree", "note": "Same view.", "at": 0 },
+               { "by": "OPS", "stance": "object", "note": "...", "at": 0 } ],
+  "status": "open|frozen", "frozen_reason": null|"answered"|"owner_back"|"away_changed", "frozen_at": 0|null,
+  "away": { "since": 0, "by": "OPS" }, "created_at": 0, "updated_at": 0 }
+```
+
+Rules:
+
+- **Which cards.** A pending (`pending` or `unauthorized`) decision of kind `question` that is not a
+  pane question: board asks and gates, production gates included. Never a permission prompt or a
+  pane question (refused, exit 1). Only while the owner is away (refused otherwise, exit 1).
+- `board advise <id> --from <CODE> [--to A,B] [--option N|LABEL] [--red-line] "<recommendation>"|--file <path>`
+  records the one recommendation for that ask (a second is refused: weigh in instead). `--option`
+  is the option's number or label (exact, else a unique case-insensitive match; anything else is
+  refused). Participants are the recommender, `--to` and the asking session.
+- `board advise <id> agree|object --from <CODE> [--note T|--note-file F] [--red-line]`: any session
+  but the recommender (one that was not asked joins the list). Stances are appended, never
+  rewritten; the latest of each session counts, and it may change either way (advice decides
+  nothing, unlike consensus). Repeating the same stance with no note is refused.
+- **Silence is no opinion**, never agreement: the card lists who was asked and has not weighed in.
+- **Red lines.** A production gate (gate or stage `production`) always shows "red line — owner
+  only"; `--red-line` on a recommendation or stance marks any ask the same way (it is never
+  cleared). Advice on a red line is still allowed, as information.
+- **Self-attested, like consensus votes.** `--from` is the caller's own code; inside tmux, a
+  `--from` that is neither this tmux session nor an alias of the same fleet code is refused (exit 4,
+  logged as `{type: "advise", result: "refused", ...}`).
+- **Frozen.** Advice is open only while the owner is away in the same away period and the decision
+  is still pending. `board away off` freezes every open record (`owner_back`); `board away on` for
+  a new period or `--replace` freezes the earlier ones (`away_changed`); an answer freezes it
+  (`answered`: written by the next `board advise` on it, shown at once by every reader). A frozen
+  record takes no more stances (exit 1), stays on the card while it is pending and in the decision
+  history afterwards. A new away period does not reopen it.
+- Free text is screened by the secret guard and never relay-shaped (`[BOARD` → `(BOARD`), as for
+  consensus. Writers hold `$BOARD_HOME/consensus.lock`. Every change appends `{type: "advice",
+  action: "recommend"|"agree"|"object"|"freeze"|"digest-sent", ...}` to `events.jsonl`. No notify is
+  ever sent.
+- `board advise ls [--all] [--json]` (open, plus frozen in the last 24 h) and `board advise show <id>
+  [--json]`.
+
+**The low-priority digest (BOARD).** Advice must never interrupt a session's work, so nobody is
+pinged per question. BOARD sends each session at most one digest every `advice.digest_minutes`
+(fleet.yaml, default 60, 5–1440), only while the owner is away, and only to the sessions concerned:
+
+- the asking session, for its pending ask without advice that is at least 10 minutes old (so it
+  can attach advice itself first): "if you have a recommendation, `board advise <id> --from <you> …`";
+- each session a recommendation names that has not weighed in yet: "`board advise <id> agree|object
+  --from <you>`".
+
+Each item goes to a session once per away period; an offline session (snapshot) gets nothing.
+`board advise digest --from <operator code> [CODE] [--json]` (BOARD or `operator.json`'s `operator_session`) prints what is due, one block per session: a header line
+`== <CODE> <digest id> <n> item(s): <decision ids>`, then the message, already final:
+`[BOARD advice <digest id>] Low priority: reply at your next natural pause (between tasks); do not
+stop current work. …`, one numbered entry per ask (quoted text one line, clipped, defanged).
+BOARD sends it as printed in one `SendMessage`, then runs `board advise sent --from <operator code> <digest id>`
+(accepted for 30 minutes after printing; exit 1 otherwise, nothing recorded). **One digest in
+flight per session:** while a printed digest is not recorded as sent (and is under 30 minutes old),
+that session is not due at all, so a second `digest` (or a new `advice <CODE> due` line) never
+prints the same item again or a second batch; an unsent digest comes back once it expires and
+`advice.digest_minutes` have passed since it was printed (the interval counts from printing), and
+`sent` drops anything else printed for that session. `digest` and `sent` are the operator's only:
+`--from` must be `BOARD` or `operator.json`'s `operator_session` and, inside tmux, this tmux session
+(exit 4, logged as `{type: "advise", result: "refused", reason: "not the operator"}`); otherwise a
+session could print or record the others' digests without sending them. Sessions answer by running
+`board advise` themselves; nothing goes back to BOARD. The digest never escalates, never notifies
+and never pages the owner.
+
+**On the board.** `/api/state` carries `advice`: the records of the decisions it serves, compact
+(`decision_id, from, participants, option, recommendation (one line, <= 600 chars), red_line,
+stances[{by, stance, at, note}], status, frozen_reason, frozen_at, created_at, updated_at`).
+The pending card shows a "Committee advice" block (labelled "advice only · not a decision"): the
+summary, the recommendation, each asked session's stance (or "no opinion"), and the red-line
+badge; the recommended option's button is outlined and marked "advised". The answer buttons are
+unchanged and answer exactly as before. The decision history keeps one line of it. `board-serve
+--watch` prints `advice <CODE> due` when a session's digest is due. In Artifact mode the operator
+mirrors each item to `advice/{decisionId}` from `board mirror state`.
+
+The relay of the owner's answer is unchanged (`[BOARD decision <id>] <answer> (by owner on
+board)`): its exact form is what sessions trust, so advice is never added to it.
 
 ## Owner availability (do not disturb)
 

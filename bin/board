@@ -84,6 +84,13 @@
 #   board consensus ls [--all] | show ID [--markdown]
 #                                              decide among sessions while the owner is away
 #                                              (never for red lines, never for board asks)
+#   board advise ID --from CODE [--to A,B] [--option N|LABEL] [--red-line] "recommendation"|--file PATH
+#   board advise ID agree|object --from CODE [--note T|--note-file PATH] [--red-line]
+#   board advise ls [--all] [--json] | show ID [--json]
+#   board advise digest --from BOARD [CODE] [--json] | sent --from BOARD DIGEST_ID...
+#                                              committee advice on a pending board ask while the
+#                                              owner is away: information on the card, never an
+#                                              answer; BOARD batches a low-priority digest
 #   board rc on|off CODE|all [--by NAME] [--no-apply]
 #                                              Remote Control: store the choice (fleet-up uses it
 #                                              at start) and apply it to running sessions that
@@ -492,6 +499,28 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
     "consensus vote") echo "usage: board consensus vote ID agree|object --from CODE [--note T|--note-file PATH]" ;;
     "consensus ls") echo "usage: board consensus ls [--all]   (default: pending, plus anything decided in the last 24 h)" ;;
     "consensus show") echo "usage: board consensus show ID [--markdown]   (--markdown: a block to paste into the PR/ticket)" ;;
+    advise) echo "usage: board advise ID --from CODE [--to A,B[,..]] [--option N|LABEL] [--red-line] \"recommendation\"|--file PATH"
+        echo "       board advise ID agree|object --from CODE [--note T|--note-file PATH] [--red-line]"
+        echo "       board advise ls [--all] [--json]"
+        echo "       board advise show ID [--json]"
+        echo "       board advise digest --from BOARD [CODE] [--json]   (the operator: the low-priority digest due now)"
+        echo "       board advise sent --from BOARD DIGEST_ID...        (the operator: after sending it)"
+        echo "  committee advice: while the owner is away, sessions may attach a recommendation to a"
+        echo "  pending board ask (a question or gate, never a permission prompt or a pane question)."
+        echo "  It is information on the card for the owner: it never answers, approves or relays"
+        echo "  anything, and it sends no alert. One recommendation per ask (--option names the option"
+        echo "  it recommends; --to the sessions whose view it asks for, plus the asker); any other"
+        echo "  session may agree or object with a note (the latest stance counts). Silence is no"
+        echo "  opinion, never agreement. --red-line marks the ask \"red line: owner only\" (production"
+        echo "  gates always are). Advice freezes when the owner answers or comes back (board away off)."
+        echo "  --from must be this tmux session (exit 4 otherwise); exit 1: the owner is not away, the"
+        echo "  ask is not pending, or the advice is frozen. digest and sent are the operator's only:"
+        echo "  --from BOARD (or operator.json's operator_session), else exit 4. A session whose digest"
+        echo "  was printed and not recorded as sent is not due again until that digest expires (30 min)." ;;
+    "advise ls") echo "usage: board advise ls [--all] [--json]   (default: open, plus frozen in the last 24 h)" ;;
+    "advise show") echo "usage: board advise show ID [--json]" ;;
+    "advise digest") echo "usage: board advise digest --from BOARD [CODE] [--json]   (the operator only; one block per session: '== CODE DIGEST_ID N item(s): IDS', then the message)" ;;
+    "advise sent") echo "usage: board advise sent --from BOARD DIGEST_ID...   (the operator only; exit 1: not printed in the last 30 minutes)" ;;
     ticket) python3 "$REPO/lib/tickets/cli.py" --help ;;
     *) usage ;;
   esac
@@ -2449,6 +2478,7 @@ away_set() {
     # hand, or a record replaced) goes back to the owner first; it was never agreed under this one.
     local stale
     stale="$(consensus_owner_back "$now" "$(if [ -n "$cur" ]; then echo "away record replaced"; else echo "owner-away file removed"; fi)")"
+    advice_freeze "$now" away_changed >/dev/null
     rec="$(jq -n --argjson now "$now" --arg by "$by" --arg said "$said" '{since: $now, by: $by, said: $said}')"
     rm -f "$AWAY_FILE"   # a legacy file may be a symlink or have looser modes: start fresh
     write_atomic "$AWAY_FILE" "$rec" || die "cannot write $AWAY_FILE"
@@ -2471,6 +2501,8 @@ away_set() {
   rm -f "$AWAY_FILE" || die "cannot remove $AWAY_FILE"
   local returned
   returned="$(consensus_owner_back "$now" "$by")"
+  local frozen
+  frozen="$(advice_freeze "$now" owner_back)"
   log_event "$(jq -cn --argjson now "$now" --arg by "$by" --arg said "$said" --argjson prev "$cur" \
     --arg ret "$returned" '{ts: $now, type: "away", action: "off", by: $by, previous: $prev,
       returned: ($ret | split("\n") | map(select(. != "")))} + (if $said == "" then {} else {said: $said} end)')"
@@ -2478,6 +2510,7 @@ away_set() {
   local n=0
   [ -n "$returned" ] && n="$(wc -l <<<"$returned" | tr -d ' ')"
   echo "owner back (by $by); $n pending consensus item(s) returned to the owner${returned:+: $(paste -sd " " - <<<"$returned")}"
+  [ -n "$frozen" ] && echo "committee advice frozen on $(wc -l <<<"$frozen" | tr -d ' ') ask(s); it stays on the cards for the owner: $(paste -sd " " - <<<"$frozen")" >&2
   notify_quiet "$(jq -rn --arg by "$by" --arg n "$n" --arg ret "$returned" "$JQ_LINE"'
     "[board] Owner back (by \($by | line)); away mode off."
     + (if $n == "0" then "" else " \($n) pending consensus item(s) returned to the owner: \($ret | split("\n") | map(select(. != "")) | join(", "))" end)')" \
@@ -2766,6 +2799,265 @@ cons_show() {
       "_Red lines never pass by consensus: \($red)._"' "$f"
 }
 
+# ---------------------------------------------------------------- committee advice
+# While the owner is away, sessions may attach advice to a pending board ask (lib/advice.py reads
+# it; docs/contract.md "Committee advice"). It is information on the card for the owner: never an
+# answer, never a [BOARD decision], never a notification. Records are written under the same lock
+# as owner-away and consensus, so `away off` freezes them without a write slipping in between.
+adv_path() {
+  case "$1" in ''|*[!A-Za-z0-9._-]*) die "invalid decision id: $1" ;; esac
+  echo "$BOARD_HOME/advice/$1.json"
+}
+
+# advice_freeze NOW REASON — (lock held) every open advice record becomes frozen; prints the ids.
+advice_freeze() {
+  local f new id
+  for f in "$BOARD_HOME"/advice/*.json; do
+    [ -f "$f" ] || continue
+    [ "$(jq -r '.status // empty' "$f" 2>/dev/null)" = open ] || continue
+    new="$(jq --argjson now "$1" --arg why "$2" \
+      '.status = "frozen" | .frozen_reason = $why | .frozen_at = $now | .updated_at = $now' "$f")" || continue
+    write_atomic "$f" "$new" || continue
+    id="$(jq -r '.decision_id' "$f")"
+    log_event "$(jq -cn --argjson now "$1" --arg id "$id" --arg why "$2" \
+      '{ts: $now, type: "advice", action: "freeze", id: $id, reason: $why}')"
+    echo "$id"
+  done
+}
+
+# adv_operator CODE ACTION — `board advise digest|sent` are the operator's: CODE must be BOARD or
+# operator.json's operator_session, and inside tmux this tmux session (self_check). Exit 4 otherwise,
+# logged: a session printing or recording digests could swallow the others' without sending them.
+adv_operator() {
+  local op
+  op="$(jq -r '.operator_session // empty' "$BOARD_HOME/operator.json" 2>/dev/null)"
+  if [ "$1" != BOARD ] && { [ -z "$op" ] || [ "$1" != "$op" ]; }; then
+    log_event "$(jq -cn --argjson now "$(now_ms)" --arg a "$2" --arg by "$1" \
+      '{ts: $now, type: "advise", action: $a, by: $by, result: "refused", reason: "not the operator"}')"
+    echo "board advise: refused — $2 is the operator's (BOARD or operator.json's operator_session); --from $1 is not" >&2
+    exit 4
+  fi
+  self_check "$1" "$2" "" advise
+}
+
+cmd_advise() {
+  need_jq
+  case "${1:-}" in
+    ls|show) guarded python3 "$REPO/lib/advice.py" "$@" ;;
+    digest|sent)
+      local sub="$1" from="" rest=()
+      shift
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          --from) shift; from="${1:-}" ;;
+          *) rest+=("$1") ;;
+        esac
+        shift
+      done
+      [ -n "$from" ] || { sub_usage advise "$sub" >&2; exit 2; }
+      valid_code "$from" || die "advise $sub: invalid session code: $from"
+      adv_operator "$from" "$sub"
+      if [ "$sub" = digest ]; then
+        guarded python3 "$REPO/lib/advice.py" digest ${rest[@]+"${rest[@]}"}
+      else
+        python3 "$REPO/lib/advice.py" sent ${rest[@]+"${rest[@]}"}
+      fi ;;
+    ""|-*) sub_usage advise >&2; exit 2 ;;
+    *) case "${2:-}" in
+         agree|object) adv_stance "$@" ;;
+         *) adv_recommend "$@" ;;
+       esac ;;
+  esac
+}
+
+# adv_gate ID — (lock held) the decision is a pending board ask and the owner is away: sets
+# ADV_AWAY to the away record. Otherwise releases the lock and exits 1 (an open record of an ask
+# that was answered meanwhile is frozen first). Never called in a subshell: it holds the lock.
+ADV_AWAY=""
+adv_gate() {
+  local id="$1" df f now
+  df="$(dec_path "$id")"; f="$(adv_path "$id")"
+  [ -f "$df" ] || { unlock_board; die "no such decision: $id"; }
+  if [ "$(jq -r '(.kind == "question") and ((.source // "") != "pane")' "$df")" != true ]; then
+    unlock_board
+    die "advise: $id is not a board ask (permission prompts and pane questions take no advice)"
+  fi
+  case "$(jq -r '.status // ""' "$df")" in
+    pending|unauthorized) ;;
+    *) now="$(now_ms)"
+       if [ -f "$f" ] && [ "$(jq -r '.status // empty' "$f")" = open ]; then
+         write_atomic "$f" "$(jq --argjson now "$now" \
+           '.status = "frozen" | .frozen_reason = "answered" | .frozen_at = $now | .updated_at = $now' "$f")"
+         log_event "$(jq -cn --argjson now "$now" --arg id "$id" \
+           '{ts: $now, type: "advice", action: "freeze", id: $id, reason: "answered"}')"
+       fi
+       unlock_board
+       die "advise: $id is no longer pending (the owner answered it); its advice is frozen" ;;
+  esac
+  if ! ADV_AWAY="$(away_record)"; then
+    unlock_board
+    echo "board advise: refused — the owner is not away (board away status); the owner decides" >&2
+    exit 1
+  fi
+}
+
+# adv_open ID FILE — (lock held) the advice record is open and from this away episode, else exit 1.
+adv_open() {
+  local st why
+  st="$(jq -r '.status // empty' "$2")"
+  if [ "$st" = open ] && [ "$(jq -c '.away.since' "$2")" != "$(jq -c '.since' <<<"$ADV_AWAY")" ]; then
+    local now; now="$(now_ms)"
+    write_atomic "$2" "$(jq --argjson now "$now" \
+      '.status = "frozen" | .frozen_reason = "away_changed" | .frozen_at = $now | .updated_at = $now' "$2")"
+    log_event "$(jq -cn --argjson now "$now" --arg id "$1" \
+      '{ts: $now, type: "advice", action: "freeze", id: $id, reason: "away_changed"}')"
+    st=frozen
+  fi
+  if [ "$st" != open ]; then
+    why="$(jq -r '.frozen_reason // "owner_back"' "$2")"
+    unlock_board
+    die "advise: the advice on $1 is frozen ($why); it stays on the card for the owner"
+  fi
+}
+
+adv_recommend() {
+  local id="${1:-}"
+  [ $# -gt 0 ] && shift
+  local from="" to="" option="" red=0 text=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --from) shift; from="${1:-}" ;;
+      --to) shift; to="${to:+$to,}${1:-}" ;;
+      --option) shift; option="${1:-}" ;;
+      --red-line) red=1 ;;
+      --file) shift; [ -z "$text" ] || die "advise: only one recommendation"; text="$(from_file --file "${1:-}")" || exit 1 ;;
+      -*) die "advise: unknown option $1" ;;
+      *) [ -z "$text" ] || die "advise: only one recommendation"; text="$1" ;;
+    esac
+    shift
+  done
+  [ -n "$id" ] && [ -n "$from" ] && [ -n "${text//[[:space:]]/}" ] || { sub_usage advise >&2; exit 2; }
+  valid_code "$from" || die "advise: invalid session code: $from"
+  local f; f="$(adv_path "$id")"
+  no_ctl "--option" "$option" 200
+  cap "recommendation" "$text" 2000
+  local parts=("$from") p q seen tos=()
+  IFS=, read -ra tos <<<"$to"
+  for p in "${tos[@]}"; do
+    p="${p//[[:space:]]/}"
+    [ -n "$p" ] || continue
+    valid_code "$p" || die "advise: invalid session code: $p"
+    seen=0
+    for q in "${parts[@]}"; do [ "$q" = "$p" ] && seen=1; done
+    [ "$seen" = 1 ] || parts+=("$p")
+  done
+  self_check "$from" recommend "$id" advise
+  text="$(defang "$text")"
+
+  lock_board
+  adv_gate "$id"
+  local df label="" asker
+  df="$(dec_path "$id")"
+  if [ -n "$option" ]; then
+    # N (1-based), the exact label, else a unique case-insensitive match
+    label="$(jq -r --arg o "$option" '[(.options // [])[] | tostring] as $l
+      | if ($o | test("^[0-9]{1,3}$")) and ($o | tonumber) >= 1 and ($o | tonumber) <= ($l | length) then $l[($o | tonumber) - 1]
+        elif any($l[]; . == $o) then $o
+        else [ $l[] | select(ascii_downcase == ($o | ascii_downcase)) ] | if length == 1 then .[0] else empty end end' "$df")"
+    [ -n "$label" ] || { unlock_board; die "advise: --option $option is not one of this ask's options"; }
+  fi
+  # the asking session is always asked for its view
+  asker="$(jq -r '.from // empty' "$df")"
+  if [ -n "$asker" ] && valid_code "$asker"; then
+    seen=0
+    for q in "${parts[@]}"; do [ "$q" = "$asker" ] && seen=1; done
+    [ "$seen" = 1 ] || parts+=("$asker")
+  fi
+  if [ -f "$f" ]; then
+    adv_open "$id" "$f"
+    local by; by="$(jq -r '.from' "$f")"
+    unlock_board
+    die "advise: $id already has a recommendation (from $by); weigh in with: board advise $id agree|object --from $from [--note ...]"
+  fi
+  local now parts_json new
+  now="$(now_ms)"
+  parts_json="$(printf '%s\n' "${parts[@]}" | jq -R . | jq -sc .)"
+  mkdir -p "$BOARD_HOME/advice"
+  new="$(jq -n --arg id "$id" --arg from "$from" --arg text "$text" --arg label "$label" \
+    --argjson parts "$parts_json" --argjson away "$ADV_AWAY" --argjson now "$now" --argjson red "$red" '
+    { decision_id: $id, kind: "advice", from: $from, participants: $parts,
+      option: (if $label == "" then null else $label end), recommendation: $text, red_line: ($red == 1),
+      stances: [ { by: $from, stance: "recommend", note: null, at: $now } ],
+      status: "open", frozen_reason: null, frozen_at: null,
+      away: { since: $away.since, by: $away.by }, created_at: $now, updated_at: $now }')" \
+    || { unlock_board; die "cannot build the advice on $id"; }
+  write_atomic "$f" "$new" || { unlock_board; die "cannot write the advice on $id"; }
+  log_event "$(jq -cn --argjson now "$now" --arg id "$id" --arg from "$from" --argjson parts "$parts_json" \
+    '{ts: $now, type: "advice", action: "recommend", id: $id, by: $from, participants: $parts}')"
+  unlock_board
+  echo "advice on $id: $from recommends${label:+ \"$label\"}; asked: ${parts[*]:1}"
+  {
+    echo "  advice only: the ask still waits for the owner, who reads it on the card."
+    echo "  the others weigh in at their next pause (BOARD's low-priority digest); nothing else to send."
+  } >&2
+}
+
+adv_stance() {
+  local id="$1" stance="$2"
+  shift 2
+  local from="" note="" red=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --from) shift; from="${1:-}" ;;
+      --note) shift; note="${1:-}" ;;
+      --note-file) shift; note="$(from_file --note-file "${1:-}")" || exit 1 ;;
+      --red-line) red=1 ;;
+      *) die "advise $stance: unknown option $1" ;;
+    esac
+    shift
+  done
+  [ -n "$from" ] || { sub_usage advise >&2; exit 2; }
+  valid_code "$from" || die "advise: invalid session code: $from"
+  local f; f="$(adv_path "$id")"
+  cap "--note" "$note" 1000
+  self_check "$from" "$stance" "$id" advise
+  note="$(defang "$note")"
+
+  lock_board
+  adv_gate "$id"
+  if [ ! -f "$f" ]; then
+    unlock_board
+    die "advise: $id has no recommendation yet; make one with: board advise $id --from $from \"<recommendation>\""
+  fi
+  adv_open "$id" "$f"
+  if [ "$(jq -r '.from' "$f")" = "$from" ]; then
+    unlock_board
+    die "advise: $from made this recommendation; it already counts as theirs"
+  fi
+  local prev now new
+  prev="$(jq -r --arg f "$from" '[.stances[]? | select(.by == $f)] | last | .stance // empty' "$f")"
+  if [ "$prev" = "$stance" ] && [ -z "$note" ] && [ "$red" = 0 ]; then
+    unlock_board
+    die "advise: $from already said $stance on $id"
+  fi
+  now="$(now_ms)"
+  new="$(jq --arg by "$from" --arg s "$stance" --arg note "$note" --argjson now "$now" --argjson red "$red" '
+    .stances += [ { by: $by, stance: $s, note: (if $note == "" then null else $note end), at: $now } ]
+    | (if (.participants | index($by)) == null then .participants += [$by] else . end)
+    | (if $red == 1 then .red_line = true else . end)
+    | .updated_at = $now' "$f")" || { unlock_board; die "cannot update the advice on $id"; }
+  write_atomic "$f" "$new" || { unlock_board; die "cannot write the advice on $id"; }
+  log_event "$(jq -cn --argjson now "$now" --arg id "$id" --arg by "$from" --arg s "$stance" \
+    '{ts: $now, type: "advice", action: $s, id: $id, by: $by}')"
+  unlock_board
+  echo "advice on $id: $from ${stance}s — $(jq -r '
+    (reduce .stances[] as $x ({}; .[$x.by] = $x.stance)) as $last
+    | ([.participants[] | select($last[.] == "agree")] | length) as $a
+    | ([.participants[] | select($last[.] == "object")] | length) as $o
+    | "\($a) agree, \($o) object, \((.participants | length) - $a - $o - 1) no opinion yet"' "$f")"
+  echo "  advice only: the ask still waits for the owner." >&2
+}
+
 # ---------------------------------------------------------------- notification controls
 PREFS="$REPO/lib/prefs.py"
 cmd_mute() {
@@ -2903,6 +3195,10 @@ case "$sub" in
   away|consensus|mute)
     case "${1:-}" in -h|--help) sub_usage "$sub"; exit 0 ;; esac
     case "${2:-}" in -h|--help) sub_usage "$sub" "$1"; exit 0 ;; esac ;;
+  advise)
+    case "${1:-}" in -h|--help) sub_usage advise; exit 0 ;; esac
+    case "${1:-}:${2:-}" in ls:-h|ls:--help|show:-h|show:--help|digest:-h|digest:--help|sent:-h|sent:--help)
+      sub_usage advise "$1"; exit 0 ;; esac ;;
   task)
     if wants_help "$@"; then
       case "${1:-}" in new|stage|ls|show|set|dep|pr|done|pause|resume|drop|block|progress) sub_usage task "$1" ;;
@@ -2943,6 +3239,7 @@ case "$sub" in
   notify-presence) [ $# -gt 0 ] || { sub_usage notify-presence >&2; exit 2; }; exec python3 "$PREFS" presence "$@" ;;
   away) guarded cmd_away "$@" ;;
   consensus) guarded cmd_consensus "$@" ;;
+  advise) cmd_advise "$@" ;;
   rc) cmd_rc "$@" ;;
   session) cmd_session "$@" ;;
   resume) [ $# -gt 0 ] || { sub_usage resume >&2; exit 2; }; exec python3 "$REPO/lib/resume.py" "$@" ;;

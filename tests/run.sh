@@ -2202,7 +2202,7 @@ out="$("$B" answer --help)"; rc=$?
 eq "board answer --help exits 0" "$rc" "0"
 grep -q "lgtm" <<<"$out" && ok "answer --help lists approve words" || bad "answer --help lists approve words" "$out"
 for c in ls snapshot ask decisions answer mark resolve press limit notify doctor ack task "task new" "task stage" "task ls" "task show" \
-    "task set" "task dep" "task pr" "task done" schedule lesson pomodoro resources mute notify-level notify-presence rc session away consensus message; do
+    "task set" "task dep" "task pr" "task done" schedule lesson pomodoro resources mute notify-level notify-presence rc session away consensus advise message; do
   # shellcheck disable=SC2086  # word-split "task new" on purpose
   out="$("$B" $c -h 2>&1)"; rc=$?
   if [ "$rc" = 0 ] && grep -q "^usage: board ${c%% *}" <<<"$out"; then ok "board $c -h"; else bad "board $c -h" "rc=$rc $out"; fi

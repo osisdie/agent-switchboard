@@ -122,6 +122,7 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import availability  # noqa: E402
 import asker_route  # noqa: E402
+import advice  # noqa: E402
 import away  # noqa: E402
 import desk  # noqa: E402
 import fleet  # noqa: E402
@@ -557,7 +558,7 @@ class StateBuilder:
         paths.append(self.p("scheduler.json"))  # rewritten only when the decision changes
         paths.append(self.p("desk", "health.json"))   # the local asker desk's endpoint (lib/desk.py)
         paths.append(os.path.join(fleet.config_dir(), "fleet.yaml"))   # sessions' `about`, approver lists
-        for sub in ("decisions", "tasks", "consensus"):
+        for sub in ("decisions", "tasks", "consensus", "advice"):
             paths.append(self.p(sub))
             paths.extend(glob.glob(self.p(sub, "*.json")))
         for root, dirs, files in os.walk(self.p("messages")):
@@ -717,6 +718,8 @@ class StateBuilder:
                 # who answers askers now: local model or Claude sessions (lib/asker_route.py)
                 "asker_route": asker_route.view(self.home),
                 "consensus": away.consensus_items(self.home, now_ms())[-50:],
+                # committee advice on the decisions served (lib/advice.py): information, never an answer
+                "advice": advice.board_view(self.home, {d["id"] for d in decisions}),
                 "notify": notify_state(self.home),
                 "rc": rc_state(self.home),
                 "resources": resources.board_view(read_json(self.p("resources.json"))),
@@ -2627,11 +2630,35 @@ class Server(http.server.ThreadingHTTPServer):
             self.slots.release()
 
 
+ADVICE_CHECK_S = 30     # the digest is due at most every advice.digest_minutes: no need to look every poll
+_advice_due = {}
+
+
+def advice_due_lines(home):
+    """While the owner is away: (ts, "advice <CODE> due", key) for each session whose low-priority
+    committee-advice digest is due (`board advise digest`), looked up at most every ADVICE_CHECK_S."""
+    now = time.monotonic()
+    hit = _advice_due.get(home)
+    if hit and now - hit[0] < ADVICE_CHECK_S:
+        return hit[1]
+    out = []
+    try:
+        t = advice.now_ms()     # BOARD_NOW_MS in tests, like board advise digest
+        for code, items in sorted(advice.due(home, fleet.load_fleet(), t).items()):
+            out.append((t, "advice %s due" % code, ("v", code, tuple(k for k, *_ in items))))
+    except Exception as exc:  # noqa: BLE001 - never stops the watch
+        sys.stderr.write("board-serve: advice digest: %s\n" % type(exc).__name__)
+    _advice_due[home] = (now, out)
+    return out
+
+
 def actionable(home):
     """What a local-mode operator has to relay: answered question/gate decisions, new messages,
     the owner-away state (`away on|off`, broadcast to every session when it changes) and each
     consensus status (`consensus <id> <status>`, mirrored, never relayed as a decision) and each
-    session with scheduler advisories to send (`schedule <CODE> due`, board schedule outbox)."""
+    session with scheduler advisories to send (`schedule <CODE> due`, board schedule outbox), and,
+    while the owner is away, each session whose low-priority committee-advice digest is due
+    (`advice <CODE> due`, board advise digest; never relayed as a decision)."""
     out = []
     rec = away.away_record(home)
     if rec:
@@ -2641,6 +2668,8 @@ def actionable(home):
     for c in away.consensus_items(home, now_ms()):
         out.append((as_int(c.get("updated_at")), "consensus %s %s" % (c["id"], c["status"]),
                     ("c", c["id"], c["status"])))
+    if rec:
+        out += advice_due_lines(home)
     for path in glob.glob(os.path.join(home, "decisions", "*.json")):
         d = read_json(path)
         # board-serve presses permission prompts and pane questions itself (relay "press").
