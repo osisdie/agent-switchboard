@@ -160,6 +160,8 @@ def main():
             b = {x["text"]: x for x in c["btns"]}
             check("the recommended option is marked", b.get("Keep redirect advised", {}).get("advised") is True
                   and b["Keep redirect advised"]["describedby"] == c["id"] and "not a decision" in b["Keep redirect advised"]["title"], c["btns"])
+            check("  its accessible name is still the option (the mark is aria-hidden)",
+                  pg.locator("#dec-" + d1).get_by_role("button", name="Keep redirect", exact=True).count() == 1)
             check("  the other option is not", b.get("Remove it", {}).get("advised") is False and not b["Remove it"]["describedby"], c["btns"])
             check("  the free-text answer is still there", pg.evaluate("(id) => !!document.querySelector('#dec-' + id + ' .free input')", d1))
             g = pg.evaluate(CARD_JS, d2)

@@ -46,7 +46,8 @@ nowms() { python3 -c 'import time; print(int(time.time() * 1000))'; }
 snap() { jq -n --arg off "${1:-}" '{generated_at: 1, sessions: (["API", "WEB", "QA", "OPS"]
   | map({code: ., state: (if . == $off then "offline" else "idle" end)}))}' > "$BOARD_HOME/snapshot.json"; }
 snap
-digest() { BOARD_NOW_MS="$1" "$B" advise digest "${@:2}"; }
+digest() { BOARD_NOW_MS="$1" "$B" advise digest --from BOARD "${@:2}"; }
+sent() { BOARD_NOW_MS="$1" "$B" advise sent --from BOARD "${@:2}"; }
 
 # ---------------------------------------------------------------- refusals
 echo "refusals:"
@@ -131,7 +132,15 @@ eq "an alias of the same code may" "$rc" "0"
 echo "digest:"
 now="$(nowms)"
 d4="$("$B" ask --from API "Which queue name?" --option alpha --option beta)"
-eq "an ask younger than 10 minutes is not in a digest yet" "$(digest "$now" API --json | jq -r '[.[].decisions[]] | index("'"$d4"'") // "none"')" "none"
+# read-only (prints nothing, so nothing goes in flight): the decisions due for API at $now
+due_api="$(python3 - "$REPO" "$now" <<'EOF'
+import os, sys
+sys.path.insert(0, os.path.join(sys.argv[1], "lib"))
+import advice, fleet
+print(",".join(d["id"] for _k, d, _r, _x in advice.due(fleet.board_home(), fleet.load_fleet(), int(sys.argv[2])).get("API", [])))
+EOF
+)"
+case ",$due_api," in *",$d4,"*) bad "an ask younger than 10 minutes is not in a digest yet" "$due_api" ;; *) ok "an ask younger than 10 minutes is not in a digest yet" ;; esac
 later=$((now + 11 * 60000))
 out="$(digest "$later")"
 grep -q "^== API g-[0-9a-f]\{12\} " <<<"$out" && ok "one block for the asker" || bad "one block for the asker" "$out"
@@ -146,23 +155,40 @@ n_tags="$(grep -o '\[BOARD' <<<"$out" | wc -l | tr -d ' ')"
 n_blocks="$(grep -c '^== ' <<<"$out")"
 eq "exactly one [BOARD tag per message (quoted text defanged)" "$n_tags" "$n_blocks"
 gid="$(grep '^== API ' <<<"$out" | awk '{print $3}')"
-again="$(digest "$later" API)"
-grep -q "^== API " <<<"$again" && ok "printed but not recorded: still due" || bad "printed but not recorded: still due" "$again"
-gid="$(grep '^== API ' <<<"$again" | awk '{print $3}')"
-BOARD_NOW_MS="$later" "$B" advise sent "$gid" >/dev/null; eq "sent records it" "$?" "0"
-BOARD_NOW_MS="$later" "$B" advise sent "$gid" >/dev/null 2>&1; eq "  the same id twice: exit 1" "$?" "1"
-"$B" advise sent "nope" >/dev/null 2>&1; eq "  a malformed id: exit 2" "$?" "2"
+ogid="$(grep '^== OPS ' <<<"$out" | awk '{print $3}')"
+[ -n "$ogid" ] && ok "  OPS gets its own block" || bad "  OPS gets its own block" "$out"
+eq "a second digest before sent prints nothing again (one in flight per session)" "$(digest "$later")" ""
+d4b="$("$B" ask --from API "And the topic name?")"
+eq "a new item while a digest is in flight: no second batch" "$(digest "$later" API --json | jq length)" "0"
+w="$(BOARD_NOW_MS="$later" python3 "$REPO/lib/serve.py" --watch --once)"
+grep -q "^advice API due$" <<<"$w" && bad "  and no new watch line for it" "$w" || ok "  and no new watch line for it"
+sent "$later" "$gid" >/dev/null; eq "sent records it" "$?" "0"
+sent "$later" "$gid" >/dev/null 2>&1; eq "  the same id twice: exit 1" "$?" "1"
+sent "$later" "nope" >/dev/null 2>&1; eq "  a malformed id: exit 2" "$?" "2"
 eq "no second digest within digest_minutes" "$(digest $((later + 60000)) API --json | jq length)" "0"
-eq "sent items never go again, even after the interval" "$(digest $((later + 31 * 60000)) API --json | jq length)" "0"
-d5="$("$B" ask --from API "One more?")"
 late2=$((later + 31 * 60000))
-eq "a new item after the interval is due" "$(digest "$late2" API --json | jq -r '.[0].decisions | join(",")')" "$d5"
-eq "  only the new item" "$(digest "$late2" API --json | jq -r '.[0].decisions | length')" "1"
+eq "after the interval: only the item that was not sent" "$(digest "$late2" API --json | jq -r '[.[].decisions[]] | join(",")')" "$d4b"
 snap OPS
-eq "an offline session gets no digest" "$(digest "$later" OPS --json | jq length)" "0"
+eq "an offline session gets no digest" "$(digest "$late2" OPS --json | jq length)" "0"
 snap
+eq "an unsent digest comes back once it expires" "$(digest "$late2" OPS --json | jq -r '[.[].decisions[]] | join(",")')" "$d2"
+sent "$late2" "$ogid" >/dev/null 2>&1; eq "  the expired id cannot be recorded (exit 1)" "$?" "1"
 "$B" advise "$d1" agree --from API >/dev/null 2>&1
-eq "a session that weighed in is not asked" "$(digest "$late2" --json | jq -r '[.[].text] | join("\n") | test("'"$d1"' agree\\|object --from API")')" "false"
+late3=$((late2 + 31 * 60000))
+eq "a session that weighed in is not asked" "$(digest "$late3" API --json | jq -r '([.[].decisions[]] | join(",")) + "|" + ([.[].text] | join("\n") | test("'"$d1"' agree\\|object --from API") | tostring)')" "$d4b|false"
+# digest and sent are the operator's
+st0="$(cat "$BOARD_HOME/advice-digest.json")"
+"$B" advise digest --from WEB >/dev/null 2>&1; eq "digest from a session that is not the operator: exit 4" "$?" "4"
+eq "  logged" "$(lastev advise '.result + "/" + .reason + "/" + .by')" "refused/not the operator/WEB"
+"$B" advise sent --from WEB "g-000000000000" >/dev/null 2>&1; eq "sent from another session: exit 4" "$?" "4"
+eq "  nothing printed or recorded" "$(cat "$BOARD_HOME/advice-digest.json")" "$st0"
+"$B" advise digest >/dev/null 2>&1; eq "digest without --from: usage (exit 2)" "$?" "2"
+printf '{"operator_session": "OPS"}\n' > "$BOARD_HOME/operator.json"
+eq "operator.json's operator_session may run it" "$(BOARD_NOW_MS="$late3" "$B" advise digest --from OPS QA --json)" "[]"
+rm -f "$BOARD_HOME/operator.json"
+TMUX=fake FAKE_TMUX_SESSION=API PATH="$T/bin:$PATH" "$B" advise digest --from BOARD QA >/dev/null 2>&1; rc=$?
+eq "inside tmux, --from BOARD from another session: exit 4" "$rc" "4"
+eq "  from the BOARD session itself" "$(TMUX=fake FAKE_TMUX_SESSION=BOARD PATH="$T/bin:$PATH" BOARD_NOW_MS="$late3" "$B" advise digest --from BOARD QA --json)" "[]"
 eq "digest sends no notification" "$(jq -s '[.[] | select(.type == "notify")] | length' "$BOARD_HOME/events.jsonl")" "0"
 grep -q '"digest-sent"' "$BOARD_HOME/events.jsonl" && ok "digest-sent is in events.jsonl" || bad "digest-sent is in events.jsonl"
 
@@ -178,9 +204,21 @@ EOF
 )"
 eq "state.advice carries the records" "$(jq -r --arg d "$d1" '.[] | select(.decision_id == $d) | .status + "|" + .option' <<<"$st")" "open|Keep redirect"
 grep -q '\[BOARD' <<<"$st" && bad "  no relay-shaped text in state" || ok "  no relay-shaped text in state"
-w="$(BOARD_NOW_MS="$late2" python3 "$REPO/lib/serve.py" --watch --once)"
+late4=$((late3 + 31 * 60000))
+w="$(BOARD_NOW_MS="$late4" python3 "$REPO/lib/serve.py" --watch --once)"
 grep -q "^advice API due$" <<<"$w" && ok "watch: advice <CODE> due" || bad "watch: advice <CODE> due" "$w"
 grep -q "^decision $d1" <<<"$w" && bad "  advice is never a decision line" "$w" || ok "  advice is never a decision line"
+n="$(python3 - "$REPO" <<'EOF'
+import json, os, sys
+sys.path.insert(0, os.path.join(sys.argv[1], "lib"))
+import fleet, notify
+h = fleet.board_home()
+snap = json.load(open(os.path.join(h, "snapshot.json")))
+snap["decisions"] = [json.load(open(os.path.join(h, "decisions", f))) for f in os.listdir(os.path.join(h, "decisions"))]
+print(notify._pending_count(snap, h))
+EOF
+)"
+eq "operator:stale never counts advice as waiting (lib/notify.py _pending_count)" "$n" "0"
 
 # ---------------------------------------------------------------- freeze
 echo "freeze:"
@@ -188,6 +226,7 @@ echo "freeze:"
 eq "an answered ask: advice shows frozen" "$("$B" advise show "$d3" --json | jq -r '.status + "/" + .frozen_reason')" "frozen/answered"
 "$B" advise "$d3" object --from OPS >/dev/null 2>&1; eq "  and takes no more" "$?" "1"
 eq "  the record is frozen on disk" "$(af "$d3" '.status + "/" + .frozen_reason')" "frozen/answered"
+eq "  the freeze is logged" "$(lastev advice '.action + "/" + .reason + "/" + .id')" "freeze/answered/$d3"
 eq "  the answer is the owner's" "$(jq -r '.answer + "|" + .answered_by' "$pdir/$d3.json")" "keep the bucket|local"
 out="$("$B" away off --by OPS 2>&1)"
 grep -q "committee advice frozen on 2 ask(s)" <<<"$out" && ok "away off freezes open advice" || bad "away off freezes open advice" "$out"
@@ -199,6 +238,11 @@ eq "  digest: nothing while the owner is here" "$(digest "$late2" --json | jq le
 "$B" advise "$d1" object --from QA >/dev/null 2>&1; eq "a new away period does not reopen earlier advice" "$?" "1"
 eq "  still shown frozen" "$("$B" advise show "$d1" --json | jq -r .status)" "frozen"
 d6="$("$B" ask --from WEB "New question?")"
+"$B" advise "$d6" --from WEB "yes" >/dev/null 2>&1
+jq '.away.since = 1' "$BOARD_HOME/advice/$d6.json" > "$T/a.json" && mv "$T/a.json" "$BOARD_HOME/advice/$d6.json"
+"$B" advise "$d6" agree --from QA >/dev/null 2>&1; eq "advice from another away period takes no stance" "$?" "1"
+eq "  frozen and logged" "$(af "$d6" .frozen_reason)/$(lastev advice '.action + "/" + .reason')" "away_changed/freeze/away_changed"
+d6="$("$B" ask --from WEB "Another new question?")"
 "$B" advise "$d6" --from WEB "yes" >/dev/null 2>&1
 "$B" away on --by OPS --said "replaced" --replace >/dev/null 2>&1
 eq "a replaced away record freezes advice of the earlier one" "$(af "$d6" '.status + "/" + .frozen_reason')" "frozen/away_changed"

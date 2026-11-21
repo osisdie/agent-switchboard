@@ -854,7 +854,7 @@ never counts, and the dangerous things still wait for you.
   board advise "$d" --from WEB --to QA,OPS --option 1 "Keep it: two help pages still link to it."
   board advise "$d" agree --from QA --note "Same view."
   board advise "$d" object --from OPS --note "Remove it; the pages are being rewritten."
-  board advise ls            # BOARD: board advise digest, then board advise sent <digest id>
+  board advise ls            # BOARD: board advise digest --from BOARD, then board advise sent --from BOARD <digest id>
   ```
 
 Details: [`docs/contract.md`](docs/contract.md), "Owner away & consensus" and "Committee advice".

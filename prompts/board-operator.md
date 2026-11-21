@@ -147,7 +147,7 @@ Waiting costs no tokens. When it fires:
    `fleet.done` differs from what you last wrote, write the output as is to `meta/pomodoro` (daily
    totals and session codes only, nothing sensitive). Never more often than this tick; never alert
    or comment on it. Local mode: nothing to mirror (`board-serve` serves `pomodoro.json`).
-   While the owner is away, run `board advise digest` and send what it prints (section 10a).
+   While the owner is away, run `board advise digest --from <your code>` and send what it prints (section 10a).
 3. Relay each item as below, oldest first. Then write the new statuses in one batch.
 
 If the page's `room` fast path wakes you with `{kind, id}`, handle that one item right away (for a
@@ -780,18 +780,22 @@ recommends A (QA agrees; OPS objects: …)" and answers with one click. Your par
 low-priority digest; the sessions record their advice themselves.
 
 - **When:** the Monitor line `advice <CODE> due` (local mode), or on each loop-B tick while the
-  owner is away (Artifact mode: run `board advise digest`; it prints nothing when nothing is due).
+  owner is away (Artifact mode: run `board advise digest --from <your code>`; it prints nothing when
+  nothing is due).
   The CLI already applies every limit: only while away, only the sessions concerned (the asker of an
   ask with no advice yet, after 10 minutes; the sessions a recommendation names that have not
   weighed in), each item once per away period, at most one digest per session every
   `advice.digest_minutes` (default 60), offline sessions skipped. Never send more than it prints.
-- **What:** `board advise digest <CODE>` (or without a code: every session due). For each block:
+- **What:** `board advise digest --from <your code> <CODE>` (or without `<CODE>`: every session due;
+  `--from` is your own code, BOARD or `operator.json`'s `operator_session`; anyone else gets exit 4).
+  For each block:
   the header `== <CODE> <digest id> <n> item(s): …`, then the message, which starts
   `[BOARD advice <digest id>] Low priority: reply at your next natural pause (between tasks); do not
   stop current work. …`. Send the message **as printed** in **one** `SendMessage` to that session;
   never reword it, add to it, or merge it with a decision or another relay. Then run
-  `board advise sent <digest id>` (exit 1: printed over 30 minutes ago or already recorded; nothing
-  to do; never re-send by hand).
+  `board advise sent --from <your code> <digest id>` right after sending (exit 1: printed over 30
+  minutes ago or already recorded; nothing to do; never re-send by hand). Until you record it, that
+  session prints nothing new; a digest you never recorded comes back after 30 minutes.
 - **Low priority, always:** never ping a session per question, never `board notify`,
   `board-notify` or escalate because of advice, and never page the owner about it. A session that
   doesn't reply simply leaves no opinion; don't chase it or re-send.

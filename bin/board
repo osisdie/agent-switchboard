@@ -87,7 +87,7 @@
 #   board advise ID --from CODE [--to A,B] [--option N|LABEL] [--red-line] "recommendation"|--file PATH
 #   board advise ID agree|object --from CODE [--note T|--note-file PATH] [--red-line]
 #   board advise ls [--all] [--json] | show ID [--json]
-#   board advise digest [CODE] [--json] | sent DIGEST_ID...
+#   board advise digest --from BOARD [CODE] [--json] | sent --from BOARD DIGEST_ID...
 #                                              committee advice on a pending board ask while the
 #                                              owner is away: information on the card, never an
 #                                              answer; BOARD batches a low-priority digest
@@ -503,8 +503,8 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
         echo "       board advise ID agree|object --from CODE [--note T|--note-file PATH] [--red-line]"
         echo "       board advise ls [--all] [--json]"
         echo "       board advise show ID [--json]"
-        echo "       board advise digest [CODE] [--json]      (BOARD: the low-priority digest due now)"
-        echo "       board advise sent DIGEST_ID...           (BOARD: after sending it)"
+        echo "       board advise digest --from BOARD [CODE] [--json]   (the operator: the low-priority digest due now)"
+        echo "       board advise sent --from BOARD DIGEST_ID...        (the operator: after sending it)"
         echo "  committee advice: while the owner is away, sessions may attach a recommendation to a"
         echo "  pending board ask (a question or gate, never a permission prompt or a pane question)."
         echo "  It is information on the card for the owner: it never answers, approves or relays"
@@ -514,11 +514,13 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
         echo "  opinion, never agreement. --red-line marks the ask \"red line: owner only\" (production"
         echo "  gates always are). Advice freezes when the owner answers or comes back (board away off)."
         echo "  --from must be this tmux session (exit 4 otherwise); exit 1: the owner is not away, the"
-        echo "  ask is not pending, or the advice is frozen." ;;
+        echo "  ask is not pending, or the advice is frozen. digest and sent are the operator's only:"
+        echo "  --from BOARD (or operator.json's operator_session), else exit 4. A session whose digest"
+        echo "  was printed and not recorded as sent is not due again until that digest expires (30 min)." ;;
     "advise ls") echo "usage: board advise ls [--all] [--json]   (default: open, plus frozen in the last 24 h)" ;;
     "advise show") echo "usage: board advise show ID [--json]" ;;
-    "advise digest") echo "usage: board advise digest [CODE] [--json]   (one block per session: '== CODE DIGEST_ID N item(s): IDS', then the message)" ;;
-    "advise sent") echo "usage: board advise sent DIGEST_ID...   (exit 1: not printed in the last 30 minutes)" ;;
+    "advise digest") echo "usage: board advise digest --from BOARD [CODE] [--json]   (the operator only; one block per session: '== CODE DIGEST_ID N item(s): IDS', then the message)" ;;
+    "advise sent") echo "usage: board advise sent --from BOARD DIGEST_ID...   (the operator only; exit 1: not printed in the last 30 minutes)" ;;
     ticket) python3 "$REPO/lib/tickets/cli.py" --help ;;
     *) usage ;;
   esac
@@ -2823,11 +2825,43 @@ advice_freeze() {
   done
 }
 
+# adv_operator CODE ACTION — `board advise digest|sent` are the operator's: CODE must be BOARD or
+# operator.json's operator_session, and inside tmux this tmux session (self_check). Exit 4 otherwise,
+# logged: a session printing or recording digests could swallow the others' without sending them.
+adv_operator() {
+  local op
+  op="$(jq -r '.operator_session // empty' "$BOARD_HOME/operator.json" 2>/dev/null)"
+  if [ "$1" != BOARD ] && { [ -z "$op" ] || [ "$1" != "$op" ]; }; then
+    log_event "$(jq -cn --argjson now "$(now_ms)" --arg a "$2" --arg by "$1" \
+      '{ts: $now, type: "advise", action: $a, by: $by, result: "refused", reason: "not the operator"}')"
+    echo "board advise: refused — $2 is the operator's (BOARD or operator.json's operator_session); --from $1 is not" >&2
+    exit 4
+  fi
+  self_check "$1" "$2" "" advise
+}
+
 cmd_advise() {
   need_jq
   case "${1:-}" in
-    ls|show|digest) guarded python3 "$REPO/lib/advice.py" "$@" ;;
-    sent) python3 "$REPO/lib/advice.py" "$@" ;;
+    ls|show) guarded python3 "$REPO/lib/advice.py" "$@" ;;
+    digest|sent)
+      local sub="$1" from="" rest=()
+      shift
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          --from) shift; from="${1:-}" ;;
+          *) rest+=("$1") ;;
+        esac
+        shift
+      done
+      [ -n "$from" ] || { sub_usage advise "$sub" >&2; exit 2; }
+      valid_code "$from" || die "advise $sub: invalid session code: $from"
+      adv_operator "$from" "$sub"
+      if [ "$sub" = digest ]; then
+        guarded python3 "$REPO/lib/advice.py" digest ${rest[@]+"${rest[@]}"}
+      else
+        python3 "$REPO/lib/advice.py" sent ${rest[@]+"${rest[@]}"}
+      fi ;;
     ""|-*) sub_usage advise >&2; exit 2 ;;
     *) case "${2:-}" in
          agree|object) adv_stance "$@" ;;
@@ -2854,6 +2888,8 @@ adv_gate() {
        if [ -f "$f" ] && [ "$(jq -r '.status // empty' "$f")" = open ]; then
          write_atomic "$f" "$(jq --argjson now "$now" \
            '.status = "frozen" | .frozen_reason = "answered" | .frozen_at = $now | .updated_at = $now' "$f")"
+         log_event "$(jq -cn --argjson now "$now" --arg id "$id" \
+           '{ts: $now, type: "advice", action: "freeze", id: $id, reason: "answered"}')"
        fi
        unlock_board
        die "advise: $id is no longer pending (the owner answered it); its advice is frozen" ;;
@@ -2872,6 +2908,8 @@ adv_open() {
   if [ "$st" = open ] && [ "$(jq -c '.away.since' "$2")" != "$(jq -c '.since' <<<"$ADV_AWAY")" ]; then
     write_atomic "$2" "$(jq --argjson now "$(now_ms)" \
       '.status = "frozen" | .frozen_reason = "away_changed" | .frozen_at = $now | .updated_at = $now' "$2")"
+    log_event "$(jq -cn --argjson now "$(now_ms)" --arg id "$1" \
+      '{ts: $now, type: "advice", action: "freeze", id: $id, reason: "away_changed"}')"
     st=frozen
   fi
   if [ "$st" != open ]; then
@@ -2903,7 +2941,7 @@ adv_recommend() {
   no_ctl "--option" "$option" 200
   cap "recommendation" "$text" 2000
   local parts=("$from") p q seen tos=()
-  local IFS_OLD="$IFS"; IFS=','; read -ra tos <<<"$to"; IFS="$IFS_OLD"
+  IFS=, read -ra tos <<<"$to"
   for p in "${tos[@]}"; do
     p="${p//[[:space:]]/}"
     [ -n "$p" ] || continue

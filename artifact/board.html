@@ -2748,7 +2748,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
             return h('button', { class: 'btn ' + optionClass(o) + (advised ? ' advised' : ''), type: 'button',
               onclick: () => (needsConfirm ? askConfirm(d.id, o) : answerDecision(d, o)),
               'aria-describedby': advised ? 'adv-' + d.id : null, title: advised ? tr('Committee advice recommends this (not a decision)') : null,
-              text: isPerm ? tr(o === 'allow' ? 'Allow' : 'Deny') : o }, advised ? [' ', h('span', { class: 'adv-mark', text: tr('advised') })] : null);
+              text: isPerm ? tr(o === 'allow' ? 'Allow' : 'Deny') : o }, advised ? [' ', h('span', { class: 'adv-mark', 'aria-hidden': 'true', text: tr('advised') })] : null);
           })));
       }
       if (!isPerm && !conf) {

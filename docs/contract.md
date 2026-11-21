@@ -2988,12 +2988,19 @@ pinged per question. BOARD sends each session at most one digest every `advice.d
   --from <you>`".
 
 Each item goes to a session once per away period; an offline session (snapshot) gets nothing.
-`board advise digest [CODE] [--json]` prints what is due, one block per session: a header line
+`board advise digest --from BOARD [CODE] [--json]` prints what is due, one block per session: a header line
 `== <CODE> <digest id> <n> item(s): <decision ids>`, then the message, already final:
 `[BOARD advice <digest id>] Low priority: reply at your next natural pause (between tasks); do not
 stop current work. …`, one numbered entry per ask (quoted text one line, clipped, defanged).
-BOARD sends it as printed in one `SendMessage`, then runs `board advise sent <digest id>` (accepted
-for 30 minutes after printing; exit 1 otherwise, nothing recorded). Sessions answer by running
+BOARD sends it as printed in one `SendMessage`, then runs `board advise sent --from BOARD <digest id>`
+(accepted for 30 minutes after printing; exit 1 otherwise, nothing recorded). **One digest in
+flight per session:** while a printed digest is not recorded as sent (and is under 30 minutes old),
+that session is not due at all, so a second `digest` (or a new `advice <CODE> due` line) never
+prints the same item again or a second batch; an unsent digest comes back once it expires, and
+`sent` drops anything else printed for that session. `digest` and `sent` are the operator's only:
+`--from` must be `BOARD` or `operator.json`'s `operator_session` and, inside tmux, this tmux session
+(exit 4, logged as `{type: "advise", result: "refused", reason: "not the operator"}`); otherwise a
+session could print or record the others' digests without sending them. Sessions answer by running
 `board advise` themselves; nothing goes back to BOARD. The digest never escalates, never notifies
 and never pages the owner.
 

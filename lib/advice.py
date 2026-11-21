@@ -24,6 +24,7 @@ Usage (through `board advise ...`):
   advice.py show ID [--json]             one decision's advice
   advice.py digest [CODE] [--json]       the low-priority digest due now, one block per session
   advice.py sent DIGEST_ID [...]         BOARD sent these digests (records them; never sent twice)
+  (bin/board checks first that the caller is the operator: board advise digest|sent --from BOARD)
 """
 import contextlib
 import fcntl
@@ -264,8 +265,18 @@ def items_for(home, now, away_rec):
     return out
 
 
+def fresh_printed(printed, now):
+    """The digests printed in the last PRINTED_MS and not recorded as sent yet {gid: {to, keys, printed_at}}."""
+    return {g: p for g, p in (printed or {}).items()
+            if DIGEST_RE.fullmatch(str(g)) and isinstance(p, dict) and isinstance(p.get("to"), str)
+            and 0 <= now - _ms(p.get("printed_at")) <= PRINTED_MS}
+
+
 def due(home, cfg, now, state=None):
-    """{code: [(key, decision, record, kind)]}: the digest each session should get now."""
+    """{code: [(key, decision, record, kind)]}: the digest each session should get now. A session
+    whose last printed digest is not recorded as sent yet (and printed less than PRINTED_MS ago) is
+    not due at all: BOARD is sending it, so nothing is printed twice, and nothing new is added to a
+    second digest meanwhile. If it was never sent, it comes back once that digest expires."""
     away_rec = away.away_record(home)
     if away_rec is None:
         return {}
@@ -273,9 +284,10 @@ def due(home, cfg, now, state=None):
     gap = digest_minutes(cfg) * 60000
     live = live_codes(home, cfg)
     known = fleet.known_codes(home, cfg)
+    busy = {p["to"] for p in fresh_printed(state["printed"], now).values()}
     out = {}
     for code, key, d, rec, kind in items_for(home, now, away_rec):
-        if key in (state["sent"].get(code) or {}):
+        if code in busy or key in (state["sent"].get(code) or {}):
             continue
         if code not in known or (live is not None and code not in live):
             continue
@@ -323,8 +335,7 @@ def digest(home, cfg, only=None, as_json=False, now=None):
         state = load_state(home)
         before = dict(state["printed"])
         plan = due(home, cfg, now, state)
-        printed = {k: v for k, v in state["printed"].items()
-                   if isinstance(v, dict) and 0 <= now - _ms(v.get("printed_at")) <= PRINTED_MS}
+        printed = fresh_printed(state["printed"], now)
         blocks = []
         for code in sorted(plan):
             if only and code != only:
@@ -368,7 +379,9 @@ def sent(home, ids, now=None):
                 if isinstance(k, str):
                     mine[k] = now
             state["last"][p["to"]] = now
-            del state["printed"][gid]
+            # one digest in flight per session: anything else printed for it is superseded
+            for g in [g for g, q in state["printed"].items() if isinstance(q, dict) and q.get("to") == p["to"]]:
+                del state["printed"][g]
             print("%s: digest for %s recorded (%d item(s))" % (gid, p["to"], len(p.get("keys") or [])))
         # forget what belongs to an ended away episode (keys start with its `since`)
         rec = away.away_record(home)
@@ -461,7 +474,7 @@ def main(argv):
         return show(home, rest[0], as_json=js)
     if cmd == "digest":
         if len(rest) > 1 or (rest and not CODE_RE.fullmatch(rest[0])):
-            sys.stderr.write("usage: board advise digest [CODE] [--json]\n")
+            sys.stderr.write("usage: board advise digest --from BOARD [CODE] [--json]\n")
             return 2
         try:
             return digest(home, fleet.load_fleet(), only=rest[0] if rest else None, as_json=js)
