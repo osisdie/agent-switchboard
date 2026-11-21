@@ -189,6 +189,14 @@ rm -f "$BOARD_HOME/operator.json"
 TMUX=fake FAKE_TMUX_SESSION=API PATH="$T/bin:$PATH" "$B" advise digest --from BOARD QA >/dev/null 2>&1; rc=$?
 eq "inside tmux, --from BOARD from another session: exit 4" "$rc" "4"
 eq "  from the BOARD session itself" "$(TMUX=fake FAKE_TMUX_SESSION=BOARD PATH="$T/bin:$PATH" BOARD_NOW_MS="$late3" "$B" advise digest --from BOARD QA --json)" "[]"
+# the interval counts from printing: an unsent digest that expires waits digest_minutes, not 30 min
+sed -i 's/digest_minutes: 30/digest_minutes: 90/' "$BOARD_CONFIG_DIR/fleet.yaml"
+d8="$("$B" ask --from QA "Which retention period?")"
+t8=$((late3 + 60000))
+eq "a digest is printed (never sent)" "$(digest "$t8" QA --json | jq -r '[.[].decisions[]] | join(",")')" "$d8"
+eq "  expired after 30 min, still not due before digest_minutes since printing" "$(digest $((t8 + 31 * 60000)) QA --json | jq length)" "0"
+eq "  due again once digest_minutes have passed" "$(digest $((t8 + 91 * 60000)) QA --json | jq -r '[.[].decisions[]] | join(",")')" "$d8"
+sed -i 's/digest_minutes: 90/digest_minutes: 30/' "$BOARD_CONFIG_DIR/fleet.yaml"
 eq "digest sends no notification" "$(jq -s '[.[] | select(.type == "notify")] | length' "$BOARD_HOME/events.jsonl")" "0"
 grep -q '"digest-sent"' "$BOARD_HOME/events.jsonl" && ok "digest-sent is in events.jsonl" || bad "digest-sent is in events.jsonl"
 

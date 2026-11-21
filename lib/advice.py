@@ -343,10 +343,13 @@ def digest(home, cfg, only=None, as_json=False, now=None):
             items = plan[code]
             gid = "g-" + os.urandom(6).hex()
             printed[gid] = {"to": code, "keys": [k for k, *_ in items], "printed_at": now}
+            # the interval counts from printing too: a digest that is never recorded as sent and
+            # expires is printed again only digest_minutes after this one, never every PRINTED_MS
+            state["last"][code] = now
             blocks.append({"to": code, "digest_id": gid, "decisions": [d["id"] for _k, d, _r, _x in items],
                            "text": render(code, gid, items)})
         state["printed"] = printed
-        if printed != before:
+        if printed != before or blocks:
             write_json(os.path.join(home, STATE_FILE), state)
     if as_json:
         print(json.dumps(blocks, ensure_ascii=False))

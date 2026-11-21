@@ -2906,9 +2906,10 @@ adv_open() {
   local st why
   st="$(jq -r '.status // empty' "$2")"
   if [ "$st" = open ] && [ "$(jq -c '.away.since' "$2")" != "$(jq -c '.since' <<<"$ADV_AWAY")" ]; then
-    write_atomic "$2" "$(jq --argjson now "$(now_ms)" \
+    local now; now="$(now_ms)"
+    write_atomic "$2" "$(jq --argjson now "$now" \
       '.status = "frozen" | .frozen_reason = "away_changed" | .frozen_at = $now | .updated_at = $now' "$2")"
-    log_event "$(jq -cn --argjson now "$(now_ms)" --arg id "$1" \
+    log_event "$(jq -cn --argjson now "$now" --arg id "$1" \
       '{ts: $now, type: "advice", action: "freeze", id: $id, reason: "away_changed"}')"
     st=frozen
   fi
