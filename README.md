@@ -841,7 +841,23 @@ never counts, and the dangerous things still wait for you.
   BOARD tells every live session when the away state changes and reports who received and
   acknowledged it.
 
-Details: [`docs/contract.md`](docs/contract.md), "Owner away & consensus".
+- **Committee advice on your asks (low priority).** Board asks and gates still wait for you, but
+  the sessions concerned may discuss one and attach advice to its card, so when you are back you
+  read "Committee recommends "A" (QA agree; OPS object)" and click once. It is advice only: never
+  an answer, never a `[BOARD decision]`, no alert; your buttons stay as they are (the recommended
+  one is outlined). BOARD batches it into a digest at most every `advice.digest_minutes` (default
+  60) per session, worded "low priority — reply at your next natural pause; do not stop current
+  work". Silence is no opinion. Production gates (and asks marked `--red-line`) show "red line —
+  owner only". Advice freezes when you answer or come back, and stays in the history.
+
+  ```bash
+  board advise "$d" --from WEB --to QA,OPS --option 1 "Keep it: two help pages still link to it."
+  board advise "$d" agree --from QA --note "Same view."
+  board advise "$d" object --from OPS --note "Remove it; the pages are being rewritten."
+  board advise ls            # BOARD: board advise digest, then board advise sent <digest id>
+  ```
+
+Details: [`docs/contract.md`](docs/contract.md), "Owner away & consensus" and "Committee advice".
 
 ### Do not disturb and automatic declines
 
@@ -1743,7 +1759,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 |---|---|
 | `docs/contract.md` | Binding data contract: local files, db collections, lifecycle stages & gates, relay formats, degraded mode |
 | `hooks/board-hook.sh` | Lifecycle hook: writes `state/<session_id>.json`, appends `events.jsonl`, always exits 0 |
-| `bin/board` | CLI: `ls`, `snapshot`, `ask`, `task new/stage/ls/show/set/dep/pr`, `decisions`, `answer`, `mark`, `resolve`, `limit`, `resources`, `pomodoro`, `schedule`, `press`, `notify`, `mute`, `unmute`, `notify-level`, `notify-presence`, `rc`, `session`, `away`, `consensus`, `message`, `apikey`, `guard`, `doctor`. Exit codes: 2 = usage (also `answer --option` mismatch), 3 = press refused, 4 = answer / vote refused, 5 = press partial (keys sent, Enter not pressed), 6 = refused by the secret guard, 7 = press refused (prompt off screen) |
+| `bin/board` | CLI: `ls`, `snapshot`, `ask`, `task new/stage/ls/show/set/dep/pr`, `decisions`, `answer`, `mark`, `resolve`, `limit`, `resources`, `pomodoro`, `schedule`, `press`, `notify`, `mute`, `unmute`, `notify-level`, `notify-presence`, `rc`, `session`, `away`, `consensus`, `advise`, `message`, `apikey`, `guard`, `doctor`. Exit codes: 2 = usage (also `answer --option` mismatch), 3 = press refused, 4 = answer / vote refused, 5 = press partial (keys sent, Enter not pressed), 6 = refused by the secret guard, 7 = press refused (prompt off screen) |
 | `bin/board-collect` | Zero-token collector: snapshot, diff, runs `board-notify` each loop; `--baseline` on first install |
 | `bin/board-notify`, `lib/notify.py` | Alerting: `send`, `ack`, `tick`, `test`, `status`, `gate`. Adapters (slack, desktop, email, line, sns, webhook), levels, escalation, ack, quiet hours, dedupe |
 | `lib/prefs.py` | Notification controls: mutes, min levels, presence (`board mute`, `notify-level`, `notify-presence`) and the delivery rule `lib/notify.py` applies |

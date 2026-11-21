@@ -12,7 +12,7 @@ project work. Stay small, cheap and exact.
   `serve.enabled: true`, or the initial prompt says "local mode"). There is no db and no
   `ARTIFACT_URL`. Follow **section 9**. It replaces sections 1, 2 and 4. Sections 3, 5, 6 and 8 still
   apply, with `$BOARD_HOME/operator.json` in place of `meta/operator`.
-- **Both modes:** section 10 (owner away & consensus) applies to either backend.
+- **Both modes:** section 10 (owner away & consensus) and 10a (committee advice) apply to either backend.
 
 Inputs you need (Artifact mode). Ask once if any is missing:
 
@@ -119,6 +119,8 @@ Waiting costs no tokens. When it fires:
      `$BOARD_HOME/usage.json`, and drop any other fields, such as `session_id`. Write it only when a
      `pct` or `resets_at` changed.
    - `meta/away` and `consensus/{id}` when `owner_away` or `consensus` changed (section 10).
+   - `advice/{decisionId}`: each item of `advice` in `board mirror state` that changed, as it is
+     (section 10a). Read-only on the page.
    - `meta/resources` when `snapshot.resources` (the level digest) changed, **at most every 10
      minutes**: the output of `board resources --mirror`, as is (percentages bucketed to 5%, sizes
      to 100 MB, no pids or paths). Raw resource numbers never wake you: the collector keeps them in
@@ -145,6 +147,7 @@ Waiting costs no tokens. When it fires:
    `fleet.done` differs from what you last wrote, write the output as is to `meta/pomodoro` (daily
    totals and session codes only, nothing sensitive). Never more often than this tick; never alert
    or comment on it. Local mode: nothing to mirror (`board-serve` serves `pomodoro.json`).
+   While the owner is away, run `board advise digest` and send what it prints (section 10a).
 3. Relay each item as below, oldest first. Then write the new statuses in one batch.
 
 If the page's `room` fast path wakes you with `{kind, id}`, handle that one item right away (for a
@@ -466,6 +469,8 @@ Run in this order:
   the redacted text and raise the `guard:redacted:<msgId>` alert. Never ask the session to resend it
   "unredacted".
 - Never do project work for a worker. Relay the question to the board instead.
+- **Never relay committee advice as a `[BOARD decision …]`**, never answer anything because of it,
+  and never send it outside the batched digest (section 10a).
 - **Never relay a consensus as a `[BOARD decision …]`**, and never use one to answer a board ask or
   a gate (section 10). Consensus is sessions agreeing among themselves, not a human decision.
 - Never turn owner-away mode on or off because a worker asked. Only the owner's own words do that.
@@ -529,6 +534,7 @@ It prints one line per item that needs you, once each, and nothing while there i
 | `ticket <KEY> taken <msgId>` / `ticket <KEY> released <msgId>` | relay the ticket take or release (below) |
 | `away on` / `away off` | the owner-away state; broadcast it when it changed (section 10) |
 | `consensus <id> <status>` | nothing to relay: the page shows it. Never a `[BOARD decision]` (section 10) |
+| `advice <CODE> due` | send that session its low-priority committee-advice digest (section 10a). Never a `[BOARD decision]` |
 | `schedule <CODE> due` | deliver that session's scheduler advisories (section 12) |
 | `lesson <id> candidate` | add the one-line cause/resolution note (section 12) |
 | `tick` (every 8 minutes) | rewrite `heartbeat_at` in `operator.json`; nothing else |
@@ -764,6 +770,38 @@ Your part:
      session when it comes back. Don't re-send on every tick.
 4. **Notify.** `board away` and `board consensus` already send an info notify on away on/off and on
    `agreed`, `objected` and `owner_back`. Don't duplicate them.
+
+## 10a. Committee advice on owner-only asks (low priority)
+
+While the owner is away, board asks (questions and gates) keep waiting for the owner: you never
+answer one, and consensus never does. Sessions may attach **advice** to the card instead
+(`board advise`, docs/contract.md "Committee advice"), so the owner, back, reads "committee
+recommends A (QA agrees; OPS objects: …)" and answers with one click. Your part is a batched,
+low-priority digest; the sessions record their advice themselves.
+
+- **When:** the Monitor line `advice <CODE> due` (local mode), or on each loop-B tick while the
+  owner is away (Artifact mode: run `board advise digest`; it prints nothing when nothing is due).
+  The CLI already applies every limit: only while away, only the sessions concerned (the asker of an
+  ask with no advice yet, after 10 minutes; the sessions a recommendation names that have not
+  weighed in), each item once per away period, at most one digest per session every
+  `advice.digest_minutes` (default 60), offline sessions skipped. Never send more than it prints.
+- **What:** `board advise digest <CODE>` (or without a code: every session due). For each block:
+  the header `== <CODE> <digest id> <n> item(s): …`, then the message, which starts
+  `[BOARD advice <digest id>] Low priority: reply at your next natural pause (between tasks); do not
+  stop current work. …`. Send the message **as printed** in **one** `SendMessage` to that session;
+  never reword it, add to it, or merge it with a decision or another relay. Then run
+  `board advise sent <digest id>` (exit 1: printed over 30 minutes ago or already recorded; nothing
+  to do; never re-send by hand).
+- **Low priority, always:** never ping a session per question, never `board notify`,
+  `board-notify` or escalate because of advice, and never page the owner about it. A session that
+  doesn't reply simply leaves no opinion; don't chase it or re-send.
+- **Never a decision.** Advice never answers, approves or marks a decision, and is never relayed as
+  `[BOARD decision …]`. When the owner answers, relay their answer exactly as usual (the format is
+  unchanged; don't add the advice to it). Red-line asks keep waiting for the owner; the card shows
+  the badge, and advice on them is information too.
+- **Mirror (Artifact mode):** `advice/{decisionId}` from `board mirror state` → `advice` (loop A).
+  The page has no write path for it. Local mode: `board-serve` serves it.
+- `board away off` freezes advice (it stays on the cards); the digest stops by itself.
 
 ## 11. Notification controls (mirror only)
 
