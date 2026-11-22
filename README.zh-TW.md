@@ -746,9 +746,9 @@ pomodoro:                 # fleet.yaml；全部選填
   「Owner away」橫幅和唯讀的共識清單；在自架看板上，核准者會看到 **I'm away**／**I'm back** 按鈕
   （`POST /api/away`）。不在狀態改變時，BOARD 會通知每個存活的 session，並回報誰收到、誰確認了。
 
-- **委員會對你的提問給建議（低優先）**。看板提問和關卡仍然等你回來，但相關的 session 可以先討論，
-  在卡片上附上建議；你回來時看到「委員會建議「A」（QA 同意；OPS 反對）」，按一下就好。這只是建議：
-  不是回覆、不會變成 `[BOARD decision]`、不發警示；你的按鈕不變（被建議的那個會加上外框）。BOARD 把
+- **委員會對你的提問給建議（低優先）**。你不在時，相關的 session 可以先討論看板提問或關卡，
+  在卡片上附上建議；你看到「委員會建議「A」（QA 同意；OPS 反對）」，按一下就好。在成為決定之前，
+  建議不是回覆，也不發警示；你的按鈕不變（被建議的那個會加上外框）。BOARD 把
   它整批放進摘要，每個 session 最多每 `advice.digest_minutes`（預設 60）分鐘送一次，並寫明「低優先，
   在下一個自然的空檔（兩件工作之間）再回，不要中斷手上的工作」。沒回應就是沒有意見。production 關卡
   （以及標了 `--red-line` 的提問）會顯示「紅線：只有主人能決定」。你回覆或回來後建議就凍結，留在歷史紀錄裡。
@@ -760,7 +760,24 @@ pomodoro:                 # fleet.yaml；全部選填
   board advise ls            # BOARD: board advise digest --from <operator code>, then board advise sent --from <operator code> <digest id>
   ```
 
-詳見 [`docs/contract.md`](docs/contract.md) 的「Owner away & consensus」與「Committee advice」。
+- **你不在時由委員會決定（你的設定）**。預設是：**每個被詢問的 session 都同意**這個建議（至少兩個，
+  包括提問的 session），而且**沒有人反對**，建議就成為決定：回覆者記為 `committee`，由 BOARD 轉給
+  提問的 session，格式是 `[BOARD decision <id>] <answer> (by committee consensus while owner away: WEB, QA, API)`，
+  紅線或 production 關卡會再加上 `; red line` 或 `; red line: production gate`。沉默一律不算同意。
+  每個決定事後都會通知你（info；紅線和 production 關卡用 high），頁面會列在「你不在時做出的決定」，
+  歷史紀錄寫「由委員會決定」和同意的 session。你回來後這些決定維持不變（之後的回覆會被拒絕）。
+  想自己做最後決定？在個人選單選「由我決定」（或 `board away decisions owner_final --by <你>`），
+  建議就只是建議。勾選「紅線和 production gate 仍然等我」則只有那些留給你。
+
+  ```bash
+  board away decisions status                       # committee (default) or owner_final
+  board away decisions owner_final --by OPS         # advice only; the owner answers every ask
+  board away decisions committee --red-lines owner --by OPS
+  board advise decided                              # committee decisions of the last 7 days
+  ```
+
+詳見 [`docs/contract.md`](docs/contract.md) 的「Owner away & consensus」、「Committee advice」與
+「Committee decisions」。
 
 ### 勿擾與自動婉拒
 
@@ -1563,7 +1580,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 |---|---|
 | `docs/contract.md` | 具約束力的資料契約：本機檔案、資料庫 collection、生命週期階段與關卡、轉發格式、降級模式 |
 | `hooks/board-hook.sh` | 生命週期 hook：寫入 `state/<session_id>.json`、附加到 `events.jsonl`，永遠以 exit 0 結束 |
-| `bin/board` | CLI：`ls`、`snapshot`、`ask`、`task new/stage/ls/show/set/dep/pr`、`decisions`、`answer`、`mark`、`resolve`、`limit`、`resources`、`pomodoro`、`schedule`、`press`、`notify`、`mute`、`unmute`、`notify-level`、`notify-presence`、`rc`、`session`、`away`、`consensus`、`advise`、`message`、`apikey`、`guard`、`doctor`。結束碼：2 = 用法錯誤（也包括 `answer --option` 不一致），3 = 拒絕按鍵，4 = 拒絕回答／投票，5 = 按鍵做到一半（已送出按鍵、沒有按 Enter），6 = 被機密防護拒絕，7 = 拒絕按鍵（提示不在畫面上） |
+| `bin/board` | CLI：`ls`、`snapshot`、`ask`、`task new/stage/ls/show/set/dep/pr`、`decisions`、`answer`、`mark`、`resolve`、`limit`、`resources`、`pomodoro`、`schedule`、`press`、`notify`、`mute`、`unmute`、`notify-level`、`notify-presence`、`rc`、`session`、`away`、`consensus`、`advise`、`message`、`apikey`、`guard`、`doctor`。結束碼：2 = 用法錯誤（也包括 `answer --option` 不一致），3 = 拒絕按鍵，4 = 拒絕回答／投票，5 = 按鍵做到一半（已送出按鍵、沒有按 Enter），6 = 被機密防護拒絕，7 = 拒絕按鍵（提示不在畫面上），9 = 拒絕回答（委員會已經決定） |
 | `bin/board-collect` | 不耗 token 的收集器：snapshot、diff，每一輪執行 `board-notify`；首次安裝時用 `--baseline` |
 | `bin/board-notify`、`lib/notify.py` | 告警：`send`、`ack`、`tick`、`test`、`status`、`gate`。轉接器（slack、desktop、email、line、sns、webhook）、等級、升級、確認、勿擾時段、去除重複 |
 | `lib/prefs.py` | 通知控制：靜音、最低等級、在場（`board mute`、`notify-level`、`notify-presence`），以及 `lib/notify.py` 套用的送出規則 |

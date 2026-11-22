@@ -175,9 +175,10 @@ serve:
 #   # process_classes: {test: "regex", browser: "regex", build: "regex", container: "regex"}
 
 # Committee advice (`board advise`, docs/contract.md "Committee advice"): while the owner is away,
-# sessions may attach advice to a pending board ask; it is information on the card, never an
-# answer. BOARD sends each concerned session at most one low-priority digest this often (5-1440);
-# no alerts, no per-question pings.
+# sessions may attach advice to a pending board ask. By default a unanimous recommendation becomes
+# the decision ("Committee decisions"); that is the owner's own setting, kept in
+# $BOARD_HOME/away-decisions.json (`board away decisions`, the profile menu), not here. BOARD sends
+# each concerned session at most one low-priority digest this often (5-1440); no per-question pings.
 # advice:
 #   digest_minutes: 60
 

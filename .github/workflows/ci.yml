@@ -34,7 +34,7 @@ jobs:
             scripts/install.sh scripts/setup-dev.sh tests/run.sh .githooks/pre-commit .githooks/commit-msg \
             bin/board-notify hooks/board-statusline-tap.sh tests/test_notify.sh \
             bin/board-serve scripts/expose-cloudflare.sh tests/test_serve.sh tests/test_away.sh \
-            tests/test_notify_controls.sh tests/test_advice.sh
+            tests/test_notify_controls.sh tests/test_advice.sh tests/test_committee.sh
 
   readme-sync:
     runs-on: ubuntu-latest
@@ -69,6 +69,8 @@ jobs:
         run: tests/test_away.sh -v
       - name: committee advice tests (board advise, the low-priority digest)
         run: tests/test_advice.sh -v
+      - name: committee decision tests (board away decisions, board advise relay, board answer exit 9)
+        run: tests/test_committee.sh -v
       - name: resources tests
         run: python3 tests/test_resources.py -v
       - name: secret guard tests

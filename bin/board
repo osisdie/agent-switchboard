@@ -69,6 +69,10 @@
 #   board away on --by WHO --said "owner's words"|--said-file PATH [--replace]
 #   board away off --by WHO [--said "..."|--said-file PATH]     owner-away mode ($BOARD_HOME/owner-away)
 #   board away status [--quiet|--json]         exit 0 when the owner is away, 1 when not
+#   board away decisions committee|owner_final [--red-lines committee|owner] --by WHO | status [--json]
+#                                              while away, a unanimous committee recommendation on
+#                                              a board ask becomes the decision (committee, default)
+#                                              or stays advice for the owner (owner_final)
 #   board dnd on|off --by WHO [--said TEXT]     do not disturb ($BOARD_HOME/owner-dnd): the owner
 #                                              is present, askers are declined with a canned reply
 #   board dnd status [--quiet|--json]          exit 0 when do-not-disturb is on, 1 when not
@@ -88,9 +92,12 @@
 #   board advise ID agree|object --from CODE [--note T|--note-file PATH] [--red-line]
 #   board advise ls [--all] [--json] | show ID [--json]
 #   board advise digest --from BOARD [CODE] [--json] | sent --from BOARD DIGEST_ID...
+#   board advise relay --from BOARD [ID] [--json] | decided [--json]
 #                                              committee advice on a pending board ask while the
-#                                              owner is away: information on the card, never an
-#                                              answer; BOARD batches a low-priority digest
+#                                              owner is away; BOARD batches a low-priority digest.
+#                                              With `board away decisions committee` (the default)
+#                                              a unanimous recommendation becomes the decision and
+#                                              BOARD relays it (advise relay)
 #   board rc on|off CODE|all [--by NAME] [--no-apply]
 #                                              Remote Control: store the choice (fleet-up uses it
 #                                              at start) and apply it to running sessions that
@@ -479,10 +486,18 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
         echo "  on: records {since, by, said}; when already away it shows the record and keeps it"
         echo "  (unless --replace). off: removes it; pending consensus items go back to the owner."
         echo "  status: exit 0 when away, 1 when not (--quiet prints nothing, --json the record);"
-        echo "  2 for a usage error, so a typo never reads as \"not away\"." ;;
+        echo "  2 for a usage error, so a typo never reads as \"not away\"."
+        echo "       board away decisions committee|owner_final [--red-lines committee|owner] --by WHO"
+        echo "       board away decisions status [--json]"
+        echo "  the owner's setting for board asks while away (\$BOARD_HOME/away-decisions.json):"
+        echo "  committee (default): when every session asked agrees (2 or more, the asker included) and"
+        echo "  nobody objects, the committee's recommendation becomes the decision; owner_final: advice"
+        echo "  only. --red-lines owner keeps red lines and production gates for the owner (default:"
+        echo "  committee). Inside tmux, a board session can't loosen it (exit 4); tightening always works." ;;
     "away on") echo "usage: board away on --by WHO --said \"owner's words\"|--said-file PATH [--replace]" ;;
     "away off") echo "usage: board away off --by WHO [--said \"...\"|--said-file PATH]" ;;
     "away status") echo "usage: board away status [--quiet|--json]   (exit 0 = away, 1 = not away, 2 = usage)" ;;
+    "away decisions") python3 "$REPO/lib/committee.py" settings --help ;;
     consensus) echo "usage: board consensus propose --from CODE --to A,B[,..] [--ref REF] \"proposal\"|--file PATH"
         echo "       board consensus vote ID agree|object --from CODE [--note T|--note-file PATH]"
         echo "       board consensus ls [--all]"
@@ -505,14 +520,20 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
         echo "       board advise show ID [--json]"
         echo "       board advise digest --from BOARD [CODE] [--json]   (the operator: the low-priority digest due now)"
         echo "       board advise sent --from BOARD DIGEST_ID...        (the operator: after sending it)"
+        echo "       board advise relay --from BOARD [ID] [--json]      (the operator: committee decisions to relay)"
+        echo "       board advise decided [--json]                       (committee decisions of the last 7 days)"
         echo "  committee advice: while the owner is away, sessions may attach a recommendation to a"
         echo "  pending board ask (a question or gate, never a permission prompt or a pane question)."
-        echo "  It is information on the card for the owner: it never answers, approves or relays"
-        echo "  anything, and it sends no alert. One recommendation per ask (--option names the option"
+        echo "  It is information on the card for the owner, and it sends no alert. While the owner allows"
+        echo "  it (board away decisions committee, the default), the agree that makes every session asked"
+        echo "  agree (2 or more, the asker included; no objection) turns the recommendation into the"
+        echo "  decision: answered by \"committee\", relayed by BOARD (board advise relay), the owner told"
+        echo "  after. Otherwise (owner_final) it never answers anything. One recommendation per ask (--option names the option"
         echo "  it recommends; --to the sessions whose view it asks for, plus the asker); any other"
         echo "  session may agree or object with a note (the latest stance counts). Silence is no"
-        echo "  opinion, never agreement. --red-line marks the ask \"red line: owner only\" (production"
-        echo "  gates always are). Advice freezes when the owner answers or comes back (board away off)."
+        echo "  opinion, never agreement. --red-line marks the ask as a red line (production gates always"
+        echo "  are); the committee decides those too unless the owner chose --red-lines owner. Advice"
+        echo "  freezes when the owner answers or comes back (board away off), or when it is decided."
         echo "  --from must be this tmux session (exit 4 otherwise); exit 1: the owner is not away, the"
         echo "  ask is not pending, or the advice is frozen. digest and sent are the operator's only:"
         echo "  --from BOARD (or operator.json's operator_session), else exit 4. A session whose digest"
@@ -521,6 +542,8 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
     "advise show") echo "usage: board advise show ID [--json]" ;;
     "advise digest") echo "usage: board advise digest --from BOARD [CODE] [--json]   (the operator only; one block per session: '== CODE DIGEST_ID N item(s): IDS', then the message)" ;;
     "advise sent") echo "usage: board advise sent --from BOARD DIGEST_ID...   (the operator only; exit 1: not printed in the last 30 minutes)" ;;
+    "advise relay") echo "usage: board advise relay --from BOARD [ID] [--json]   (the operator only; '== ID ASKER [red-line|production-gate]', then the exact [BOARD decision] line; after sending: board mark ID relayed)" ;;
+    "advise decided") echo "usage: board advise decided [--json]   (committee decisions of the last 7 days)" ;;
     ticket) python3 "$REPO/lib/tickets/cli.py" --help ;;
     *) usage ;;
   esac
@@ -795,6 +818,14 @@ cmd_answer() {
   [ -n "$id" ] && { [ -n "$answer" ] || [ -n "$options" ] || [ -n "$form_file" ]; } && [ -n "$by" ] || { sub_usage answer >&2; exit 2; }
   local f; f="$(dec_path "$id")"
   [ -f "$f" ] || die "no such decision: $id"
+  # "committee" is the committee's own identity (lib/committee.py, under the away/consensus lock):
+  # never an approver's, whatever fleet.yaml says. Refused before anything is written.
+  if [ "$(tr '[:upper:]' '[:lower:]' <<<"$by")" = committee ]; then
+    log_event "$(jq -cn --arg id "$id" --arg by "$by" --argjson now "$(now_ms)" \
+      '{ts: $now, type: "unauthorized", id: $id, by: $by, reason: "committee is not an approver identity"}')"
+    echo "board answer: refused — \"committee\" is not an approver; committee decisions are made by board advise while the owner is away" >&2
+    exit 4
+  fi
   # --options I,J,...: one option number per question of a pane form, checked before anything is
   # written (exit 2, nothing recorded). The answer is composed from the session's own labels.
   local opts_json=""
@@ -892,11 +923,22 @@ cmd_answer() {
   fi
   local raw_answer="$answer"
   answer="$(guard_scrub "$answer")"   # a free-text answer is shown on the board and relayed
+  # The committee decides board asks under the away/consensus lock (lib/committee.py): hold it from
+  # reading the status to writing the answer, so an owner's answer and a committee decision never
+  # interleave and whoever comes first wins. Without flock, `board advise` can't run at all.
+  if command -v flock >/dev/null 2>&1; then lock_board; fi
   local cur; cur="$(jq -r '.status' "$f")"
   case "$cur" in
     pending|answered|unauthorized) ;;
     *) die "decision $id is already $cur" ;;
   esac
+  # A committee decision is final: it is relayed as it is, and the owner reviews it afterwards.
+  if [ "$cur" = answered ] && [ "$(jq -r '.answered_by // empty' "$f")" = committee ]; then
+    log_event "$(jq -cn --arg id "$id" --arg by "$by" --argjson now "$(now_ms)" \
+      '{ts: $now, type: "answer", id: $id, by: $by, result: "refused", reason: "decided by the committee"}')"
+    echo "board answer: refused — $id was decided by committee consensus while the owner was away (board advise show $id); it stays decided" >&2
+    exit 9
+  fi
   local now; now="$(now_ms)"
   # --option N (the button the human clicked): only for a pane question, and only when option N's
   # label is this answer (both trimmed). Checked before anything is written.
@@ -964,6 +1006,7 @@ cmd_answer() {
   if [ -n "$held" ] || { [ -z "$opts_json" ] && ! held="$(printf '%s' "$raw_answer" | python3 "$GUARD" screen-answer "$f")"; }; then
     log_event "$(jq -cn --arg id "$id" --arg by "$by" --arg r "$held" --argjson now "$(now_ms)" \
       '{ts: $now, type: "guard", action: "held-answer", id: $id, by: $by, reason: $r}')"
+    unlock_board
     "$REPO/bin/board-notify" send --level high --key "guard:held-answer:$id" --board "$id" \
       --title "A board answer was refused by the secret guard" >/dev/null 2>&1 || true
     echo "board answer: refused by the secret guard ($held); nothing recorded" >&2
@@ -997,6 +1040,7 @@ cmd_answer() {
     update_decision "$id" "$base" --arg a "$answer" --arg by "$by" --argjson now "$now"
   fi
   log_event "$(jq -cn --arg id "$id" --arg by "$by" --argjson now "$now" '{ts: $now, type: "answer", id: $id, by: $by}')"
+  unlock_board   # the answer is on disk: a committee check now sees it is no longer pending
 
   if [ "$is_pane" = 1 ]; then
     # A pane question: its answer was mapped to its option number above, and how it reaches the session.
@@ -2402,6 +2446,7 @@ cmd_away() {
   case "$sub" in
     on|off) away_set "$sub" "$@" ;;
     status) away_status "$@" ;;
+    decisions) python3 "$REPO/lib/committee.py" settings "$@" ;;
     *) sub_usage away >&2; exit 2 ;;
   esac
 }
@@ -2425,7 +2470,8 @@ away_status() {
   elif [ "$quiet" = 0 ]; then
     away_line "$rec"
     echo "  sessions may decide cross-session questions by explicit consensus (board consensus);"
-    echo "  red lines and board asks wait for the owner."
+    echo "  red lines there wait for the owner."
+    echo "  $(python3 "$REPO/lib/committee.py" settings status 2>/dev/null || echo "board asks: see board away decisions status")"
   fi
   return 0
 }
@@ -2488,8 +2534,13 @@ away_set() {
     unlock_board
     away_line "$rec"
     [ -n "$stale" ] && echo "earlier pending consensus returned to the owner: $(paste -sd " " - <<<"$stale")" >&2
-    notify_quiet "$(jq -rn --arg by "$by" --arg said "$said" "$JQ_LINE"'
-      "[board] Owner away (set by \($by | line)): \"\($said | line | .[0:300])\" — sessions may decide by explicit consensus; red lines and board asks wait for the owner."')"
+    local asks
+    asks="$(python3 "$REPO/lib/committee.py" settings status --json 2>/dev/null | jq -r '
+      if .mode == "committee" then "the committee decides one when every session asked agrees"
+        + (if .red_lines == "owner" then " (red lines wait for the owner)" else ", red lines included" end)
+      else "they wait for the owner" end' 2>/dev/null)"
+    notify_quiet "$(jq -rn --arg by "$by" --arg said "$said" --arg asks "${asks:-they wait for the owner}" "$JQ_LINE"'
+      "[board] Owner away (set by \($by | line)): \"\($said | line | .[0:300])\" — sessions may decide by explicit consensus; board asks: \($asks)."')"
     return 0
   fi
 
@@ -2844,7 +2895,8 @@ cmd_advise() {
   need_jq
   case "${1:-}" in
     ls|show) guarded python3 "$REPO/lib/advice.py" "$@" ;;
-    digest|sent)
+    decided) guarded python3 "$REPO/lib/committee.py" "$@" ;;
+    digest|sent|relay)
       local sub="$1" from="" rest=()
       shift
       while [ $# -gt 0 ]; do
@@ -2859,6 +2911,8 @@ cmd_advise() {
       adv_operator "$from" "$sub"
       if [ "$sub" = digest ]; then
         guarded python3 "$REPO/lib/advice.py" digest ${rest[@]+"${rest[@]}"}
+      elif [ "$sub" = relay ]; then
+        guarded python3 "$REPO/lib/committee.py" relay ${rest[@]+"${rest[@]}"}
       else
         python3 "$REPO/lib/advice.py" sent ${rest[@]+"${rest[@]}"}
       fi ;;
@@ -2997,7 +3051,12 @@ adv_recommend() {
   unlock_board
   echo "advice on $id: $from recommends${label:+ \"$label\"}; asked: ${parts[*]:1}"
   {
-    echo "  advice only: the ask still waits for the owner, who reads it on the card."
+    if [ "$(python3 "$REPO/lib/committee.py" settings status --json 2>/dev/null | jq -r .mode 2>/dev/null)" = committee ]; then
+      echo "  not a decision yet: when every session asked agrees and nobody objects, it becomes the"
+      echo "  decision (the owner lets the committee decide while away; board away decisions status)."
+    else
+      echo "  advice only: the ask still waits for the owner, who reads it on the card."
+    fi
     echo "  the others weigh in at their next pause (BOARD's low-priority digest); nothing else to send."
   } >&2
 }
@@ -3049,13 +3108,33 @@ adv_stance() {
   write_atomic "$f" "$new" || { unlock_board; die "cannot write the advice on $id"; }
   log_event "$(jq -cn --argjson now "$now" --arg id "$id" --arg by "$from" --arg s "$stance" \
     '{ts: $now, type: "advice", action: $s, id: $id, by: $by}')"
+  # The agree that completes a unanimous consensus turns it into the decision, here, under the same
+  # lock (lib/committee.py: the owner's setting, red lines, at least 2 sessions with the asker, no
+  # objection). `board answer` takes this lock too: whoever comes first wins.
+  local outcome="advice"
+  if [ "$stance" = agree ]; then
+    outcome="$(python3 "$REPO/lib/committee.py" _decide "$id" 2>/dev/null)" || outcome="error"
+  fi
   unlock_board
   echo "advice on $id: $from ${stance}s — $(jq -r '
     (reduce .stances[] as $x ({}; .[$x.by] = $x.stance)) as $last
     | ([.participants[] | select($last[.] == "agree")] | length) as $a
     | ([.participants[] | select($last[.] == "object")] | length) as $o
     | "\($a) agree, \($o) object, \((.participants | length) - $a - $o - 1) no opinion yet"' "$f")"
-  echo "  advice only: the ask still waits for the owner." >&2
+  case "$outcome" in
+    decided)
+      echo "$id decided by committee consensus while the owner is away: \"$(jq -r '.answer | tostring | .[0:200]' "$(dec_path "$id")")\"" \
+        "(agreed: $(jq -r '.committee.participants | join(", ")' "$(dec_path "$id")"))"
+      echo "  BOARD relays it to $(jq -r '.from' "$(dec_path "$id")"); the owner is told after." >&2 ;;
+    owner_final|red_line_owner) echo "  advice only: the owner keeps the final say on this ask (board away decisions status)." >&2 ;;
+    held) echo "  not decided: the recommendation was held by the secret guard; it waits for the owner." >&2 ;;
+    error) echo "  advice recorded; the committee decision check failed, so the ask waits for the owner." >&2 ;;
+    *) if [ "$(python3 "$REPO/lib/committee.py" settings status --json 2>/dev/null | jq -r .mode 2>/dev/null)" = committee ]; then
+         echo "  not decided yet: it becomes the decision when every session asked agrees and nobody objects." >&2
+       else
+         echo "  advice only: the ask still waits for the owner." >&2
+       fi ;;
+  esac
 }
 
 # ---------------------------------------------------------------- notification controls
@@ -3197,7 +3276,7 @@ case "$sub" in
     case "${2:-}" in -h|--help) sub_usage "$sub" "$1"; exit 0 ;; esac ;;
   advise)
     case "${1:-}" in -h|--help) sub_usage advise; exit 0 ;; esac
-    case "${1:-}:${2:-}" in ls:-h|ls:--help|show:-h|show:--help|digest:-h|digest:--help|sent:-h|sent:--help)
+    case "${1:-}:${2:-}" in ls:-h|ls:--help|show:-h|show:--help|digest:-h|digest:--help|sent:-h|sent:--help|relay:-h|relay:--help|decided:-h|decided:--help)
       sub_usage advise "$1"; exit 0 ;; esac ;;
   task)
     if wants_help "$@"; then

@@ -47,6 +47,8 @@ snap() { jq -n --arg off "${1:-}" '{generated_at: 1, sessions: (["API", "WEB", "
   | map({code: ., state: (if . == $off then "offline" else "idle" end)}))}' > "$BOARD_HOME/snapshot.json"; }
 snap
 digest() { BOARD_NOW_MS="$1" "$B" advise digest --from BOARD "${@:2}"; }
+# advice only here (the owner keeps the final say); the committee deciding is tests/test_committee.sh
+"$B" away decisions owner_final --by local >/dev/null
 sent() { BOARD_NOW_MS="$1" "$B" advise sent --from BOARD "${@:2}"; }
 
 # ---------------------------------------------------------------- refusals

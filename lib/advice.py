@@ -3,8 +3,10 @@
 advice"). bin/board writes the records (`board advise ID ...`, under the away/consensus lock);
 this module reads them and runs the low-priority digest that BOARD sends.
 
-Advice is information for the owner, never an answer: nothing here answers, marks or relays a
-decision, and nothing sends a notification. A board ask still waits for the owner.
+Advice is information for the owner: nothing here answers, marks or relays a decision, and nothing
+sends a notification. While the owner is away and allows it (away-decisions.json, mode committee),
+a unanimous recommendation becomes the decision: lib/committee.py does that, never this module;
+the record then freezes with reason "decided".
 
 - Records: $BOARD_HOME/advice/<decision id>.json, one per decision: the recommendation (one
   session's, with an optional option label), every session's agree/object stance (latest counts,
@@ -58,6 +60,12 @@ MAX_Q = 200
 SUFFIX_RULE = ("Low priority: reply at your next natural pause (between tasks); do not stop current work. "
                "The owner is away and these board asks wait for the owner. Advice is information on the card, "
                "never an answer or an approval; no reply simply leaves no opinion.")
+# the owner's setting is "committee" (lib/committee.py): a unanimous recommendation becomes the decision
+SUFFIX_COMMITTEE = ("Low priority: reply at your next natural pause (between tasks); do not stop current work. "
+                    "The owner is away and lets the committee decide: when every session asked agrees (2 or more, "
+                    "the asker included) and nobody objects, the recommendation becomes the decision and BOARD "
+                    "relays it to the asker. Agree only with what you would decide yourself; object to stop it. "
+                    "No reply leaves no opinion and decides nothing.")
 
 
 def now_ms():
@@ -144,7 +152,10 @@ def load_record(home, did):
 
 
 def frozen_why(rec, dec, away_rec):
-    """None while the advice is open, else why it is frozen (answered, owner_back, away_changed)."""
+    """None while the advice is open, else why it is frozen (decided: the committee's consensus
+    became the decision, lib/committee.py; answered, owner_back, away_changed)."""
+    if rec.get("frozen_reason") == "decided" and isinstance(dec, dict) and dec.get("answered_by") == "committee":
+        return "decided"
     if not isinstance(dec, dict) or dec.get("status") not in OPEN_STATUSES:
         return "answered"
     if rec.get("status") == "frozen":
@@ -176,7 +187,7 @@ def view(rec, dec, away_rec):
                             "at": _ms(s.get("at")) or None,
                             "note": away._text(s.get("note"), MAX_NOTE) if s.get("note") else None})  # noqa: SLF001
     frozen_at = None
-    if why == "answered":
+    if why in ("answered", "decided"):
         frozen_at = _ms((dec or {}).get("answered_at")) or _ms(rec.get("frozen_at")) or None
     elif why:
         frozen_at = _ms(rec.get("frozen_at")) or None
@@ -187,7 +198,8 @@ def view(rec, dec, away_rec):
             "recommendation": away._text(rec.get("recommendation"), MAX_REC),  # noqa: SLF001
             "red_line": is_red_line(dec, rec),
             "stances": stances, "status": "frozen" if why else "open", "frozen_reason": why,
-            "frozen_at": frozen_at, "created_at": _ms(rec.get("created_at")) or None,
+            "frozen_at": frozen_at, "decided": why == "decided",
+            "created_at": _ms(rec.get("created_at")) or None,
             "updated_at": _ms(rec.get("updated_at")) or None}
 
 
@@ -301,16 +313,20 @@ def _q(s, n=MAX_Q):
     return away._text(s, n)  # noqa: SLF001 - one line, clipped, "[BOARD" defanged
 
 
-def render(code, digest_id, items):
-    """The one message BOARD sends to `code`, as printed."""
-    lines = ["[BOARD advice %s] %s" % (digest_id, SUFFIX_RULE)]
+def render(code, digest_id, items, mode=None):
+    """The one message BOARD sends to `code`, as printed. mode: the owner's away_decisions setting
+    ({mode, red_lines}, lib/committee.py); None or owner_final: advice only."""
+    decides = isinstance(mode, dict) and mode.get("mode") == "committee"
+    red_too = decides and mode.get("red_lines") == "committee"
+    lines = ["[BOARD advice %s] %s" % (digest_id, SUFFIX_COMMITTEE if decides else SUFFIX_RULE)]
     for i, (_key, d, rec, kind) in enumerate(items, 1):
         opts = [str(o) for o in d.get("options") or [] if isinstance(o, (str, int, float))]
         head = "%d. %s from %s: \"%s\"" % (i, d["id"], _q(d.get("from"), 64), _q(d.get("question")))
         if opts:
             head += " — options: " + " | ".join("%d. %s" % (j, _q(o, 60)) for j, o in enumerate(opts, 1))
         if is_red_line(d, rec):
-            head += " [red line: owner only; advice is still information]"
+            head += (" [red line: the committee may decide it; the owner is told after]" if red_too
+                     else " [red line: owner only; advice is still information]")
         lines.append(head)
         if kind == "propose":
             lines.append("   You asked it and it has no advice yet. If you have a recommendation: "
@@ -331,6 +347,8 @@ def render(code, digest_id, items):
 
 def digest(home, cfg, only=None, as_json=False, now=None):
     now = now if now is not None else now_ms()
+    import committee  # noqa: PLC0415 - committee imports this module
+    mode = committee.settings(home)
     with locked(home):
         state = load_state(home)
         before = dict(state["printed"])
@@ -347,7 +365,7 @@ def digest(home, cfg, only=None, as_json=False, now=None):
             # expires is printed again only digest_minutes after this one, never every PRINTED_MS
             state["last"][code] = now
             blocks.append({"to": code, "digest_id": gid, "decisions": [d["id"] for _k, d, _r, _x in items],
-                           "text": render(code, gid, items)})
+                           "text": render(code, gid, items, mode)})
         state["printed"] = printed
         if printed != before or blocks:
             write_json(os.path.join(home, STATE_FILE), state)
@@ -423,7 +441,7 @@ def ls(home, all_=False, as_json=False, now=None):
         print(json.dumps(rows, ensure_ascii=False))
         return 0
     rec = away.away_record(home)
-    print("owner away" if rec else "owner is not away (advice is frozen; it never answers anything)")
+    print("owner away" if rec else "owner is not away (advice is frozen; nothing more is decided by the committee)")
     if not rows:
         print("no committee advice" + ("" if all_ else " (--all shows older)"))
         return 0
@@ -431,7 +449,7 @@ def ls(home, all_=False, as_json=False, now=None):
         st = v["status"] + ("/" + v["frozen_reason"] if v["frozen_reason"] else "")
         print("%s  %s  %s recommends %s%s  [%s]%s" % (
             v["decision_id"], st, v["from"], ('"%s": ' % v["option"]) if v["option"] else "",
-            v["recommendation"][:80], _summary(v), "  RED LINE: owner only" if v["red_line"] else ""))
+            v["recommendation"][:80], _summary(v), "  RED LINE" if v["red_line"] else ""))
     return 0
 
 
@@ -444,10 +462,18 @@ def show(home, did, as_json=False):
     if as_json:
         print(json.dumps(v, ensure_ascii=False))
         return 0
-    print("committee advice on %s (%s%s) — advice only, not a decision" % (
-        did, v["status"], "/" + v["frozen_reason"] if v["frozen_reason"] else ""))
-    if v["red_line"]:
-        print("red line: owner only")
+    if v["frozen_reason"] == "decided":
+        dec = load_decision(home, did) or {}
+        c = dec.get("committee") if isinstance(dec.get("committee"), dict) else {}
+        print("%s: decided by committee consensus while the owner was away (%s): \"%s\"; agreed: %s%s" % (
+            did, dec.get("status"), away._text(dec.get("answer"), 300),  # noqa: SLF001
+            ", ".join(away._text(p, 64) for p in c.get("participants") or []),  # noqa: SLF001
+            "; red line: production gate" if c.get("production") else "; red line" if c.get("red_line") else ""))
+    else:
+        print("committee advice on %s (%s%s) — advice only, not a decision" % (
+            did, v["status"], "/" + v["frozen_reason"] if v["frozen_reason"] else ""))
+    if v["red_line"] and v["frozen_reason"] != "decided":
+        print("red line")
     print("%s recommends %s%s" % (v["from"], ('"%s": ' % v["option"]) if v["option"] else "", v["recommendation"]))
     print("asked: %s" % ", ".join(v["participants"]))
     for s in v["stances"]:

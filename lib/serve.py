@@ -49,6 +49,9 @@ listeners (docs/contract.md, "Local adapter API"):
   POST /api/asker-route                {"mode"?: "local"|"claude_when_ample", "five_hour_below"?,
                                        "seven_day_below"?, "away_askers"?: "committee"|"decline"|"wait"}
                                        (owners only: who answers askers, lib/asker_route.py)
+  POST /api/away-decisions             {"mode"?: "committee"|"owner_final", "red_lines"?: "committee"|"owner"}
+                                       (owners only: whether a unanimous committee decides board asks
+                                       while the owner is away, lib/committee.py)
   POST /api/notify-prefs               {"op": "mute"|"unmute"|"level"|"presence", ...}  (approvers
                                        only; via `board mute|unmute|notify-level|notify-presence`)
   POST /api/presence                   {"visible": bool, "idle_ms": ms}  (owners only, else 204 ignored;
@@ -123,6 +126,7 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import availability  # noqa: E402
 import asker_route  # noqa: E402
 import advice  # noqa: E402
+import committee  # noqa: E402
 import away  # noqa: E402
 import desk  # noqa: E402
 import fleet  # noqa: E402
@@ -549,7 +553,7 @@ class StateBuilder:
         paths = [self.p(n) for n in ("snapshot.json", "usage.json", "usage-samples.json", "account.json",
                                     "limit.json", "operator.json",
                                     "ledger.json", "events.jsonl", "owner-away", availability.DND_FILE, prefs.PREFS_FILE,
-                                    asker_route.FILE, asker_route.STATE_FILE,
+                                    asker_route.FILE, asker_route.STATE_FILE, committee.FILE,
                                     rc.PREFS_FILE, actions.QUEUE_FILE, actions.LAST_FILE)]
         paths.append(self.p("resources.json"))  # rewritten on a bucketed change, else every 60 s
         paths.append(self.p("cards.json"))      # card extras (lib/cards.py), rewritten when changed
@@ -661,6 +665,11 @@ class StateBuilder:
                 row.pop("reconciled_from", None)
             if row.get("reconcile_result") not in RECONCILE_RESULTS:
                 row.pop("reconcile_result", None)
+            # decided by committee consensus while the owner was away (lib/committee.py): compact,
+            # and only on a decision the committee really answered
+            row.pop("committee", None)
+            if committee.is_committee(d):
+                row["committee"] = committee.compact(d["committee"])
             if not row.get("from") and d.get("session_id") in by_sid:
                 row["from"] = by_sid[d["session_id"]]
             decisions.append(row)
@@ -717,6 +726,8 @@ class StateBuilder:
                 "local_model": desk.view(self.home, cfg),
                 # who answers askers now: local model or Claude sessions (lib/asker_route.py)
                 "asker_route": asker_route.view(self.home),
+                # whether a unanimous committee decides board asks while the owner is away
+                "away_decisions": committee.view(self.home),
                 "consensus": away.consensus_items(self.home, now_ms())[-50:],
                 # committee advice on the decisions served (lib/advice.py): information, never an answer
                 "advice": advice.board_view(self.home, {d["id"] for d in decisions}),
@@ -1533,6 +1544,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # local model or Claude sessions for askers (usage-dependent: per viewer, like availability);
         # the owner's thresholds and why only for owners
         state["asker_route"] = asker_route.view(self.server.home, owner=is_owner(cfg, ident))
+        state["away_decisions"] = committee.view(self.server.home, owner=is_owner(cfg, ident))
         if not is_owner(cfg, ident):
             state["operator"] = owner_only_operator(state.get("operator"))
         return self.viewer_for(state, ident, via, cfg)
@@ -1689,6 +1701,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if path == "/api/asker-route":
                 body = self.read_body()
                 return self.set_asker_route(body, ident, via)
+            if path == "/api/away-decisions":
+                body = self.read_body()
+                return self.set_away_decisions(body, ident, via)
             if path == "/api/notify-prefs":
                 body = self.read_body()
                 return self.notify_prefs(body, ident, via)
@@ -1832,6 +1847,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if dec.get("status") not in ("pending", "unauthorized", "answered"):
                 self.audit(ident, via, "answer", id=did, result="gone", status=dec.get("status"))
                 raise Refused(409, "gone", "decision is already %s" % dec.get("status"))
+            if committee.is_committee(dec):     # final; `board answer` refuses it too (exit 9)
+                self.audit(ident, via, "answer", id=did, result="gone", reason="decided by the committee")
+                raise Refused(409, "committee_decided", "the committee decided this while you were away")
             if kind == "permission" and answer not in ("allow", "deny"):
                 raise Refused(400, "bad_answer", "a permission answer is allow or deny")
             if options is not None:
@@ -1941,6 +1959,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if rc == 2 and option is not None:
                 self.audit(ident, via, "answer", id=did, result="refused", reason="option does not match")
                 raise Refused(400, "bad_option", "that option does not match the question; reload and try again")
+            if rc == 9:  # the committee decided it a moment ago (under the same lock)
+                self.audit(ident, via, "answer", id=did, result="gone", reason="decided by the committee")
+                raise Refused(409, "committee_decided", "the committee decided this while you were away")
             if rc == 8:  # the gate's task was busy: nothing recorded, or the gate not yet updated
                 raise Refused(409, "task_busy", "the task is busy; try again in a moment")
             if rc == 4:
@@ -2328,6 +2349,38 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return self.send_json(200, {"status": "set" if changed else "unchanged",
                                     "asker_route": asker_route.view(self.server.home, owner=True)})
 
+    def set_away_decisions(self, body, ident, via):
+        """Whether a unanimous committee decides board asks while the owner is away, from the
+        board's profile menu: owners only (an owner who is an approver), like the asker route.
+        {"mode"?: "committee"|"owner_final", "red_lines"?: "committee"|"owner"} (at least one).
+        lib/committee.py; audited. Switching to committee decides any consensus already complete."""
+        mode, red = body.get("mode"), body.get("red_lines")
+        cfg = fleet.load_fleet()
+        by = match_id(ident, fleet.id_list(cfg, "approvers"))
+        if by is None or not is_owner(cfg, ident):     # first: every refusal is audited
+            self.audit(ident, via, "away_decisions", mode=str(mode)[:40] if mode is not None else None,
+                       red_lines=str(red)[:40] if red is not None else None,
+                       result="refused", reason="not an owner")
+            raise Refused(403, "not_owner", "only the board's owner chooses who decides while they are away")
+        if mode is not None and mode not in committee.MODES:
+            raise Refused(400, "bad_mode", "mode must be \"committee\" or \"owner_final\"")
+        if red is not None and red not in committee.RED_MODES:
+            raise Refused(400, "bad_red_lines", "red_lines must be \"committee\" or \"owner\"")
+        if mode is None and red is None:
+            raise Refused(400, "bad_request", "give mode or red_lines")
+        with self.server.write_lock:
+            try:
+                changed, s, decided = committee.set_settings(self.server.home, mode, red, "board:%s" % by)
+            except ValueError as exc:
+                raise Refused(400, "bad_request", str(exc))
+            except TimeoutError:
+                raise Refused(503, "busy", "another away/consensus change holds the lock; try again")
+            self.audit(ident, via, "away_decisions", mode=s["mode"], red_lines=s["red_lines"],
+                       result="set" if changed else "unchanged", decided=decided or None)
+        self.hub_kick()
+        return self.send_json(200, {"status": "set" if changed else "unchanged", "decided": decided,
+                                    "away_decisions": committee.view(self.server.home, owner=True)})
+
     def lesson(self, lid, body, ident, via):
         """Add (lid None) or change a lesson. Approvers only; the body goes to `board lesson` by a
         0600 file, never argv; the CLI validates the rule, screens and scrubs the text."""
@@ -2655,7 +2708,9 @@ def advice_due_lines(home):
 def actionable(home):
     """What a local-mode operator has to relay: answered question/gate decisions, new messages,
     the owner-away state (`away on|off`, broadcast to every session when it changes) and each
-    consensus status (`consensus <id> <status>`, mirrored, never relayed as a decision) and each
+    consensus status (`consensus <id> <status>`, mirrored, never relayed as a decision), each board
+    ask the committee decided while the owner was away (`decision <id> committee`, relayed with
+    the exact line `board advise relay` prints) and each
     session with scheduler advisories to send (`schedule <CODE> due`, board schedule outbox), and,
     while the owner is away, each session whose low-priority committee-advice digest is due
     (`advice <CODE> due`, board advise digest; never relayed as a decision)."""
@@ -2680,6 +2735,11 @@ def actionable(home):
             # on approve (prompts/board-operator.md, "Take requests from the API")
             out.append((as_int(d.get("answered_at")), "take %s answered" % d.get("id"),
                         ("t", d.get("id"), d.get("answered_at"))))
+        elif committee.is_committee(d) and d.get("status") == "answered":
+            # decided by committee consensus while the owner was away: relay the exact line that
+            # `board advise relay --from <operator> <id>` prints (lib/committee.py), never by hand
+            out.append((as_int(d.get("answered_at")), "decision %s committee" % d.get("id"),
+                        ("d", d.get("id"), d.get("answered_at"))))
         elif isinstance(d, dict) and d.get("status") == "answered" and d.get("kind") != "permission" \
                 and not (d.get("source") == "pane" and d.get("relay") != "operator"):
             out.append((as_int(d.get("answered_at")), "decision %s answered" % d.get("id"),

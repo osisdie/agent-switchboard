@@ -841,11 +841,10 @@ never counts, and the dangerous things still wait for you.
   BOARD tells every live session when the away state changes and reports who received and
   acknowledged it.
 
-- **Committee advice on your asks (low priority).** Board asks and gates still wait for you, but
-  the sessions concerned may discuss one and attach advice to its card, so when you are back you
-  read "Committee recommends "A" (QA agree; OPS object)" and click once. It is advice only: never
-  an answer, never a `[BOARD decision]`, no alert; your buttons stay as they are (the recommended
-  one is outlined). BOARD batches it into a digest at most every `advice.digest_minutes` (default
+- **Committee advice on your asks (low priority).** While you are away, the sessions concerned may
+  discuss a board ask or gate and attach advice to its card, so you read "Committee recommends "A"
+  (QA agree; OPS object)" and click once. Until it is decided, advice is not an answer and sends no
+  alert; your buttons stay as they are (the recommended one is outlined). BOARD batches it into a digest at most every `advice.digest_minutes` (default
   60) per session, worded "low priority — reply at your next natural pause; do not stop current
   work". Silence is no opinion. Production gates (and asks marked `--red-line`) show "red line —
   owner only". Advice freezes when you answer or come back, and stays in the history.
@@ -857,7 +856,26 @@ never counts, and the dangerous things still wait for you.
   board advise ls            # BOARD: board advise digest --from <operator code>, then board advise sent --from <operator code> <digest id>
   ```
 
-Details: [`docs/contract.md`](docs/contract.md), "Owner away & consensus" and "Committee advice".
+- **The committee decides while you are away (your setting).** By default, when **every session
+  asked agrees** with the recommendation (at least two, the asking session included) and **nobody
+  objects**, it becomes the decision: answered by `committee`, relayed by BOARD to the asking session
+  as `[BOARD decision <id>] <answer> (by committee consensus while owner away: WEB, QA, API)`, with
+  `; red line` or `; red line: production gate` when it is one. Silence never counts. You are told
+  after each one (info; high for red lines and production gates), the page lists them under
+  **Decided while you were away**, and the history says **Decided by committee** with who agreed.
+  They stay decided when you are back (a later answer is refused). Prefer the final say yourself?
+  Pick **I decide** in the profile menu (or `board away decisions owner_final --by <you>`): advice
+  then stays advice. **Red lines and production gates still wait for me** keeps only those for you.
+
+  ```bash
+  board away decisions status                       # committee (default) or owner_final
+  board away decisions owner_final --by OPS         # advice only; the owner answers every ask
+  board away decisions committee --red-lines owner --by OPS
+  board advise decided                              # committee decisions of the last 7 days
+  ```
+
+Details: [`docs/contract.md`](docs/contract.md), "Owner away & consensus", "Committee advice" and
+"Committee decisions".
 
 ### Do not disturb and automatic declines
 
@@ -1759,7 +1777,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 |---|---|
 | `docs/contract.md` | Binding data contract: local files, db collections, lifecycle stages & gates, relay formats, degraded mode |
 | `hooks/board-hook.sh` | Lifecycle hook: writes `state/<session_id>.json`, appends `events.jsonl`, always exits 0 |
-| `bin/board` | CLI: `ls`, `snapshot`, `ask`, `task new/stage/ls/show/set/dep/pr`, `decisions`, `answer`, `mark`, `resolve`, `limit`, `resources`, `pomodoro`, `schedule`, `press`, `notify`, `mute`, `unmute`, `notify-level`, `notify-presence`, `rc`, `session`, `away`, `consensus`, `advise`, `message`, `apikey`, `guard`, `doctor`. Exit codes: 2 = usage (also `answer --option` mismatch), 3 = press refused, 4 = answer / vote refused, 5 = press partial (keys sent, Enter not pressed), 6 = refused by the secret guard, 7 = press refused (prompt off screen) |
+| `bin/board` | CLI: `ls`, `snapshot`, `ask`, `task new/stage/ls/show/set/dep/pr`, `decisions`, `answer`, `mark`, `resolve`, `limit`, `resources`, `pomodoro`, `schedule`, `press`, `notify`, `mute`, `unmute`, `notify-level`, `notify-presence`, `rc`, `session`, `away`, `consensus`, `advise`, `message`, `apikey`, `guard`, `doctor`. Exit codes: 2 = usage (also `answer --option` mismatch), 3 = press refused, 4 = answer / vote refused, 5 = press partial (keys sent, Enter not pressed), 6 = refused by the secret guard, 7 = press refused (prompt off screen), 9 = answer refused (the committee already decided it) |
 | `bin/board-collect` | Zero-token collector: snapshot, diff, runs `board-notify` each loop; `--baseline` on first install |
 | `bin/board-notify`, `lib/notify.py` | Alerting: `send`, `ack`, `tick`, `test`, `status`, `gate`. Adapters (slack, desktop, email, line, sns, webhook), levels, escalation, ack, quiet hours, dedupe |
 | `lib/prefs.py` | Notification controls: mutes, min levels, presence (`board mute`, `notify-level`, `notify-presence`) and the delivery rule `lib/notify.py` applies |
