@@ -449,6 +449,23 @@ dialog.notif { width: min(720px, calc(100vw - 24px)); }
 .btn.advised { outline: 2px dashed color-mix(in srgb, var(--cord) 70%, transparent); outline-offset: 2px; }
 .btn .adv-mark { margin-left: 6px; font-family: var(--f-mono); font-size: 10px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--cord); }
 #dec-history li .adv-past { color: var(--muted); }
+/* decided by committee consensus while the owner was away (lib/committee.py) */
+.cmt-tag { font-family: var(--f-mono); font-size: 11px; letter-spacing: .04em; padding: 1px 7px; border-radius: 9px; border: 1px solid var(--cord); color: var(--cord); white-space: nowrap; }
+.cmt-red { font-family: var(--f-mono); font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 9px; background: var(--deny-soft); color: var(--deny); white-space: nowrap; }
+.cmt-decided { display: grid; gap: 8px; min-width: 0; margin: 0 0 14px; padding: 12px 14px; border-radius: var(--r); border: 2px solid var(--cord); background: color-mix(in srgb, var(--cord-soft) 60%, var(--panel)); }
+.cmt-decided .cmt-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px; }
+.cmt-decided h3 { margin: 0; font-size: 16px; }
+.cmt-decided .cmt-lede { margin: 0; font-size: 13px; color: var(--muted); }
+.cmt-decided ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.cmt-decided li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 10px; align-items: baseline; padding: 8px 0 0; border-top: 1px solid var(--rule); font-size: 14px; min-width: 0; }
+.cmt-decided .what { min-width: 0; overflow-wrap: anywhere; }
+.cmt-decided .ans { font-family: var(--f-mono); font-size: 13px; }
+.cmt-decided .who { grid-column: 1 / -1; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.cmt-decided .why, .cmt-decided .notes { grid-column: 1 / -1; margin: 0; font-size: 13px; overflow-wrap: anywhere; }
+.cmt-decided .notes { padding-left: 12px; color: var(--muted); }
+#dec-history li .cmt-why { color: var(--muted); }
+#acct-awaydec .ad-red { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; margin-top: 6px; }
+.advice .adv-tag.decides { border-color: var(--cord); color: var(--cord); }
 .dcard.maybe:hover, .dcard.maybe:focus-within { opacity: 1; }
 .dcard .resolve-row { display: flex; justify-content: flex-end; }
 .btn.linkish { min-height: 32px; padding: 4px 10px; font-size: 13px; border-style: dashed; color: var(--muted); }
@@ -1255,6 +1272,15 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
           </div>
           <p class="acct-note" id="acct-ar-away-note"></p>
         </fieldset>
+        <fieldset class="acct-sec" id="acct-awaydec" hidden>
+          <legend id="ad-label" data-i18n>While you're away, board asks</legend>
+          <div class="seg seg2" role="radiogroup" aria-labelledby="ad-label">
+            <label><input type="radio" name="sb-awaydec" value="committee"><span data-i18n>Committee decides</span></label>
+            <label><input type="radio" name="sb-awaydec" value="owner_final"><span data-i18n>I decide</span></label>
+          </div>
+          <label class="ad-red" id="ad-red-row"><input type="checkbox" id="ad-red-owner"><span data-i18n>Red lines and production gates still wait for me</span></label>
+          <p class="acct-note" id="acct-ad-note" role="status"></p>
+        </fieldset>
         <fieldset class="acct-sec" id="acct-theme">
           <legend data-i18n>Theme</legend>
           <div class="seg">
@@ -1394,6 +1420,14 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       <span class="hint" data-i18n>Questions and permission prompts that sessions are waiting on. Your answer is relayed to the session.</span>
     </div>
     <div class="empty" id="dec-empty"><strong data-i18n>Nothing needs you.</strong><span data-i18n>When a session asks a question, hits a permission prompt or reaches a gate, it appears here with buttons to answer.</span></div>
+    <section class="cmt-decided" id="cmt-decided" aria-labelledby="h-cmt-decided" hidden>
+      <div class="cmt-head">
+        <h3 id="h-cmt-decided" data-i18n>Decided while you were away</h3>
+        <button class="btn" type="button" id="cmt-reviewed" data-i18n>Mark reviewed</button>
+      </div>
+      <p class="cmt-lede" data-i18n>Every session asked agreed, so the committee's recommendation became the decision and was relayed. These stay decided; review them, and follow up with the session if you would decide differently.</p>
+      <ul id="cmt-list"></ul>
+    </section>
     <div class="dgrid" id="dec-list"></div>
     <details class="history" id="dec-history" hidden>
       <summary id="dec-history-sum" data-i18n>Recent decisions</summary>
@@ -1404,7 +1438,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
   <section class="sec" id="consensus" aria-labelledby="h-consensus">
     <div class="sec-head">
       <h2 id="h-consensus" data-i18n>Consensus</h2>
-      <span class="hint" data-i18n>While the owner is away, sessions settle cross-session questions only when every participant agrees explicitly. Silence is not agreement; one objection parks it for the owner. Red lines and board asks always wait for the owner.</span>
+      <span class="hint" data-i18n>While the owner is away, sessions settle cross-session questions only when every participant agrees explicitly. Silence is not agreement; one objection parks it for the owner. Red lines here always wait for the owner; board asks follow the owner's away setting.</span>
     </div>
     <form class="away-form" id="away-form" hidden>
       <label for="away-said" data-i18n>Going offline?</label>
@@ -1678,6 +1712,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     operator: null, ledger: null,
     away: null, consensus: [],   // owner-away record ({since, by, said}) | null; consensus items
     advice: [],                  // committee advice on board asks (lib/advice.py): information, never an answer
+    awayDec: null, adPick: null, // the owner's away_decisions (lib/committee.py): {mode, red_lines[, invalid, by, at]} | null
     arPick: null, arDirty: false, awayPick: null, // the asker-route control: a mode being saved; levels being edited
     askerRoute: null,            // board-serve state.asker_route: {effective: local|claude[, mode, five_hour_below, seven_day_below, why, since]} | null
     avail: null,                 // board-serve state.availability: {state: online|dnd|away, declining: null|owner_dnd|compute_low[, dnd]} | null
@@ -2308,7 +2343,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       const a = S.away, since = ts(a.since);
       box.append(h('div', { class: 'banner away', role: 'status' }, h('span', { class: 'lamp working', 'aria-hidden': 'true' }),
         h('strong', { text: (since ? tr('Owner away since {at}', { at: hhmm(since) }) : tr('Owner away')) + (a.by ? tr(' (by {who})', { who: str(a.by) }) : '') }),
-        h('p', { text: tr('Sessions decide by explicit consensus; red lines and board asks wait for the owner.') }),
+        h('p', { text: tr(committeeDecides(null) ? 'Sessions decide by explicit consensus; the committee decides a board ask when every session asked agrees.'
+          : 'Sessions decide by explicit consensus; red lines and board asks wait for the owner.') }),
         awayEditor() ? h('button', { class: 'btn primary', type: 'button', disabled: S.busy.has('away'), onclick: () => setAway('off'), text: tr('I\'m back') }) : null,
         a.said ? h('span', { class: 'said', text: '“' + str(a.said) + '”' + (a.legacy ? tr(' (free-text record)') : '') }) : null));
     }
@@ -2601,7 +2637,15 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
 
   /* committee advice (lib/advice.py): what sessions recommended while the owner was away. Shown on
      the card as information; it never answers, and the answer buttons stay the owner's. */
-  const ADV_FROZEN = { answered: 'frozen when the question was answered', owner_back: 'frozen when the owner came back', away_changed: 'frozen: from an earlier away period' };
+  const ADV_FROZEN = { answered: 'frozen when the question was answered', owner_back: 'frozen when the owner came back', away_changed: 'frozen: from an earlier away period', decided: 'became the decision: every session asked agreed' };
+  // The owner's setting (lib/committee.py): "committee" lets a unanimous recommendation become the
+  // decision while the owner is away. Unknown (not mirrored yet) reads as owner_final, the default.
+  const committeeDecides = (d) => {
+    const A = S.awayDec && typeof S.awayDec === 'object' ? S.awayDec : null;
+    if (!A || A.mode !== 'committee') return false;
+    if (A.red_lines === 'owner' && d && isProdGate(d)) return false;
+    return true;
+  };
   const adviceFor = (id) => S.advice.find((a) => str(a.decision_id) === str(id)) || null;
   function adviceLast(a) {
     const last = new Map();
@@ -2626,12 +2670,14 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     const others = parts.filter((p) => p !== from);
     const frozen = str(a.status) === 'frozen';
     const red = a.red_line === true || isProdGate(d);
+    // open advice on an ask the committee may decide (owner away, the owner's setting): the tag says so
+    const decides = !frozen && !!S.away && committeeDecides(d) && !(red && S.awayDec && S.awayDec.red_lines === 'owner');
     const text = clampText('adv:' + d.id, str(a.recommendation), 'adv-text');
     return h('section', { id: 'adv-' + d.id, class: 'advice' + (frozen ? ' frozen' : ''), role: 'note', 'aria-label': tr('Committee advice (not a decision)') },
       h('div', { class: 'adv-head' },
         h('strong', { text: tr('Committee advice') }),
-        h('span', { class: 'adv-tag', text: tr('advice only · not a decision') }),
-        red ? h('span', { class: 'adv-red', text: tr('red line — owner only') }) : null,
+        h('span', { class: 'adv-tag' + (decides ? ' decides' : ''), text: tr(decides ? 'decides if every session asked agrees' : 'advice only · not a decision') }),
+        red ? h('span', { class: 'adv-red', text: tr(decides ? 'red line' : 'red line — owner only') }) : null,
         frozen ? h('span', { class: 'adv-frozen', text: Object.hasOwn(ADV_FROZEN, str(a.frozen_reason)) ? tr(ADV_FROZEN[str(a.frozen_reason)]) : tr('frozen') }) : null,
         timeEl(a.updated_at || a.created_at)),
       h('p', { class: 'adv-sum', text: adviceSummary(a) }),
@@ -2646,7 +2692,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
           x && x.note ? h('span', { class: 'adv-note', text: str(x.note) }) : null);
       })) : null,
       h('p', { class: 'adv-foot', text: tr(frozen ? 'Kept as it was when it froze. Advice is not an answer.'
-        : 'Sessions weighed in while the owner was away; silence is no opinion. Advice is not an answer: the buttons below are yours.') }));
+        : decides ? 'While you are away, it becomes the decision once every session asked agrees and nobody objects; silence is no opinion. Until then the buttons below are yours.'
+          : 'Sessions weighed in while the owner was away; silence is no opinion. Advice is not an answer: the buttons below are yours.') }));
   }
 
   function buildDecision(d) {
@@ -2827,7 +2874,44 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
   const isForm = (d) => Array.isArray(d.questions) && (d.questions.length > 1 || d.questions.some((q) => q && q.multiSelect === true));
   const reasonText = (d) => (typeof d.status_reason === 'string' && Object.hasOwn(REASONS, d.status_reason)
     ? tr(d.status_reason === 'partial' && isForm(d) ? 'keys were sent but the form was not submitted' : REASONS[d.status_reason]) : tr('reason not recorded'));
+  /* decided by committee consensus while the owner was away (lib/committee.py): final, relayed as
+     [BOARD decision <id>] ... (by committee consensus while owner away: A, B). Listed prominently
+     until this viewer marks them reviewed (per browser; nothing is written to the board). */
+  const CMT_SEEN_KEY = 'switchboard.committeeReviewed';
+  const cmtOf = (d) => (d && d.answered_by === 'committee' && d.committee && typeof d.committee === 'object' ? d.committee : null);
+  const cmtRed = (d) => { const c = cmtOf(d); return !!(c && (c.red_line === true || c.production === true)); };
+  const cmtWho = (d) => (Array.isArray(cmtOf(d).participants) ? cmtOf(d).participants.map(str).filter(Boolean).join(', ') : '');
+  const cmtAt = (d) => ts((cmtOf(d) || {}).decided_at) || ts(d.answered_at);
+  // the record the owner reviews: why (the recommendation's rationale) and each session's own reason
+  const cmtWhy = (d) => str((cmtOf(d) || {}).rationale);
+  const cmtNotes = (d) => (Array.isArray((cmtOf(d) || {}).stances) ? cmtOf(d).stances : [])
+    .filter((x) => x && str(x.note) && str(x.stance) === 'agree').map((x) => str(x.by) + ': ' + str(x.note));
+  let cmtSeen = (() => { try { return Number(localStorage.getItem(CMT_SEEN_KEY)) || 0; } catch (e) { return 0; } })();
+  function renderCommitteeDecided() {
+    const box = $('#cmt-decided');
+    const list = S.decisions.filter((d) => cmtOf(d) && cmtAt(d) > cmtSeen).sort((a, b) => cmtAt(b) - cmtAt(a)).slice(0, 20);
+    box.hidden = list.length === 0;
+    reconcile($('#cmt-list'), list, (d) => d.id, (d) => JSON.stringify(d), (d) => {
+      const c = cmtOf(d);
+      const what = str(d.question) || (isGateDecision(d) ? tr('{stage} gate', { stage: stageName(d.stage || d.gate) }) : tr('Question'));
+      return h('li', { id: 'cmt-' + d.id },
+        h('span', { class: 'what' },
+          cmtRed(d) ? [h('span', { class: 'cmt-red', text: tr(c.production ? 'red line · production gate' : 'red line') }), ' '] : null,
+          h('span', { class: 'code-chip', text: str(d.from) || '?' }), ' ', what, ' → ', h('span', { class: 'ans', text: str(d.answer) })),
+        timeEl(cmtAt(d)),
+        h('span', { class: 'who', text: tr('agreed: {who}', { who: cmtWho(d) }) + ' · ' + tr(d.status === 'relayed' ? 'relayed to the session' : 'waiting for the operator to relay it') }),
+        cmtWhy(d) ? h('p', { class: 'why', text: tr('why: {text}', { text: cmtWhy(d) }) }) : null,
+        cmtNotes(d).length ? h('p', { class: 'notes', text: tr('their reasons: {text}', { text: cmtNotes(d).join(' · ') }) }) : null);
+    });
+  }
+  $('#cmt-reviewed').addEventListener('click', () => {
+    cmtSeen = Math.max(Date.now(), ...S.decisions.filter(cmtOf).map(cmtAt));
+    try { localStorage.setItem(CMT_SEEN_KEY, String(cmtSeen)); } catch (e) { /* storage blocked: this page view only */ }
+    renderCommitteeDecided();
+  });
+
   function renderDecisions() {
+    renderCommitteeDecided();
     const pend = pendingDecisions();
     $('#dec-empty').hidden = pend.length > 0;
     if (!pend.length) {
@@ -2837,7 +2921,9 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       else if (S.mode === 'offline') e.append(h('strong', { text: tr('No board data.') }), tr('Decisions appear here once the page can reach the board.'));
       else e.append(h('strong', { text: tr('Nothing needs you.') }), tr('When a session asks a question, hits a permission prompt or reaches a gate, it appears here with buttons to answer.'));
     }
-    const ctx = [canAnswer() ? 'w' : 'r', operatorOffline() ? 'off' : 'on', String(approverState())].join('|');
+    // the advice wording depends on the owner being away and their away_decisions setting
+    const ctx = [canAnswer() ? 'w' : 'r', operatorOffline() ? 'off' : 'on', String(approverState()),
+      S.away ? 'away' : 'here', S.awayDec ? str(S.awayDec.mode) + '/' + str(S.awayDec.red_lines) : '-'].join('|');
     reconcile($('#dec-list'), pend, (d) => d.id,
       (d) => JSON.stringify(d) + '|' + JSON.stringify(adviceFor(d.id)) + '|' + JSON.stringify(S.myAnswers.get(d.id) || null) + '|' + ctx + '|' + (S.busy.has(d.id) ? 'b' : '') + '|' + (S.confirm && S.confirm.id === d.id ? S.confirm.choice : '') + '|' + str(findSession(d.from) && findSession(d.from).remote_url) + '|' + str((S.tasks.find((t) => t.id === d.task_id) || {}).title),
       buildDecision);
@@ -2860,7 +2946,12 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
           nd ? h('span', { class: 'undeliv' }, ' ', tr('Not delivered: {why}', { why: reasonText(d) })) : null,
           d.answer != null && d.answer !== '' ? h('span', null, ' → ', h('span', { class: 'ans', text: str(d.answer) })) : null,
           sessionNote(d) ? h('span', { class: 'via-session' }, ' · ', sessionNote(d)) : null,
-          adv ? h('span', { class: 'adv-past', text: ' · ' + tr('advice: {summary}', { summary: adviceSummary(adv) }) }) : null),
+          cmtOf(d) ? h('span', { class: 'cmt-past' }, ' ', h('span', { class: 'cmt-tag', text: tr('Decided by committee') }),
+            cmtRed(d) ? [' ', h('span', { class: 'cmt-red', text: tr(cmtOf(d).production ? 'red line · production gate' : 'red line') })] : null,
+            ' ', h('span', { class: 'adv-past', text: tr('agreed: {who}', { who: cmtWho(d) }) }),
+            cmtWhy(d) ? h('span', { class: 'cmt-why', text: ' · ' + tr('why: {text}', { text: cmtWhy(d).length > 140 ? cmtWhy(d).slice(0, 139) + '…' : cmtWhy(d) }) }) : null,
+            cmtNotes(d).length ? h('span', { class: 'cmt-why', text: ' · ' + tr('their reasons: {text}', { text: cmtNotes(d).join(' · ') }) }) : null)
+            : adv ? h('span', { class: 'adv-past', text: ' · ' + tr('advice: {summary}', { summary: adviceSummary(adv) }) }) : null),
         timeEl(d.answered_at || d.relayed_at || d.created_at));
     });
   }
@@ -4892,6 +4983,10 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     $('#away-on').disabled = S.busy.has('away');
     reconcile($('#cons-list'), items, (c) => str(c.id), (c) => JSON.stringify(c), buildConsensus);
   }
+  // what marking away means for board asks: the owner's away_decisions setting (lib/committee.py)
+  const awayOnToast = () => (committeeDecides(null)
+    ? 'Marked away: sessions may decide by explicit consensus, and the committee decides your board asks when every session asked agrees.'
+    : 'Marked away: sessions may decide by explicit consensus. Red lines and board asks wait for you.');
   function setAway(state, said) {
     if (S.demo) {
       const now = Date.now();
@@ -4909,7 +5004,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     adapter.setAway(state, said || '').then((r) => {
       const same = r && r.status === 'unchanged';
       if (state === 'off') toast(tr(same ? 'The owner was not marked away.' : 'Welcome back: away mode is off, and pending consensus items are back with you.'));
-      else { toast(tr(same ? 'Already marked away; the earlier record is kept.' : 'Marked away: sessions may decide by explicit consensus. Red lines and board asks wait for you.')); $('#away-said').value = ''; }
+      else { toast(tr(same ? 'Already marked away; the earlier record is kept.' : awayOnToast())); $('#away-said').value = ''; }
     }).catch((e) => handleWriteError(e)).finally(() => { S.busy.delete('away'); renderAll(); });
   }
   $('#away-form').addEventListener('submit', (ev) => { ev.preventDefault(); setAway('on', $('#away-said').value.trim()); });
@@ -4939,7 +5034,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     for (const inp of document.querySelectorAll('input[name="sb-presence"]')) inp.checked = inp.value === st;
     $('#acct-pres-note').textContent = tr(st === 'dnd'
       ? 'You are here, but askers get a polite automatic reply and their messages and requests reach no session.'
-      : st === 'away' ? 'Sessions decide by explicit consensus; red lines and board asks wait for you.'
+      : st === 'away' ? (committeeDecides(null) ? 'Sessions decide by explicit consensus; the committee decides your board asks when every session asked agrees.'
+        : 'Sessions decide by explicit consensus; red lines and board asks wait for you.')
         : 'Sessions and askers reach you as usual.');
     $('#acct-pres-compute').hidden = !(S.avail && S.avail.declining === 'compute_low' && st !== 'dnd');
   }
@@ -4963,7 +5059,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     else if (dndOn()) steps.push(dnd('off'));
     steps.reduce((p, f) => p.then(f), Promise.resolve()).then(() => {
       toast(tr(want === 'dnd' ? 'Do not disturb: askers get an automatic reply until you turn it off.'
-        : want === 'away' ? 'Marked away: sessions may decide by explicit consensus. Red lines and board asks wait for you.'
+        : want === 'away' ? awayOnToast()
           : 'You are online: sessions and askers reach you as usual.'));
     }).catch((e) => handleWriteError(e)).finally(() => { S.busy.delete('presence'); renderAll(); renderProfile(); });
   }
@@ -5041,6 +5137,48 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     }).catch((e) => handleWriteError(e)).finally(() => { S.busy.delete('askroute'); S.awayPick = null; renderAll(); renderProfile(); });
   }
   $('#ar-save').addEventListener('click', () => setAskerRoute('claude_when_ample', true));
+
+  /* -------------------------------------------- board asks while away (profile menu) */
+  // committee (default): a unanimous committee recommendation becomes the decision while the owner
+  // is away; owner_final: advice only (docs/contract.md "Committee decisions"). Owners only: the
+  // owner-only fields (by, at, invalid) come only in an owner's state, and board-serve checks again.
+  const awayDecEditor = () => awayEditor() && !S.demo && !!adapter && typeof adapter.setAwayDecisions === 'function'
+    && !!(S.awayDec && Object.hasOwn(S.awayDec, 'invalid'));
+  function renderAwayDecisions() {
+    const box = $('#acct-awaydec'), own = awayDecEditor();
+    box.hidden = !own;
+    if (!own) return;
+    const A = S.awayDec, busy = S.busy.has('awaydec');
+    box.disabled = busy;
+    const mode = (S.adPick && S.adPick.mode) || (A.invalid ? '' : str(A.mode) || 'owner_final');
+    for (const inp of document.querySelectorAll('input[name="sb-awaydec"]')) inp.checked = inp.value === mode;
+    const red = (S.adPick && S.adPick.red_lines) || str(A.red_lines) || 'owner';
+    const cb = $('#ad-red-owner');
+    cb.checked = red === 'owner';
+    $('#ad-red-row').hidden = false;   // always shown with the mode: an opt-in says what it includes
+    $('#acct-ad-note').textContent = (A.invalid ? tr('The saved setting could not be read, so board asks wait for you until you pick one.') + ' ' : '')
+      + (S.away ? tr('You are away now.') + ' ' : '')
+      + tr(mode === 'committee'
+        ? (red === 'owner' ? 'When every session asked agrees and nobody objects, their recommendation becomes the decision; red lines and production gates wait for you. You are told after each one.'
+          : 'When every session asked agrees and nobody objects, their recommendation becomes the decision, red lines and production gates included. You are told after each one.')
+        : mode === 'owner_final' ? 'Sessions may add advice, but every board ask waits for your answer. If you pick Committee decides, the box below says whether red lines and production gates are included.' : '');
+  }
+  function awayDecBody() {
+    const A = S.awayDec || {};
+    const picked = document.querySelector('input[name="sb-awaydec"]:checked');
+    return { mode: picked ? picked.value : (str(A.mode) || 'owner_final'), red_lines: $('#ad-red-owner').checked ? 'owner' : 'committee' };
+  }
+  function setAwayDecisions(body) {
+    if (!awayDecEditor() || S.busy.has('awaydec')) return;
+    S.busy.add('awaydec'); S.adPick = body; renderAwayDecisions();
+    adapter.setAwayDecisions(body).then((r) => {
+      if (r && r.away_decisions && typeof r.away_decisions === 'object') S.awayDec = r.away_decisions;
+      const A = S.awayDec || {};
+      toast(tr(A.mode === 'owner_final' ? 'While you are away, board asks wait for your answer; advice stays advice.'
+        : A.red_lines === 'owner' ? 'While you are away, the committee decides board asks when everyone agrees; red lines wait for you.'
+          : 'While you are away, the committee decides board asks when everyone agrees, red lines included.'));
+    }).catch((e) => handleWriteError(e)).finally(() => { S.busy.delete('awaydec'); S.adPick = null; renderAll(); renderProfile(); });
+  }
   for (const id of ['#ar-5h', '#ar-7d']) $(id).addEventListener('input', () => { S.arDirty = true; });
 
   /* ------------------------------------------------- notification controls */
@@ -6043,7 +6181,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     ack: { q: 'Acknowledge all open alerts?', note: 'Escalation stops for every open alert. The board still shows everything, and a condition that opens again alerts again.', yes: 'Yes, acknowledge all' },
     mute: { q: 'Mute all push for 1 hour?', note: 'Urgent alerts still break through. The board still shows everything.', yes: 'Yes, mute 1 hour' },
     unmute: { q: 'Unmute all push?', note: 'Every channel delivers again at its own level.', yes: 'Yes, unmute' },
-    'away-on': { q: 'Mark the owner away?', note: 'Sessions may decide among themselves by explicit consensus. Red lines and board asks still wait for the owner.', yes: 'Yes, I\'m away' },
+    'away-on': { q: 'Mark the owner away?', note: 'Sessions may decide among themselves by explicit consensus. Board asks follow your away setting in the profile menu: by default they wait for you; you can let the committee decide one when every session asked agrees.', yes: 'Yes, I\'m away' },
     'away-off': { q: 'Mark the owner back?', note: 'Away mode ends; pending consensus items come back to the owner.', yes: 'Yes, I\'m back' },
   };
   function askDeck(what) {
@@ -6830,7 +6968,10 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       // Owner away + consensus: mirrored by the operator; the page never writes them.
       db.doc('meta/away').onSnapshot((snap) => {
         const d = snap.exists ? snap.data() : null;
-        S.away = d && d.active === true ? d : null; renderBanners(); renderConsensus(); renderDeck();
+        S.away = d && d.active === true ? d : null;
+        // the owner's away_decisions setting, mirrored with it (read-only here)
+        S.awayDec = d && d.decisions && typeof d.decisions === 'object' ? d.decisions : null;
+        renderBanners(); renderConsensus(); renderDeck(); renderDecisions();
       }, () => {});
       // Notification controls: mirrored by the operator (board-notify status --json); read-only here.
       db.doc('meta/notify').onSnapshot((snap) => {
@@ -6933,6 +7074,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       S.avail = st.availability && typeof st.availability === 'object' ? st.availability : null;
       S.localModel = st.local_model && typeof st.local_model === 'object' ? st.local_model : null;
       S.askerRoute = st.asker_route && typeof st.asker_route === 'object' ? st.asker_route : null;
+      S.awayDec = st.away_decisions && typeof st.away_decisions === 'object' ? st.away_decisions : null;
       S.consensus = arr(st.consensus);
       S.advice = arr(st.advice);
       S.notify = st.notify && typeof st.notify === 'object' ? st.notify : null;
@@ -7012,6 +7154,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       setDnd(state) { return post('/api/dnd', { state }); },
       // Owners only: who answers askers (lib/asker_route.py): the local model, or Claude sessions while usage is low.
       setAskerRoute(body) { return post('/api/asker-route', body); },
+      // Owners only: whether a unanimous committee decides board asks while the owner is away (lib/committee.py).
+      setAwayDecisions(body) { return post('/api/away-decisions', body); },
       // Approvers only; board-serve runs `board mute|unmute|notify-level|notify-presence --by board:<identity>`.
       setNotify(body) { return post('/api/notify-prefs', body); },
       // Approvers only; board-serve runs `board ack --by board:<identity> '*'` (the Deck's HITL key).
@@ -7216,6 +7360,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     renderLang();
     renderPresence();
     renderAskerRoute();
+    renderAwayDecisions();
   }
 
   // Reload: an installed app (a home-screen PWA) has no reload control of its own. Unsent work (a
@@ -7281,6 +7426,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     else if (e.target.name === 'sb-presence') setPresence(e.target.value);
     else if (e.target.name === 'sb-askroute') setAskerRoute(e.target.value);
     else if (e.target.name === 'sb-awayaskers') setAwayAskers(e.target.value);
+    // one control: every change saves the mode and the red-lines box together
+    else if (e.target.name === 'sb-awaydec' || e.target.id === 'ad-red-owner') setAwayDecisions(awayDecBody());
   });
   function renderLang() {
     for (const inp of document.querySelectorAll('input[name="sb-lang"]')) inp.checked = inp.value === LANG;
@@ -8050,7 +8197,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "agreed": "已同意",
       "objected · parked for the owner": "有人反對 · 留給主人決定",
       "back to the owner": "交還給主人",
-      "While the owner is away, sessions settle cross-session questions only when every participant agrees explicitly. Silence is not agreement; one objection parks it for the owner. Red lines and board asks always wait for the owner.": "主人不在時，跨 session 的問題只有在每位參與者都明確同意時才算定案。沉默不算同意；只要有一人反對就留給主人決定。紅線和看板提問一律等主人。",
+      "While the owner is away, sessions settle cross-session questions only when every participant agrees explicitly. Silence is not agreement; one objection parks it for the owner. Red lines here always wait for the owner; board asks follow the owner's away setting.": "主人不在時，跨 session 的問題只有在每位參與者都明確同意時才算定案。沉默不算同意；只要有一人反對就留給主人決定。這裡的紅線一律等主人；看板提問依主人不在時的設定處理。",
       "Going offline?": "要離開了嗎？",
       "Your words for the sessions, e.g. back Monday; agree among yourselves": "給 session 的話，例如：週一回來；你們自己商量",
       "I'm away": "我不在",
@@ -8497,7 +8644,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "Turn owner-away on": "開啟主人不在模式",
       "Turn owner-away off": "關閉主人不在模式",
       "Mark the owner away?": "標記主人不在？",
-      "Sessions may decide among themselves by explicit consensus. Red lines and board asks still wait for the owner.": "sessions 可以用明確的共識自行決定。紅線與看板提問仍等主人處理。",
+      "Sessions may decide among themselves by explicit consensus. Board asks follow your away setting in the profile menu: by default they wait for you; you can let the committee decide one when every session asked agrees.": "sessions 可以用明確的共識自行決定。看板提問依個人選單裡「不在時」的設定處理：預設會等你；你也可以讓每個被詢問的 session 都同意時由委員會決定。",
       "Yes, I'm away": "是，我不在",
       "Mark the owner back?": "標記主人回來？",
       "Away mode ends; pending consensus items come back to the owner.": "不在模式結束；待決的共識項目回到主人手上。",
@@ -8850,6 +8997,34 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "Committee advice recommends this (not a decision)": "委員會建議選這個（不是決定）",
       "advised": "建議",
       "advice: {summary}": "建議：{summary}",
+      "why: {text}": "理由：{text}",
+      "their reasons: {text}": "各 session 的理由：{text}",
+      "became the decision: every session asked agreed": "已成為決定：每個被詢問的 session 都同意",
+      "decides if every session asked agrees": "每個被詢問的 session 都同意就成為決定",
+      "red line": "紅線",
+      "While you are away, it becomes the decision once every session asked agrees and nobody objects; silence is no opinion. Until then the buttons below are yours.": "你不在時，只要每個被詢問的 session 都同意、沒有人反對，這個建議就會成為決定；沉默不算意見。在那之前，下面的按鈕仍由你決定。",
+      "Decided by committee": "由委員會決定",
+      "red line · production gate": "紅線 · production gate",
+      "agreed: {who}": "同意：{who}",
+      "relayed to the session": "已轉達給 session",
+      "waiting for the operator to relay it": "等 operator 轉達",
+      "The saved setting could not be read, so board asks wait for you until you pick one.": "讀不到已存的設定，所以在你重新選擇之前，看板提問都會等你。",
+      "When every session asked agrees and nobody objects, their recommendation becomes the decision; red lines and production gates wait for you. You are told after each one.": "每個被詢問的 session 都同意、沒有人反對時，他們的建議就成為決定；紅線和 production gate 會等你。每一個決定事後都會通知你。",
+      "When every session asked agrees and nobody objects, their recommendation becomes the decision, red lines and production gates included. You are told after each one.": "每個被詢問的 session 都同意、沒有人反對時，他們的建議就成為決定，紅線和 production gate 也包括在內。每一個決定事後都會通知你。",
+      "Sessions may add advice, but every board ask waits for your answer. If you pick Committee decides, the box below says whether red lines and production gates are included.": "session 可以附上建議，但每個看板提問都會等你回答。如果選「委員會決定」，下面的勾選決定紅線和 production gate 是否包括在內。",
+      "While you are away, board asks wait for your answer; advice stays advice.": "你不在時，看板提問會等你回答；建議只是建議。",
+      "While you are away, the committee decides board asks when everyone agrees; red lines wait for you.": "你不在時，大家都同意的看板提問由委員會決定；紅線會等你。",
+      "While you are away, the committee decides board asks when everyone agrees, red lines included.": "你不在時，大家都同意的看板提問由委員會決定，紅線也包括在內。",
+      "Sessions decide by explicit consensus; the committee decides a board ask when every session asked agrees.": "session 以明確的共識做決定；每個被詢問的 session 都同意時，看板提問由委員會決定。",
+      "Sessions decide by explicit consensus; the committee decides your board asks when every session asked agrees.": "session 以明確的共識做決定；每個被詢問的 session 都同意時，你的看板提問由委員會決定。",
+      "Marked away: sessions may decide by explicit consensus, and the committee decides your board asks when every session asked agrees.": "已標記為不在：session 可以用明確的共識做決定；每個被詢問的 session 都同意時，你的看板提問由委員會決定。",
+      "Decided while you were away": "你不在時做出的決定",
+      "Mark reviewed": "標記為已看過",
+      "Every session asked agreed, so the committee's recommendation became the decision and was relayed. These stay decided; review them, and follow up with the session if you would decide differently.": "每個被詢問的 session 都同意，所以委員會的建議成為決定並已轉達。這些決定維持不變；請過目，若你會做不同的決定，再跟該 session 跟進。",
+      "While you're away, board asks": "你不在時的看板提問",
+      "Committee decides": "委員會決定",
+      "I decide": "由我決定",
+      "Red lines and production gates still wait for me": "紅線和 production gate 仍然等我",
     };
   }
 })();

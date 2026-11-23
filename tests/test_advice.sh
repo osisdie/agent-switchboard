@@ -28,6 +28,14 @@ sessions:
   - {code: WEB, cwd: /w, aliases: [web-main]}
   - {code: QA, cwd: /q}
   - {code: OPS, cwd: /o}
+  # weigh in without being asked / in parallel (--from and --to must be fleet.yaml sessions)
+  - {code: DATA, cwd: /d}
+  - {code: A1, cwd: /1}
+  - {code: A2, cwd: /2}
+  - {code: A3, cwd: /3}
+  - {code: A4, cwd: /4}
+  - {code: A5, cwd: /5}
+  - {code: A6, cwd: /6}
 approvers: [local]
 advice:
   digest_minutes: 30
@@ -47,6 +55,8 @@ snap() { jq -n --arg off "${1:-}" '{generated_at: 1, sessions: (["API", "WEB", "
   | map({code: ., state: (if . == $off then "offline" else "idle" end)}))}' > "$BOARD_HOME/snapshot.json"; }
 snap
 digest() { BOARD_NOW_MS="$1" "$B" advise digest --from BOARD "${@:2}"; }
+# advice only here (the owner keeps the final say); the committee deciding is tests/test_committee.sh
+"$B" away decisions owner_final --by local >/dev/null
 sent() { BOARD_NOW_MS="$1" "$B" advise sent --from BOARD "${@:2}"; }
 
 # ---------------------------------------------------------------- refusals

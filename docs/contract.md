@@ -23,8 +23,9 @@ $BOARD_HOME/
   asker-route.json          # who answers askers: local model or Claude sessions while usage is low (see "Asker routing")
   asker-route-state.json    # its effective route now (the hysteresis memory); asker-route.lock: its flock
   consensus/<id>.json       # written by `board consensus` while the owner is away
-  consensus.lock            # flock held by `board away on|off`, `board consensus propose|vote` and `board advise`
+  consensus.lock            # flock held by `board away on|off`, `board consensus propose|vote`, `board advise`, `board answer` and `board away decisions`
   advice/<decision id>.json # committee advice on a board ask, written by `board advise` (see "Committee advice")
+  away-decisions.json       # the owner's setting: does a unanimous committee decide board asks while away (see "Committee decisions")
   advice-digest.json        # what the advice digest printed and sent, per session; advice-digest.lock: its flock
   resources.json            # system resources, sampled by the collector (see "Resources")
   resources-state.json      # the sampler's memory: previous counters, dwell state, teammate activity
@@ -215,8 +216,12 @@ instead. Everything in `card` also passes the guard's `scrub_tree` like the rest
   "status": "pending|answered|relayed|stale|timeout|unauthorized|answered_in_pane",
   "answer": null, "answered_by": null, "answered_at": null, "relayed_at": null,
   "delivered_via": "session (settled from the session's report)", "reconciled_from": "partial",
-  "reconcile_result": "match|differs|unknown|no_answer", "reconciled_at": 0, "created_at": 0 }
+  "reconcile_result": "match|differs|unknown|no_answer", "reconciled_at": 0, "created_at": 0,
+  "committee": { "...": "only when answered_by is \"committee\": see \"Committee decisions\"" } }
 ```
+
+`answered_by` is an approver's identity, or `"committee"` for a board ask the committee decided while
+the owner was away (never an approver identity; see "Committee decisions").
 
 **Board asks answered elsewhere.** A plain board ask (`kind: "question"`, no `source: "pane"`, no
 `gate` / `task_id`) that was answered in the session's pane, or by the owner in another session,
@@ -688,7 +693,7 @@ Rules:
 | `messages/{id}` | page (Editors) creates; operator updates | `to` (code, `"triage"` or `"all"`), `body`, `by` (user id), `created_at`, `status: "new"\|"relayed"\|"replied"`. The operator adds `relayed_to[]` and `relayed_at`, and for a triage message also `routed_to[]` and `routed_at` (see "Message routing"). |
 | `messages/{id}/replies/{rid}` | operator | `from` (code), `body`, `created_at` |
 | `meta/operator` | operator | `heartbeat_at, version, owner_id`. The page shows "operator offline" if the heartbeat is older than 10 minutes. |
-| `meta/away` | operator | `{active: true, since, by, said, legacy?, updated_at}` while the owner is away, `{active: false, updated_at}` otherwise. The page shows the away banner only for `active: true`. |
+| `meta/away` | operator | `{active: true, since, by, said, legacy?, decisions, updated_at}` while the owner is away, `{active: false, decisions, updated_at}` otherwise; `decisions` is `away_decisions` from `board mirror state` (`{mode, red_lines}`, see "Committee decisions"). The page shows the away banner only for `active: true`, and words committee advice by `decisions`. |
 | `consensus/{id}` | operator | a `snapshot.consensus` item as it is. Read-only on the page: no page write path, never relayed as a `[BOARD decision]`. |
 | `advice/{decisionId}` | operator | an item of `board mirror state` → `advice` as it is (see "Committee advice"). Read-only on the page: no page write path, never an answer and never relayed as a `[BOARD decision]`. |
 | `meta/notify` | operator | the notification controls, read-only on the page: `board-notify status --json` → `.controls` without `presence.present`, plus `channels` (`{slack: true, ...}`, booleans only). See "Notification controls". |
@@ -836,7 +841,7 @@ $BOARD_HOME/
 | `POST /api/tickets/take` `{ref, session, comment?, transition?, assign?}` | take a ticket for a session, see "Tickets: take". Approvers only (empty → 403 `no_approvers`; else 403 `not_approver`), checked and a refusal audited **before** anything is fetched, sent or written. `session` must be a session in the snapshot or `fleet.yaml` (else 400 `unknown_session`); `comment` a string (scrubbed, footer added) or `false` (skip) or absent (the tracker's `take.comment`); `transition`, `assign` booleans (default true; else 400 `bad_body`). → 200 `{status: "taken"\|"partial", task_id, msg_id, failed, link, ticket}`; an active take → 409 `already_taken {task_id, session}`, nothing written |
 | `POST /api/tickets/<ref>/comment` `{text}`, `/transition` `{to}`, `/assign` `{who}`, `/release` `{}` | the tracker writes and the end of a take, see "Tickets: writes". Approvers only, checked first and refusals audited. → 200 `{status: "ok", ref, ticket}` (`release`: `{status: "released", msg_id, link}`); `to` not in the tracker's `states` → 400 `bad_transition`; no active take → 409 `not_taken`; a tracker without that write → 400 `ticket_unsupported` |
 | `GET /api/events` | `text/event-stream`: `event: state` with the full state at once and after every change (1 s mtime poll; only when the state differs), `: keepalive` every 25 s |
-| `POST /api/decisions/<id>/answer` `{answer}` | `<id>` must match `^d-[0-9]+-[a-z0-9]+$`. With empty `approvers` → 403 `no_approvers` (fails closed). The identity is then checked **before anything is written**, with the rule of `board answer` (`approvers`; for a production decision, gate or stage, `release_managers`, falling back to `approvers`): not allowed → 403 `not_approver`, audited, file untouched (so it can never cancel an approver's answer that waits for the relay). `board answer` exit 8 (the gate's task was busy) → 409 `task_busy`: try again. Otherwise `board answer <id> --answer-file <tmp> --by <identity>` (argv, no shell; the answer goes by a 0600 file under `$BOARD_HOME` that is removed afterwards, so `-`, `--help` or `--answer-file` typed as an answer are recorded literally) → 200 `{status: "answered"}`. For `kind: "permission"` (`answer` = `allow`\|`deny`; `allow` with `summary_truncated` → 409 `review_in_session`), it then runs `board press <from> <answer> --expect <tool_use_id>` → 200 `{status: "relayed"}`; exit 3 → 409 `stale`; exit 4 → 403 `press_refused`; exit 7 → 409 `screen_not_ready` (the decision is pending again; the body adds `scrolled`, `attempts`, `question` and `elsewhere`). A pane question (`source: "pane"`) that is not `pressable` → 409 `answer_in_session`, untouched. A pressable form of several questions takes `{options: [i, j, ...]}` instead of `answer` (2–4 numbers, one per question, 1–8, no `answer`/`option`); a wrong count, a number out of its question's range, a boolean, free text, or `options` on any other decision → 400 `bad_options`, untouched. It runs `board answer <id> --options i,j --by <identity>`, then `board press` like below. With free text for some questions, or a multi-select question (alone or in a form), it takes `{answers: [{question_index, option} \| {question_index, text} \| {question_index, labels}, ...]}` instead (one entry per question, in order, exactly one of `option` 1–8, `text` or `labels` per entry, no `options`/`answer`/`option`; `labels` — a list of exact, distinct option labels, `[]` allowed — for and only for a multi-select question; 1–4 entries, 1 only for a lone multi-select question; else 400 `bad_answers`); text is cleaned as by `board answer --form-file` and must then be 1–200 characters, not ending in `\;` and not the "Type something" row itself (else 400 `bad_answers`; `question_index`, when given, an integer equal to the entry's position), and each text is screened by the secret guard before anything is written: a request for a secret or a secret-shaped value → 400 `held_answer`, audited; it goes to `board answer <id> --form-file <0600 tmp file> --by <identity>` (removed afterwards), then `board press`; an optional `option` (1–10, a pane question's clicked button) goes to `board answer --option` (mismatch → 400 `bad_option`, untouched; `option` on any other decision → 400); otherwise, when `board answer` set `relay: "press"`, it runs `board press <from> answer --expect <tool_use_id>` with the same results (plus exit 5 → 409 `partial`; with `box: true` in the body when a box of a multi-select question did not flip, `status_reason: "partial_box"`: a digit may be left in "Type something"), and with `relay: "operator"` it returns 200 `{status: "answered"}` for the operator to relay. A decision already `relayed`/`stale`/`timeout` → 409 `gone`. |
+| `POST /api/decisions/<id>/answer` `{answer}` | `<id>` must match `^d-[0-9]+-[a-z0-9]+$`. With empty `approvers` → 403 `no_approvers` (fails closed). The identity is then checked **before anything is written**, with the rule of `board answer` (`approvers`; for a production decision, gate or stage, `release_managers`, falling back to `approvers`): not allowed → 403 `not_approver`, audited, file untouched (so it can never cancel an approver's answer that waits for the relay). `board answer` exit 8 (the gate's task was busy) → 409 `task_busy`: try again. Otherwise `board answer <id> --answer-file <tmp> --by <identity>` (argv, no shell; the answer goes by a 0600 file under `$BOARD_HOME` that is removed afterwards, so `-`, `--help` or `--answer-file` typed as an answer are recorded literally) → 200 `{status: "answered"}`. For `kind: "permission"` (`answer` = `allow`\|`deny`; `allow` with `summary_truncated` → 409 `review_in_session`), it then runs `board press <from> <answer> --expect <tool_use_id>` → 200 `{status: "relayed"}`; exit 3 → 409 `stale`; exit 4 → 403 `press_refused`; exit 7 → 409 `screen_not_ready` (the decision is pending again; the body adds `scrolled`, `attempts`, `question` and `elsewhere`). A pane question (`source: "pane"`) that is not `pressable` → 409 `answer_in_session`, untouched. A pressable form of several questions takes `{options: [i, j, ...]}` instead of `answer` (2–4 numbers, one per question, 1–8, no `answer`/`option`); a wrong count, a number out of its question's range, a boolean, free text, or `options` on any other decision → 400 `bad_options`, untouched. It runs `board answer <id> --options i,j --by <identity>`, then `board press` like below. With free text for some questions, or a multi-select question (alone or in a form), it takes `{answers: [{question_index, option} \| {question_index, text} \| {question_index, labels}, ...]}` instead (one entry per question, in order, exactly one of `option` 1–8, `text` or `labels` per entry, no `options`/`answer`/`option`; `labels` — a list of exact, distinct option labels, `[]` allowed — for and only for a multi-select question; 1–4 entries, 1 only for a lone multi-select question; else 400 `bad_answers`); text is cleaned as by `board answer --form-file` and must then be 1–200 characters, not ending in `\;` and not the "Type something" row itself (else 400 `bad_answers`; `question_index`, when given, an integer equal to the entry's position), and each text is screened by the secret guard before anything is written: a request for a secret or a secret-shaped value → 400 `held_answer`, audited; it goes to `board answer <id> --form-file <0600 tmp file> --by <identity>` (removed afterwards), then `board press`; an optional `option` (1–10, a pane question's clicked button) goes to `board answer --option` (mismatch → 400 `bad_option`, untouched; `option` on any other decision → 400); otherwise, when `board answer` set `relay: "press"`, it runs `board press <from> answer --expect <tool_use_id>` with the same results (plus exit 5 → 409 `partial`; with `box: true` in the body when a box of a multi-select question did not flip, `status_reason: "partial_box"`: a digit may be left in "Type something"), and with `relay: "operator"` it returns 200 `{status: "answered"}` for the operator to relay. A decision already `relayed`/`stale`/`timeout` → 409 `gone`; one the committee decided (`answered_by: "committee"`, or `board answer` exit 9) → 409 `committee_decided`, audited. |
 | `GET /api/messages?before=&limit=&to=&q=` | the message history (the page's History view). `X-Board: 1` and no cross-site `Sec-Fetch-Site` (else 403 `csrf`, before identity); any identity that may read the board. Threads by latest activity (the latest of created_at, released_at and the replies), then id, newest first; `before` is the cursor `<last_activity_at>.<id>` of the last thread already shown (strictly older ones follow), `limit` 1..50 (default 20), `to` a session code (threads sent, relayed or routed to it, or that it replied to: the page's session filter means the same), `triage` or `all`, `q` text (at most 200 chars, case-insensitive) in the to / by / body / ticket and the replies. Each thread goes through the same viewer filter as `/api/state` before it is searched, so a search never matches text the viewer would not see. → 200 `{messages, replies, next}`; `next` is the cursor for the following page, `null` at the end. A bad parameter → 400 `bad_request`. Read-only; nothing is deleted on disk |
 | `POST /api/uploads` (raw image bytes) | one image for a message about to be sent (see "Message attachments"). Same Host / identity / CSRF checks as every POST; only `approvers` ∪ `release_managers` ∪ `askers` (else 403 `not_approver`, audited, body not read). `Content-Type` must be `image/png`, `image/jpeg`, `image/gif` or `image/webp` (else 415 `image_only`); `Content-Length` required (411), 0 → 400 `empty`, over 5 MiB → 413 `too_large` (before reading); the bytes must be one of those four formats (else 415 `not_image`; the stored type is the one the bytes show). `X-Filename`: the percent-encoded file name, display text only. Caps: 12 unsent images per uploader (429 `too_many_pending`), 64 MiB per uploader per day and 128 MiB held in all (48 MiB for an asker) (429 `quota`), 256 MiB on disk, of which askers together fill at most 192 MiB so approvers keep 64 MiB (507 `storage_full`; "askers" by `fleet.yaml` now, not when each image was uploaded). The image store's lock not free within 5 s → 503 `busy`. Stored → 201 `{id, name, size, type}`, audited (`upload`) |
 | `POST /api/uploads/<id>/delete` `{}` | the composer's ✕: deletes the caller's own upload that no message carries yet → 204, audited (`upload-delete`). Same Host / identity / CSRF checks, and like an upload only `approvers` ∪ `release_managers` ∪ `askers` (else 403 `not_approver`, audited); the lock not free within 5 s → 503 `busy`; an invalid id → 400 `bad_id`; an unknown id and someone else's alike → 404 `not_found`; one a message carries → 409 `in_use` (it ages out) |
@@ -849,6 +854,7 @@ $BOARD_HOME/
 | `POST /api/resume` `{code}` \| `{codes: [...]}` | Resume sessions stuck on a usage limit (see "Resume after a usage limit"), **exactly the codes named**: the page sends the codes it showed the owner (one card, or the banner's list). Who is asking is checked first: empty `approvers` → 403 `no_approvers`; not an approver → 403 `not_approver`; an approver who is not an owner → 403 `not_owner`; each audited (`type: "serve"`, `action: "resume"`, `result: "refused"`), nothing run. Then the input: exactly one of `code` (a string) and `codes` (a list of 1–64 distinct strings), each a session in the snapshot or `fleet.yaml` (`"all"` and anything else → 400 `bad_code`; nothing run). Otherwise `board resume CODE... --by board:<identity>` starts in the background (argv, no shell) → 200 `{status: "started", codes}`, audited `result: "ok"` with `codes`; each session's attempt lands in `events.jsonl` (`type: "resume"`) and the page follows the snapshot (`limit` disappears once the session works again). It cannot start → 500 `resume_failed`. |
 | `POST /api/rc` `{code, state}` | Remote Control. `state` other than `on`/`off` → 400 `bad_state`; `code` not `"all"` and not `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`, or not a session in the snapshot or `fleet.yaml` → 400 `bad_code`; nothing run. Empty `approvers` → 403 `no_approvers`; identity not in `approvers` → 403 `not_approver`, audited, nothing written. Otherwise `board rc on\|off <code> --by board:<identity> --no-apply` (argv, no shell) → 200 `{status: "ok", rc}` (the new `rc` state), then `board rc apply <code>` (`--pending` for `all`) starts in the background: the page follows the result through the snapshot. Failure → 500 `rc_failed`. |
 | `POST /api/dnd` `{state: "on"\|"off"}` | do not disturb (see "Owner availability"). `state` other than `on`/`off` → 400 `bad_state`; an identity that is not an owner who is an approver → 403 `not_owner`, audited, nothing written. Otherwise writes or removes `$BOARD_HOME/owner-dnd` (`by: board:<identity>`) → 200 `{dnd: true\|false, status: "on"\|"off"\|"unchanged", availability}`. Audited (`dnd`); owner-away is not touched. |
+| `POST /api/away-decisions` `{mode?: "committee"\|"owner_final", red_lines?: "committee"\|"owner"}` | whether a unanimous committee decides board asks while the owner is away (see "Committee decisions"). Neither field → 400 `bad_request`; a bad `mode` → 400 `bad_mode`, a bad `red_lines` → 400 `bad_red_lines`; an identity that is not an owner who is an approver → 403 `not_owner`, audited, nothing written; a change that lets the committee decide more from a loopback client that runs under a Claude Code session (best effort, through `/proc/net/tcp`) → 403 `agent_session`, audited (unresolved: allowed, audited `peer_unresolved`); the lock busy → 503 `busy`. Otherwise writes `$BOARD_HOME/away-decisions.json` (`by: board:<identity>`; a field left out keeps its value) → 200 `{status: "set"\|"unchanged", decided: [ids], away_decisions}` (the owner's view; `decided`: asks whose consensus was already complete and are decided now). Audited (`away_decisions`). |
 | `POST /api/asker-route` `{mode?: "local"\|"claude_when_ample", five_hour_below?, seven_day_below?, away_askers?: "committee"\|"decline"\|"wait"}` | who answers askers, and what happens to their requests while the owner is away (see "Asker routing"). None of the fields → 400 `bad_request`; a bad `mode` → 400 `bad_mode`, a bad `away_askers` → 400 `bad_away`; a level that is not an integer 1-99 → 400 `bad_pct`; an identity that is not an owner who is an approver → 403 `not_owner`, audited, nothing written. Otherwise writes `$BOARD_HOME/asker-route.json` (`by: board:<identity>`; a field left out keeps its value) → 200 `{status: "set"\|"unchanged", asker_route}` (the owner's view). Audited (`asker_route`). |
 | `POST /api/away` `{state: "on"\|"off", said?}` | `state` other than `on`/`off` → 400 `bad_state`; `said` not a string or over 500 chars → 400 `bad_said`. Empty `approvers` → 403 `no_approvers`; identity not in `approvers` → 403 `not_approver`, audited, nothing written. Otherwise `board away on\|off --by board:<identity> [--said <said>]` (argv, no shell; `on` without `said` records "away (set on the board)") → 200 `{away: true\|false, status: "on"\|"off"\|"unchanged"}`. `on` while already away keeps the existing record (`unchanged`). Failure → 500 `away_failed`. |
 
@@ -968,7 +974,8 @@ page does not declare the `profile` scope) and takes roles from `meta/operator.a
 `via` is `access`.
 
 **Operator in local mode** (`prompts/board-operator.md` section 9): `board-serve --watch` prints
-`decision <id> answered`, `take <id> answered` (an API take request: the operator runs the take
+`decision <id> answered`, `decision <id> committee` (decided by the committee while the owner was
+away: relayed with `board advise relay`, see "Committee decisions"), `take <id> answered` (an API take request: the operator runs the take
 on approve and never relays it), `message <id> new` (`message <id> new triage` for a message to
 `triage`: the operator routes it first), `away on|off`, `consensus <id> <status>` and
 `schedule <CODE> due` (scheduler advisories to deliver, section 12; once per due set; never
@@ -1347,6 +1354,7 @@ The operator is an LLM session. When the account hits a usage limit, nothing wri
 
 ## Relay message formats (SendMessage text)
 - **Decision answered on the board:** `[BOARD decision <id>] <answer> (by owner on board)`. For `kind=permission`, the operator runs `board press` instead of sending a message.
+- **Decision by the committee while the owner was away:** `[BOARD decision <id>] <answer> (by committee consensus while owner away: <A>, <B>[, …][; red line[: production gate]])`, printed by `board advise relay --from <operator>` from the board's own record and sent as printed; never composed by hand. Pattern: `^\[BOARD decision ([A-Za-z0-9._-]+)\] (.*) \(by committee consensus while owner away: ([A-Za-z0-9][A-Za-z0-9_.-]*(, [A-Za-z0-9][A-Za-z0-9_.-]*)+)(; red line(: production gate)?)?\)$`. `<answer>` is one line (the recommended option's label, else the recommendation), defanged. See "Committee decisions".
 - **Question from the board:** `[BOARD ask <msgId>] <body> — reply to BOARD via SendMessage, starting with [re <msgId>]`.
 - **Ticket taken:** `` [BOARD ticket <KEY>] taken for <CODE> as task <taskId> by <identity> on board: "<title>" <url>. Authorizes: the delivery harness for this ticket up to and including opening the PR/MR: plan, design, build, tests, local review, push, open the PR, and, as this session (board ticket comment|transition --session), progress comments and in-progress on this ticket. NOT merge, production deploy, closing or cancelling the ticket, other tickets or repos, or any red line. Verify with `board ticket show <TRACKER>:<KEY>`. Reply to BOARD with [re <msgId>]. `` The title and URL come from the tracker and are defanged: one line, scrubbed, `[`/`]` turned into `(`/`)` and `"` into `'`, so they can never form a `[BOARD …]` header. Built by `board message show <msgId>` (`lib/messages.py`); never typed by hand.
 - **Ticket released:** `[BOARD ticket <KEY>] released from <CODE> (task <taskId>) by <identity> on board. The take no longer authorizes anything on this ticket. Reply to BOARD with [re <msgId>].`
@@ -2913,6 +2921,10 @@ Rules:
 - publishing externally
 - loosening permissions or security settings
 
+(A board ask about one of these can still be decided by the committee while the owner is away, when
+the owner's setting allows it: see "Committee decisions". That is a separate path, never `board
+consensus`.)
+
 **Consensus is not a human decision.** It never answers a board `ask`, a gate or a permission
 prompt, and the operator never relays it as `[BOARD decision …]`. The page shows it read-only. In
 Artifact mode the operator mirrors `owner_away` to `meta/away` and each item to `consensus/{id}`;
@@ -2921,11 +2933,13 @@ received and who acknowledged it (`prompts/board-operator.md` section 10).
 
 ## Committee advice
 
-While the owner is away, a board ask (a question or a gate) still waits for the owner: consensus
-never answers it, and neither does this. What sessions can do is discuss it and attach **advice**
-to the card, so the owner, back, reads "committee recommends A (QA agrees; OPS objects: …)" and
-clicks once. Advice is information only: it never becomes an answer, a gate approval, a `[BOARD
-decision]` or a notification, and nothing answers automatically because of it.
+While the owner is away, a board ask (a question or a gate) waits for the owner: `board consensus`
+never answers it. What sessions can do is discuss it and attach **advice** to the card, so the
+owner, back, reads "committee recommends A (QA agrees; OPS objects: …)" and clicks once. Advice
+itself is information: it never becomes an answer, a gate approval, a `[BOARD decision]` or a
+notification. The one exception is the owner's own choice: once they opt in with `board away
+decisions committee`, a **unanimous** recommendation becomes the decision (see "Committee
+decisions"); with `owner_final` (the default) nothing answers automatically because of advice.
 
 ```
 $BOARD_HOME/advice/<decision id>.json   # one record per decision, 0600 (bin/board writes it)
@@ -3017,6 +3031,187 @@ mirrors each item to `advice/{decisionId}` from `board mirror state`.
 
 The relay of the owner's answer is unchanged (`[BOARD decision <id>] <answer> (by owner on
 board)`): its exact form is what sessions trust, so advice is never added to it.
+
+## Committee decisions
+
+The owner may choose that while they are away, a committee consensus on a pending board ask **becomes
+the decision**, relayed and acted on without waiting for them. Until they opt in, they keep their
+final say (advice only, as in "Committee advice"): an upgrade never turns on binding decisions by
+itself.
+
+```
+$BOARD_HOME/away-decisions.json   # {"mode": "committee"|"owner_final", "red_lines": "committee"|"owner", "by": "...", "at": <ms>}, 0600
+```
+
+**The setting.** No file (or a deleted one): `owner_final`, red lines `owner` (fails closed; the
+owner opts in). A file that can't be read or holds an unknown value reads the same, with
+`invalid: true` so the owner sees it. `red_lines: "owner"` keeps red lines and production gates for
+the owner while the rest is decided by the committee. It is a
+separate file from `asker-route.json` on purpose: that one routes askers' messages, has its own lock
+and fails to `wait`; this one is read by `bin/board` under `consensus.lock` at the moment a vote
+completes, and is written under that same lock, so a change and a completing vote never interleave.
+
+- `board away decisions committee|owner_final [--red-lines committee|owner] --by WHO` (`--by` as for
+  `board away`) and `board away decisions status [--json]` (`{mode, red_lines, invalid, by, at,
+  away}`). Each change appends `{type: "away_decisions", action: "set", by, mode, red_lines,
+  previous}`. A change that lets the committee decide **more** (to `committee`, or red lines to
+  `committee`) is refused with exit 4 and logged (`result: "refused"`) when **any ancestor process**
+  of the command is a Claude Code session: a registered one (the session registry, as below) or a
+  process whose program names `claude`. That holds with or without tmux. Tightening always works.
+  The owner uses the profile menu or their own terminal. (An ancestry check rather than a TTY
+  prompt: a session's shell can fake a TTY with `script`. A `!` command typed in a session's pane
+  runs under that session too, so it is refused as well.)
+- **Protection against honest mistakes, not a security boundary.** A process of the same user can
+  get around it: `setsid` re-parents a command to init, so it has no session among its ancestors
+  any more, and the owner's own path, the loopback API `POST /api/away-decisions` (identity `local`
+  for any direct request on this machine), is reachable by any local process. board-serve therefore
+  also checks a loosening request from a loopback peer, best effort: it finds the client's process
+  through `/proc/net/tcp` (the socket inode, then the process holding it) and refuses with 403
+  `agent_session` when that process or an ancestor is a Claude Code session. When the peer can't be
+  told (no `/proc`, another user's process), the request is allowed, since it is normally the
+  owner's browser, and audited `peer_unresolved`.
+- The page shows the mode and "Red lines and production gates still wait for me" together in one
+  control; each change saves both, so the owner sees what an opt-in includes (the box is ticked by
+  default: red lines stay with the owner unless they untick it).
+- `board away status` prints which mode is in effect.
+
+**When the committee decides** (`lib/committee.py`, all of these, checked under `consensus.lock`):
+
+1. the owner is away, in the same away period the advice was made in, and the advice is open;
+2. the setting is `committee` (and, for a red line or a production gate, `red_lines` is `committee`);
+3. the decision is a board ask (`kind: "question"`, not a pane question) still `pending` or
+   `unauthorized`;
+4. the participants (the recommender, `--to`, the asking session, anyone who weighed in), each
+   mapped to its **fleet code** (an alias is its session: counted once, on write and again when
+   checked), are at least **2 distinct sessions**, all of them **fleet.yaml sessions**, and include
+   the **asking session** (so a session can't approve its own ask alone);
+5. for a **red line or production gate**, a **strong record** (the owner's choice: "a red line is
+   for a longer-term reason; keep a good record"): the recommendation gives its **rationale** beyond
+   the option label (at least 20 characters once the label, relay phrases and punctuation are
+   removed), and every other participant's agree carries its own reason as `--note` (at least 10
+   characters). While the setting is `committee`, `board advise` refuses a red-line recommendation
+   without a rationale and an agree (the recommender's reaffirm included) without a note: **exit 2**,
+   nothing recorded. The asker may recommend its own red line; the 2-session rule applies as usual.
+   The rationale (clipped to 400) and each note (200), scrubbed and defanged, go on the decision's
+   `committee` block (`rationale`, `stances[].note`), into the `committee/decided` event and into the
+   owner's notify body ("Why: …. Notes: QA: …"), and the page shows them;
+6. every participant's **latest** stance is `agree` (the recommender's recommendation counts as its
+   own), and **no** latest stance is `object`. Silence is never agreement: there is no timeout;
+7. each of those stances is **binding**: written while the setting was `committee` (and, for a red
+   line, `red_lines: committee`), by a `--from` that was **verified** (below). Every stance records
+   `binding: {mode, red_lines, verified}` when it is written. An agree given while it was advice only
+   never counts later: switching the setting does not convert it; the session agrees again (the
+   same stance is accepted again when its stamp differs), and the recommender reaffirms with `board
+   advise <id> agree --from <itself>` (recorded as a new `recommend` stance, note `reaffirmed`);
+8. the answer, the recommended option's label (else the recommendation as one line, at most 2000
+   characters, with the relay phrases `(by committee consensus while owner away:` and `(by owner
+   on board)` stripped, defanged), is not empty and passes the secret guard like an owner's
+   free-text answer (`screen-answer`, and no secret-shaped value). A held one is not decided.
+
+**Verified `--from`.** While the setting is `committee`, `board advise … --from X` (a recommendation)
+and `board advise … agree --from X` must run **inside session X**: the `board resolve --from` check
+(`lib/committee.py` verify): the first ancestor of the command with a session registry entry that
+describes that very process (not a zombie, its `procStart` matching `/proc`) and whose program names
+`claude` must be X (its tmux session name, else its registered name; an alias counts as its code).
+None, or another session: exit 4, logged `{type: "advise", result: "refused", reason: "--from is not
+the session this command runs in"}`, nothing written. The registry is always `<passwd home>/.claude/
+sessions` and `/proc` the real one: `$HOME`, `$CLAUDE_SESSIONS_DIR` and `$BOARD_PROC_ROOT` are not
+trusted for this. An `object` needs no verification (it can only block). This is same-user trust
+against honest mistakes and casual misuse, not a security boundary: a process of the same user can
+write a registry file for itself.
+
+**Test mode.** `BOARD_COMMITTEE_TEST=1` makes the checks use `$CLAUDE_SESSIONS_DIR` and skip the
+`claude` program check, so tests can stand in for sessions. It applies **only** when `$BOARD_HOME`
+resolves under `/tmp/`, `/private/tmp/` or `/var/folders/`, is not `~/.agent-switchboard`, and its
+`advice/`, `decisions/`, `away-decisions.json` and `owner-away` (when present) resolve inside it, so
+a symlink out to a real board turns it off. It is meant for boards BOARD does not operate; like the
+rest, it guards against mistakes, not against a hostile process of the same user.
+
+**Setups where it fails closed** (no committee decision; the asks wait for the owner): sessions in a
+sandbox or PID namespace whose processes this command can't see as its ancestors, and session
+registries kept anywhere but `<passwd home>/.claude/sessions`.
+
+**Changing your mind.** The recommender may `object` to its own recommendation: a stance of its own,
+which blocks like any objection; `agree` reaffirms it later. A recommendation can't be edited: one
+whose red-line rationale is too short stays undecided until the owner answers. `--from` and `--to`
+must be fleet.yaml sessions (codes or aliases; exit 2 otherwise), so an ask never carries a
+participant that can never count.
+
+**Production gates.** A decision is a production gate when its gate or stage, trimmed and
+lowercased, is exactly `production`: the same rule as the `release_managers` check, alerts and the
+collector, so the committee never treats a gate differently from the rest of the board. A gate named
+anything else (`prod`, `release`) is not one; a session asking such a gate marks it `--red-line`
+(stages are already limited to the lifecycle names, where `production` is the only one).
+
+**Who triggers it.** The `board advise <id> agree` that completes it, in the same locked section as
+the stance (no polling, no second writer). `board away decisions committee` / the profile control
+switching so that the committee decides more also checks every open advice record, but only binding
+stances count (rule 7), so advice given before the switch is never converted by it; the sessions
+agree again. It is idempotent: a decided ask is no longer pending.
+
+**What it writes**, in one pass: the decision becomes `status: "answered"`, `answer`,
+`answered_by: "committee"`, `answered_at`, and
+
+```json
+"committee": { "participants": ["WEB", "QA", "API"], "recommended_by": "WEB", "asker": "API",
+  "option": "Keep redirect"|null, "stances": [ { "by": "WEB", "stance": "recommend", "at": 0 }, { "by": "QA", "stance": "agree", "at": 0 } ],
+  "red_line": false, "production": false, "settings": { "mode": "committee", "red_lines": "committee" },
+  "away": { "since": 0, "by": "OPS" }, "decided_at": 0 }
+```
+
+A gate gets its approval event and its task entry exactly as `board answer` writes them, with
+`approved_by` / `answered_by` `"committee"` (approve-style answer → `approved`, anything else →
+`rejected`). The advice record freezes with `frozen_reason: "decided"`. `events.jsonl` gets
+`{type: "answer", by: "committee"}`, `{type: "committee", action: "decided", id, answer,
+participants, stances, recommended_by, red_line, production, settings, away}` and the freeze.
+
+**Owner first wins; a committee decision is final.** `board answer` holds `consensus.lock` from
+reading the status to writing the answer, and the committee decides under the same lock. If the
+owner's answer lands first, the ask is no longer pending and the agree decides nothing (the advice
+freezes `answered`). If the committee's lands first, `board answer` refuses any later answer with
+**exit 9**, checked before the status, so also after the relay (audited `{type: "answer", result: "refused", reason: "decided by the committee"}`;
+board-serve → 409 `committee_decided`), so the relayed decision is never replaced behind the
+asker's back. `board away off` before consensus completes leaves it advice (frozen `owner_back`);
+decisions already taken stay taken. Without `flock`, `board advise` can't run, so nothing is
+decided this way. `board resolve`, `board mark` (and `board press`'s marks) take the same lock; the
+collector takes it without waiting before it rewrites a board ask (a timeout or a hint) and leaves
+the write for its next run when it is busy.
+
+**Approve-style answers** for a committee gate are `bin/board`'s `APPROVE_WORDS` (read from that
+file: one list; unreadable → `rejected`).
+
+**Not a weaker approver check.** `"committee"` is never added to `approvers` or
+`release_managers`, and `board answer --by committee` is refused like any non-approver. The
+committee path is separate: only `lib/committee.py`, called by `bin/board` under the lock, writes
+it.
+
+**Relay.** `board advise relay --from <operator> [ID] [--json]` (BOARD or `operator.json`'s
+`operator_session`, inside tmux this tmux session; anyone else exit 4) prints each committee
+decision still `answered`: `== <id> <asker> [red-line|production-gate]`, then the exact line (see
+"Relay message formats"). BOARD sends it as printed to the asker, then `board mark <id> relayed`.
+`board-serve --watch` prints `decision <id> committee` for it (never `decision <id> answered`). A
+worker treats it as the decision on its own ask after checking `board advise show <id>` (which
+prints `decided by committee consensus while the owner was away`, the answer and the sessions).
+
+**The owner is told after the fact.** At each decision, `board-notify send --key committee:<id>
+--board <id> --no-escalate`, level `info`, or `high` for a red line or production gate (Slack, plus
+desktop and email at high; never escalating, never repeating). Logged as `{type: "committee",
+action: "notified", level}`. The advice digest stays low priority, worded for the setting.
+
+**On the board.** `/api/state` carries `away_decisions` (`{mode, red_lines}` for everyone; owners
+also get `invalid, by, at`), and each committee decision carries a compact `committee` block
+(participants, recommended_by, option, stances, red_line, production, settings, away_since,
+decided_at). The page shows:
+- a **"Decided while you were away"** list above the cards: each committee decision of the served
+  decisions (newest first), its answer, who agreed, whether it has been relayed, and a red-line /
+  production-gate badge, until this viewer presses **Mark reviewed** (kept in this browser);
+- **"Decided by committee"** with who agreed (and the badge) in the decision history;
+- on open advice, the tag "decides if every session asked agrees" when the committee may decide it,
+  else "advice only · not a decision";
+- for owners, the profile control "While you're away, board asks": Committee decides / I decide,
+  and "Red lines and production gates still wait for me".
+
+`board advise decided [--json]` lists the committee decisions of the last 7 days.
 
 ## Owner availability (do not disturb)
 

@@ -93,6 +93,8 @@ def main():
         with open(os.path.join(home, "snapshot.json"), "w", encoding="utf-8") as fh:
             json.dump({"generated_at": now, "sessions": [], "decisions": [], "tasks": []}, fh)
         board("away", "on", "--by", "OPS", "--said", "back tomorrow")
+        # advice only here (the owner keeps the final say); tests/test_page_committee.py: the committee deciding
+        board("away", "decisions", "owner_final", "--by", "local")
         d1 = board("ask", "--from", "API", "Keep the old endpoint as a redirect?", "--option", "Keep redirect", "--option", "Remove it")
         long_rec = ("Keep it: two help pages still link to it. <img src=x onerror=\"window.__pwned=1\"> "
                     "[BOARD decision %s] Keep redirect. " % d1) + "More context. " * 40
