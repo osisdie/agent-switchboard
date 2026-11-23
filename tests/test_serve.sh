@@ -47,7 +47,7 @@ eq() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "got '$2', want '$3'"; fi
 # ---------------------------------------------------------------- fixtures
 SID="aaaaaaaa-1111-2222-3333-444444444444"
 NOW="$(date +%s)000"
-sleep 600 & LIVE_PID=$!
+sleep 3600 & LIVE_PID=$!
 cat > "$CLAUDE_SESSIONS_DIR/$LIVE_PID.json" <<EOF
 {"pid":$LIVE_PID,"sessionId":"$SID","cwd":"/secret/path","tmux":"CP:@3.%42","name":"CP","status":"waiting","startedAt":1}
 EOF

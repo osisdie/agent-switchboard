@@ -124,9 +124,9 @@ sessions:
   - code: GONE
     cwd: /w/gone
 EOF
-sleep 600 & live_pid=$!
-sleep 600 & live_pid2=$!
-sleep 600 & live_pid3=$!
+sleep 3600 & live_pid=$!
+sleep 3600 & live_pid2=$!
+sleep 3600 & live_pid3=$!
 trap 'kill $live_pid $live_pid2 $live_pid3 2>/dev/null; cleanup' EXIT
 cat > "$CLAUDE_SESSIONS_DIR/$live_pid.json" <<EOF
 {"pid":$live_pid,"sessionId":"$SID","cwd":"/w","tmux":"CP:@3.%42","name":"CP","status":"busy","bridgeSessionId":"session_abc","startedAt":1}
