@@ -461,6 +461,9 @@ dialog.notif { width: min(720px, calc(100vw - 24px)); }
 .cmt-decided .what { min-width: 0; overflow-wrap: anywhere; }
 .cmt-decided .ans { font-family: var(--f-mono); font-size: 13px; }
 .cmt-decided .who { grid-column: 1 / -1; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.cmt-decided .why, .cmt-decided .notes { grid-column: 1 / -1; margin: 0; font-size: 13px; overflow-wrap: anywhere; }
+.cmt-decided .notes { padding-left: 12px; color: var(--muted); }
+#dec-history li .cmt-why { color: var(--muted); }
 #acct-awaydec .ad-red { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; margin-top: 6px; }
 .advice .adv-tag.decides { border-color: var(--cord); color: var(--cord); }
 .dcard.maybe:hover, .dcard.maybe:focus-within { opacity: 1; }
@@ -2879,6 +2882,10 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
   const cmtRed = (d) => { const c = cmtOf(d); return !!(c && (c.red_line === true || c.production === true)); };
   const cmtWho = (d) => (Array.isArray(cmtOf(d).participants) ? cmtOf(d).participants.map(str).filter(Boolean).join(', ') : '');
   const cmtAt = (d) => ts((cmtOf(d) || {}).decided_at) || ts(d.answered_at);
+  // the record the owner reviews: why (the recommendation's rationale) and each session's own reason
+  const cmtWhy = (d) => str((cmtOf(d) || {}).rationale);
+  const cmtNotes = (d) => (Array.isArray((cmtOf(d) || {}).stances) ? cmtOf(d).stances : [])
+    .filter((x) => x && str(x.note) && str(x.stance) === 'agree').map((x) => str(x.by) + ': ' + str(x.note));
   let cmtSeen = (() => { try { return Number(localStorage.getItem(CMT_SEEN_KEY)) || 0; } catch (e) { return 0; } })();
   function renderCommitteeDecided() {
     const box = $('#cmt-decided');
@@ -2892,7 +2899,9 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
           cmtRed(d) ? [h('span', { class: 'cmt-red', text: tr(c.production ? 'red line · production gate' : 'red line') }), ' '] : null,
           h('span', { class: 'code-chip', text: str(d.from) || '?' }), ' ', what, ' → ', h('span', { class: 'ans', text: str(d.answer) })),
         timeEl(cmtAt(d)),
-        h('span', { class: 'who', text: tr('agreed: {who}', { who: cmtWho(d) }) + ' · ' + tr(d.status === 'relayed' ? 'relayed to the session' : 'waiting for the operator to relay it') }));
+        h('span', { class: 'who', text: tr('agreed: {who}', { who: cmtWho(d) }) + ' · ' + tr(d.status === 'relayed' ? 'relayed to the session' : 'waiting for the operator to relay it') }),
+        cmtWhy(d) ? h('p', { class: 'why', text: tr('why: {text}', { text: cmtWhy(d) }) }) : null,
+        cmtNotes(d).length ? h('p', { class: 'notes', text: tr('their reasons: {text}', { text: cmtNotes(d).join(' · ') }) }) : null);
     });
   }
   $('#cmt-reviewed').addEventListener('click', () => {
@@ -2939,7 +2948,9 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
           sessionNote(d) ? h('span', { class: 'via-session' }, ' · ', sessionNote(d)) : null,
           cmtOf(d) ? h('span', { class: 'cmt-past' }, ' ', h('span', { class: 'cmt-tag', text: tr('Decided by committee') }),
             cmtRed(d) ? [' ', h('span', { class: 'cmt-red', text: tr(cmtOf(d).production ? 'red line · production gate' : 'red line') })] : null,
-            ' ', h('span', { class: 'adv-past', text: tr('agreed: {who}', { who: cmtWho(d) }) }))
+            ' ', h('span', { class: 'adv-past', text: tr('agreed: {who}', { who: cmtWho(d) }) }),
+            cmtWhy(d) ? h('span', { class: 'cmt-why', text: ' · ' + tr('why: {text}', { text: cmtWhy(d).length > 140 ? cmtWhy(d).slice(0, 139) + '…' : cmtWhy(d) }) }) : null,
+            cmtNotes(d).length ? h('span', { class: 'cmt-why', text: ' · ' + tr('their reasons: {text}', { text: cmtNotes(d).join(' · ') }) }) : null)
             : adv ? h('span', { class: 'adv-past', text: ' · ' + tr('advice: {summary}', { summary: adviceSummary(adv) }) }) : null),
         timeEl(d.answered_at || d.relayed_at || d.created_at));
     });
@@ -8981,6 +8992,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "Committee advice recommends this (not a decision)": "委員會建議選這個（不是決定）",
       "advised": "建議",
       "advice: {summary}": "建議：{summary}",
+      "why: {text}": "理由：{text}",
+      "their reasons: {text}": "各 session 的理由：{text}",
       "became the decision: every session asked agreed": "已成為決定：每個被詢問的 session 都同意",
       "decides if every session asked agrees": "每個被詢問的 session 都同意就成為決定",
       "red line": "紅線",

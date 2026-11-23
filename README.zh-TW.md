@@ -763,7 +763,8 @@ pomodoro:                 # fleet.yaml；全部選填
 - **你不在時由委員會決定（要你自己開啟）**。預設關閉。在個人選單選「委員會決定」（或在你自己的終端機
   執行 `board away decisions committee --by <你>`；在 Claude Code session 底下執行會被拒絕）之後，
   **每個被詢問的 session 都同意**這個建議（至少兩個 fleet session，包括提問的 session，每一票都要在
-  該 session 裡面執行；紅線的建議必須來自提問者以外的 session），而且**沒有人反對**，建議就成為決定：回覆者記為 `committee`，由 BOARD 轉給
+  該 session 裡面執行；紅線的建議要寫明理由，每一票 agree 也要用 `--note` 寫下該 session 自己的理由，
+  留在紀錄上給你看），而且**沒有人反對**，建議就成為決定：回覆者記為 `committee`，由 BOARD 轉給
   提問的 session，格式是 `[BOARD decision <id>] <answer> (by committee consensus while owner away: WEB, QA, API)`，
   紅線或 production 關卡會再加上 `; red line` 或 `; red line: production gate`。沉默一律不算同意。
   每個決定事後都會通知你（info；紅線和 production 關卡用 high），頁面會列在「你不在時做出的決定」，

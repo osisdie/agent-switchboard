@@ -3074,8 +3074,16 @@ completes, and is written under that same lock, so a change and a completing vot
    mapped to its **fleet code** (an alias is its session: counted once, on write and again when
    checked), are at least **2 distinct sessions**, all of them **fleet.yaml sessions**, and include
    the **asking session** (so a session can't approve its own ask alone);
-5. for a **red line or production gate**, the recommender is **not the asking session** (ordinary
-   asks keep the 2-session rule);
+5. for a **red line or production gate**, a **strong record** (the owner's choice: "a red line is
+   for a longer-term reason; keep a good record"): the recommendation gives its **rationale** beyond
+   the option label (at least 20 characters once the label, relay phrases and punctuation are
+   removed), and every other participant's agree carries its own reason as `--note` (at least 10
+   characters). While the setting is `committee`, `board advise` refuses a red-line recommendation
+   without a rationale and an agree (the recommender's reaffirm included) without a note: **exit 2**,
+   nothing recorded. The asker may recommend its own red line; the 2-session rule applies as usual.
+   The rationale (clipped to 400) and each note (200), scrubbed and defanged, go on the decision's
+   `committee` block (`rationale`, `stances[].note`), into the `committee/decided` event and into the
+   owner's notify body ("Why: …. Notes: QA: …"), and the page shows them;
 6. every participant's **latest** stance is `agree` (the recommender's recommendation counts as its
    own), and **no** latest stance is `object`. Silence is never agreement: there is no timeout;
 7. each of those stances is **binding**: written while the setting was `committee` (and, for a red

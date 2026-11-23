@@ -531,8 +531,9 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
         echo "  decision: answered by \"committee\", relayed by BOARD (board advise relay), the owner told"
         echo "  after. Then a recommendation or an agree must run inside its --from session (as board"
         echo "  resolve --from; exit 4 otherwise), and only stances given under that setting count (agree"
-        echo "  again after it changes; the recommender reaffirms with agree). A red line needs a"
-        echo "  recommender other than the asker. Otherwise (owner_final, the default) it never answers"
+        echo "  again after it changes; the recommender reaffirms with agree). On a red line, the"
+        echo "  recommendation must say why (20+ characters beyond the option) and each agree needs --note"
+        echo "  with the session's own reason (10+), else exit 2. Otherwise (owner_final, the default) it never answers"
         echo "  anything. An alias counts as its session's code. One recommendation per ask (--option names the option"
         echo "  it recommends; --to the sessions whose view it asks for, plus the asker); any other"
         echo "  session may agree or object with a note (the latest stance counts). Silence is no"
@@ -3085,6 +3086,14 @@ adv_recommend() {
     for q in "${parts[@]}"; do [ "$q" = "$asker" ] && seen=1; done
     [ "$seen" = 1 ] || parts+=("$asker")
   fi
+  # A red line (a production gate, or --red-line) the committee may decide needs a strong record:
+  # the recommendation gives its reason beyond the option label (lib/committee.py RATIONALE_MIN).
+  if [ ! -f "$f" ] && [ "$(jq -r .mode <<<"$stamp")" = committee ] && { [ "$red" = 1 ] || is_production "$df"; } \
+      && ! printf '%s' "$text" | python3 "$REPO/lib/committee.py" rationale-ok "$label" 2>/dev/null; then
+    unlock_board
+    echo "board advise: refused — $id is a red line the committee may decide: the recommendation must say why (at least 20 characters beyond the option), so the owner can review it; nothing recorded" >&2
+    exit 2
+  fi
   if [ -f "$f" ]; then
     adv_open "$id" "$f"
     local by; by="$(jq -r '.from' "$f")"
@@ -3151,6 +3160,15 @@ adv_stance() {
   adv_open "$id" "$f"
   local stamp; stamp="$(adv_binding "$vfy")"
   [ "$stance" = agree ] && adv_require_verified "$id" agree "$from" "$vfy" "$stamp"
+  # A red line the committee may decide: each agree (the recommender's reaffirm too) gives this
+  # session's own reason, kept on the decision for the owner (lib/committee.py NOTE_MIN).
+  if [ "$stance" = agree ] && [ "$(jq -r .mode <<<"$stamp")" = committee ] \
+      && { [ "$red" = 1 ] || [ "$(jq -r '.red_line == true' "$f")" = true ] || is_production "$(dec_path "$id")"; } \
+      && [ "$(jq -rn --arg n "$note" '$n | gsub("\\s+"; " ") | gsub("^ | $"; "") | length')" -lt 10 ]; then
+    unlock_board
+    echo "board advise: refused — $id is a red line the committee may decide: an agree needs --note with $from's own reason (at least 10 characters), kept on the decision for the owner; nothing recorded" >&2
+    exit 2
+  fi
   # the stance this session gave last, and the stamp it carried (an alias counts as its code)
   local prev prevb now new
   prev="$(jq -r --arg f "$from" '[.stances[]? | select(.by == $f)] | last | .stance // empty' "$f")"
@@ -3197,7 +3215,8 @@ adv_stance() {
       echo "  BOARD relays it to $(jq -r '.from' "$(dec_path "$id")"); the owner is told after." >&2 ;;
     owner_final|red_line_owner) echo "  advice only: the owner keeps the final say on this ask (board away decisions status)." >&2 ;;
     not_binding) echo "  not decided: some agreement was given while it was advice only (or unverified); those sessions agree again to count." >&2 ;;
-    red_line_self) echo "  not decided: a red line needs a recommendation from a session other than the asker." >&2 ;;
+    no_rationale) echo "  not decided: a red line needs a recommendation that says why (at least 20 characters beyond the option)." >&2 ;;
+    no_note) echo "  not decided: on a red line every agree needs --note with the session's own reason; those sessions agree again with one." >&2 ;;
     unknown_session) echo "  not decided: every session asked must be a fleet.yaml session." >&2 ;;
     held) echo "  not decided: the recommendation was held by the secret guard; it waits for the owner." >&2 ;;
     error) echo "  advice recorded; the committee decision check failed, so the ask waits for the owner." >&2 ;;

@@ -860,7 +860,8 @@ never counts, and the dangerous things still wait for you.
   **Committee decides** in the profile menu (or `board away decisions committee --by <you>` from
   your own terminal; refused under a Claude Code session), when **every session asked agrees** with
   the recommendation (at least two fleet sessions, the asking session included, each agree run
-  inside its own session; for a red line, recommended by a session other than the asker) and
+  inside its own session; for a red line, the recommendation says why and every agree gives its own
+  reason with `--note`, kept on the record for you) and
   **nobody objects**, it becomes the decision: answered by `committee`, relayed by BOARD to the asking session
   as `[BOARD decision <id>] <answer> (by committee consensus while owner away: WEB, QA, API)`, with
   `; red line` or `; red line: production gate` when it is one. Silence never counts. You are told

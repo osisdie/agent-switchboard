@@ -18,7 +18,10 @@ When the committee decides (decide(), all of these, checked under consensus.lock
   - the decision is a board ask (kind "question", not a pane question) still pending/unauthorized;
   - participants (the asker, the recommender, --to, anyone who weighed in), each mapped to its fleet
     code (aliases count once), are at least 2 distinct fleet.yaml sessions and include the asker;
-  - for a red line or production gate, the recommender is not the asking session;
+  - for a red line or production gate, a strong record: the recommendation carries a rationale
+    beyond the option label (RATIONALE_MIN characters), and every agree carries its session's own
+    reason as --note (NOTE_MIN characters; the recommender's reaffirm too). `board advise` refuses
+    either without it (exit 2) while the owner lets the committee decide;
   - every participant's latest stance is agree (the recommender's recommendation counts as its
     agreement), and nobody's latest stance is object. Silence is never agreement;
   - each of those counting stances is binding: it was written while the setting was committee
@@ -87,6 +90,10 @@ TEST_ROOTS = ("/tmp/", "/private/tmp/", "/var/folders/")
 # the relay's own phrases never appear inside an answer (a recommendation can't fake the suffix)
 STRIP_RE = re.compile(r"\(\s*by\s+(?:committee\s+consensus\s+while\s+owner\s+away\s*:?|owner\s+on\s+board\s*\)?)", re.I)
 MAX_ANSWER = 2000
+RATIONALE_MIN = 20                # a red line's recommendation: its reason, beyond the option label
+NOTE_MIN = 10                     # a red line's agree: the session's own reason
+MAX_RATIONALE = 400
+MAX_NOTE = 200
 KEEP_MS = 7 * 24 * 3600 * 1000    # `decided` view: the last week
 REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 # The relay a worker trusts (docs/contract.md "Relay message formats"); built here only.
@@ -372,8 +379,6 @@ def evaluate(home, did, rec=None, dec=None, away_rec=None, s=None):
     recommender = canon(m, rec.get("from"))
     if recommender not in parts:
         return False, "no_recommender", None
-    if red and recommender == asker:
-        return False, "red_line_self", None
     last = {}
     for st in rec.get("stances") or []:
         if isinstance(st, dict) and isinstance(st.get("by"), str) and st.get("stance") in advice.STANCES:
@@ -387,6 +392,11 @@ def evaluate(home, did, rec=None, dec=None, away_rec=None, s=None):
         if not binding(st, red):
             return False, "not_binding", None
     option = rec.get("option") if isinstance(rec.get("option"), str) and rec.get("option") else None
+    # a red line is decided only with a strong record: the reason for it, and each session's own
+    if red and len(rationale_text(rec.get("recommendation"), option)) < RATIONALE_MIN:
+        return False, "no_rationale", None
+    if red and any(p != recommender and not note_ok(last[p].get("note")) for p in parts):
+        return False, "no_note", None
     answer = option if option is not None else rec.get("recommendation")
     answer = clean_answer(answer)
     if not answer:
@@ -394,9 +404,10 @@ def evaluate(home, did, rec=None, dec=None, away_rec=None, s=None):
     if guard.scrub(answer) != answer or guard.screen_answer(answer, dec.get("options")):
         return False, "held", None
     stances = [{"by": p, "stance": last[p]["stance"], "at": _ms(last[p].get("at")) or None,
-                "binding": last[p].get("binding")} for p in parts]
+                "note": short(last[p].get("note"), MAX_NOTE), "binding": last[p].get("binding")} for p in parts]
     return True, "ok", {
         "answer": answer, "option": option, "participants": parts, "recommended_by": recommender,
+        "rationale": short(rec.get("recommendation"), MAX_RATIONALE),
         "asker": asker, "stances": stances, "red_line": bool(red), "production": bool(production),
         "settings": {"mode": s["mode"], "red_lines": s["red_lines"]},
         "away": {"since": _ms((rec.get("away") or {}).get("since")) or None, "by": (rec.get("away") or {}).get("by")}}
@@ -408,6 +419,23 @@ def binding(st, red):
     b = st.get("binding") if isinstance(st, dict) else None
     return isinstance(b, dict) and b.get("verified") is True and b.get("mode") == "committee" \
         and (not red or b.get("red_lines") == "committee")
+
+
+def rationale_text(text, label=None):
+    """The recommendation's reason: one line, without the option label, relay phrases stripped."""
+    t = clean_answer(text)
+    if isinstance(label, str) and label.strip():
+        t = re.sub(re.escape(label.strip()), " ", t, flags=re.I)
+    return re.sub(r"[\s.,;:!?\-]+", " ", t).strip()
+
+
+def note_ok(note):
+    return isinstance(note, str) and len(re.sub(r"\s+", " ", note).strip()) >= NOTE_MIN
+
+
+def short(text, n):
+    """Free text for the record, an event or a notify: scrubbed, one line, clipped, defanged."""
+    return away._text(guard.scrub(text if isinstance(text, str) else ""), n) or None  # noqa: SLF001
 
 
 def clean_answer(answer):
@@ -470,7 +498,7 @@ def decide(home, did, now=None):
     log_event(home, {"ts": now, "type": "answer", "id": did, "by": BY})
     log_event(home, {"ts": now, "type": "committee", "action": "decided", "id": did, "answer": plan["answer"],
                      "participants": plan["participants"], "stances": plan["stances"],
-                     "recommended_by": plan["recommended_by"], "red_line": plan["red_line"],
+                     "recommended_by": plan["recommended_by"], "rationale": plan["rationale"], "red_line": plan["red_line"],
                      "production": plan["production"], "settings": plan["settings"], "away": plan["away"]})
     log_event(home, {"ts": now, "type": "advice", "action": "freeze", "id": did, "reason": "decided"})
     if dec.get("gate"):
@@ -502,9 +530,13 @@ def notify_owner(home, did):
     what = "production gate" if c.get("production") else "red line" if red else "board ask"
     title = "[board] Decided by committee while you were away: %s %s → %s" % (
         what, did, away._text(dec.get("answer"), 120))  # noqa: SLF001
-    body = "Asked by %s: \"%s\". Agreed: %s. Review it on the board (decided while you were away)." % (
+    notes = "; ".join("%s: %s" % (away._text(x.get("by"), 64), short(x.get("note"), 120))  # noqa: SLF001
+                      for x in c.get("stances") or [] if isinstance(x, dict) and x.get("note"))
+    body = "Asked by %s: \"%s\". Agreed: %s. Why: %s.%s Review it on the board (decided while you were away)." % (
         away._text(dec.get("from"), 64), away._text(dec.get("question"), 200),  # noqa: SLF001
-        ", ".join(away._text(p, 64) for p in c.get("participants") or []))  # noqa: SLF001
+        ", ".join(away._text(p, 64) for p in c.get("participants") or []),  # noqa: SLF001
+        short(c.get("rationale"), 240) or "-", (" Notes: %s." % notes) if notes else "")
+    log_event(home, {"ts": now_ms(), "type": "committee", "action": "notify-body", "id": did, "body": body})
     cmd = [os.path.join(REPO, "bin", "board-notify"), "send", "--level", "high" if red else "info",
            "--key", "committee:%s" % did, "--board", did, "--kind", "committee", "--no-escalate",
            "--title", title, "--body", body]
@@ -526,7 +558,9 @@ def compact(c):
     return {"participants": [t(p, 64) for p in c.get("participants") or [] if isinstance(p, str)][:32],
             "recommended_by": t(c.get("recommended_by"), 64) if c.get("recommended_by") else None,
             "option": t(c.get("option"), 200) if c.get("option") else None,
-            "stances": [{"by": t(x.get("by"), 64), "stance": t(x.get("stance"), 16), "at": _ms(x.get("at")) or None}
+            "rationale": short(c.get("rationale"), MAX_RATIONALE),
+            "stances": [{"by": t(x.get("by"), 64), "stance": t(x.get("stance"), 16), "at": _ms(x.get("at")) or None,
+                         "note": short(x.get("note"), MAX_NOTE)}
                         for x in c.get("stances") or [] if isinstance(x, dict)][:32],
             "red_line": c.get("red_line") is True, "production": c.get("production") is True,
             "settings": {k: t((c.get("settings") or {}).get(k), 16) for k in ("mode", "red_lines")},
@@ -692,6 +726,9 @@ def main(argv):
                                               ", ".join(c["participants"]),
                                               "  PRODUCTION GATE" if c["production"] else "  RED LINE" if c["red_line"] else ""))
         return 0
+    if cmd == "rationale-ok":
+        # committee.py rationale-ok [LABEL] < recommendation: exit 0 when it gives a reason beyond the label
+        return 0 if len(rationale_text(sys.stdin.read(), rest[0] if rest else None)) >= RATIONALE_MIN else 1
     if cmd == "verify":
         if len(rest) != 1 or not CODE_RE.fullmatch(rest[0]):
             sys.stderr.write("usage: committee.py verify CODE\n")

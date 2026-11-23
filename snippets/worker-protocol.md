@@ -159,7 +159,9 @@ shows the human a board and relays their answers.
     fleet sessions, the asker included) and nobody objects, the recommendation **becomes the
     decision**, and `BOARD` relays it to the asker as a `[BOARD decision …] (by committee consensus
     while owner away: …)`. Red lines and production gates are included unless the owner chose
-    `--red-lines owner`; for those, a session other than the asker must make the recommendation. So
+    `--red-lines owner`; for those, the recommendation must say why (beyond the option label), and
+    every agree must carry `--note` with my own reason (refused otherwise, exit 2): the owner reviews
+    that record when back. So
     I **agree only with what I would decide myself**, and I object (with a note) to anything I'm
     unsure of: my agree may be the one that decides it. I run `board advise` **from my own session**
     with my own code (an agree or a recommendation from anywhere else is refused, exit 4). An agree

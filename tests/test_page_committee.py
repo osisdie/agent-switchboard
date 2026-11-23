@@ -68,7 +68,8 @@ def wait(fn, secs=10):
 VIEW_JS = """() => {
   const box = document.getElementById('cmt-decided');
   const rows = [...document.querySelectorAll('#cmt-list li')].map((li) => ({ id: li.id, text: li.textContent,
-    red: (li.querySelector('.cmt-red') || {}).textContent || null }));
+    red: (li.querySelector('.cmt-red') || {}).textContent || null,
+    why: (li.querySelector('.why') || {}).textContent || null, notes: (li.querySelector('.notes') || {}).textContent || null }));
   const hist = document.getElementById('dec-history-list');
   return { shown: !!box && !box.hidden, head: box && box.querySelector('h3').textContent, rows,
     hist: hist ? hist.textContent : '', pending: [...document.querySelectorAll('#dec-list .dcard')].map((c) => c.id) };
@@ -141,8 +142,8 @@ def main():
         as_session("API", "advise", d1, "agree", "--from", "API")
         tid = board("task", "new", "--owner", "OPS", "Rotate certificates", "--stage", "production")
         d2 = board("ask", "--from", "OPS", "--task", tid, "--gate", "production", "Release to production?")
-        as_session("API", "advise", d2, "--from", "API", "--option", "approve", "The canary is green.")
-        as_session("OPS", "advise", d2, "agree", "--from", "OPS")
+        as_session("API", "advise", d2, "--from", "API", "--option", "approve", "The canary has been green for a day.")
+        as_session("OPS", "advise", d2, "agree", "--from", "OPS", "--note", "Certificates expire Friday.")
         d3 = board("ask", "--from", "QA", "Which image tag?", "--option", "dated", "--option", "latest")
         as_session("WEB", "advise", d3, "--from", "WEB", "--option", "dated", "Use the dated tag.")
         for d in (d1, d2):
@@ -191,9 +192,13 @@ def main():
             check("  the production gate is marked a red line", r2.get("red") == "red line · production gate", r2)
             check("  who agreed and that it waits to be relayed", "agreed: API, OPS" in r2.get("text", "")
                   and "waiting for the operator to relay it" in r2.get("text", ""), r2)
+            check("  the red line's record: why and each session's reason", r2.get("why") == "why: The canary has been green for a day."
+                  and r2.get("notes") == "their reasons: OPS: Certificates expire Friday.", r2)
             check("  the ordinary one has no red-line mark, its answer shown", r1.get("red") is None and "→ Keep redirect" in r1.get("text", ""), r1)
             check("decided asks are not pending cards", ("dec-" + d1) not in v["pending"] and ("dec-" + d2) not in v["pending"], v["pending"])
             check("the history says decided by committee", "Decided by committee" in v["hist"] and "agreed: WEB, QA, API" in v["hist"], v["hist"][:300])
+            check("  with the red line's why and reasons", "why: The canary has been green for a day." in v["hist"]
+                  and "their reasons: OPS: Certificates expire Friday." in v["hist"], v["hist"][:500])
             check("text is inserted as text", pg.evaluate("() => !window.__pwned && !document.querySelector('#cmt-list img, #dec-history-list img')"))
             tag = pg.evaluate("(id) => document.querySelector('#adv-' + id + ' .adv-tag').textContent", d3)
             check("open advice says it becomes the decision when everyone agrees", tag == "decides if every session asked agrees", tag)
@@ -246,6 +251,8 @@ def main():
             check("zh-TW heading and marks", v["head"] == "你不在時做出的決定" and any(r["red"] == "紅線 · production gate" for r in v["rows"])
                   and any("同意：API, OPS" in r["text"] for r in v["rows"]), v)
             check("  the history tag in zh-TW", "由委員會決定" in v["hist"], v["hist"][:200])
+            check("  why and reasons in zh-TW", any((r["why"] or "").startswith("理由：") and (r["notes"] or "").startswith("各 session 的理由：")
+                                                  for r in v["rows"]), v["rows"])
             check("no sideways scroll at 390 px", pg.evaluate("() => document.scrollingElement.scrollWidth <= innerWidth"))
             box = pg.evaluate("() => { const s = getComputedStyle(document.getElementById('cmt-decided'));"
                               " return { bg: s.backgroundColor, ink: getComputedStyle(document.querySelector('#cmt-decided h3')).color }; }")

@@ -71,7 +71,8 @@ in_session() {
 }
 # adv CODE ID ARGS... — board advise as session CODE (--from CODE)
 adv() { local c="$1" id="$2"; shift 2; in_session "$c" "$B" advise "$id" "$@" --from "$c"; }
-agree() { in_session "$2" "$B" advise "$1" agree --from "$2"; }
+# agree ID CODE [NOTE] — an agree as session CODE (a red line needs NOTE: the session's own reason)
+agree() { if [ -n "${3:-}" ]; then in_session "$2" "$B" advise "$1" agree --from "$2" --note "$3"; else in_session "$2" "$B" advise "$1" agree --from "$2"; fi; }
 
 # ---------------------------------------------------------------- the owner's setting
 echo "setting:"
@@ -189,7 +190,7 @@ eq "  so an agree is refused there" "$rc/$(df "$d11" .status)" "4/pending"
 # an alias is its session: WEB can't recommend and then agree as web-main
 tid0="$("$B" task new --owner WEB "Ship the widget" --stage production)"
 d13="$("$B" ask --from WEB --task "$tid0" --gate production "Release the widget?")"
-adv QA "$d13" --to web-main --option approve "Ship it." >/dev/null 2>&1
+adv QA "$d13" --to web-main --option approve "Ship it: the release checklist is complete." >/dev/null 2>&1
 eq "--to an alias is stored as its code (counted once)" "$(af "$d13" '.participants | join(",")')" "QA,WEB"
 d14="$("$B" ask --from API "Rotate the key?")"
 adv WEB "$d14" --to web-main "Rotate it." >/dev/null 2>&1
@@ -262,36 +263,53 @@ echo "red lines:"
 tid="$("$B" task new --owner OPS "Rotate certificates" --stage production)"
 d6="$("$B" ask --from OPS --task "$tid" --gate production "Release to production?")"
 adv API "$d6" --option approve "Ready: the canary is green." >/dev/null 2>&1
-out="$(agree "$d6" OPS 2>&1)"
+out="$(agree "$d6" OPS "Certificates expire Friday." 2>&1)"
 eq "red lines: owner — a production gate waits" "$(df "$d6" .status)" "pending"
 grep -q "the owner keeps the final say" <<<"$out" && ok "  says so" || bad "  says so" "$out"
 d7="$("$B" ask --from QA "Drop the old fixtures bucket?")"
-adv WEB "$d7" --red-line "Drop it." >/dev/null 2>&1
-agree "$d7" QA >/dev/null 2>&1
+out="$(adv WEB "$d7" --red-line "Drop it." 2>&1)"; rc=$?
+eq "a red-line recommendation without a rationale: exit 2, nothing recorded" "$rc/$([ -e "$BOARD_HOME/advice/$d7.json" ] && echo written || echo none)" "2/none"
+grep -q "must say why" <<<"$out" && ok "  says why" || bad "  says why" "$out"
+adv WEB "$d7" --red-line "Drop it: nothing has read the bucket since the migration." >/dev/null 2>&1
+agree "$d7" QA "Our fixtures moved; the bucket is unused." >/dev/null 2>&1
 eq "  a flagged red line waits too" "$(df "$d7" .status)" "pending"
 "$B" away decisions committee --red-lines committee --by local >/dev/null
 eq "red lines to the committee: stances given while they waited don't count" "$(df "$d6" .status)/$(df "$d7" .status)" "pending/pending"
-agree "$d6" API >/dev/null 2>&1; agree "$d6" OPS >/dev/null 2>&1
-agree "$d7" WEB >/dev/null 2>&1; agree "$d7" QA >/dev/null 2>&1
+out="$(agree "$d6" OPS 2>&1)"; rc=$?
+eq "a red-line agree without --note: exit 2, nothing recorded" "$rc/$(af "$d6" '[.stances[] | select(.by == "OPS")] | length')" "2/1"
+grep -q "needs --note with OPS's own reason" <<<"$out" && ok "  says so" || bad "  says so" "$out"
+agree "$d6" OPS "ok" >/dev/null 2>&1; eq "  a note too short to be a reason: exit 2" "$?" "2"
+agree "$d6" API >/dev/null 2>&1; eq "  the recommender's reaffirm needs one too: exit 2" "$?" "2"
+agree "$d6" API "Canary green for 24 hours, rollback tested." >/dev/null 2>&1
+agree "$d6" OPS "Certificates expire Friday; waiting is riskier." >/dev/null 2>&1
+agree "$d7" WEB "Checked the access logs: no reads in 30 days." >/dev/null 2>&1
+agree "$d7" QA "Our fixtures moved; the bucket is unused." >/dev/null 2>&1
 eq "  reaffirmed under the new setting: both decided" "$(df "$d6" '.status + "|" + .answer')/$(df "$d7" .status)" "answered|approve/answered"
 eq "  the production gate: approved by committee on the task" "$(jq -r --arg d "$d6" '.gates[] | select(.decision_id == $d) | .status + "|" + .approved_by + "|" + .answered_by' "$BOARD_HOME/tasks/$tid.json")" \
   "approved|committee|committee"
 eq "  the approval event" "$(lastev approval 'select(.decision_id == "'"$d6"'") | .result + "|" + .answered_by')" "approved|committee"
 eq "  marked on the record" "$(df "$d6" '(.committee.production | tostring) + "|" + (.committee.red_line | tostring)')" "true|true"
+eq "  the rationale and each reason on the record" "$(df "$d6" '.committee.rationale + "|" + ([.committee.stances[] | .by + ":" + (.note // "-")] | join("|"))')" \
+  "Ready: the canary is green.|API:Canary green for 24 hours, rollback tested.|OPS:Certificates expire Friday; waiting is riskier."
+eq "  and in the audit event" "$(jq -s -r --arg d "$d6" '[.[] | select(.type == "committee" and .action == "decided" and .id == $d)] | last | .rationale + "|" + ([.stances[] | .note] | join("|"))' "$BOARD_HOME/events.jsonl")" \
+  "Ready: the canary is green.|Canary green for 24 hours, rollback tested.|Certificates expire Friday; waiting is riskier."
+body="$(jq -s -r --arg d "$d6" '[.[] | select(.type == "committee" and .action == "notify-body" and .id == $d)] | last | .body' "$BOARD_HOME/events.jsonl")"
+case "$body" in *"Why: Ready: the canary is green."*"Notes: API: Canary green for 24 hours, rollback tested.; OPS: Certificates expire Friday; waiting is riskier."*) ok "  and in the owner's notify body" ;;
+  *) bad "  and in the owner's notify body" "$body" ;; esac
 out="$("$B" advise relay --from BOARD)"
 grep -qx "== $d6 OPS production-gate" <<<"$out" && ok "  relay header says production gate" || bad "  relay header" "$out"
 grep -qx "\[BOARD decision $d6\] approve (by committee consensus while owner away: API, OPS; red line: production gate)" <<<"$out" \
   && ok "  relay text says red line: production gate" || bad "  relay text (production)" "$out"
-grep -qx "\[BOARD decision $d7\] Drop it. (by committee consensus while owner away: WEB, QA; red line)" <<<"$out" \
+grep -qx "\[BOARD decision $d7\] Drop it: nothing has read the bucket since the migration. (by committee consensus while owner away: WEB, QA; red line)" <<<"$out" \
   && ok "  relay text says red line" || bad "  relay text (red line)" "$out"
 n=0; while IFS= read -r l; do case "$l" in "[BOARD"*) [[ $l =~ $RELAY_RE ]] || n=$((n + 1)) ;; esac; done <<<"$out"
 eq "  every relay line matches the documented pattern" "$n" "0"
-# a red line needs a recommender other than the asker
+# the asker may recommend its own red line: the 2-session rule and the record apply as usual
 d18="$("$B" ask --from QA "Purge the staging bucket?")"
-adv QA "$d18" --red-line --to WEB "Purge it." >/dev/null 2>&1
-out="$(agree "$d18" WEB 2>&1)"
-eq "a red line the asker recommended itself: not decided" "$(df "$d18" .status)" "pending"
-grep -q "other than the asker" <<<"$out" && ok "  says so" || bad "  says so" "$out"
+adv QA "$d18" --red-line --to WEB "Purge it: staging is rebuilt from scratch every night." >/dev/null 2>&1
+agree "$d18" WEB "Rebuild verified on last night's run." >/dev/null 2>&1
+eq "a red line the asker recommended itself: decided with the record" "$(df "$d18" '.status + "|" + .committee.recommended_by + "|" + (.committee.stances[1].note // "-")')" \
+  "answered|QA|Rebuild verified on last night's run."
 d19="$("$B" ask --from QA "Rename the log field?")"
 adv QA "$d19" --to WEB "Rename it." >/dev/null 2>&1
 agree "$d19" WEB >/dev/null 2>&1

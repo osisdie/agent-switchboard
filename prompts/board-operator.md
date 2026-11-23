@@ -830,8 +830,9 @@ low-priority digest; the sessions record their advice themselves.
 
 When the owner has opted in (`board away decisions committee`, or the profile menu; the default is
 `owner_final`), a board ask is decided while they are away when **every session asked agrees and
-nobody objects** (at least two fleet sessions, the asker included; for a red line or production gate
-the recommender is not the asker; each agree run inside its own session; silence never counts). The
+nobody objects** (at least two fleet sessions, the asker included; each agree run inside its own
+session; for a red line or production gate, a rationale on the recommendation and a reason on every
+agree, kept on the record; silence never counts). The
 board records it itself, atomically, at the agree that completes it (`board advise <id> agree`,
 under the away/consensus lock). The decision file then says `answered_by: "committee"`
 with a `committee` block (participants, stances, red line, production gate, the setting). Red lines
