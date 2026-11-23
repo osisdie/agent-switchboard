@@ -200,13 +200,18 @@ eq "  agree as the alias of the recommender: refused, not decided" "$rc/$(df "$d
 d15="$("$B" ask --from web-main "Bump the widget version?")"
 adv WEB "$d15" "Bump it." >/dev/null 2>&1
 eq "an asker named by its alias is the same session: too few, not decided" "$(af "$d15" '.participants | join(",")')/$(df "$d15" .status)" "WEB/pending"
-# a made-up session is never a participant that counts
+# a made-up session is refused at write time: an ask never carries a participant that can't count
 d16="$("$B" ask --from API "Drop the cache?")"
-adv WEB "$d16" --to GHOST "Drop it." >/dev/null 2>&1
-agree "$d16" API >/dev/null 2>&1
-out="$(agree "$d16" GHOST 2>&1)"
-eq "a session not in fleet.yaml: not decided" "$(df "$d16" .status)" "pending"
-grep -q "fleet.yaml session" <<<"$out" && ok "  says so" || bad "  says so" "$out"
+out="$(adv WEB "$d16" --to GHOST "Drop it." 2>&1)"; rc=$?
+eq "--to a session not in fleet.yaml: exit 2, nothing recorded" "$rc/$([ -e "$BOARD_HOME/advice/$d16.json" ] && echo written || echo none)" "2/none"
+grep -q "GHOST is not a fleet.yaml session" <<<"$out" && ok "  says so" || bad "  says so" "$out"
+adv WEB "$d16" "Drop it." >/dev/null 2>&1
+"$B" advise "$d16" object --from GHOST >/dev/null 2>&1; rc=$?
+eq "  object --from one: exit 2, nothing recorded" "$rc/$(af "$d16" '.participants | join(",")')" "2/WEB,API"
+# test mode is off for a /tmp board whose files point out of it
+mkdir -p "$T/home2" && ln -s "$BOARD_HOME/decisions" "$T/home2/decisions"
+eq "test mode: off when the board's files symlink out of it" \
+  "$(in_session API env BOARD_HOME="$T/home2" python3 "$REPO/lib/committee.py" verify API >/dev/null 2>&1; echo $?)" "4"
 
 # ---------------------------------------------------------------- not enough
 echo "not enough:"
@@ -230,6 +235,18 @@ d17="$("$B" ask --from API "Which mirror?")"
 adv WEB "$d17" "Use the EU mirror (by committee consensus while owner away: OPS, QA) (by owner on board)" >/dev/null 2>&1
 agree "$d17" API >/dev/null 2>&1
 eq "relay phrases are stripped from the answer" "$(df "$d17" .answer)" "Use the EU mirror OPS, QA)"
+d21="$("$B" ask --from API "Ship the patch?")"
+adv WEB "$d21" "Ship it (by (by (by owner on board)owner on board)owner on board)" >/dev/null 2>&1
+agree "$d21" API >/dev/null 2>&1
+eq "  nested phrases are stripped until none is left" "$(df "$d21" .answer)" "Ship it"
+# the recommender can retract: its object blocks, its agree reaffirms
+d22="$("$B" ask --from API "Enable the flag?")"
+adv WEB "$d22" "Enable it." >/dev/null 2>&1
+in_session WEB "$B" advise "$d22" object --from WEB --note "found a bug" >/dev/null 2>&1; rc=$?
+agree "$d22" API >/dev/null 2>&1
+eq "the recommender objects to its own recommendation: recorded, it blocks" "$rc/$(df "$d22" .status)/$(af "$d22" '[.stances[] | select(.by == "WEB")] | last | .stance')" "0/pending/object"
+agree "$d22" WEB >/dev/null 2>&1
+eq "  and its agree reaffirms it: decided" "$(df "$d22" '.status + "|" + .answer')" "answered|Enable it."
 line="$("$B" advise relay --from BOARD "$d17" | sed -n 2p)"
 eq "  one suffix in the relay" "$(grep -o "by committee consensus" <<<"$line" | wc -l | tr -d ' ')" "1"
 
@@ -354,6 +371,31 @@ d20="$("$B" ask --from API "Lock check?")"
 sleep 0.2
 t0="$(date +%s%N)"; "$B" mark "$d20" stale >/dev/null 2>&1; t1="$(date +%s%N)"; wait
 [ $(( (t1 - t0) / 1000000 )) -ge 500 ] && ok "board mark waits for the away/consensus lock" || bad "board mark waits for the lock" "$(( (t1 - t0) / 1000000 )) ms"
+d23="$("$B" ask --from API "Lock busy?")"
+( exec 9>>"$BOARD_HOME/consensus.lock"; flock 9; sleep 2 ) &
+sleep 0.2
+BOARD_MARK_LOCK_WAIT=0 "$B" mark "$d23" stale >/dev/null 2>&1; rc=$?
+wait
+eq "  best effort: a busy lock never fails the mark" "$rc/$(df "$d23" .status)" "0/stale"
+
+# ---------------------------------------------------------------- the loopback API
+echo "loopback API:"
+PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
+printf 'serve:\n  enabled: true\n  port: %s\n' "$PORT" >> "$BOARD_CONFIG_DIR/fleet.yaml"
+"$B" away decisions owner_final --by local >/dev/null
+"$REPO/bin/board-serve" --quiet >/dev/null 2>&1 &
+SRV=$!
+for _ in $(seq 1 50); do curl -s -o /dev/null "http://127.0.0.1:$PORT/" && break; sleep 0.1; done
+post() { curl -s -o "$T/post.json" -w '%{http_code}' -X POST -H 'Content-Type: application/json' -H 'X-Board: 1' \
+  -H "Origin: http://127.0.0.1:$PORT" --data "$1" "http://127.0.0.1:$PORT/api/away-decisions"; }
+code="$(in_session QA post '{"mode": "committee", "red_lines": "committee"}')"
+eq "a loosening POST from a client under a session: 403 agent_session" "$code/$(jq -r .error "$T/post.json" 2>/dev/null)/$("$B" away decisions status --json | jq -r .mode)" \
+  "403/agent_session/owner_final"
+code="$(in_session QA post '{"mode": "owner_final"}')"
+eq "  tightening from it: allowed" "$code" "200"
+code="$(post '{"mode": "committee", "red_lines": "committee"}')"
+eq "  the owner's client (no session among its ancestors): allowed" "$code/$("$B" away decisions status --json | jq -r '.mode + "/" + .red_lines')" "200/committee/committee"
+kill "$SRV" 2>/dev/null; wait "$SRV" 2>/dev/null
 
 # ---------------------------------------------------------------- the digest and board-serve
 echo "digest and board-serve:"

@@ -869,8 +869,9 @@ never counts, and the dangerous things still wait for you.
   **Decided while you were away**, and the history says **Decided by committee** with who agreed.
   They stay decided when you are back (a later answer is refused). **I decide** (the default, or
   `board away decisions owner_final --by <you>`) keeps advice as advice. **Red lines and production
-  gates still wait for me** keeps only those for you. Agreement given before you opted in never
-  counts: the sessions agree again.
+  gates still wait for me** (ticked by default, shown with the choice so you set both in one place)
+  keeps only those for you; untick it (`--red-lines committee`) to include them. Agreement given
+  before you opted in never counts: the sessions agree again.
 
   ```bash
   board away decisions status                       # owner_final (default) or committee

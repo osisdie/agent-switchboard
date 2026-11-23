@@ -5155,13 +5155,18 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     const red = (S.adPick && S.adPick.red_lines) || str(A.red_lines) || 'owner';
     const cb = $('#ad-red-owner');
     cb.checked = red === 'owner';
-    $('#ad-red-row').hidden = mode !== 'committee';
+    $('#ad-red-row').hidden = false;   // always shown with the mode: an opt-in says what it includes
     $('#acct-ad-note').textContent = (A.invalid ? tr('The saved setting could not be read, so board asks wait for you until you pick one.') + ' ' : '')
       + (S.away ? tr('You are away now.') + ' ' : '')
       + tr(mode === 'committee'
         ? (red === 'owner' ? 'When every session asked agrees and nobody objects, their recommendation becomes the decision; red lines and production gates wait for you. You are told after each one.'
           : 'When every session asked agrees and nobody objects, their recommendation becomes the decision, red lines and production gates included. You are told after each one.')
-        : mode === 'owner_final' ? 'Sessions may add advice, but every board ask waits for your answer.' : '');
+        : mode === 'owner_final' ? 'Sessions may add advice, but every board ask waits for your answer. If you pick Committee decides, the box below says whether red lines and production gates are included.' : '');
+  }
+  function awayDecBody() {
+    const A = S.awayDec || {};
+    const picked = document.querySelector('input[name="sb-awaydec"]:checked');
+    return { mode: picked ? picked.value : (str(A.mode) || 'owner_final'), red_lines: $('#ad-red-owner').checked ? 'owner' : 'committee' };
   }
   function setAwayDecisions(body) {
     if (!awayDecEditor() || S.busy.has('awaydec')) return;
@@ -7421,8 +7426,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     else if (e.target.name === 'sb-presence') setPresence(e.target.value);
     else if (e.target.name === 'sb-askroute') setAskerRoute(e.target.value);
     else if (e.target.name === 'sb-awayaskers') setAwayAskers(e.target.value);
-    else if (e.target.name === 'sb-awaydec') setAwayDecisions({ mode: e.target.value });
-    else if (e.target.id === 'ad-red-owner') setAwayDecisions({ red_lines: e.target.checked ? 'owner' : 'committee' });
+    // one control: every change saves the mode and the red-lines box together
+    else if (e.target.name === 'sb-awaydec' || e.target.id === 'ad-red-owner') setAwayDecisions(awayDecBody());
   });
   function renderLang() {
     for (const inp of document.querySelectorAll('input[name="sb-lang"]')) inp.checked = inp.value === LANG;
@@ -9006,7 +9011,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "The saved setting could not be read, so board asks wait for you until you pick one.": "讀不到已存的設定，所以在你重新選擇之前，看板提問都會等你。",
       "When every session asked agrees and nobody objects, their recommendation becomes the decision; red lines and production gates wait for you. You are told after each one.": "每個被詢問的 session 都同意、沒有人反對時，他們的建議就成為決定；紅線和 production gate 會等你。每一個決定事後都會通知你。",
       "When every session asked agrees and nobody objects, their recommendation becomes the decision, red lines and production gates included. You are told after each one.": "每個被詢問的 session 都同意、沒有人反對時，他們的建議就成為決定，紅線和 production gate 也包括在內。每一個決定事後都會通知你。",
-      "Sessions may add advice, but every board ask waits for your answer.": "session 可以附上建議，但每個看板提問都會等你回答。",
+      "Sessions may add advice, but every board ask waits for your answer. If you pick Committee decides, the box below says whether red lines and production gates are included.": "session 可以附上建議，但每個看板提問都會等你回答。如果選「委員會決定」，下面的勾選決定紅線和 production gate 是否包括在內。",
       "While you are away, board asks wait for your answer; advice stays advice.": "你不在時，看板提問會等你回答；建議只是建議。",
       "While you are away, the committee decides board asks when everyone agrees; red lines wait for you.": "你不在時，大家都同意的看板提問由委員會決定；紅線會等你。",
       "While you are away, the committee decides board asks when everyone agrees, red lines included.": "你不在時，大家都同意的看板提問由委員會決定，紅線也包括在內。",

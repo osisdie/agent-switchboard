@@ -770,7 +770,8 @@ pomodoro:                 # fleet.yaml；全部選填
   每個決定事後都會通知你（info；紅線和 production 關卡用 high），頁面會列在「你不在時做出的決定」，
   歷史紀錄寫「由委員會決定」和同意的 session。你回來後這些決定維持不變（之後的回覆會被拒絕）。
   「由我決定」（預設，或 `board away decisions owner_final --by <你>`）讓建議只是建議。勾選
-  「紅線和 production gate 仍然等我」則只有那些留給你。開啟之前給的同意不算數，各 session 要再同意一次。
+  「紅線和 production gate 仍然等我」（預設勾選，和上面的選擇放在一起，一次設定）則只有那些留給你；取消勾選
+  （`--red-lines committee`）才包括紅線。開啟之前給的同意不算數，各 session 要再同意一次。
 
   ```bash
   board away decisions status                       # owner_final (default) or committee

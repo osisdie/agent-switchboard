@@ -2368,6 +2368,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
             raise Refused(400, "bad_red_lines", "red_lines must be \"committee\" or \"owner\"")
         if mode is None and red is None:
             raise Refused(400, "bad_request", "give mode or red_lines")
+        # Letting the committee decide more: best effort, refused when the loopback client is a Claude
+        # Code session (or runs under one), found through /proc/net/tcp. Unresolved: allowed (the
+        # owner's browser, normally), audited. Not a security boundary (docs/contract.md).
+        if committee.loosens(committee.settings(self.server.home), mode, red) \
+                and self.client_address[0] in LOOPBACK_PEERS:
+            agent = committee.agent_peer(self.server.home, int(self.client_address[1]),
+                                         int(self.server.server_address[1]))
+            if agent:
+                self.audit(ident, via, "away_decisions", mode=mode, red_lines=red, result="refused",
+                           reason="the client runs under a Claude Code session")
+                raise Refused(403, "agent_session", "a Claude Code session may not let the committee decide more; the owner does")
+            if agent is None:
+                self.audit(ident, via, "away_decisions", mode=mode, red_lines=red, result="peer_unresolved")
         with self.server.write_lock:
             try:
                 changed, s, decided = committee.set_settings(self.server.home, mode, red, "board:%s" % by)

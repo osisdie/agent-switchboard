@@ -158,8 +158,8 @@ shows the human a board and relays their answers.
   - **committee** (only when the owner opted in): when every session asked agrees (at least two
     fleet sessions, the asker included) and nobody objects, the recommendation **becomes the
     decision**, and `BOARD` relays it to the asker as a `[BOARD decision …] (by committee consensus
-    while owner away: …)`. Red lines and production gates are included unless the owner chose
-    `--red-lines owner`; for those, the recommendation must say why (beyond the option label), and
+    while owner away: …)`. Red lines and production gates are included only when the owner also
+    set `--red-lines committee` (otherwise they wait for the owner); for those, the recommendation must say why (beyond the option label), and
     every agree must carry `--note` with my own reason (refused otherwise, exit 2): the owner reviews
     that record when back. So
     I **agree only with what I would decide myself**, and I object (with a note) to anything I'm

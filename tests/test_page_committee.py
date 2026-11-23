@@ -222,7 +222,8 @@ def main():
             if pg.evaluate("() => document.getElementById('acct-panel').hidden"):
                 pg.click("#acct-btn")
             pv = pg.evaluate(PROFILE_JS)
-            check("  the red-lines box hides with owner_final", pv["checked"] == "owner_final" and not pv["redShown"], pv)
+            check("  the red-lines box stays shown with owner_final (one control)", pv["checked"] == "owner_final" and pv["redShown"], pv)
+            check("  each save carries both: red lines as they were", setting().get("red_lines") == "committee", setting())
             pg.click("#acct-awaydec label:has(input[value=committee])")
             check("committee is saved again", wait(lambda: setting().get("mode") == "committee"), setting())
             if pg.evaluate("() => document.getElementById('acct-panel').hidden"):

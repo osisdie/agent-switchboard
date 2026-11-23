@@ -836,7 +836,8 @@ agree, kept on the record; silence never counts). The
 board records it itself, atomically, at the agree that completes it (`board advise <id> agree`,
 under the away/consensus lock). The decision file then says `answered_by: "committee"`
 with a `committee` block (participants, stances, red line, production gate, the setting). Red lines
-and production gates are included unless the owner chose `--red-lines owner`. With `owner_final`,
+and production gates are included only when the owner also set `--red-lines committee` (the default
+`owner` keeps them for the owner). With `owner_final`,
 nothing is decided this way (section 10a only).
 
 Your part:

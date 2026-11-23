@@ -44,9 +44,12 @@ gets the lock first wins, and a committee decision is final (the owner's later a
 
 Test mode (BOARD_COMMITTEE_TEST=1) lets tests use $CLAUDE_SESSIONS_DIR for the ancestry checks and
 skips the command-line check. It applies only when $BOARD_HOME resolves under /tmp/, /private/tmp/ or
-/var/folders/ and is not ~/.agent-switchboard: a session that sets it can only fool a throwaway
-board that BOARD never reads. Otherwise the registry is always <passwd home>/.claude/sessions
-(neither $HOME nor $CLAUDE_SESSIONS_DIR is trusted) and /proc is the real one.
+/var/folders/, is not ~/.agent-switchboard, and its advice/, decisions/, away-decisions.json and
+owner-away (when present) resolve inside it (no symlink out to a real board), so it is meant for
+boards that BOARD does not operate. Otherwise the registry is always <passwd home>/.claude/sessions
+(neither $HOME nor $CLAUDE_SESSIONS_DIR is trusted) and /proc is the real one. All of this guards
+against honest mistakes and casual misuse within one user account, not against a hostile process of
+that user: it is not a security boundary.
 
 CLI (through `board away decisions ...` and `board advise relay ...`):
   committee.py settings status [--json]
@@ -54,6 +57,8 @@ CLI (through `board away decisions ...` and `board advise relay ...`):
                                        (a change that lets the committee decide more is refused,
                                        exit 4, when any ancestor process is a Claude Code session)
   committee.py verify CODE             exit 0 when this command runs inside session CODE, else 4
+  committee.py canon NAME...           each name's fleet code, one per line (an alias is its code);
+                                       exit 3 when one is not a fleet.yaml session (named on stderr)
   committee.py relay [ID] [--json]     committee decisions waiting to be relayed (the operator's)
   committee.py decided [--json]       committee decisions of the last 7 days
   committee.py _decide ID              (bin/board only, with consensus.lock held)
@@ -146,7 +151,14 @@ def test_mode(home):
         return False
     real = os.path.realpath(home) + "/"
     default = os.path.realpath(os.path.join(_real_home(), ".agent-switchboard")) + "/"
-    return real != default and real.startswith(TEST_ROOTS)
+    if real == default or not real.startswith(TEST_ROOTS):
+        return False
+    # the board's own files stay inside it: a symlink out to a real board is not a test board
+    for name in (advice.DIR, "decisions", FILE, "owner-away"):
+        path = os.path.join(home, name)
+        if os.path.lexists(path) and not (os.path.realpath(path) + "/").startswith(real):
+            return False
+    return True
 
 
 def _sessions_dir(home):
@@ -188,8 +200,8 @@ def _is_claude(pid):
     return any("claude" in a.lower() for a in _argv(pid)[:2])
 
 
-def _ancestors(limit=32):
-    p = os.getpid()
+def _ancestors(limit=32, start=None):
+    p = os.getpid() if start is None else start
     for _ in range(limit):
         if p <= 1:
             return
@@ -228,13 +240,60 @@ def verify(home, code):
     return bool(found) and canon(m, found) == canon(m, code), found
 
 
-def agent_ancestor(home):
-    """True when any ancestor process is a Claude Code session (a registered one, or outside test
-    mode any process whose program names claude): an agent must not loosen the owner's setting."""
-    for pid in _ancestors():
+def agent_ancestor(home, start=None):
+    """True when the process START (default: this one) or any of its ancestors is a Claude Code
+    session (a registered one, or outside test mode any process whose program names claude): an
+    agent must not loosen the owner's setting. A process re-parented to init (setsid, nohup) has
+    no such ancestor any more: best effort, not a security boundary."""
+    for pid in _ancestors(start=start):
         if _registered(home, pid) is not None or (not test_mode(home) and _is_claude(pid)):
             return True
     return False
+
+
+def _tcp_inodes(local_port, remote_port):
+    """Socket inodes of the TCP connections from local_port to remote_port (/proc/net/tcp, tcp6)."""
+    out = set()
+    for name in ("tcp", "tcp6"):
+        try:
+            with open("/proc/net/" + name, encoding="ascii") as fh:
+                next(fh, None)
+                for line in fh:
+                    f = line.split()
+                    if len(f) < 10:
+                        continue
+                    lp, rp = int(f[1].rsplit(":", 1)[1], 16), int(f[2].rsplit(":", 1)[1], 16)
+                    if lp == local_port and rp == remote_port and f[9] != "0":
+                        out.add(f[9])
+        except (OSError, ValueError, IndexError):
+            continue
+    return out
+
+
+def peer_pids(client_port, server_port):
+    """The processes holding the client end of a loopback connection to server_port (best effort:
+    only processes this user may inspect; an empty list when it can't be told)."""
+    inodes = _tcp_inodes(client_port, server_port)
+    if not inodes:
+        return []
+    want = {"socket:[%s]" % i for i in inodes}
+    out = []
+    for d in glob.glob("/proc/[0-9]*/fd"):
+        try:
+            if any(os.readlink(os.path.join(d, fd)) in want for fd in os.listdir(d)):
+                out.append(int(d.split("/")[2]))
+        except (OSError, ValueError):
+            continue
+    return out
+
+
+def agent_peer(home, client_port, server_port):
+    """For a loosening request on the loopback API: True when the client process (or an ancestor)
+    is a Claude Code session, False when it is not, None when the peer can't be told."""
+    pids = peer_pids(client_port, server_port)
+    if not pids:
+        return None
+    return any(agent_ancestor(home, start=p) for p in pids)
 
 
 def _ms(v):
@@ -439,10 +498,17 @@ def short(text, n):
 
 
 def clean_answer(answer):
-    """One line, at most MAX_ANSWER characters, no relay phrases, defanged."""
+    """One line, at most MAX_ANSWER characters, no relay phrases (stripped until none is left, so
+    nesting can't rebuild one), defanged."""
     a = re.sub(r"\s+", " ", answer if isinstance(answer, str) else "")
-    a = re.sub(r"\s+", " ", STRIP_RE.sub("", a)).strip()[:MAX_ANSWER]
-    return away.DEFANG_RE.sub(r"(\1", a)
+    for _ in range(64):
+        b = re.sub(r"\s+", " ", STRIP_RE.sub("", a))
+        if b == a:
+            break
+        a = b
+    else:
+        a = STRIP_RE.sub("", a).replace("(by", "(")   # never reached in practice: fail safe
+    return away.DEFANG_RE.sub(r"(\1", a.strip()[:MAX_ANSWER])
 
 
 def _gate_result(answer):
@@ -725,6 +791,18 @@ def main(argv):
             print("%s  %s  %s → %s  [%s]%s" % (r["id"], r["status"], r["from"], r["answer"][:80],
                                               ", ".join(c["participants"]),
                                               "  PRODUCTION GATE" if c["production"] else "  RED LINE" if c["red_line"] else ""))
+        return 0
+    if cmd == "canon":
+        m, codes = canon_map()
+        bad = []
+        for n in rest:
+            c = canon(m, n)
+            print(c)
+            if c not in codes:
+                bad.append(n)
+        if bad:
+            sys.stderr.write("not a fleet.yaml session: %s\n" % ", ".join(bad))
+            return 3
         return 0
     if cmd == "rationale-ok":
         # committee.py rationale-ok [LABEL] < recommendation: exit 0 when it gives a reason beyond the label

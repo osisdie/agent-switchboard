@@ -493,8 +493,9 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
         echo "  committee: when every session asked agrees (2 or more fleet sessions, the asker included,"
         echo "  each agree run inside that session) and nobody objects, the recommendation becomes the"
         echo "  decision; owner_final (the default; also a missing or unreadable file): advice only."
-        echo "  --red-lines owner keeps red lines and production gates for the owner. A change that lets"
-        echo "  the committee decide more is refused (exit 4) under a Claude Code session; tightening works." ;;
+        echo "  Red lines and production gates stay with the owner (red_lines owner, the default) unless"
+        echo "  the owner also sets --red-lines committee. A change that lets the committee decide more"
+        echo "  is refused (exit 4) under a Claude Code session (best effort); tightening always works." ;;
     "away on") echo "usage: board away on --by WHO --said \"owner's words\"|--said-file PATH [--replace]" ;;
     "away off") echo "usage: board away off --by WHO [--said \"...\"|--said-file PATH]" ;;
     "away status") echo "usage: board away status [--quiet|--json]   (exit 0 = away, 1 = not away, 2 = usage)" ;;
@@ -533,7 +534,10 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
         echo "  resolve --from; exit 4 otherwise), and only stances given under that setting count (agree"
         echo "  again after it changes; the recommender reaffirms with agree). On a red line, the"
         echo "  recommendation must say why (20+ characters beyond the option) and each agree needs --note"
-        echo "  with the session's own reason (10+), else exit 2. Otherwise (owner_final, the default) it never answers"
+        echo "  with the session's own reason (10+), else exit 2. A recommendation can't be edited: one"
+        echo "  whose rationale is too short stays undecided until the owner answers. The recommender"
+        echo "  may object to its own recommendation (it then blocks) and reaffirm it later with agree."
+        echo "  --from and --to must be fleet.yaml sessions (exit 2). Otherwise (owner_final, the default) it never answers"
         echo "  anything. An alias counts as its session's code. One recommendation per ask (--option names the option"
         echo "  it recommends; --to the sessions whose view it asks for, plus the asker); any other"
         echo "  session may agree or object with a note (the latest stance counts). Silence is no"
@@ -1107,12 +1111,22 @@ cmd_answer() {
 # mark_status ID STATUS [reason] [code] — code: a fixed status_reason the board shows when an answer
 # was not delivered (screen, partial, moved_on, unknown_session, config, ...); relayed clears it.
 mark_status() {
-  # under the away/consensus lock, like `board answer`, so a mark never lands between a committee
-  # decision's check and its write (or the other way round)
-  local was="$LOCKED" rc=0
-  if [ "$was" = 0 ] && command -v flock >/dev/null 2>&1; then lock_board; fi
+  # Under the away/consensus lock, like `board answer`, so a mark never lands between a committee
+  # decision's check and its write (or the other way round). Best effort with a short wait: a mark
+  # after `board press` sent its keys must not fail just because the lock is busy (it then marks
+  # without it, as before the committee existed).
+  local rc=0 took=0
+  if [ "$LOCKED" = 0 ] && command -v flock >/dev/null 2>&1; then
+    if exec 8>>"$BOARD_HOME/consensus.lock"; then
+      if flock -w "${BOARD_MARK_LOCK_WAIT:-3}" 8; then
+        LOCKED=1; took=1
+      else
+        exec 8>&-
+      fi
+    fi
+  fi
   mark_status_locked "$@" || rc=$?
-  [ "$was" = 1 ] || unlock_board
+  if [ "$took" = 1 ]; then unlock_board; fi
   return "$rc"
 }
 mark_status_locked() {
@@ -2992,15 +3006,19 @@ adv_open() {
   fi
 }
 
-# adv_canon NAME... — each name's fleet code, one per line: an alias is its session's code (so one
-# session never counts twice); a name fleet.yaml does not know stays as it is.
-adv_canon() {
-  local map n
-  map="$(python3 "$FLEET" sessions 2>/dev/null | jq -sc '[.[] | {code, aliases: (.aliases // [])}]' 2>/dev/null)"
-  [ -n "$map" ] || map='[]'
-  for n in "$@"; do
-    jq -rn --argjson m "$map" --arg n "$n" '([$m[] | select(.code == $n or (.aliases | index($n) != null)) | .code] | first) // $n'
-  done
+# adv_canon NAME... — each name's fleet code, one per line (lib/committee.py canon: fleet.yaml's
+# alias map, so an alias is its session's code and one session never counts twice); exit 3 when a
+# name is not a fleet.yaml session (the name is printed as it is).
+adv_canon() { python3 "$REPO/lib/committee.py" canon "$@"; }
+# adv_fleet_code NAME OPTION — NAME's fleet code; a name that is not a fleet.yaml session is refused
+# (exit 2, nothing recorded), so an ask never carries a participant that can never count.
+adv_fleet_code() {
+  local c
+  if ! c="$(adv_canon "$1" 2>/dev/null)"; then
+    echo "board advise: refused — $2 $1 is not a fleet.yaml session (a code or an alias); nothing recorded" >&2
+    exit 2
+  fi
+  echo "$c"
 }
 
 # adv_verified CODE — 1 when this command runs inside session CODE (lib/committee.py verify: the
@@ -3019,7 +3037,7 @@ adv_binding() {
 # adv_require_verified ID ACTION FROM VERIFIED STAMP — (lock held) while the owner lets the committee
 # decide, a recommendation or an agree may decide an ask: it must come from inside that session.
 adv_require_verified() {
-  [ "$(jq -r .mode <<<"$5")" = committee ] && [ "$4" = 0 ] || return 0
+  if [ "$(jq -r .mode <<<"$5")" != committee ] || [ "$4" != 0 ]; then return 0; fi
   log_event "$(jq -cn --argjson now "$(now_ms)" --arg a "$2" --arg id "$1" --arg by "$3" \
     '{ts: $now, type: "advise", action: $a, id: $id, by: $by, result: "refused", reason: "--from is not the session this command runs in"}')"
   unlock_board
@@ -3050,14 +3068,14 @@ adv_recommend() {
   cap "recommendation" "$text" 2000
   self_check "$from" recommend "$id" advise
   local vfy; vfy="$(adv_verified "$from")"
-  from="$(adv_canon "$from")"
+  from="$(adv_fleet_code "$from" --from)" || exit 2
   local parts=("$from") p q seen tos=()
   IFS=, read -ra tos <<<"$to"
   for p in "${tos[@]}"; do
     p="${p//[[:space:]]/}"
     [ -n "$p" ] || continue
     valid_code "$p" || die "advise: invalid session code: $p"
-    p="$(adv_canon "$p")"
+    p="$(adv_fleet_code "$p" --to)" || exit 2
     seen=0
     for q in "${parts[@]}"; do [ "$q" = "$p" ] && seen=1; done
     [ "$seen" = 1 ] || parts+=("$p")
@@ -3081,7 +3099,7 @@ adv_recommend() {
   # the asking session is always asked for its view
   asker="$(jq -r '.from // empty' "$df")"
   if [ -n "$asker" ] && valid_code "$asker"; then
-    asker="$(adv_canon "$asker")"
+    asker="$(adv_canon "$asker" 2>/dev/null)" || true
     seen=0
     for q in "${parts[@]}"; do [ "$q" = "$asker" ] && seen=1; done
     [ "$seen" = 1 ] || parts+=("$asker")
@@ -3148,7 +3166,7 @@ adv_stance() {
   cap "--note" "$note" 1000
   self_check "$from" "$stance" "$id" advise
   local vfy; vfy="$(adv_verified "$from")"
-  from="$(adv_canon "$from")"
+  from="$(adv_fleet_code "$from" --from)" || exit 2
   note="$(defang "$note")"
 
   lock_board
@@ -3173,10 +3191,12 @@ adv_stance() {
   local prev prevb now new
   prev="$(jq -r --arg f "$from" '[.stances[]? | select(.by == $f)] | last | .stance // empty' "$f")"
   prevb="$(jq -c --arg f "$from" '[.stances[]? | select(.by == $f)] | last | .binding // null' "$f")"
-  if [ "$(adv_canon "$(jq -r '.from' "$f")")" = "$from" ]; then
+  if [ "$(adv_canon "$(jq -r '.from' "$f")" 2>/dev/null)" = "$from" ] && [ "$stance" = agree ]; then
     # The recommender's recommendation counts as its own agreement. Given while it was advice only
-    # (or unverified), `agree` reaffirms it under the setting in force now, so it can count.
-    if [ "$stance" != agree ] || [ "$prevb" = "$(jq -c . <<<"$stamp")" ]; then
+    # (or unverified), or after the recommender objected to it, `agree` reaffirms it under the
+    # setting in force now, so it can count. (`object` from the recommender retracts it: a stance
+    # of its own, which blocks like any objection.)
+    if [ "$prev" = recommend ] && [ "$prevb" = "$(jq -c . <<<"$stamp")" ]; then
       unlock_board
       die "advise: $from made this recommendation; it already counts as theirs"
     fi

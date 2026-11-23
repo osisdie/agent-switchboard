@@ -28,6 +28,14 @@ sessions:
   - {code: WEB, cwd: /w, aliases: [web-main]}
   - {code: QA, cwd: /q}
   - {code: OPS, cwd: /o}
+  # weigh in without being asked / in parallel (--from and --to must be fleet.yaml sessions)
+  - {code: DATA, cwd: /d}
+  - {code: A1, cwd: /1}
+  - {code: A2, cwd: /2}
+  - {code: A3, cwd: /3}
+  - {code: A4, cwd: /4}
+  - {code: A5, cwd: /5}
+  - {code: A6, cwd: /6}
 approvers: [local]
 advice:
   digest_minutes: 30

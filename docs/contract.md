@@ -854,7 +854,7 @@ $BOARD_HOME/
 | `POST /api/resume` `{code}` \| `{codes: [...]}` | Resume sessions stuck on a usage limit (see "Resume after a usage limit"), **exactly the codes named**: the page sends the codes it showed the owner (one card, or the banner's list). Who is asking is checked first: empty `approvers` → 403 `no_approvers`; not an approver → 403 `not_approver`; an approver who is not an owner → 403 `not_owner`; each audited (`type: "serve"`, `action: "resume"`, `result: "refused"`), nothing run. Then the input: exactly one of `code` (a string) and `codes` (a list of 1–64 distinct strings), each a session in the snapshot or `fleet.yaml` (`"all"` and anything else → 400 `bad_code`; nothing run). Otherwise `board resume CODE... --by board:<identity>` starts in the background (argv, no shell) → 200 `{status: "started", codes}`, audited `result: "ok"` with `codes`; each session's attempt lands in `events.jsonl` (`type: "resume"`) and the page follows the snapshot (`limit` disappears once the session works again). It cannot start → 500 `resume_failed`. |
 | `POST /api/rc` `{code, state}` | Remote Control. `state` other than `on`/`off` → 400 `bad_state`; `code` not `"all"` and not `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`, or not a session in the snapshot or `fleet.yaml` → 400 `bad_code`; nothing run. Empty `approvers` → 403 `no_approvers`; identity not in `approvers` → 403 `not_approver`, audited, nothing written. Otherwise `board rc on\|off <code> --by board:<identity> --no-apply` (argv, no shell) → 200 `{status: "ok", rc}` (the new `rc` state), then `board rc apply <code>` (`--pending` for `all`) starts in the background: the page follows the result through the snapshot. Failure → 500 `rc_failed`. |
 | `POST /api/dnd` `{state: "on"\|"off"}` | do not disturb (see "Owner availability"). `state` other than `on`/`off` → 400 `bad_state`; an identity that is not an owner who is an approver → 403 `not_owner`, audited, nothing written. Otherwise writes or removes `$BOARD_HOME/owner-dnd` (`by: board:<identity>`) → 200 `{dnd: true\|false, status: "on"\|"off"\|"unchanged", availability}`. Audited (`dnd`); owner-away is not touched. |
-| `POST /api/away-decisions` `{mode?: "committee"\|"owner_final", red_lines?: "committee"\|"owner"}` | whether a unanimous committee decides board asks while the owner is away (see "Committee decisions"). Neither field → 400 `bad_request`; a bad `mode` → 400 `bad_mode`, a bad `red_lines` → 400 `bad_red_lines`; an identity that is not an owner who is an approver → 403 `not_owner`, audited, nothing written; the lock busy → 503 `busy`. Otherwise writes `$BOARD_HOME/away-decisions.json` (`by: board:<identity>`; a field left out keeps its value) → 200 `{status: "set"\|"unchanged", decided: [ids], away_decisions}` (the owner's view; `decided`: asks whose consensus was already complete and are decided now). Audited (`away_decisions`). |
+| `POST /api/away-decisions` `{mode?: "committee"\|"owner_final", red_lines?: "committee"\|"owner"}` | whether a unanimous committee decides board asks while the owner is away (see "Committee decisions"). Neither field → 400 `bad_request`; a bad `mode` → 400 `bad_mode`, a bad `red_lines` → 400 `bad_red_lines`; an identity that is not an owner who is an approver → 403 `not_owner`, audited, nothing written; a change that lets the committee decide more from a loopback client that runs under a Claude Code session (best effort, through `/proc/net/tcp`) → 403 `agent_session`, audited (unresolved: allowed, audited `peer_unresolved`); the lock busy → 503 `busy`. Otherwise writes `$BOARD_HOME/away-decisions.json` (`by: board:<identity>`; a field left out keeps its value) → 200 `{status: "set"\|"unchanged", decided: [ids], away_decisions}` (the owner's view; `decided`: asks whose consensus was already complete and are decided now). Audited (`away_decisions`). |
 | `POST /api/asker-route` `{mode?: "local"\|"claude_when_ample", five_hour_below?, seven_day_below?, away_askers?: "committee"\|"decline"\|"wait"}` | who answers askers, and what happens to their requests while the owner is away (see "Asker routing"). None of the fields → 400 `bad_request`; a bad `mode` → 400 `bad_mode`, a bad `away_askers` → 400 `bad_away`; a level that is not an integer 1-99 → 400 `bad_pct`; an identity that is not an owner who is an approver → 403 `not_owner`, audited, nothing written. Otherwise writes `$BOARD_HOME/asker-route.json` (`by: board:<identity>`; a field left out keeps its value) → 200 `{status: "set"\|"unchanged", asker_route}` (the owner's view). Audited (`asker_route`). |
 | `POST /api/away` `{state: "on"\|"off", said?}` | `state` other than `on`/`off` → 400 `bad_state`; `said` not a string or over 500 chars → 400 `bad_said`. Empty `approvers` → 403 `no_approvers`; identity not in `approvers` → 403 `not_approver`, audited, nothing written. Otherwise `board away on\|off --by board:<identity> [--said <said>]` (argv, no shell; `on` without `said` records "away (set on the board)") → 200 `{away: true\|false, status: "on"\|"off"\|"unchanged"}`. `on` while already away keeps the existing record (`unchanged`). Failure → 500 `away_failed`. |
 
@@ -3057,11 +3057,22 @@ completes, and is written under that same lock, so a change and a completing vot
   previous}`. A change that lets the committee decide **more** (to `committee`, or red lines to
   `committee`) is refused with exit 4 and logged (`result: "refused"`) when **any ancestor process**
   of the command is a Claude Code session: a registered one (the session registry, as below) or a
-  process whose program names `claude`. That holds with or without tmux, and an agent can't dodge it
-  by unsetting `TMUX`. Tightening always works. The owner uses the profile menu
-  (`POST /api/away-decisions`) or their own terminal. (An ancestry check rather than a TTY prompt: a
-  session's shell can fake a TTY with `script`, but not its own ancestors. A `!` command typed in a
-  session's pane runs under that session too, so it is refused as well.)
+  process whose program names `claude`. That holds with or without tmux. Tightening always works.
+  The owner uses the profile menu or their own terminal. (An ancestry check rather than a TTY
+  prompt: a session's shell can fake a TTY with `script`. A `!` command typed in a session's pane
+  runs under that session too, so it is refused as well.)
+- **Protection against honest mistakes, not a security boundary.** A process of the same user can
+  get around it: `setsid` re-parents a command to init, so it has no session among its ancestors
+  any more, and the owner's own path, the loopback API `POST /api/away-decisions` (identity `local`
+  for any direct request on this machine), is reachable by any local process. board-serve therefore
+  also checks a loosening request from a loopback peer, best effort: it finds the client's process
+  through `/proc/net/tcp` (the socket inode, then the process holding it) and refuses with 403
+  `agent_session` when that process or an ancestor is a Claude Code session. When the peer can't be
+  told (no `/proc`, another user's process), the request is allowed, since it is normally the
+  owner's browser, and audited `peer_unresolved`.
+- The page shows the mode and "Red lines and production gates still wait for me" together in one
+  control; each change saves both, so the owner sees what an opt-in includes (the box is ticked by
+  default: red lines stay with the owner unless they untick it).
 - `board away status` prints which mode is in effect.
 
 **When the committee decides** (`lib/committee.py`, all of these, checked under `consensus.lock`):
@@ -3111,8 +3122,20 @@ write a registry file for itself.
 
 **Test mode.** `BOARD_COMMITTEE_TEST=1` makes the checks use `$CLAUDE_SESSIONS_DIR` and skip the
 `claude` program check, so tests can stand in for sessions. It applies **only** when `$BOARD_HOME`
-resolves under `/tmp/`, `/private/tmp/` or `/var/folders/` and is not `~/.agent-switchboard`: a
-session that sets it can only fool a throwaway board that BOARD never reads.
+resolves under `/tmp/`, `/private/tmp/` or `/var/folders/`, is not `~/.agent-switchboard`, and its
+`advice/`, `decisions/`, `away-decisions.json` and `owner-away` (when present) resolve inside it, so
+a symlink out to a real board turns it off. It is meant for boards BOARD does not operate; like the
+rest, it guards against mistakes, not against a hostile process of the same user.
+
+**Setups where it fails closed** (no committee decision; the asks wait for the owner): sessions in a
+sandbox or PID namespace whose processes this command can't see as its ancestors, and session
+registries kept anywhere but `<passwd home>/.claude/sessions`.
+
+**Changing your mind.** The recommender may `object` to its own recommendation: a stance of its own,
+which blocks like any objection; `agree` reaffirms it later. A recommendation can't be edited: one
+whose red-line rationale is too short stays undecided until the owner answers. `--from` and `--to`
+must be fleet.yaml sessions (codes or aliases; exit 2 otherwise), so an ask never carries a
+participant that can never count.
 
 **Production gates.** A decision is a production gate when its gate or stage, trimmed and
 lowercased, is exactly `production`: the same rule as the `release_managers` check, alerts and the
