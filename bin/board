@@ -1122,6 +1122,7 @@ mark_status() {
         LOCKED=1; took=1
       else
         exec 8>&-
+        MARK_LOCK_SKIPPED=1
       fi
     fi
   fi
@@ -1147,8 +1148,9 @@ mark_status_locked() {
   update_decision "$id" '.status = $st | .updated_at = $now | (if $st == "relayed" then .relayed_at = $now else . end)
       | (if $st == "relayed" then del(.status_reason) elif $code != "" then .status_reason = $code else . end)' \
     --arg st "$st" --argjson now "$now" --arg code "$code"
-  log_event "$(jq -cn --arg id "$id" --arg st "$st" --arg r "$reason" --argjson now "$now" \
-    '{ts: $now, type: "mark", id: $id, status: $st} + (if $r == "" then {} else {reason: $r} end)')"
+  log_event "$(jq -cn --arg id "$id" --arg st "$st" --arg r "$reason" --argjson now "$now" --arg lk "${MARK_LOCK_SKIPPED:+skipped}" \
+    '{ts: $now, type: "mark", id: $id, status: $st} + (if $r == "" then {} else {reason: $r} end)
+     + (if $lk == "" then {} else {lock: $lk} end)')"
 }
 
 # caller_session_code — the code of the Claude Code session this command runs in: the first
@@ -3227,7 +3229,8 @@ adv_stance() {
     (reduce .stances[] as $x ({}; .[$x.by] = $x.stance)) as $last
     | ([.participants[] | select($last[.] == "agree")] | length) as $a
     | ([.participants[] | select($last[.] == "object")] | length) as $o
-    | "\($a) agree, \($o) object, \((.participants | length) - $a - $o - 1) no opinion yet"' "$f")"
+    | ([.participants[] | select(($last[.] // "") == "")] | length) as $n
+    | "\($a) agree, \($o) object, \($n) no opinion yet"' "$f")"
   case "$outcome" in
     decided)
       echo "$id decided by committee consensus while the owner is away: \"$(jq -r '.answer | tostring | .[0:200]' "$(dec_path "$id")")\"" \

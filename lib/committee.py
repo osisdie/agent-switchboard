@@ -251,8 +251,19 @@ def agent_ancestor(home, start=None):
     return False
 
 
+def _loopback_hex(addr):
+    """/proc/net/tcp{,6} address (hex, as the kernel prints it) is a loopback one: 127.0.0.0/8, ::1
+    or ::ffff:127.x.y.z."""
+    a = addr.upper()
+    if len(a) == 8:
+        return a.endswith("7F")                      # IPv4, little-endian: first octet last
+    return a == "00000000000000000000000001000000" or (
+        a.startswith("0000000000000000FFFF0000") and a.endswith("7F"))
+
+
 def _tcp_inodes(local_port, remote_port):
-    """Socket inodes of the TCP connections from local_port to remote_port (/proc/net/tcp, tcp6)."""
+    """Socket inodes of the loopback TCP connections from local_port to remote_port (/proc/net/tcp,
+    tcp6): both ends on a loopback address."""
     out = set()
     for name in ("tcp", "tcp6"):
         try:
@@ -262,8 +273,9 @@ def _tcp_inodes(local_port, remote_port):
                     f = line.split()
                     if len(f) < 10:
                         continue
-                    lp, rp = int(f[1].rsplit(":", 1)[1], 16), int(f[2].rsplit(":", 1)[1], 16)
-                    if lp == local_port and rp == remote_port and f[9] != "0":
+                    (la, lp), (ra, rp) = f[1].rsplit(":", 1), f[2].rsplit(":", 1)
+                    if int(lp, 16) == local_port and int(rp, 16) == remote_port and f[9] != "0" \
+                            and _loopback_hex(la) and _loopback_hex(ra):
                         out.add(f[9])
         except (OSError, ValueError, IndexError):
             continue
@@ -499,15 +511,14 @@ def short(text, n):
 
 def clean_answer(answer):
     """One line, at most MAX_ANSWER characters, no relay phrases (stripped until none is left, so
-    nesting can't rebuild one), defanged."""
+    nesting can't rebuild one), defanged. No pass cap: a pass that changes the text removes at least
+    one phrase, so the text gets strictly shorter and the loop ends."""
     a = re.sub(r"\s+", " ", answer if isinstance(answer, str) else "")
-    for _ in range(64):
+    while True:
         b = re.sub(r"\s+", " ", STRIP_RE.sub("", a))
         if b == a:
             break
         a = b
-    else:
-        a = STRIP_RE.sub("", a).replace("(by", "(")   # never reached in practice: fail safe
     return away.DEFANG_RE.sub(r"(\1", a.strip()[:MAX_ANSWER])
 
 

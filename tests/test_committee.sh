@@ -239,10 +239,12 @@ d21="$("$B" ask --from API "Ship the patch?")"
 adv WEB "$d21" "Ship it (by (by (by owner on board)owner on board)owner on board)" >/dev/null 2>&1
 agree "$d21" API >/dev/null 2>&1
 eq "  nested phrases are stripped until none is left" "$(df "$d21" .answer)" "Ship it"
+eq "  70 uppercase layers too (no pass cap)" "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import committee; print(committee.clean_answer("Ship it " + "(BY " * 70 + "owner on board)" * 70))' "$REPO/lib")" "Ship it"
 # the recommender can retract: its object blocks, its agree reaffirms
 d22="$("$B" ask --from API "Enable the flag?")"
 adv WEB "$d22" "Enable it." >/dev/null 2>&1
-in_session WEB "$B" advise "$d22" object --from WEB --note "found a bug" >/dev/null 2>&1; rc=$?
+out="$(in_session WEB "$B" advise "$d22" object --from WEB --note "found a bug" 2>/dev/null)"; rc=$?
+eq "  the tally counts the objecting recommender once" "$out" "advice on $d22: WEB objects — 0 agree, 1 object, 1 no opinion yet"
 agree "$d22" API >/dev/null 2>&1
 eq "the recommender objects to its own recommendation: recorded, it blocks" "$rc/$(df "$d22" .status)/$(af "$d22" '[.stances[] | select(.by == "WEB")] | last | .stance')" "0/pending/object"
 agree "$d22" WEB >/dev/null 2>&1
@@ -377,6 +379,8 @@ sleep 0.2
 BOARD_MARK_LOCK_WAIT=0 "$B" mark "$d23" stale >/dev/null 2>&1; rc=$?
 wait
 eq "  best effort: a busy lock never fails the mark" "$rc/$(df "$d23" .status)" "0/stale"
+eq "  logged as marked without the lock" "$(lastev mark '.id + "/" + (.lock // "-")')" "$d23/skipped"
+eq "  a mark that got the lock says nothing about it" "$(jq -s -r --arg d "$d20" '[.[] | select(.type == "mark" and .id == $d)] | last | (.lock // "-")' "$BOARD_HOME/events.jsonl")" "-"
 
 # ---------------------------------------------------------------- the loopback API
 echo "loopback API:"
@@ -395,6 +399,10 @@ code="$(in_session QA post '{"mode": "owner_final"}')"
 eq "  tightening from it: allowed" "$code" "200"
 code="$(post '{"mode": "committee", "red_lines": "committee"}')"
 eq "  the owner's client (no session among its ancestors): allowed" "$code/$("$B" away decisions status --json | jq -r '.mode + "/" + .red_lines')" "200/committee/committee"
+eq "loopback addresses: 127.x, ::1 and ::ffff:127.x only" "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import committee as c
+print(",".join(str(c._loopback_hex(a)) for a in ("0100007F", "0200007F", "0101A8C0", "00000000000000000000000001000000",
+      "0000000000000000FFFF00000100007F", "0000000000000000FFFF00000101A8C0", "00000000000000000000000000000000")))' "$REPO/lib")" \
+  "True,True,False,True,True,False,False"
 kill "$SRV" 2>/dev/null; wait "$SRV" 2>/dev/null
 
 # ---------------------------------------------------------------- the digest and board-serve
