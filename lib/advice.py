@@ -64,7 +64,8 @@ SUFFIX_RULE = ("Low priority: reply at your next natural pause (between tasks); 
 SUFFIX_COMMITTEE = ("Low priority: reply at your next natural pause (between tasks); do not stop current work. "
                     "The owner is away and lets the committee decide: when every session asked agrees (2 or more, "
                     "the asker included) and nobody objects, the recommendation becomes the decision and BOARD "
-                    "relays it to the asker. Agree only with what you would decide yourself; object to stop it. "
+                    "relays it to the asker. Agree only with what you would decide yourself, running board advise "
+                    "in your own session; object to stop it. "
                     "No reply leaves no opinion and decides nothing.")
 
 

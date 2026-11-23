@@ -760,19 +760,21 @@ pomodoro:                 # fleet.yaml；全部選填
   board advise ls            # BOARD: board advise digest --from <operator code>, then board advise sent --from <operator code> <digest id>
   ```
 
-- **你不在時由委員會決定（你的設定）**。預設是：**每個被詢問的 session 都同意**這個建議（至少兩個，
-  包括提問的 session），而且**沒有人反對**，建議就成為決定：回覆者記為 `committee`，由 BOARD 轉給
+- **你不在時由委員會決定（要你自己開啟）**。預設關閉。在個人選單選「委員會決定」（或在你自己的終端機
+  執行 `board away decisions committee --by <你>`；在 Claude Code session 底下執行會被拒絕）之後，
+  **每個被詢問的 session 都同意**這個建議（至少兩個 fleet session，包括提問的 session，每一票都要在
+  該 session 裡面執行；紅線的建議必須來自提問者以外的 session），而且**沒有人反對**，建議就成為決定：回覆者記為 `committee`，由 BOARD 轉給
   提問的 session，格式是 `[BOARD decision <id>] <answer> (by committee consensus while owner away: WEB, QA, API)`，
   紅線或 production 關卡會再加上 `; red line` 或 `; red line: production gate`。沉默一律不算同意。
   每個決定事後都會通知你（info；紅線和 production 關卡用 high），頁面會列在「你不在時做出的決定」，
   歷史紀錄寫「由委員會決定」和同意的 session。你回來後這些決定維持不變（之後的回覆會被拒絕）。
-  想自己做最後決定？在個人選單選「由我決定」（或 `board away decisions owner_final --by <你>`），
-  建議就只是建議。勾選「紅線和 production gate 仍然等我」則只有那些留給你。
+  「由我決定」（預設，或 `board away decisions owner_final --by <你>`）讓建議只是建議。勾選
+  「紅線和 production gate 仍然等我」則只有那些留給你。開啟之前給的同意不算數，各 session 要再同意一次。
 
   ```bash
-  board away decisions status                       # committee (default) or owner_final
-  board away decisions owner_final --by OPS         # advice only; the owner answers every ask
-  board away decisions committee --red-lines owner --by OPS
+  board away decisions status                       # owner_final (default) or committee
+  board away decisions committee --red-lines owner --by me   # opt in, from your own terminal
+  board away decisions owner_final --by OPS         # back to advice only (any session may tighten)
   board advise decided                              # committee decisions of the last 7 days
   ```
 

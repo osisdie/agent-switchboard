@@ -2,28 +2,31 @@
 """Committee decisions on owner-only asks while the owner is away (docs/contract.md, "Committee
 decisions"). Builds on committee advice (lib/advice.py, `board advise`).
 
-While the owner is away, a unanimous committee recommendation on a pending board ask becomes the
-decision: the board records it as answered by "committee" and BOARD relays it to the asking session
-as a [BOARD decision]. The owner's profile setting chooses this (the default) or "owner_final", where
-advice stays advice (as before this existed).
+While the owner is away and has opted in, a unanimous committee recommendation on a pending board
+ask becomes the decision: the board records it as answered by "committee" and BOARD relays it to
+the asking session as a [BOARD decision]. Otherwise ("owner_final", the default) advice stays advice.
 
   $BOARD_HOME/away-decisions.json   {mode: "committee"|"owner_final", red_lines: "committee"|"owner", by, at}
                                     (the owner's setting; 0600; written under consensus.lock)
 
-Absent file: committee, red lines included (the owner's default). A file that can't be read, or an
-invalid value: owner_final / owner (nothing is decided without the owner), with invalid True so the
-owner sees it.
+Absent file, unreadable file or invalid value: owner_final / owner (fails closed: nothing is decided
+without the owner until the owner opts in; invalid True so the owner sees a broken file).
 
 When the committee decides (decide(), all of these, checked under consensus.lock):
   - the owner is away, in the same away period the advice was made in, and the advice is open;
   - the setting is committee (and, for a red line or production gate, red_lines is committee);
   - the decision is a board ask (kind "question", not a pane question) still pending/unauthorized;
-  - participants (the asker, the recommender, --to, anyone who weighed in) are at least 2 distinct
-    sessions and include the asking session;
+  - participants (the asker, the recommender, --to, anyone who weighed in), each mapped to its fleet
+    code (aliases count once), are at least 2 distinct fleet.yaml sessions and include the asker;
+  - for a red line or production gate, the recommender is not the asking session;
   - every participant's latest stance is agree (the recommender's recommendation counts as its
     agreement), and nobody's latest stance is object. Silence is never agreement;
-  - the answer (the recommended option's label, else the recommendation as one line) is not empty
-    and passes the secret guard like an owner's free-text answer.
+  - each of those counting stances is binding: it was written while the setting was committee
+    (red_lines committee for a red line) and its --from was verified (verify(): the command ran
+    inside that session, the `board resolve --from` ancestry check). An advice-only agree from
+    before the owner opted in never counts;
+  - the answer (the recommended option's label, else the recommendation as one line, the relay
+    phrases stripped) is not empty and passes the secret guard like an owner's free-text answer.
 Then, in one pass: the decision becomes {status: answered, answered_by: "committee", answer,
 committee: {...}}; a gate's task entry and the approval event are written as `board answer` writes
 them (approved_by "committee"); the advice record freezes with reason "decided"; events.jsonl gets
@@ -36,20 +39,31 @@ committee (or red lines to committee) while away, which sweeps every open advice
 answer` takes the same lock, so an owner's answer and a committee decision never interleave: who
 gets the lock first wins, and a committee decision is final (the owner's later answer is refused).
 
+Test mode (BOARD_COMMITTEE_TEST=1) lets tests use $CLAUDE_SESSIONS_DIR for the ancestry checks and
+skips the command-line check. It applies only when $BOARD_HOME resolves under /tmp/, /private/tmp/ or
+/var/folders/ and is not ~/.agent-switchboard: a session that sets it can only fool a throwaway
+board that BOARD never reads. Otherwise the registry is always <passwd home>/.claude/sessions
+(neither $HOME nor $CLAUDE_SESSIONS_DIR is trusted) and /proc is the real one.
+
 CLI (through `board away decisions ...` and `board advise relay ...`):
   committee.py settings status [--json]
   committee.py settings committee|owner_final [--red-lines committee|owner] --by WHO
+                                       (a change that lets the committee decide more is refused,
+                                       exit 4, when any ancestor process is a Claude Code session)
+  committee.py verify CODE             exit 0 when this command runs inside session CODE, else 4
   committee.py relay [ID] [--json]     committee decisions waiting to be relayed (the operator's)
   committee.py decided [--json]       committee decisions of the last 7 days
   committee.py _decide ID              (bin/board only, with consensus.lock held)
-Exit codes: 0 ok, 1 error / nothing to show, 2 usage, 4 refused (loosening from a fleet session).
+Exit codes: 0 ok, 1 error / nothing to show, 2 usage, 4 refused (loosening from a session; verify).
 """
 import contextlib
 import fcntl
 import glob
 import json
 import os
+import pwd
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -64,11 +78,14 @@ FILE = "away-decisions.json"
 LOCK_FILE = "consensus.lock"      # shared with bin/board (away, consensus, advise, answer)
 MODES = ("committee", "owner_final")
 RED_MODES = ("committee", "owner")
-DEFAULTS = {"mode": "committee", "red_lines": "committee"}
+DEFAULTS = {"mode": "owner_final", "red_lines": "owner"}   # fails closed: the owner opts in
 BY = "committee"                  # answered_by of a committee decision: never an approver identity
 BY_RE = re.compile(r"(board:)?[A-Za-z0-9][A-Za-z0-9@._+:-]{0,199}")
 CODE_RE = advice.CODE_RE
-APPROVE_WORDS = ("approve", "approved", "yes", "y", "allow", "ok", "lgtm", "go", "ship", "ship it")
+TEST_ENV = "BOARD_COMMITTEE_TEST"
+TEST_ROOTS = ("/tmp/", "/private/tmp/", "/var/folders/")
+# the relay's own phrases never appear inside an answer (a recommendation can't fake the suffix)
+STRIP_RE = re.compile(r"\(\s*by\s+(?:committee\s+consensus\s+while\s+owner\s+away\s*:?|owner\s+on\s+board\s*\)?)", re.I)
 MAX_ANSWER = 2000
 KEEP_MS = 7 * 24 * 3600 * 1000    # `decided` view: the last week
 REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
@@ -80,6 +97,137 @@ RELAY_RE = re.compile(r"\[BOARD decision (?P<id>[A-Za-z0-9._-]+)\] (?P<answer>.*
 
 def now_ms():
     return advice.now_ms()
+
+
+def approve_words():
+    """The approve-style gate answers: bin/board's APPROVE_WORDS line is the one source. Unreadable:
+    none (every committee gate answer is then "rejected", never approved by accident)."""
+    try:
+        with open(os.path.join(REPO, "bin", "board"), encoding="utf-8") as fh:
+            for line in fh:
+                m = re.match(r"APPROVE_WORDS=\((.*)\)\s*$", line)
+                if m:
+                    return tuple(w.lower() for w in shlex.split(m.group(1)))
+    except (OSError, ValueError):
+        pass
+    return ()
+
+
+def canon_map(cfg=None):
+    """alias -> fleet code (codes map to themselves), and the set of fleet.yaml codes."""
+    try:
+        cfg = fleet.load_fleet() if cfg is None else cfg
+        return fleet.alias_map(cfg), {sess["code"] for sess in cfg.get("sessions") or []}
+    except Exception:  # noqa: BLE001 - no config: nobody is a known session (fails closed)
+        return {}, set()
+
+
+def canon(m, name):
+    return m.get(name, name) if isinstance(name, str) else None
+
+
+# ------------------------------------------------------------------ who runs this command
+def _real_home():
+    try:
+        return pwd.getpwuid(os.getuid()).pw_dir
+    except (KeyError, OSError):
+        return os.path.expanduser("~")
+
+
+def test_mode(home):
+    if os.environ.get(TEST_ENV) != "1":
+        return False
+    real = os.path.realpath(home) + "/"
+    default = os.path.realpath(os.path.join(_real_home(), ".agent-switchboard")) + "/"
+    return real != default and real.startswith(TEST_ROOTS)
+
+
+def _sessions_dir(home):
+    if test_mode(home):
+        return fleet.sessions_dir()
+    return os.path.join(_real_home(), ".claude", "sessions")
+
+
+def _ppid(pid):
+    try:
+        with open("/proc/%d/status" % pid, encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("PPid:"):
+                    return int(line.split()[1])
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        r = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)], capture_output=True, text=True, timeout=5)
+        return int(r.stdout.strip())
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return 0
+
+
+def _argv(pid):
+    try:
+        with open("/proc/%d/cmdline" % pid, "rb") as fh:
+            return [a.decode("utf-8", "replace") for a in fh.read().split(b"\0") if a]
+    except OSError:
+        pass
+    try:
+        r = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True, timeout=5)
+        return r.stdout.split()
+    except (OSError, subprocess.SubprocessError):
+        return []
+
+
+def _is_claude(pid):
+    """The process is Claude Code: its program or script (argv[0] or argv[1]) names claude."""
+    return any("claude" in a.lower() for a in _argv(pid)[:2])
+
+
+def _ancestors(limit=32):
+    p = os.getpid()
+    for _ in range(limit):
+        if p <= 1:
+            return
+        yield p
+        p = _ppid(p)
+
+
+def _registered(home, pid):
+    """The registry entry of PID when it describes that very process (lib/actions.py same_process)
+    and, outside test mode, that process is Claude Code; else None."""
+    import actions  # noqa: PLC0415
+    reg = advice.read_json(os.path.join(_sessions_dir(home), "%d.json" % pid))
+    if not isinstance(reg, dict) or not actions.same_process(reg, pid):
+        return None
+    if not test_mode(home) and not _is_claude(pid):
+        return None
+    return reg
+
+
+def caller_session(home):
+    """The session this command runs in: the first ancestor with a registry entry (as `board resolve
+    --from` finds it), by its tmux session name, else its registered name; None when there is none."""
+    for pid in _ancestors():
+        reg = _registered(home, pid)
+        if reg is not None:
+            t = str(reg.get("tmux") or "").split(":")[0]
+            n = reg.get("name") if isinstance(reg.get("name"), str) else ""
+            return t or n or None
+    return None
+
+
+def verify(home, code):
+    """True when this command runs inside session CODE (aliases count as their code). Fails closed."""
+    found = caller_session(home)
+    m, _codes = canon_map()
+    return bool(found) and canon(m, found) == canon(m, code), found
+
+
+def agent_ancestor(home):
+    """True when any ancestor process is a Claude Code session (a registered one, or outside test
+    mode any process whose program names claude): an agent must not loosen the owner's setting."""
+    for pid in _ancestors():
+        if _registered(home, pid) is not None or (not test_mode(home) and _is_claude(pid)):
+            return True
+    return False
 
 
 def _ms(v):
@@ -207,37 +355,46 @@ def evaluate(home, did, rec=None, dec=None, away_rec=None, s=None):
     red = advice.is_red_line(dec, rec)
     if red and s["red_lines"] != "committee":
         return False, "red_line_owner", None
+    # every name is its fleet code: an alias is the same session, counted once
+    m, codes = canon_map()
     parts = []
     for p in rec.get("participants") or []:
-        if isinstance(p, str) and CODE_RE.fullmatch(p) and p not in parts:
-            parts.append(p)
-    asker = dec.get("from")
+        c = canon(m, p)
+        if isinstance(c, str) and CODE_RE.fullmatch(c) and c not in parts:
+            parts.append(c)
+    asker = canon(m, dec.get("from"))
     if not isinstance(asker, str) or asker not in parts:
         return False, "no_asker", None
     if len(parts) < 2:
         return False, "too_few", None
-    last = advice.latest(rec)
-    if any(st.get("stance") == "object" for st in last.values()):
-        return False, "objected", None
-    recommender = rec.get("from")
+    if any(p not in codes for p in parts):
+        return False, "unknown_session", None
+    recommender = canon(m, rec.get("from"))
     if recommender not in parts:
         return False, "no_recommender", None
+    if red and recommender == asker:
+        return False, "red_line_self", None
+    last = {}
+    for st in rec.get("stances") or []:
+        if isinstance(st, dict) and isinstance(st.get("by"), str) and st.get("stance") in advice.STANCES:
+            last[canon(m, st["by"])] = st
+    if any(st.get("stance") == "object" for st in last.values()):
+        return False, "objected", None
     for p in parts:
         st = last.get(p)
-        if p == recommender:
-            if not st or st.get("stance") != "recommend":
-                return False, "silent", None
-        elif not st or st.get("stance") != "agree":
+        if not st or st.get("stance") != ("recommend" if p == recommender else "agree"):
             return False, "silent", None
+        if not binding(st, red):
+            return False, "not_binding", None
     option = rec.get("option") if isinstance(rec.get("option"), str) and rec.get("option") else None
     answer = option if option is not None else rec.get("recommendation")
-    answer = re.sub(r"\s+", " ", answer if isinstance(answer, str) else "").strip()[:MAX_ANSWER]
-    answer = away.DEFANG_RE.sub(r"(\1", answer)
+    answer = clean_answer(answer)
     if not answer:
         return False, "empty", None
     if guard.scrub(answer) != answer or guard.screen_answer(answer, dec.get("options")):
         return False, "held", None
-    stances = [{"by": p, "stance": last[p]["stance"], "at": _ms(last[p].get("at")) or None} for p in parts]
+    stances = [{"by": p, "stance": last[p]["stance"], "at": _ms(last[p].get("at")) or None,
+                "binding": last[p].get("binding")} for p in parts]
     return True, "ok", {
         "answer": answer, "option": option, "participants": parts, "recommended_by": recommender,
         "asker": asker, "stances": stances, "red_line": bool(red), "production": bool(production),
@@ -245,8 +402,23 @@ def evaluate(home, did, rec=None, dec=None, away_rec=None, s=None):
         "away": {"since": _ms((rec.get("away") or {}).get("since")) or None, "by": (rec.get("away") or {}).get("by")}}
 
 
+def binding(st, red):
+    """A stance counts toward a decision only when it was written while the owner let the committee
+    decide that class of ask (red lines included or not) and its --from was verified."""
+    b = st.get("binding") if isinstance(st, dict) else None
+    return isinstance(b, dict) and b.get("verified") is True and b.get("mode") == "committee" \
+        and (not red or b.get("red_lines") == "committee")
+
+
+def clean_answer(answer):
+    """One line, at most MAX_ANSWER characters, no relay phrases, defanged."""
+    a = re.sub(r"\s+", " ", answer if isinstance(answer, str) else "")
+    a = re.sub(r"\s+", " ", STRIP_RE.sub("", a)).strip()[:MAX_ANSWER]
+    return away.DEFANG_RE.sub(r"(\1", a)
+
+
 def _gate_result(answer):
-    return "approved" if answer.strip().lower() in APPROVE_WORDS else "rejected"
+    return "approved" if answer.strip().lower() in approve_words() else "rejected"
 
 
 def _update_task_gate(home, dec, result, now):
@@ -371,7 +543,7 @@ def relay_text(dec):
     c = dec["committee"]
     red = "; red line: production gate" if c.get("production") else "; red line" if c.get("red_line") else ""
     return "[BOARD decision %s] %s (by committee consensus while owner away: %s%s)" % (
-        dec["id"], dec.get("answer") or "", ", ".join(c.get("participants") or []), red)
+        dec["id"], clean_answer(dec.get("answer")), ", ".join(c.get("participants") or []), red)
 
 
 def waiting(home, only=None):
@@ -420,41 +592,15 @@ SETTINGS_USAGE = ("usage: board away decisions status [--json]\n"
                   "       board away decisions committee|owner_final [--red-lines committee|owner] --by WHO")
 
 
-def _tmux_session():
-    if not os.environ.get("TMUX"):
-        return None
-    try:
-        args = ["tmux", "display-message", "-p"] + (["-t", os.environ["TMUX_PANE"]] if os.environ.get("TMUX_PANE") else []) + ["#S"]
-        r = subprocess.run(args, capture_output=True, text=True, timeout=5)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return r.stdout.strip() or None
-
-
-def _fleet_session(home, name):
-    """True when NAME (a tmux session) is one of the board's sessions (a code or an alias)."""
-    if not name:
-        return False
-    op = advice.read_json(os.path.join(home, "operator.json"))
-    if name == "BOARD" or (isinstance(op, dict) and name == op.get("operator_session")):
-        return True     # the operator is a board session too
-    try:
-        cfg = fleet.load_fleet()
-    except Exception:  # noqa: BLE001
-        cfg = {}
-    if name in fleet.known_codes(home, cfg):
-        return True
-    return any(name in (s.get("aliases") or []) for s in cfg.get("sessions") or [] if isinstance(s, dict))
-
-
 def settings_main(home, rest):
     js = "--json" in rest
     rest = [a for a in rest if a != "--json"]
     if not rest or rest[0] in ("-h", "--help", "help"):
         print(SETTINGS_USAGE)
         print("  while the owner is away, a unanimous committee recommendation on a board ask becomes the\n"
-              "  decision (committee, the default) or stays advice for the owner (owner_final).\n"
-              "  --red-lines owner keeps red lines and production gates for the owner (default: committee).")
+              "  decision (committee) or stays advice for the owner (owner_final, the default until the\n"
+              "  owner opts in). --red-lines owner keeps red lines and production gates for the owner.\n"
+              "  Only the owner lets the committee decide more: refused (exit 4) under a Claude Code session.")
         return 0 if rest else 2
     sub = rest[0]
     if sub == "status":
@@ -468,7 +614,8 @@ def settings_main(home, rest):
         else:
             print("while the owner is away, board asks: %s%s%s" % (
                 "the committee decides when every session asked agrees" if v["mode"] == "committee"
-                else "advice only; the owner has the final say",
+                else "advice only; the owner has the final say"
+                + ("" if os.path.exists(os.path.join(home, FILE)) else " (the default: the owner has not opted in)"),
                 "" if v["mode"] != "committee" else (
                     "; red lines and production gates included" if v["red_lines"] == "committee"
                     else "; red lines and production gates wait for the owner"),
@@ -492,15 +639,13 @@ def settings_main(home, rest):
     if not by or (red is not None and red not in RED_MODES):
         sys.stderr.write(SETTINGS_USAGE + "\n")
         return 2
-    # The owner's setting: a session never lets the committee decide more. Inside tmux, a change
-    # that loosens it from one of the board's own sessions is refused (tightening always works).
-    me = _tmux_session()
-    if loosens(settings(home), sub, red) and _fleet_session(home, me):
+    # The owner's setting: an agent never lets the committee decide more. A change that loosens it
+    # is refused when any ancestor process is a Claude Code session (tightening always works).
+    if loosens(settings(home), sub, red) and agent_ancestor(home):
         log_event(home, {"ts": now_ms(), "type": "away_decisions", "action": "set", "by": by, "mode": sub,
-                         "red_lines": red, "tmux_session": me, "result": "refused",
-                         "reason": "loosening from a board session"})
-        sys.stderr.write("board away decisions: refused — this is the board's session '%s'; only the owner lets "
-                         "the committee decide more (the profile menu, or a shell that is not a board session)\n" % me)
+                         "red_lines": red, "result": "refused", "reason": "loosening under a Claude Code session"})
+        sys.stderr.write("board away decisions: refused — this runs under a Claude Code session; only the owner "
+                         "lets the committee decide more (the profile menu, or the owner's own terminal)\n")
         return 4
     try:
         changed, s, decided = set_settings(home, sub, red, by)
@@ -547,6 +692,13 @@ def main(argv):
                                               ", ".join(c["participants"]),
                                               "  PRODUCTION GATE" if c["production"] else "  RED LINE" if c["red_line"] else ""))
         return 0
+    if cmd == "verify":
+        if len(rest) != 1 or not CODE_RE.fullmatch(rest[0]):
+            sys.stderr.write("usage: committee.py verify CODE\n")
+            return 2
+        ok, found = verify(home, rest[0])
+        print(found or "none")
+        return 0 if ok else 4
     if cmd == "_decide":
         if len(rest) != 1 or not advice.DEC_RE.fullmatch(rest[0]):
             return 2

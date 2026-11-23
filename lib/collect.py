@@ -53,6 +53,7 @@ Usage: collect.py [--no-notify] [--baseline] [--verbose] [--apply-rc] [--scan-li
 - Reminders: every run (not with --no-notify or --baseline) fires the owner's due reminders
   (lib/reminders.py, reminders.json): T - lead, T, snoozes; each once, persisted.
 """
+import fcntl
 import getpass
 import glob
 import json
@@ -140,6 +141,21 @@ def read_json(path):
         with open(path, encoding="utf-8") as fh:
             return json.load(fh)
     except (OSError, ValueError):
+        return None
+
+
+def try_board_lock(home):
+    """consensus.lock without waiting (the lock `board answer`, `board resolve`, `board mark` and a
+    committee decision hold): an fd to close when taken, None when busy, -1 when it can't be opened."""
+    try:
+        fd = os.open(os.path.join(home, "consensus.lock"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    except OSError:
+        return -1
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fd
+    except OSError:
+        os.close(fd)
         return None
 
 
@@ -555,15 +571,29 @@ def process_decisions(cfg, home, sessions, now):
             d["status_reason"] = "timeout"
             changed = True
         if changed:
-            # Not under a lock: `board answer` / `board resolve` may have written the file since it
-            # was read. Re-read it right before the write and keep theirs when its status moved.
-            fresh = read_json(path)
-            if not isinstance(fresh, dict) or fresh.get("status") != status_read:
-                retry = retry or (settled and isinstance(fresh, dict) and fresh.get("status") in reconcile.SETTLEABLE)
-                out.append(fresh if isinstance(fresh, dict) else d)
-                continue
-            d["updated_at"] = now
-            write_json_atomic(path, d)
+            # A board ask may be decided by the committee (lib/committee.py) or answered under
+            # consensus.lock: take it without waiting for the re-read and the write; busy → the
+            # next run. Others: not under a lock, `board answer` / `board resolve` may have written
+            # the file since it was read. Re-read it right before the write and keep theirs when
+            # its status moved.
+            lk = -1
+            if d.get("kind") == "question" and d.get("source") != "pane":
+                lk = try_board_lock(home)
+                if lk is None:     # busy: show the file as it is, write next run
+                    fresh = read_json(path)
+                    out.append(fresh if isinstance(fresh, dict) else d)
+                    continue
+            try:
+                fresh = read_json(path)
+                if not isinstance(fresh, dict) or fresh.get("status") != status_read:
+                    retry = retry or (settled and isinstance(fresh, dict) and fresh.get("status") in reconcile.SETTLEABLE)
+                    out.append(fresh if isinstance(fresh, dict) else d)
+                    continue
+                d["updated_at"] = now
+                write_json_atomic(path, d)
+            finally:
+                if lk not in (None, -1):
+                    os.close(lk)
             ev = {"ts": now, "type": "decision", "id": d["id"], "status": d["status"], "by": "collector"}
             if d.get("reconciled_at") and d["status"] in ("relayed", "answered_in_pane") and status_read != d["status"]:
                 ev["reason"] = "session_outcome"

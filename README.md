@@ -856,21 +856,25 @@ never counts, and the dangerous things still wait for you.
   board advise ls            # BOARD: board advise digest --from <operator code>, then board advise sent --from <operator code> <digest id>
   ```
 
-- **The committee decides while you are away (your setting).** By default, when **every session
-  asked agrees** with the recommendation (at least two, the asking session included) and **nobody
-  objects**, it becomes the decision: answered by `committee`, relayed by BOARD to the asking session
+- **The committee decides while you are away (your opt-in).** Off by default. Once you choose
+  **Committee decides** in the profile menu (or `board away decisions committee --by <you>` from
+  your own terminal; refused under a Claude Code session), when **every session asked agrees** with
+  the recommendation (at least two fleet sessions, the asking session included, each agree run
+  inside its own session; for a red line, recommended by a session other than the asker) and
+  **nobody objects**, it becomes the decision: answered by `committee`, relayed by BOARD to the asking session
   as `[BOARD decision <id>] <answer> (by committee consensus while owner away: WEB, QA, API)`, with
   `; red line` or `; red line: production gate` when it is one. Silence never counts. You are told
   after each one (info; high for red lines and production gates), the page lists them under
   **Decided while you were away**, and the history says **Decided by committee** with who agreed.
-  They stay decided when you are back (a later answer is refused). Prefer the final say yourself?
-  Pick **I decide** in the profile menu (or `board away decisions owner_final --by <you>`): advice
-  then stays advice. **Red lines and production gates still wait for me** keeps only those for you.
+  They stay decided when you are back (a later answer is refused). **I decide** (the default, or
+  `board away decisions owner_final --by <you>`) keeps advice as advice. **Red lines and production
+  gates still wait for me** keeps only those for you. Agreement given before you opted in never
+  counts: the sessions agree again.
 
   ```bash
-  board away decisions status                       # committee (default) or owner_final
-  board away decisions owner_final --by OPS         # advice only; the owner answers every ask
-  board away decisions committee --red-lines owner --by OPS
+  board away decisions status                       # owner_final (default) or committee
+  board away decisions committee --red-lines owner --by me   # opt in, from your own terminal
+  board away decisions owner_final --by OPS         # back to advice only (any session may tighten)
   board advise decided                              # committee decisions of the last 7 days
   ```
 

@@ -2635,12 +2635,12 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
   /* committee advice (lib/advice.py): what sessions recommended while the owner was away. Shown on
      the card as information; it never answers, and the answer buttons stay the owner's. */
   const ADV_FROZEN = { answered: 'frozen when the question was answered', owner_back: 'frozen when the owner came back', away_changed: 'frozen: from an earlier away period', decided: 'became the decision: every session asked agreed' };
-  // The owner's setting (lib/committee.py): "committee" (the default; also when the page does not
-  // know it) lets a unanimous recommendation become the decision while the owner is away.
+  // The owner's setting (lib/committee.py): "committee" lets a unanimous recommendation become the
+  // decision while the owner is away. Unknown (not mirrored yet) reads as owner_final, the default.
   const committeeDecides = (d) => {
     const A = S.awayDec && typeof S.awayDec === 'object' ? S.awayDec : null;
-    if (A && A.mode === 'owner_final') return false;
-    if (A && A.red_lines === 'owner' && d && isProdGate(d)) return false;
+    if (!A || A.mode !== 'committee') return false;
+    if (A.red_lines === 'owner' && d && isProdGate(d)) return false;
     return true;
   };
   const adviceFor = (id) => S.advice.find((a) => str(a.decision_id) === str(id)) || null;
@@ -5139,9 +5139,9 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     if (!own) return;
     const A = S.awayDec, busy = S.busy.has('awaydec');
     box.disabled = busy;
-    const mode = (S.adPick && S.adPick.mode) || (A.invalid ? '' : str(A.mode) || 'committee');
+    const mode = (S.adPick && S.adPick.mode) || (A.invalid ? '' : str(A.mode) || 'owner_final');
     for (const inp of document.querySelectorAll('input[name="sb-awaydec"]')) inp.checked = inp.value === mode;
-    const red = (S.adPick && S.adPick.red_lines) || str(A.red_lines) || 'committee';
+    const red = (S.adPick && S.adPick.red_lines) || str(A.red_lines) || 'owner';
     const cb = $('#ad-red-owner');
     cb.checked = red === 'owner';
     $('#ad-red-row').hidden = mode !== 'committee';
@@ -6165,7 +6165,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     ack: { q: 'Acknowledge all open alerts?', note: 'Escalation stops for every open alert. The board still shows everything, and a condition that opens again alerts again.', yes: 'Yes, acknowledge all' },
     mute: { q: 'Mute all push for 1 hour?', note: 'Urgent alerts still break through. The board still shows everything.', yes: 'Yes, mute 1 hour' },
     unmute: { q: 'Unmute all push?', note: 'Every channel delivers again at its own level.', yes: 'Yes, unmute' },
-    'away-on': { q: 'Mark the owner away?', note: 'Sessions may decide among themselves by explicit consensus. Board asks follow your away setting in the profile menu: by default, the committee decides one when every session asked agrees.', yes: 'Yes, I\'m away' },
+    'away-on': { q: 'Mark the owner away?', note: 'Sessions may decide among themselves by explicit consensus. Board asks follow your away setting in the profile menu: by default they wait for you; you can let the committee decide one when every session asked agrees.', yes: 'Yes, I\'m away' },
     'away-off': { q: 'Mark the owner back?', note: 'Away mode ends; pending consensus items come back to the owner.', yes: 'Yes, I\'m back' },
   };
   function askDeck(what) {
@@ -8628,7 +8628,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "Turn owner-away on": "開啟主人不在模式",
       "Turn owner-away off": "關閉主人不在模式",
       "Mark the owner away?": "標記主人不在？",
-      "Sessions may decide among themselves by explicit consensus. Board asks follow your away setting in the profile menu: by default, the committee decides one when every session asked agrees.": "sessions 可以用明確的共識自行決定。看板提問依個人選單裡「不在時」的設定處理：預設是每個被詢問的 session 都同意時，由委員會決定。",
+      "Sessions may decide among themselves by explicit consensus. Board asks follow your away setting in the profile menu: by default they wait for you; you can let the committee decide one when every session asked agrees.": "sessions 可以用明確的共識自行決定。看板提問依個人選單裡「不在時」的設定處理：預設會等你；你也可以讓每個被詢問的 session 都同意時由委員會決定。",
       "Yes, I'm away": "是，我不在",
       "Mark the owner back?": "標記主人回來？",
       "Away mode ends; pending consensus items come back to the owner.": "不在模式結束；待決的共識項目回到主人手上。",

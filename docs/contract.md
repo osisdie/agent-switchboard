@@ -2937,9 +2937,9 @@ While the owner is away, a board ask (a question or a gate) waits for the owner:
 never answers it. What sessions can do is discuss it and attach **advice** to the card, so the
 owner, back, reads "committee recommends A (QA agrees; OPS objects: …)" and clicks once. Advice
 itself is information: it never becomes an answer, a gate approval, a `[BOARD decision]` or a
-notification. The one exception is the owner's own choice: with `board away decisions committee`
-(the default), a **unanimous** recommendation becomes the decision (see "Committee decisions");
-with `owner_final` nothing answers automatically because of advice.
+notification. The one exception is the owner's own choice: once they opt in with `board away
+decisions committee`, a **unanimous** recommendation becomes the decision (see "Committee
+decisions"); with `owner_final` (the default) nothing answers automatically because of advice.
 
 ```
 $BOARD_HOME/advice/<decision id>.json   # one record per decision, 0600 (bin/board writes it)
@@ -3034,18 +3034,19 @@ board)`): its exact form is what sessions trust, so advice is never added to it.
 
 ## Committee decisions
 
-The owner's choice (2026-11): while they are away, a committee consensus on a pending board ask
-**becomes the decision** by default, relayed and acted on without waiting for them. A profile
-setting keeps their final say instead (advice only, as in "Committee advice").
+The owner may choose that while they are away, a committee consensus on a pending board ask **becomes
+the decision**, relayed and acted on without waiting for them. Until they opt in, they keep their
+final say (advice only, as in "Committee advice"): an upgrade never turns on binding decisions by
+itself.
 
 ```
 $BOARD_HOME/away-decisions.json   # {"mode": "committee"|"owner_final", "red_lines": "committee"|"owner", "by": "...", "at": <ms>}, 0600
 ```
 
-**The setting.** No file: `committee`, red lines included (the owner's default). A file that can't
-be read or holds an unknown value reads as `owner_final` / `owner` with `invalid: true` (fails
-closed: nothing is decided without the owner until it is set again). `red_lines: "owner"` keeps
-red lines and production gates for the owner while the rest is decided by the committee. It is a
+**The setting.** No file (or a deleted one): `owner_final`, red lines `owner` (fails closed; the
+owner opts in). A file that can't be read or holds an unknown value reads the same, with
+`invalid: true` so the owner sees it. `red_lines: "owner"` keeps red lines and production gates for
+the owner while the rest is decided by the committee. It is a
 separate file from `asker-route.json` on purpose: that one routes askers' messages, has its own lock
 and fails to `wait`; this one is read by `bin/board` under `consensus.lock` at the moment a vote
 completes, and is written under that same lock, so a change and a completing vote never interleave.
@@ -3053,10 +3054,14 @@ completes, and is written under that same lock, so a change and a completing vot
 - `board away decisions committee|owner_final [--red-lines committee|owner] --by WHO` (`--by` as for
   `board away`) and `board away decisions status [--json]` (`{mode, red_lines, invalid, by, at,
   away}`). Each change appends `{type: "away_decisions", action: "set", by, mode, red_lines,
-  previous}`. Inside tmux, a change that lets the committee decide **more** (to `committee`, or red
-  lines to `committee`) from one of the board's own sessions (a fleet code or alias, or a code in the
-  snapshot) is refused with exit 4 and logged (`result: "refused"`); tightening always works. The
-  owner uses the profile menu (`POST /api/away-decisions`) or a shell that is not a board session.
+  previous}`. A change that lets the committee decide **more** (to `committee`, or red lines to
+  `committee`) is refused with exit 4 and logged (`result: "refused"`) when **any ancestor process**
+  of the command is a Claude Code session: a registered one (the session registry, as below) or a
+  process whose program names `claude`. That holds with or without tmux, and an agent can't dodge it
+  by unsetting `TMUX`. Tightening always works. The owner uses the profile menu
+  (`POST /api/away-decisions`) or their own terminal. (An ancestry check rather than a TTY prompt: a
+  session's shell can fake a TTY with `script`, but not its own ancestors. A `!` command typed in a
+  session's pane runs under that session too, so it is refused as well.)
 - `board away status` prints which mode is in effect.
 
 **When the committee decides** (`lib/committee.py`, all of these, checked under `consensus.lock`):
@@ -3065,19 +3070,53 @@ completes, and is written under that same lock, so a change and a completing vot
 2. the setting is `committee` (and, for a red line or a production gate, `red_lines` is `committee`);
 3. the decision is a board ask (`kind: "question"`, not a pane question) still `pending` or
    `unauthorized`;
-4. the participants (the recommender, `--to`, the asking session, anyone who weighed in) are at
-   least **2 distinct sessions** and include the **asking session** (so a session can't approve its
-   own ask alone);
-5. every participant's **latest** stance is `agree` (the recommender's recommendation counts as its
+4. the participants (the recommender, `--to`, the asking session, anyone who weighed in), each
+   mapped to its **fleet code** (an alias is its session: counted once, on write and again when
+   checked), are at least **2 distinct sessions**, all of them **fleet.yaml sessions**, and include
+   the **asking session** (so a session can't approve its own ask alone);
+5. for a **red line or production gate**, the recommender is **not the asking session** (ordinary
+   asks keep the 2-session rule);
+6. every participant's **latest** stance is `agree` (the recommender's recommendation counts as its
    own), and **no** latest stance is `object`. Silence is never agreement: there is no timeout;
-6. the answer, the recommended option's label (else the recommendation as one line, at most 2000
-   characters, defanged), is not empty and passes the secret guard like an owner's free-text answer
-   (`screen-answer`, and no secret-shaped value). A held one is not decided; it waits for the owner.
+7. each of those stances is **binding**: written while the setting was `committee` (and, for a red
+   line, `red_lines: committee`), by a `--from` that was **verified** (below). Every stance records
+   `binding: {mode, red_lines, verified}` when it is written. An agree given while it was advice only
+   never counts later: switching the setting does not convert it; the session agrees again (the
+   same stance is accepted again when its stamp differs), and the recommender reaffirms with `board
+   advise <id> agree --from <itself>` (recorded as a new `recommend` stance, note `reaffirmed`);
+8. the answer, the recommended option's label (else the recommendation as one line, at most 2000
+   characters, with the relay phrases `(by committee consensus while owner away:` and `(by owner
+   on board)` stripped, defanged), is not empty and passes the secret guard like an owner's
+   free-text answer (`screen-answer`, and no secret-shaped value). A held one is not decided.
+
+**Verified `--from`.** While the setting is `committee`, `board advise … --from X` (a recommendation)
+and `board advise … agree --from X` must run **inside session X**: the `board resolve --from` check
+(`lib/committee.py` verify): the first ancestor of the command with a session registry entry that
+describes that very process (not a zombie, its `procStart` matching `/proc`) and whose program names
+`claude` must be X (its tmux session name, else its registered name; an alias counts as its code).
+None, or another session: exit 4, logged `{type: "advise", result: "refused", reason: "--from is not
+the session this command runs in"}`, nothing written. The registry is always `<passwd home>/.claude/
+sessions` and `/proc` the real one: `$HOME`, `$CLAUDE_SESSIONS_DIR` and `$BOARD_PROC_ROOT` are not
+trusted for this. An `object` needs no verification (it can only block). This is same-user trust
+against honest mistakes and casual misuse, not a security boundary: a process of the same user can
+write a registry file for itself.
+
+**Test mode.** `BOARD_COMMITTEE_TEST=1` makes the checks use `$CLAUDE_SESSIONS_DIR` and skip the
+`claude` program check, so tests can stand in for sessions. It applies **only** when `$BOARD_HOME`
+resolves under `/tmp/`, `/private/tmp/` or `/var/folders/` and is not `~/.agent-switchboard`: a
+session that sets it can only fool a throwaway board that BOARD never reads.
+
+**Production gates.** A decision is a production gate when its gate or stage, trimmed and
+lowercased, is exactly `production`: the same rule as the `release_managers` check, alerts and the
+collector, so the committee never treats a gate differently from the rest of the board. A gate named
+anything else (`prod`, `release`) is not one; a session asking such a gate marks it `--red-line`
+(stages are already limited to the lifecycle names, where `production` is the only one).
 
 **Who triggers it.** The `board advise <id> agree` that completes it, in the same locked section as
-the stance (no polling, no second writer), and `board away decisions committee` / the profile control
-switching so that the committee decides more, which checks every open advice record at once (a
-consensus already complete is decided then). It is idempotent: a decided ask is no longer pending.
+the stance (no polling, no second writer). `board away decisions committee` / the profile control
+switching so that the committee decides more also checks every open advice record, but only binding
+stances count (rule 7), so advice given before the switch is never converted by it; the sessions
+agree again. It is idempotent: a decided ask is no longer pending.
 
 **What it writes**, in one pass: the decision becomes `status: "answered"`, `answer`,
 `answered_by: "committee"`, `answered_at`, and
@@ -3099,11 +3138,16 @@ participants, stances, recommended_by, red_line, production, settings, away}` an
 reading the status to writing the answer, and the committee decides under the same lock. If the
 owner's answer lands first, the ask is no longer pending and the agree decides nothing (the advice
 freezes `answered`). If the committee's lands first, `board answer` refuses any later answer with
-**exit 9** (audited `{type: "answer", result: "refused", reason: "decided by the committee"}`;
+**exit 9**, checked before the status, so also after the relay (audited `{type: "answer", result: "refused", reason: "decided by the committee"}`;
 board-serve → 409 `committee_decided`), so the relayed decision is never replaced behind the
 asker's back. `board away off` before consensus completes leaves it advice (frozen `owner_back`);
 decisions already taken stay taken. Without `flock`, `board advise` can't run, so nothing is
-decided this way.
+decided this way. `board resolve`, `board mark` (and `board press`'s marks) take the same lock; the
+collector takes it without waiting before it rewrites a board ask (a timeout or a hint) and leaves
+the write for its next run when it is busy.
+
+**Approve-style answers** for a committee gate are `bin/board`'s `APPROVE_WORDS` (read from that
+file: one list; unreadable → `rejected`).
 
 **Not a weaker approver check.** `"committee"` is never added to `approvers` or
 `release_managers`, and `board answer --by committee` is refused like any non-approver. The

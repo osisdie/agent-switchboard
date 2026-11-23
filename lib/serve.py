@@ -1844,12 +1844,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     and not is_owner(cfg, ident):
                 self.audit(ident, via, "answer", id=did, result="refused", reason="not an owner")
                 raise Refused(403, "not_owner", "only the board's owner answers prompts in a session")
+            if committee.is_committee(dec):     # final, relayed or not; `board answer` refuses it too (exit 9)
+                self.audit(ident, via, "answer", id=did, result="gone", reason="decided by the committee")
+                raise Refused(409, "committee_decided", "the committee decided this while you were away")
             if dec.get("status") not in ("pending", "unauthorized", "answered"):
                 self.audit(ident, via, "answer", id=did, result="gone", status=dec.get("status"))
                 raise Refused(409, "gone", "decision is already %s" % dec.get("status"))
-            if committee.is_committee(dec):     # final; `board answer` refuses it too (exit 9)
-                self.audit(ident, via, "answer", id=did, result="gone", reason="decided by the committee")
-                raise Refused(409, "committee_decided", "the committee decided this while you were away")
             if kind == "permission" and answer not in ("allow", "deny"):
                 raise Refused(400, "bad_answer", "a permission answer is allow or deny")
             if options is not None:

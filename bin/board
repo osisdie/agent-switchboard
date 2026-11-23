@@ -71,8 +71,8 @@
 #   board away status [--quiet|--json]         exit 0 when the owner is away, 1 when not
 #   board away decisions committee|owner_final [--red-lines committee|owner] --by WHO | status [--json]
 #                                              while away, a unanimous committee recommendation on
-#                                              a board ask becomes the decision (committee, default)
-#                                              or stays advice for the owner (owner_final)
+#                                              a board ask becomes the decision (committee, once the
+#                                              owner opts in) or stays advice (owner_final, default)
 #   board dnd on|off --by WHO [--said TEXT]     do not disturb ($BOARD_HOME/owner-dnd): the owner
 #                                              is present, askers are declined with a canned reply
 #   board dnd status [--quiet|--json]          exit 0 when do-not-disturb is on, 1 when not
@@ -95,9 +95,9 @@
 #   board advise relay --from BOARD [ID] [--json] | decided [--json]
 #                                              committee advice on a pending board ask while the
 #                                              owner is away; BOARD batches a low-priority digest.
-#                                              With `board away decisions committee` (the default)
-#                                              a unanimous recommendation becomes the decision and
-#                                              BOARD relays it (advise relay)
+#                                              Once the owner opts in (`board away decisions
+#                                              committee`), a unanimous recommendation becomes the
+#                                              decision and BOARD relays it (advise relay)
 #   board rc on|off CODE|all [--by NAME] [--no-apply]
 #                                              Remote Control: store the choice (fleet-up uses it
 #                                              at start) and apply it to running sessions that
@@ -490,10 +490,11 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
         echo "       board away decisions committee|owner_final [--red-lines committee|owner] --by WHO"
         echo "       board away decisions status [--json]"
         echo "  the owner's setting for board asks while away (\$BOARD_HOME/away-decisions.json):"
-        echo "  committee (default): when every session asked agrees (2 or more, the asker included) and"
-        echo "  nobody objects, the committee's recommendation becomes the decision; owner_final: advice"
-        echo "  only. --red-lines owner keeps red lines and production gates for the owner (default:"
-        echo "  committee). Inside tmux, a board session can't loosen it (exit 4); tightening always works." ;;
+        echo "  committee: when every session asked agrees (2 or more fleet sessions, the asker included,"
+        echo "  each agree run inside that session) and nobody objects, the recommendation becomes the"
+        echo "  decision; owner_final (the default; also a missing or unreadable file): advice only."
+        echo "  --red-lines owner keeps red lines and production gates for the owner. A change that lets"
+        echo "  the committee decide more is refused (exit 4) under a Claude Code session; tightening works." ;;
     "away on") echo "usage: board away on --by WHO --said \"owner's words\"|--said-file PATH [--replace]" ;;
     "away off") echo "usage: board away off --by WHO [--said \"...\"|--said-file PATH]" ;;
     "away status") echo "usage: board away status [--quiet|--json]   (exit 0 = away, 1 = not away, 2 = usage)" ;;
@@ -524,11 +525,15 @@ sub_usage() {  # sub_usage COMMAND [SUBCOMMAND]
         echo "       board advise decided [--json]                       (committee decisions of the last 7 days)"
         echo "  committee advice: while the owner is away, sessions may attach a recommendation to a"
         echo "  pending board ask (a question or gate, never a permission prompt or a pane question)."
-        echo "  It is information on the card for the owner, and it sends no alert. While the owner allows"
-        echo "  it (board away decisions committee, the default), the agree that makes every session asked"
-        echo "  agree (2 or more, the asker included; no objection) turns the recommendation into the"
+        echo "  It is information on the card for the owner, and it sends no alert. Once the owner opts in"
+        echo "  (board away decisions committee), the agree that makes every session asked agree (2 or"
+        echo "  more fleet sessions, the asker included; no objection) turns the recommendation into the"
         echo "  decision: answered by \"committee\", relayed by BOARD (board advise relay), the owner told"
-        echo "  after. Otherwise (owner_final) it never answers anything. One recommendation per ask (--option names the option"
+        echo "  after. Then a recommendation or an agree must run inside its --from session (as board"
+        echo "  resolve --from; exit 4 otherwise), and only stances given under that setting count (agree"
+        echo "  again after it changes; the recommender reaffirms with agree). A red line needs a"
+        echo "  recommender other than the asker. Otherwise (owner_final, the default) it never answers"
+        echo "  anything. An alias counts as its session's code. One recommendation per ask (--option names the option"
         echo "  it recommends; --to the sessions whose view it asks for, plus the asker); any other"
         echo "  session may agree or object with a note (the latest stance counts). Silence is no"
         echo "  opinion, never agreement. --red-line marks the ask as a red line (production gates always"
@@ -928,17 +933,18 @@ cmd_answer() {
   # interleave and whoever comes first wins. Without flock, `board advise` can't run at all.
   if command -v flock >/dev/null 2>&1; then lock_board; fi
   local cur; cur="$(jq -r '.status' "$f")"
-  case "$cur" in
-    pending|answered|unauthorized) ;;
-    *) die "decision $id is already $cur" ;;
-  esac
-  # A committee decision is final: it is relayed as it is, and the owner reviews it afterwards.
-  if [ "$cur" = answered ] && [ "$(jq -r '.answered_by // empty' "$f")" = committee ]; then
+  # A committee decision is final, relayed or not: it is relayed as it is, and the owner reviews it
+  # afterwards. Checked before the status, so a late answer after the relay says so too.
+  if [ "$(jq -r '.answered_by // empty' "$f")" = committee ]; then
     log_event "$(jq -cn --arg id "$id" --arg by "$by" --argjson now "$(now_ms)" \
       '{ts: $now, type: "answer", id: $id, by: $by, result: "refused", reason: "decided by the committee"}')"
     echo "board answer: refused — $id was decided by committee consensus while the owner was away (board advise show $id); it stays decided" >&2
     exit 9
   fi
+  case "$cur" in
+    pending|answered|unauthorized) ;;
+    *) die "decision $id is already $cur" ;;
+  esac
   local now; now="$(now_ms)"
   # --option N (the button the human clicked): only for a pane question, and only when option N's
   # label is this answer (both trimmed). Checked before anything is written.
@@ -1100,6 +1106,15 @@ cmd_answer() {
 # mark_status ID STATUS [reason] [code] — code: a fixed status_reason the board shows when an answer
 # was not delivered (screen, partial, moved_on, unknown_session, config, ...); relayed clears it.
 mark_status() {
+  # under the away/consensus lock, like `board answer`, so a mark never lands between a committee
+  # decision's check and its write (or the other way round)
+  local was="$LOCKED" rc=0
+  if [ "$was" = 0 ] && command -v flock >/dev/null 2>&1; then lock_board; fi
+  mark_status_locked "$@" || rc=$?
+  [ "$was" = 1 ] || unlock_board
+  return "$rc"
+}
+mark_status_locked() {
   local id="$1" st="$2" reason="${3:-}" code="${4:-}" now cur
   cur="$(jq -r '.status // empty' "$(dec_path "$id")" 2>/dev/null)"
   case "$cur" in
@@ -1195,7 +1210,9 @@ cmd_resolve() {
     exit 2
   fi
   # Only an ask nobody has answered on the board: an approver's answer that waits for its relay
-  # (answered) is never dropped this way, by the asking session or an approver.
+  # (answered) is never dropped this way, by the asking session or an approver. Read and written
+  # under the away/consensus lock, like `board answer` and a committee decision.
+  if command -v flock >/dev/null 2>&1; then lock_board; fi
   local cur; cur="$(jq -r '.status' "$f")"
   case "$cur" in
     pending|unauthorized) ;;
@@ -2974,6 +2991,41 @@ adv_open() {
   fi
 }
 
+# adv_canon NAME... — each name's fleet code, one per line: an alias is its session's code (so one
+# session never counts twice); a name fleet.yaml does not know stays as it is.
+adv_canon() {
+  local map n
+  map="$(python3 "$FLEET" sessions 2>/dev/null | jq -sc '[.[] | {code, aliases: (.aliases // [])}]' 2>/dev/null)"
+  [ -n "$map" ] || map='[]'
+  for n in "$@"; do
+    jq -rn --argjson m "$map" --arg n "$n" '([$m[] | select(.code == $n or (.aliases | index($n) != null)) | .code] | first) // $n'
+  done
+}
+
+# adv_verified CODE — 1 when this command runs inside session CODE (lib/committee.py verify: the
+# `board resolve --from` ancestry check, on the real session registry), else 0. Never fails the command.
+adv_verified() { if python3 "$REPO/lib/committee.py" verify "$1" >/dev/null 2>&1; then echo 1; else echo 0; fi; }
+
+# adv_binding VERIFIED — (lock held) the stamp a stance carries: the owner's setting in force now and
+# whether --from was verified. Only a stance stamped {mode: committee, verified: true} (and, for a red
+# line, red_lines: committee) can count toward a committee decision (lib/committee.py binding()).
+adv_binding() {
+  python3 "$REPO/lib/committee.py" settings status --json 2>/dev/null \
+    | jq -c --argjson v "$1" '{mode: (.mode // "owner_final"), red_lines: (.red_lines // "owner"), verified: ($v == 1)}' 2>/dev/null \
+    || echo '{"mode":"owner_final","red_lines":"owner","verified":false}'
+}
+
+# adv_require_verified ID ACTION FROM VERIFIED STAMP — (lock held) while the owner lets the committee
+# decide, a recommendation or an agree may decide an ask: it must come from inside that session.
+adv_require_verified() {
+  [ "$(jq -r .mode <<<"$5")" = committee ] && [ "$4" = 0 ] || return 0
+  log_event "$(jq -cn --argjson now "$(now_ms)" --arg a "$2" --arg id "$1" --arg by "$3" \
+    '{ts: $now, type: "advise", action: $a, id: $id, by: $by, result: "refused", reason: "--from is not the session this command runs in"}')"
+  unlock_board
+  echo "board advise: refused — the owner lets the committee decide, so a recommendation or an agree must run inside session $3 itself (as board resolve --from); this command does not" >&2
+  exit 4
+}
+
 adv_recommend() {
   local id="${1:-}"
   [ $# -gt 0 ] && shift
@@ -2995,21 +3047,26 @@ adv_recommend() {
   local f; f="$(adv_path "$id")"
   no_ctl "--option" "$option" 200
   cap "recommendation" "$text" 2000
+  self_check "$from" recommend "$id" advise
+  local vfy; vfy="$(adv_verified "$from")"
+  from="$(adv_canon "$from")"
   local parts=("$from") p q seen tos=()
   IFS=, read -ra tos <<<"$to"
   for p in "${tos[@]}"; do
     p="${p//[[:space:]]/}"
     [ -n "$p" ] || continue
     valid_code "$p" || die "advise: invalid session code: $p"
+    p="$(adv_canon "$p")"
     seen=0
     for q in "${parts[@]}"; do [ "$q" = "$p" ] && seen=1; done
     [ "$seen" = 1 ] || parts+=("$p")
   done
-  self_check "$from" recommend "$id" advise
   text="$(defang "$text")"
 
   lock_board
   adv_gate "$id"
+  local stamp; stamp="$(adv_binding "$vfy")"
+  adv_require_verified "$id" recommend "$from" "$vfy" "$stamp"
   local df label="" asker
   df="$(dec_path "$id")"
   if [ -n "$option" ]; then
@@ -3023,6 +3080,7 @@ adv_recommend() {
   # the asking session is always asked for its view
   asker="$(jq -r '.from // empty' "$df")"
   if [ -n "$asker" ] && valid_code "$asker"; then
+    asker="$(adv_canon "$asker")"
     seen=0
     for q in "${parts[@]}"; do [ "$q" = "$asker" ] && seen=1; done
     [ "$seen" = 1 ] || parts+=("$asker")
@@ -3038,10 +3096,10 @@ adv_recommend() {
   parts_json="$(printf '%s\n' "${parts[@]}" | jq -R . | jq -sc .)"
   mkdir -p "$BOARD_HOME/advice"
   new="$(jq -n --arg id "$id" --arg from "$from" --arg text "$text" --arg label "$label" \
-    --argjson parts "$parts_json" --argjson away "$ADV_AWAY" --argjson now "$now" --argjson red "$red" '
+    --argjson parts "$parts_json" --argjson away "$ADV_AWAY" --argjson now "$now" --argjson red "$red" --argjson b "$stamp" '
     { decision_id: $id, kind: "advice", from: $from, participants: $parts,
       option: (if $label == "" then null else $label end), recommendation: $text, red_line: ($red == 1),
-      stances: [ { by: $from, stance: "recommend", note: null, at: $now } ],
+      stances: [ { by: $from, stance: "recommend", note: null, at: $now, binding: $b } ],
       status: "open", frozen_reason: null, frozen_at: null,
       away: { since: $away.since, by: $away.by }, created_at: $now, updated_at: $now }')" \
     || { unlock_board; die "cannot build the advice on $id"; }
@@ -3080,6 +3138,8 @@ adv_stance() {
   local f; f="$(adv_path "$id")"
   cap "--note" "$note" 1000
   self_check "$from" "$stance" "$id" advise
+  local vfy; vfy="$(adv_verified "$from")"
+  from="$(adv_canon "$from")"
   note="$(defang "$note")"
 
   lock_board
@@ -3089,19 +3149,28 @@ adv_stance() {
     die "advise: $id has no recommendation yet; make one with: board advise $id --from $from \"<recommendation>\""
   fi
   adv_open "$id" "$f"
-  if [ "$(jq -r '.from' "$f")" = "$from" ]; then
-    unlock_board
-    die "advise: $from made this recommendation; it already counts as theirs"
-  fi
-  local prev now new
+  local stamp; stamp="$(adv_binding "$vfy")"
+  [ "$stance" = agree ] && adv_require_verified "$id" agree "$from" "$vfy" "$stamp"
+  # the stance this session gave last, and the stamp it carried (an alias counts as its code)
+  local prev prevb now new
   prev="$(jq -r --arg f "$from" '[.stances[]? | select(.by == $f)] | last | .stance // empty' "$f")"
-  if [ "$prev" = "$stance" ] && [ -z "$note" ] && [ "$red" = 0 ]; then
+  prevb="$(jq -c --arg f "$from" '[.stances[]? | select(.by == $f)] | last | .binding // null' "$f")"
+  if [ "$(adv_canon "$(jq -r '.from' "$f")")" = "$from" ]; then
+    # The recommender's recommendation counts as its own agreement. Given while it was advice only
+    # (or unverified), `agree` reaffirms it under the setting in force now, so it can count.
+    if [ "$stance" != agree ] || [ "$prevb" = "$(jq -c . <<<"$stamp")" ]; then
+      unlock_board
+      die "advise: $from made this recommendation; it already counts as theirs"
+    fi
+    stance=recommend
+    note="${note:-reaffirmed}"
+  elif [ "$prev" = "$stance" ] && [ -z "$note" ] && [ "$red" = 0 ] && [ "$prevb" = "$(jq -c . <<<"$stamp")" ]; then
     unlock_board
     die "advise: $from already said $stance on $id"
   fi
   now="$(now_ms)"
-  new="$(jq --arg by "$from" --arg s "$stance" --arg note "$note" --argjson now "$now" --argjson red "$red" '
-    .stances += [ { by: $by, stance: $s, note: (if $note == "" then null else $note end), at: $now } ]
+  new="$(jq --arg by "$from" --arg s "$stance" --arg note "$note" --argjson now "$now" --argjson red "$red" --argjson b "$stamp" '
+    .stances += [ { by: $by, stance: $s, note: (if $note == "" then null else $note end), at: $now, binding: $b } ]
     | (if (.participants | index($by)) == null then .participants += [$by] else . end)
     | (if $red == 1 then .red_line = true else . end)
     | .updated_at = $now' "$f")" || { unlock_board; die "cannot update the advice on $id"; }
@@ -3112,7 +3181,7 @@ adv_stance() {
   # lock (lib/committee.py: the owner's setting, red lines, at least 2 sessions with the asker, no
   # objection). `board answer` takes this lock too: whoever comes first wins.
   local outcome="advice"
-  if [ "$stance" = agree ]; then
+  if [ "$stance" = agree ] || [ "$stance" = recommend ]; then
     outcome="$(python3 "$REPO/lib/committee.py" _decide "$id" 2>/dev/null)" || outcome="error"
   fi
   unlock_board
@@ -3127,6 +3196,9 @@ adv_stance() {
         "(agreed: $(jq -r '.committee.participants | join(", ")' "$(dec_path "$id")"))"
       echo "  BOARD relays it to $(jq -r '.from' "$(dec_path "$id")"); the owner is told after." >&2 ;;
     owner_final|red_line_owner) echo "  advice only: the owner keeps the final say on this ask (board away decisions status)." >&2 ;;
+    not_binding) echo "  not decided: some agreement was given while it was advice only (or unverified); those sessions agree again to count." >&2 ;;
+    red_line_self) echo "  not decided: a red line needs a recommendation from a session other than the asker." >&2 ;;
+    unknown_session) echo "  not decided: every session asked must be a fleet.yaml session." >&2 ;;
     held) echo "  not decided: the recommendation was held by the secret guard; it waits for the owner." >&2 ;;
     error) echo "  advice recorded; the committee decision check failed, so the ask waits for the owner." >&2 ;;
     *) if [ "$(python3 "$REPO/lib/committee.py" settings status --json 2>/dev/null | jq -r .mode 2>/dev/null)" = committee ]; then

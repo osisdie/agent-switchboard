@@ -86,7 +86,8 @@ PROFILE_JS = """() => {
 
 
 def main():
-    tmp = tempfile.mkdtemp(prefix="switchboard-committee-page.")
+    # under /tmp: the committee's test mode (BOARD_COMMITTEE_TEST) applies only to a board home there
+    tmp = tempfile.mkdtemp(prefix="switchboard-committee-page.", dir="/tmp")
     srv = None
     try:
         home, cfg, sess = (os.path.join(tmp, x) for x in ("home", "config", "sessions"))
@@ -96,7 +97,8 @@ def main():
         with open(os.path.join(cfg, "fleet.yaml"), "w", encoding="utf-8") as fh:
             fh.write("approvers: [local]\nserve:\n  enabled: true\n  port: %d\nsessions:\n"
                      "  - {code: API, cwd: /a}\n  - {code: WEB, cwd: /w}\n  - {code: QA, cwd: /q}\n  - {code: OPS, cwd: /o}\n" % port)
-        env = dict(os.environ, BOARD_HOME=home, BOARD_CONFIG_DIR=cfg, CLAUDE_SESSIONS_DIR=sess, ALERT_DESKTOP="0")
+        env = dict(os.environ, BOARD_HOME=home, BOARD_CONFIG_DIR=cfg, CLAUDE_SESSIONS_DIR=sess, ALERT_DESKTOP="0",
+                   BOARD_COMMITTEE_TEST="1")
         for k in ("TMUX", "TMUX_PANE", "SLACK_WEBHOOK_URL", "BOARD_PUBLIC_URL"):
             env.pop(k, None)
 
@@ -105,6 +107,21 @@ def main():
             if r.returncode != 0:
                 raise RuntimeError("board %s: %s" % (" ".join(args[:2]), r.stderr.strip()))
             return r.stdout.strip()
+
+        with open("/proc/self/stat", encoding="utf-8") as fh:
+            st = fh.read()
+        pst = st[st.rindex(")") + 2:].split()[19]
+        reg = os.path.join(sess, "%d.json" % os.getpid())
+
+        def as_session(code, *args):
+            """board ARGS run inside session CODE: this process gets a session registry entry (as
+            Claude Code writes one), so `board advise` verifies --from CODE."""
+            with open(reg, "w", encoding="utf-8") as fh:
+                json.dump({"pid": os.getpid(), "sessionId": "s-" + code, "name": code, "procStart": pst}, fh)
+            try:
+                return board(*args)
+            finally:
+                os.unlink(reg)
 
         def setting():
             try:
@@ -117,16 +134,17 @@ def main():
         with open(os.path.join(home, "snapshot.json"), "w", encoding="utf-8") as fh:
             json.dump({"generated_at": now, "sessions": [], "decisions": [], "tasks": []}, fh)
         board("away", "on", "--by", "OPS", "--said", "back tomorrow")
+        board("away", "decisions", "committee", "--red-lines", "committee", "--by", "local")   # the owner opts in
         d1 = board("ask", "--from", "API", "Keep the old endpoint as a redirect?", "--option", "Keep redirect", "--option", "Remove it")
-        board("advise", d1, "--from", "WEB", "--to", "QA", "--option", "1", "Keep it <img src=x onerror=\"window.__pwned=1\">")
-        board("advise", d1, "agree", "--from", "QA")
-        board("advise", d1, "agree", "--from", "API")
+        as_session("WEB", "advise", d1, "--from", "WEB", "--to", "QA", "--option", "1", "Keep it <img src=x onerror=\"window.__pwned=1\">")
+        as_session("QA", "advise", d1, "agree", "--from", "QA")
+        as_session("API", "advise", d1, "agree", "--from", "API")
         tid = board("task", "new", "--owner", "OPS", "Rotate certificates", "--stage", "production")
         d2 = board("ask", "--from", "OPS", "--task", tid, "--gate", "production", "Release to production?")
-        board("advise", d2, "--from", "API", "--option", "approve", "The canary is green.")
-        board("advise", d2, "agree", "--from", "OPS")
+        as_session("API", "advise", d2, "--from", "API", "--option", "approve", "The canary is green.")
+        as_session("OPS", "advise", d2, "agree", "--from", "OPS")
         d3 = board("ask", "--from", "QA", "Which image tag?", "--option", "dated", "--option", "latest")
-        board("advise", d3, "--from", "WEB", "--option", "dated", "Use the dated tag.")
+        as_session("WEB", "advise", d3, "--from", "WEB", "--option", "dated", "Use the dated tag.")
         for d in (d1, d2):
             with open(os.path.join(home, "decisions", d + ".json"), encoding="utf-8") as fh:
                 rec = json.load(fh)
