@@ -5,8 +5,8 @@ in artifact/board.html:
   - the section nav: sticky, a jump lands below it, the current section is marked, no side scroll,
     and at phone width it folds into a "Sections" button;
   - Messages: the search (text, session, sender), the session select and the filter chips list
-    every loaded thread that matches; bodies are clamped to 4 lines with Show more; a thread
-    collapses to one line, Collapse all / Expand all, and the choice survives a reload
+    every loaded thread that matches; message cards are collapsed (bodies clamped to 3 lines) with
+    Expand; a thread folds to one line, Collapse all / Expand all, and the choice survives a reload
     (localStorage; storage blocked still works); the search also drives History, which pages
     with Load more;
   - the composer: the @ list shows each session's `about` and @triage; @all asks first ("this
@@ -209,7 +209,7 @@ def main():
             check("  and off again", len(pg.evaluate(VIEW_JS)["shown"]) == 5)
             c = pg.evaluate("""() => { const p = document.querySelector('#thread-m-91-old p.body'), lh = parseFloat(getComputedStyle(p).lineHeight) || 24;
               return { clamp: getComputedStyle(p).webkitLineClamp, lines: Math.round(p.getBoundingClientRect().height / lh) }; }""")
-            check("a long body is clamped to 4 lines", c["clamp"] == "4" and c["lines"] <= 4, c)
+            check("a long body is clamped to 3 lines", c["clamp"] == "3" and c["lines"] <= 3, c)
             pg.click("#thread-m-91-old .thread-fold")
             r = pg.evaluate("""() => { const t = document.getElementById('thread-m-91-old'), b = t.querySelector('.thread-fold');
               return { folded: t.classList.contains('folded'), body: t.querySelector('p.body').getClientRects().length, preview: t.querySelector('.preview').getClientRects().length,

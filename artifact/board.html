@@ -624,6 +624,28 @@ dialog.notif { width: min(720px, calc(100vw - 24px)); }
 .thread.folded > :not(.thread-top) { display: none; }
 .thread.folded .preview { display: block; }
 .thread .routed { font-size: 12px; color: var(--cord); }
+/* a message card: collapsed to one fixed height (the top line, 3 lines of the body, one line of
+   indicators) until Expand opens it in full; the top line never clips */
+.thread { --msg-lines: 3; }
+.thread > .body { line-height: 1.5; }
+.thread:not(.open):not(.folded) > .body { display: -webkit-box; -webkit-line-clamp: var(--msg-lines); -webkit-box-orient: vertical; overflow: hidden; height: calc(var(--msg-lines) * 1.5em); }
+.thread-top { min-height: 26px; }
+.thread-top > * { white-space: nowrap; }
+.thread-top .brk { display: none; }
+@media (max-width: 600px) { .thread-top .brk { display: block; flex-basis: 100%; height: 0; } .thread.folded .thread-top .brk { display: none; } }
+.thread-foot { display: flex; flex-wrap: nowrap; align-items: center; gap: 8px; min-width: 0; height: 32px; }
+.thread-foot .btn { flex: 0 0 auto; }
+.thread-meta { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); }
+.thread-meta .ind + .ind::before, .thread-meta .ind + .relay::before { content: " · "; }
+.thread.open .thread-foot { height: auto; min-height: 32px; flex-wrap: wrap; }
+.thread.open .thread-meta { white-space: normal; overflow: visible; }
+.thread.open .thread-meta .ind { display: none; }
+.thread.open .thread-meta .relay::before { content: none; }
+.thread:not(.open) > .thread-more { display: none; }
+.thread-more { display: grid; gap: 8px; min-width: 0; }
+.thread-more > .btn { justify-self: start; }
+.thread-exp[hidden] { display: none; }
+@media (max-width: 860px) { .thread-foot { height: 44px; } .thread-foot .btn { min-height: 44px; } }
 /* the composer: who it goes to, and the confirm step before @all */
 .msg-to { margin: 0; font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
 .msg-all-confirm { display: grid; gap: 8px; padding: 10px 12px; border-radius: 6px; background: var(--lamp-soft); color: var(--lamp-ink); font-size: 14px; }
@@ -1725,7 +1747,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     replies: new Map(),
     messagesOlder: 0,            // board-serve: threads older than the state's window (state.messages_older)
     railOpen: new Set(),         // tasks whose whole stage rail is shown on a phone
-    msgOpen: new Set(),          // expanded long texts (card contexts "ctx:<id>", proposals "prop:<id>"), long bodies ("<id>" / "<id>:<rid>") and earlier replies ("<id>#r")
+    msgOpen: new Set(),          // expanded long texts (card contexts "ctx:<id>", proposals "prop:<id>"), open message cards ("<id>"), long replies ("<id>:<rid>") and earlier replies ("<id>#r")
+    msgShut: new Set(),          // message cards that start open (held) and the viewer collapsed
     msgShow: new Set(),          // threads a ?m= link asked for: shown with the recent ones
     msgVisible: new Set(),       // threads on screen (recent and History): the Artifact page follows their replies
     hist: { open: false, to: '', q: '', items: [], replies: new Map(), next: null, loading: false, err: null, count: 20, seq: 0, timer: 0 },
@@ -3905,22 +3928,55 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       ? h('span', { class: 'relay routed' }, tr('Routed by BOARD to {who}', { who: routedTo.join(', ') }), m.routed_at ? ' · ' : '', m.routed_at ? timeEl(m.routed_at) : null)
       : triage && !held && str(m.status) === 'new' ? h('span', { class: 'relay', text: tr('Waiting for BOARD to route it to the right sessions.') })
       : relayedTo.length || m.relayed_at ? h('span', { class: 'relay' }, relayedTo.length ? tr('Relayed to {who}', { who: relayedTo.join(', ') }) : tr('Relayed'), m.relayed_at ? ' · ' : '', m.relayed_at ? timeEl(m.relayed_at) : null) : null;
+    const nReplies = replies.length ? tr(replies.length === 1 ? '1 reply' : '{n} replies', { n: replies.length }) : '';
+    const atts = attChips(m), nAtts = atts ? atts.children.length : 0;
+    const notes = [guardNote(m), declinedNote(m), deskNote(m), awayNote(m)].flat().filter(Boolean);
+    const open = cardOpen(m), bodyId = 'thread-body-' + id;
+    li.classList.toggle('open', open);
+    // Expand / Collapse: shown when the collapsed card hides something (details below, or a body or
+    // indicator line cut short: syncCards measures that once the card is laid out).
+    li.dataset.details = nAtts || notes.length || replies.length ? '1' : '';
+    const exp = h('button', { type: 'button', class: 'btn linkish thread-exp', 'aria-controls': bodyId, 'data-focus': 'exp' });
+    const syncExp = (measured) => {
+      const o = li.classList.contains('open');
+      exp.textContent = tr(o ? 'Collapse' : 'Expand');
+      exp.setAttribute('aria-expanded', o ? 'true' : 'false');
+      if (!measured) exp.hidden = !o && !li.dataset.details;
+    };
+    exp.addEventListener('click', () => {
+      const o = !li.classList.contains('open');
+      if (o) { S.msgOpen.add(id); S.msgShut.delete(id); } else { S.msgOpen.delete(id); S.msgShut.add(id); }
+      li.classList.toggle('open', o);
+      syncExp(true);
+      if (!o) { syncCards(li); if (exp.hidden) li.focus(); }   // measured: nothing left to open, so the focus stays on the card
+    });
+    syncExp();
+    let markBtn = null;
+    if (unread) {
+      markBtn = h('button', { type: 'button', class: 'btn linkish', text: tr('Mark read') });
+      markBtn.addEventListener('click', () => markRead([m]));
+    }
     li.append(...[
       h('div', { class: 'thread-top' },
         fold,
         h('span', { class: 'to', text: '→ @' + (str(m.to) || '?') }),
         h('span', { class: 'status ' + str(m.status), text: str(m.status) === 'desk' ? tr('local model') : str(m.status) || 'new' }),
         unread ? h('span', { class: 'new-chip', text: tr('New reply') }) : null,
-        h('span', { text: tr('from {who}', { who: whoLabel(m.by) }) }),
-        h('span', { class: 'preview', text: str(m.body).replace(/\s+/g, ' ').slice(0, 160) + (replies.length ? ' · ' + tr(replies.length === 1 ? '1 reply' : '{n} replies', { n: replies.length }) : '') }),
+        h('span', { class: 'brk', 'aria-hidden': 'true' }),
+        h('span', { class: 'from', text: tr('from {who}', { who: whoLabel(m.by) }) }),
+        h('span', { class: 'preview', text: str(m.body).replace(/\s+/g, ' ').slice(0, 160) + (nReplies ? ' · ' + nReplies : '') }),
         timeEl(m.created_at)),
-      clampText(id, str(m.body), 'body'),
-      attChips(m),
-      guardNote(m),
-      declinedNote(m),
-      deskNote(m),
-      awayNote(m),
-      relayLine].flat().filter(Boolean));
+      h('p', { class: 'body', id: bodyId, text: str(m.body) }),
+      // one line under the body: what the collapsed card leaves out (attachments, replies), who it
+      // was relayed to, Mark read, and Expand / Collapse (the control stays put when it opens)
+      h('div', { class: 'thread-foot' },
+        h('span', { class: 'thread-meta' },
+          nAtts ? h('span', { class: 'ind', text: '📎 ' + nAtts, title: tr('Attached images') }) : null,
+          nReplies ? h('span', { class: 'ind', text: '💬 ' + nReplies }) : null,
+          relayLine),
+        markBtn, exp)].filter(Boolean));
+    const more = h('div', { class: 'thread-more' }, ...[atts].concat(notes).filter(Boolean));
+    li.append(more);
     syncFold();
     if (replies.length) {
       // Only the latest replies; the earlier ones open in place.
@@ -3938,17 +3994,36 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
           items.forEach((x, i) => { x.hidden = !open && i < n; });
           b.setAttribute('aria-expanded', open ? 'true' : 'false'); b.textContent = open ? tr('Hide earlier replies') : tr('Show {n} earlier replies', { n });
         });
-        li.append(b);
+        more.append(b);
       }
-      li.append(h('ol', { class: 'replies', 'aria-label': tr('Replies') }, items));
+      more.append(h('ol', { class: 'replies', 'aria-label': tr('Replies') }, items));
     }
-    if (unread) {
-      const b = h('button', { type: 'button', class: 'btn linkish', text: tr('Mark read') });
-      b.addEventListener('click', () => markRead([m]));
-      li.append(b);
-    }
+    if (!more.children.length) more.remove();
     return li;
   }
+  // A card starts collapsed; a held message starts open (an approver's Release is in it). The
+  // viewer's choice is kept per message id, so a poll's re-render keeps the card they read open.
+  function cardOpen(m) {
+    const id = str(m.id);
+    return S.msgOpen.has(id) || (str(m.status) === 'held' && !S.msgShut.has(id));
+  }
+  // Once laid out: does the collapsed card cut its body or its indicator line short? An open card
+  // always keeps its Collapse. Sizes change with the width and the web fonts, so it runs again then.
+  function cardCuts(li) {
+    if (li.classList.contains('open') || li.dataset.details) return true;
+    if (!li.offsetWidth || li.classList.contains('folded')) return null;   // not laid out: keep what it has
+    const body = li.querySelector(':scope > .body'), meta = li.querySelector(':scope > .thread-foot > .thread-meta');
+    return !!((body && body.scrollHeight > body.clientHeight + 1) || (meta && meta.scrollWidth > meta.clientWidth + 1));
+  }
+  function syncCards(only) {
+    const lis = only ? [only] : [...document.querySelectorAll('#threads > li.thread, #msg-hist-list > li.thread')];
+    const cuts = lis.map(cardCuts);   // measure every card first, then write: one layout
+    lis.forEach((li, i) => { const b = li.querySelector(':scope > .thread-foot > .thread-exp'); if (b && cuts[i] !== null) b.hidden = !cuts[i]; });
+  }
+  // A card that was cut stays cut at the same size, so a width change is what to watch: the lists.
+  const cardsRO = typeof ResizeObserver === 'function' ? new ResizeObserver(() => syncCards()) : null;
+  if (cardsRO) for (const sel of ['#threads', '#msg-hist-list']) { const el = $(sel); if (el) cardsRO.observe(el); }
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => syncCards(), () => {});
   /* --------------------------------------------------------------- reminders */
   // The owner's own alarms (lib/reminders.py; GET/POST /api/reminders). Only the owner (fleet.yaml
   // owners, else approvers) gets anything: for everyone else the route answers 403 and the panel,
@@ -4686,8 +4761,9 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
 
   /* ------------------------------------------- messages: recent + history */
   // The section shows the 5 threads with the latest activity (a new reply brings a thread back up),
-  // and pinned on top every held message and every thread with a reply this viewer has not marked
-  // read. The rest is in History: 20 at a time, by session and by text. board-serve pages it
+  // and also every held message and every thread with a reply this viewer has not marked read
+  // (marked "pinned"), all newest activity first. The rest is in History: 20 at a time, by
+  // session and by text. board-serve pages it
   // (GET /api/messages, the state carries the latest 20 and a count of the older ones); the demo
   // and the Artifact page page what they have. "Read" is this viewer's own, in this browser.
   const MSG_RECENT = 5, MSG_PAGE = 20, MSG_CLAMP_CHARS = 280, MSG_CLAMP_LINES = 4, MSG_REPLIES_SHOWN = 3;
@@ -4727,7 +4803,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     const all = S.messages.slice().sort((a, b) => activityOf(b) - activityOf(a) || (str(b.id) > str(a.id) ? 1 : str(b.id) < str(a.id) ? -1 : 0));
     const top = new Set(all.slice(0, MSG_RECENT).map((m) => str(m.id)));
     const pinned = (m) => str(m.status) === 'held' || isUnread(m) || S.msgShow.has(str(m.id));
-    const shown = all.filter(pinned).concat(all.filter((m) => top.has(str(m.id)) && !pinned(m)));
+    const shown = all.filter((m) => top.has(str(m.id)) || pinned(m));   // newest first, pinned ones in their place
     const total = all.length + (isLocal() ? S.messagesOlder : 0);
     return { all, shown, ids: new Set(shown.map((m) => str(m.id))), older: Math.max(0, total - shown.length), total,
       boundary: all.length >= MSG_RECENT ? all[MSG_RECENT - 1] : null, unread: all.filter(isUnread) };
@@ -4815,6 +4891,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       un.append(h('span', { text: tr('{n} threads have new replies.', { n: v.unread.length }) }), all);
     }
     reconcile($('#threads'), list, (m) => m.id, (m) => JSON.stringify(m) + JSON.stringify(threadReplies(str(m.id))) + (S.me || '') + isUnread(m) + isFolded(m), buildThread);
+    syncCards();
     const was = [...S.msgVisible].join();
     S.msgVisible = new Set(list.map((m) => str(m.id)));
     // History never repeats a thread listed above (a search lists more than the latest 5)
@@ -4881,6 +4958,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       : !items.length ? tr(H.to || H.q.trim() ? 'No older threads match.' : 'No older threads.')
       : tr('Showing {n} older threads.', { n: items.length });
     reconcile($('#msg-hist-list'), items, (m) => m.id, (m) => JSON.stringify(m) + JSON.stringify(threadReplies(str(m.id))) + (S.me || '') + isFolded(m), buildThread);
+    syncCards();
     for (const m of items) S.msgVisible.add(str(m.id));
     const mb = $('#msg-hist-more');
     mb.hidden = !more; mb.disabled = H.loading;
@@ -6300,7 +6378,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     // Wait for that feed (and, for a decision, for the viewer's rights: the answer controls).
     if (!S.demo && !(S.mode === 'live' && S.got[k.feed] && (k.feed !== 'decisions' || S.userReady))) return;
     linked = null;
-    if (k.feed === 'messages' && S.messages.some((m) => str(m.id) === id)) { S.msgShow.add(id); renderMessages(); }
+    if (k.feed === 'messages' && S.messages.some((m) => str(m.id) === id)) { S.msgShow.add(id); S.msgOpen.add(id); renderMessages(); }
     try {
       const u = new URL(location.href);
       for (const x of LINKS) u.searchParams.delete(x.param);
@@ -8090,6 +8168,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "Load more": "載入更多",
       "Show more": "顯示更多",
       "Show less": "收起",
+      "Expand": "展開",
+      "Collapse": "收合",
       "Show {n} earlier replies": "顯示較早的 {n} 則回覆",
       "Hide earlier replies": "隱藏較早的回覆",
       "New reply": "新回覆",
