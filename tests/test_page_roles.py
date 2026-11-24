@@ -106,7 +106,7 @@ VIEW_JS = """() => {
   const perm = document.getElementById('dec-d-1-perm');
   const pbtn = perm ? [...perm.querySelectorAll('.opts button')].filter(vis).map((b) => b.textContent.trim()) : null;
   const held = document.getElementById('thread-m-1-h');
-  const hbtn = held ? [...held.querySelectorAll('button:not(.thread-fold)')].filter(vis).map((b) => b.textContent.trim()) : null;
+  const hbtn = held ? [...held.querySelectorAll('button:not(.thread-fold):not(.thread-exp)')].filter(vis).map((b) => b.textContent.trim()) : null;
   return { away: !document.getElementById('away-form').hidden, perm: !!perm, permButtons: pbtn,
            permNote: perm ? !!perm.querySelector('.note.owneronly') : null, held: !!held, heldButtons: hbtn };
 }"""

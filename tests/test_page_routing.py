@@ -5,8 +5,8 @@ in artifact/board.html:
   - the section nav: sticky, a jump lands below it, the current section is marked, no side scroll,
     and at phone width it folds into a "Sections" button;
   - Messages: the search (text, session, sender), the session select and the filter chips list
-    every loaded thread that matches; bodies are clamped to 4 lines with Show more; a thread
-    collapses to one line, Collapse all / Expand all, and the choice survives a reload
+    every loaded thread that matches; message cards are collapsed (bodies clamped to 3 lines) with
+    Expand; a thread folds to one line, Fold all / Unfold all, and the choice survives a reload
     (localStorage; storage blocked still works); the search also drives History, which pages
     with Load more;
   - the composer: the @ list shows each session's `about` and @triage; @all asks first ("this
@@ -209,20 +209,20 @@ def main():
             check("  and off again", len(pg.evaluate(VIEW_JS)["shown"]) == 5)
             c = pg.evaluate("""() => { const p = document.querySelector('#thread-m-91-old p.body'), lh = parseFloat(getComputedStyle(p).lineHeight) || 24;
               return { clamp: getComputedStyle(p).webkitLineClamp, lines: Math.round(p.getBoundingClientRect().height / lh) }; }""")
-            check("a long body is clamped to 4 lines", c["clamp"] == "4" and c["lines"] <= 4, c)
+            check("a long body is clamped to 3 lines", c["clamp"] == "3" and c["lines"] <= 3, c)
             pg.click("#thread-m-91-old .thread-fold")
             r = pg.evaluate("""() => { const t = document.getElementById('thread-m-91-old'), b = t.querySelector('.thread-fold');
               return { folded: t.classList.contains('folded'), body: t.querySelector('p.body').getClientRects().length, preview: t.querySelector('.preview').getClientRects().length,
                 exp: b.getAttribute('aria-expanded'), label: b.getAttribute('aria-label'), h: t.getBoundingClientRect().height }; }""")
-            check("a thread collapses to its top line and a preview", r["folded"] and r["body"] == 0 and r["preview"] > 0 and r["exp"] == "false" and r["label"] == "Expand thread" and r["h"] < 80, r)
+            check("a thread collapses to its top line and a preview", r["folded"] and r["body"] == 0 and r["preview"] > 0 and r["exp"] == "false" and r["label"] == "Unfold" and r["h"] < 80, r)
             pg.reload()
             pg.wait_for_timeout(500)
             check("  kept after a reload (this browser)", pg.evaluate(VIEW_JS)["folded"] == ["m-91-old"])
             pg.click("#msg-fold-all")
             v = pg.evaluate(VIEW_JS)
-            check("Collapse all", sorted(v["folded"]) == sorted(v["shown"]) and len(v["folded"]) == 5, v)
+            check("Fold all", sorted(v["folded"]) == sorted(v["shown"]) and len(v["folded"]) == 5, v)
             pg.click("#msg-unfold-all")
-            check("Expand all", pg.evaluate(VIEW_JS)["folded"] == [])
+            check("Unfold all", pg.evaluate(VIEW_JS)["folded"] == [])
             pg.click("#msg-hist-btn")
             pg.fill("#msg-q", "backfill")
             pg.wait_for_timeout(200)
@@ -237,7 +237,7 @@ def main():
             pg.goto(PAGE + "?demo=1")
             pg.wait_for_timeout(500)
             pg.click("#msg-fold-all")
-            check("storage blocked: Collapse all still works for this page view", len(pg.evaluate(VIEW_JS)["folded"]) == 5)
+            check("storage blocked: Fold all still works for this page view", len(pg.evaluate(VIEW_JS)["folded"]) == 5)
             pg.close()
 
             print("demo: the composer:")
@@ -289,8 +289,8 @@ def main():
             r = pg.evaluate("""() => ({ q: document.getElementById('msg-q').placeholder, fold: document.getElementById('msg-fold-all').textContent,
               chip: document.querySelector('#msg-chips .fchip').textContent, tf: document.querySelector('#threads .thread-fold').getAttribute('aria-label'),
               help: document.querySelector('#composer .help').textContent })""")
-            check("the new strings are in 繁體中文", r["q"].startswith("搜尋訊息") and r["fold"] == "全部收合" and r["chip"].startswith("未讀")
-                  and r["tf"] == "收合對話" and "讓 BOARD 幫你轉給對的 session" in r["help"], r)
+            check("the new strings are in 繁體中文", r["q"].startswith("搜尋訊息") and r["fold"] == "全部摺疊成一行" and r["chip"].startswith("未讀")
+                  and r["tf"] == "摺疊成一行" and "讓 BOARD 幫你轉給對的 session" in r["help"], r)
             pg.fill("#msg-input", "@all hi")
             pg.click("#msg-send")
             check("  the @all confirm too", "這會打斷全部 7 個線上 session" in pg.evaluate("() => document.getElementById('msg-all-q').textContent"))

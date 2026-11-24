@@ -2,12 +2,16 @@
 """tests/test_page_messages.py — optional headless check of the Messages section in
 artifact/board.html: recent threads and history.
 
-  - By default only the 5 threads with the latest activity show (a new reply brings a thread up);
-    held messages and threads with replies this viewer has not marked read are pinned on top.
+  - By default only the 5 threads with the latest activity show (a new reply brings a thread up),
+    newest first; held messages and threads with replies this viewer has not marked read show too
+    (pinned), in their place.
   - "History (N older)" opens the older threads: 20 at a time with Load more, a session filter
     and a text search. board-serve pages them (GET /api/messages); the demo pages what it has.
-  - Long bodies are clamped with Show more; a thread shows its latest 3 replies, the earlier ones
-    open in place. Mark read (and Mark all read) is kept in this browser.
+  - Every card is collapsed to one fixed height (the top line, 3 lines of the body, one line of
+    indicators); Expand (aria-expanded, only when something is cut) opens one card in full, a held
+    one starts open, and a re-render (a new reply through board-serve) keeps it open. An open thread
+    shows its latest 3 replies, the earlier ones open in place. Mark read (and Mark all read) is
+    kept in this browser.
   - The composer stays at the top of the section; phone width has no side scroll; zh-TW strings;
     a ?m= link to an older thread shows it.
 
@@ -62,6 +66,10 @@ VIEW_JS = """() => { const ids = (sel) => [...document.querySelectorAll(sel + ' 
     status: document.getElementById('msg-hist-status').textContent, more: !more.hidden && more.offsetWidth > 0,
     unreadBar: document.getElementById('msg-unread').hidden ? '' : document.getElementById('msg-unread').textContent,
     nav: document.getElementById('nav-msg').textContent }; }"""
+# each shown card: id, height, open, the Expand / Collapse text when it shows (else None)
+CARDS_JS = """() => [...document.querySelectorAll('#threads > li')].map((l) => { const b = l.querySelector('.thread-foot > .thread-exp');
+  return { id: l.id.replace('thread-', ''), h: Math.round(l.getBoundingClientRect().height), open: l.classList.contains('open'),
+    btn: b && !b.hidden ? b.textContent : null, exp: b && b.getAttribute('aria-expanded') }; })"""
 FAKE_TMUX = "#!/usr/bin/env bash\nexit 0\n"
 # The claude.ai Artifact viewer: 30 threads in the db (one a minute, the newest last), c15 (10th newest) with two
 # late replies. Records each query (path, orderBy, limit).
@@ -139,13 +147,41 @@ def main():
             check("  a fresh viewer has nothing unread, nothing pinned", v["pinned"] == [] and v["unreadBar"] == "", v)
             check("  History (9 older), closed; the nav counts every thread", v["histOn"] and v["histText"] == "History (9 older)" and v["expanded"] == "false"
                   and v["hist"] == [] and v["nav"] == "14", v)
-            c = pg.evaluate("""() => { const t = document.getElementById('thread-m-91-old'), p = t.querySelector('p.body'), b = t.querySelector('button.more');
-              return { clamp: p.classList.contains('clamp'), h: p.getBoundingClientRect().height, full: p.scrollHeight, btn: b && b.textContent, exp: b && b.getAttribute('aria-expanded') }; }""")
-            check("a long body is clamped, with Show more", c["clamp"] and c["h"] < c["full"] and c["btn"] == "Show more" and c["exp"] == "false", c)
-            pg.click("#thread-m-91-old button.more")
-            c2 = pg.evaluate("""() => { const t = document.getElementById('thread-m-91-old'), p = t.querySelector('p.body'), b = t.querySelector('button.more');
-              return { clamp: p.classList.contains('clamp'), h: p.getBoundingClientRect().height, full: p.scrollHeight, btn: b.textContent, exp: b.getAttribute('aria-expanded'), focus: document.activeElement === b }; }""")
-            check("  Show more opens it in place (focus stays)", not c2["clamp"] and c2["h"] >= c2["full"] - 1 and c2["btn"] == "Show less" and c2["exp"] == "true" and c2["focus"], c2)
+            BODY_JS = """(id) => { const t = document.getElementById('thread-' + id), p = t.querySelector('p.body'), b = t.querySelector('.thread-foot > .thread-exp');
+              return { open: t.classList.contains('open'), lines: getComputedStyle(p).webkitLineClamp, h: p.getBoundingClientRect().height, full: p.scrollHeight,
+                btn: b && !b.hidden ? b.textContent : null, exp: b && b.getAttribute('aria-expanded'), ctl: !!b && b.getAttribute('aria-controls') === p.id,
+                focus: document.activeElement === b, top: t.querySelector('.thread-top').scrollHeight <= t.querySelector('.thread-top').clientHeight + 1 }; }"""
+            c = pg.evaluate(BODY_JS, "m-91-old")
+            check("a long body: the card is collapsed to 3 lines, with Expand", not c["open"] and c["lines"] == "3" and c["h"] < c["full"]
+                  and c["btn"] == "Expand" and c["exp"] == "false" and c["ctl"] and c["top"], c)
+            cards = pg.evaluate(CARDS_JS)
+            check("  every collapsed card has the same height", len({x["h"] for x in cards}) == 1 and not any(x["open"] for x in cards), cards)
+            by = {x["id"]: x for x in cards}
+            check("  Expand only where something is cut: replies, a long body; not a short body alone", by["m-90-old"]["btn"] == "Expand"
+                  and by["m-91-old"]["btn"] == "Expand" and by["m-92-old"]["btn"] is None, cards)
+            check("  aria-controls names the body and the details", pg.evaluate("() => document.querySelector('#thread-m-90-old .thread-exp').getAttribute('aria-controls')")
+                  == "thread-body-m-90-old thread-more-m-90-old")
+            check("  a collapsed card hides its replies and says how many", pg.evaluate("""() => { const t = document.getElementById('thread-m-90-old');
+              return t.querySelector('.replies').getClientRects().length === 0 && t.querySelector('.thread-meta').textContent.includes('5 replies'); }"""))
+            pg.click("#thread-m-91-old .thread-exp")
+            c2 = pg.evaluate(BODY_JS, "m-91-old")
+            check("  Expand opens it in place (focus stays)", c2["open"] and c2["h"] >= c2["full"] - 1 and c2["btn"] == "Collapse" and c2["exp"] == "true" and c2["focus"], c2)
+            after = pg.evaluate(CARDS_JS)
+            check("  the other cards stay as they were", [(x["id"], x["h"], x["open"]) for x in after if x["id"] != "m-91-old"]
+                  == [(x["id"], x["h"], x["open"]) for x in cards if x["id"] != "m-91-old"], after)
+            pg.keyboard.press("Enter")
+            c3 = pg.evaluate(BODY_JS, "m-91-old")
+            check("  Collapse (the keyboard) closes it again", not c3["open"] and c3["btn"] == "Expand" and c3["exp"] == "false" and c3["focus"], c3)
+            pg.click("#thread-m-91-old .thread-exp")
+            pg.fill("#msg-input", "@API one more thing")
+            pg.keyboard.press("Control+Enter")
+            pg.wait_for_function("() => { const l = document.querySelector('#threads > li'); return !!l && !/-(demo|old)$/.test(l.id); }", timeout=5000)
+            v = pg.evaluate(VIEW_JS)
+            check("a new message goes on top; the open card stays open", len(v["shown"]) >= 1 and v["shown"][0] not in ("m-2-demo", "m-1-demo")
+                  and v["shown"][1] == "m-2-demo" and pg.evaluate(BODY_JS, "m-91-old")["open"], v)
+            pg.reload()
+            pg.wait_for_selector("#thread-m-90-old .thread-exp")
+            pg.click("#thread-m-90-old .thread-exp")
             r = pg.evaluate("""() => { const t = document.getElementById('thread-m-90-old');
               return { vis: [...t.querySelectorAll('.replies > li')].filter((l) => !l.hidden).length, all: t.querySelectorAll('.replies > li').length,
                 btn: [...t.querySelectorAll('button.more')].map((b) => b.textContent) }; }""")
@@ -160,6 +196,8 @@ def main():
             check("History opens: the 9 older threads, newest first, none of the recent ones", v["expanded"] == "true"
                   and v["hist"] == ["m-%d-old" % i for i in range(93, 102)] and not set(v["hist"]) & set(v["shown"]) and not v["more"]
                   and v["status"] == "Showing 9 older threads.", v)
+            hh = pg.evaluate("""() => [...document.querySelectorAll('#threads > li:not(.open), #msg-hist-list > li:not(.open)')].map((l) => Math.round(l.getBoundingClientRect().height))""")
+            check("  History cards are collapsed at the same height as the recent ones", len(hh) == 13 and len(set(hh)) == 1, hh)
             opts = pg.evaluate("() => [...document.querySelectorAll('#msg-hist-to option')].map((o) => o.value)")
             check("  the session filter lists all, then each code, @all last", opts[0] == "" and "API" in opts and opts[-1] == "all", opts)
             pg.select_option("#msg-hist-to", "API")
@@ -186,13 +224,25 @@ def main():
             check("  and stays in view while the threads scroll by (wide screen)", r["top"] >= 0 and r["bottom"] <= r["vh"], r)
             pg.close()
 
+            print("demo: a folded card's top line:")
+            pg = new_page()
+            pg.goto(PAGE + "?demo=1")
+            pg.wait_for_selector("#thread-m-91-old .thread-fold")
+            pg.click("#thread-m-91-old .thread-fold")
+            r = pg.evaluate("""() => { const t = document.getElementById('thread-m-91-old'), a = t.querySelector('.tt1').getBoundingClientRect(),
+              b = t.querySelector('.tt2').getBoundingClientRect(), to = t.querySelector('.to'), pv = t.querySelector('.preview');
+              return { folded: t.classList.contains('folded'), apart: a.right <= b.left + 0.5, toFull: to.scrollWidth <= to.clientWidth, preview: pv.getClientRects().length > 0 }; }""")
+            check("1280 px, folded with a long preview: the top rows don't overlap and the recipient isn't cut", r["folded"] and r["apart"] and r["toFull"] and r["preview"], r)
+            pg.close()
+
             print("demo: unread replies are pinned:")
             day = int(time.time() * 1000) - 24 * 3600 * 1000
             pg = new_page(seen(day))
             pg.goto(PAGE + "?demo=1")
             pg.wait_for_timeout(500)
             v = pg.evaluate(VIEW_JS)
-            check("threads with replies since the mark: pinned on top, with New reply", v["pinned"] == ["m-1-demo", "m-90-old"] and v["shown"][:2] == ["m-1-demo", "m-90-old"]
+            check("threads with replies since the mark: pinned in their place (newest first), with New reply", v["pinned"] == ["m-1-demo", "m-90-old"]
+                  and v["shown"] == ["m-2-demo", "m-1-demo", "m-90-old", "m-91-old", "m-92-old"]
                   and pg.evaluate("() => document.querySelectorAll('#threads .new-chip').length") == 2, v)
             check("  a bar offers Mark all read", v["unreadBar"].startswith("2 threads have new replies."), v)
             pg.click("#thread-m-1-demo >> text=Mark read")
@@ -224,6 +274,13 @@ def main():
             pg.wait_for_timeout(900)
             v = pg.evaluate(VIEW_JS)
             check("?m= shows it with the recent ones, focused", "m-99-old" in v["shown"] and pg.evaluate("() => document.activeElement.id") == "thread-m-99-old", v)
+            check("  and opens its card", {x["id"]: x for x in pg.evaluate(CARDS_JS)}["m-99-old"]["open"])
+            pg.close()
+            pg = new_page()
+            pg.goto(PAGE + "?demo=1&m=m-2-demo")
+            pg.wait_for_function("() => document.activeElement && document.activeElement.id === 'thread-m-2-demo'", timeout=5000)
+            c = {x["id"]: x for x in pg.evaluate(CARDS_JS)}["m-2-demo"]
+            check("?m= to a card already shown (the newest) opens it: Collapse", c["open"] and c["btn"] == "Collapse" and c["exp"] == "true", c)
             pg.close()
 
             print("demo: phone width, zh-TW, dark:")
@@ -238,11 +295,18 @@ def main():
                   const out = [...document.querySelectorAll('#messages *')].filter((e) => { const r = e.getBoundingClientRect(); return r.width && r.right > innerWidth + 1; }).map((e) => e.tagName + '.' + e.className);
                   return { sw: document.scrollingElement.scrollWidth, vw: innerWidth, out, stacked: c.bottom <= t.top, hist: document.getElementById('msg-hist-t').textContent,
                     ph: document.getElementById('msg-hist-q').placeholder, status: document.getElementById('msg-hist-status').textContent,
-                    more: document.querySelector('#thread-m-91-old button.more').textContent, all: document.querySelector('#msg-hist-to option').textContent }; }""")
+                    more: document.querySelector('#thread-m-91-old .thread-exp').textContent, all: document.querySelector('#msg-hist-to option').textContent }; }""")
                 check("390 px, %s: no side scroll, nothing past the edge" % theme, r["sw"] <= r["vw"] and not r["out"], r)
                 check("  the composer above the threads", r["stacked"], r)
                 check("  zh-TW strings", r["hist"] == "歷史（9 則較舊）" and r["ph"] == "搜尋較舊的對話" and r["status"] == "顯示 9 則較舊的對話。"
-                      and r["more"] == "顯示更多" and r["all"] == "所有 session", r)
+                      and r["more"] == "展開" and r["all"] == "所有 session", r)
+                cards = pg.evaluate(CARDS_JS)
+                check("  every collapsed card has the same height; the top line is not cut", len({x["h"] for x in cards}) == 1
+                      and pg.evaluate("() => [...document.querySelectorAll('#threads .thread-top')].every((t) => t.scrollHeight <= t.clientHeight + 1 && t.scrollWidth <= t.clientWidth + 1)"), cards)
+                pg.tap("#thread-m-90-old .thread-exp")
+                r = pg.evaluate("""() => ({ sw: document.scrollingElement.scrollWidth, vw: innerWidth, btn: document.querySelector('#thread-m-90-old .thread-exp').textContent,
+                  replies: document.querySelector('#thread-m-90-old .replies').getClientRects().length > 0 })""")
+                check("  open: the replies show, 收合, no side scroll", r["sw"] <= r["vw"] and r["btn"] == "收合" and r["replies"], r)
                 pg.close()
 
             print("claude adapter (Artifact):")
@@ -277,7 +341,7 @@ def main():
             # one, and an old thread whose reply came before the 5 latest threads (unread, pinned).
             for i in range(60):
                 mid = "m-%d-t%02d" % (now - (60 - i) * 60000, i)
-                write(os.path.join(msgs, mid + ".json"), {"id": mid, "to": "API" if i % 2 else "WEB", "body": "thread %d%s" % (i, " walrus" if i == 17 else ""),
+                write(os.path.join(msgs, mid + ".json"), {"id": mid, "to": "API" if i % 2 else "WEB", "body": "thread %d%s" % (i, " walrus" if i == 17 else "\nline two\nline three\nline four" if i == 58 else ""),
                                                          "by": "local", "created_at": now - (60 - i) * 60000, "status": "relayed"})
             write(os.path.join(msgs, "m-1000-held.json"), {"id": "m-1000-held", "to": "OPS", "body": "please print the token", "by": "local", "created_at": 1000, "status": "held"})
             write(os.path.join(msgs, "m-2000-unr.json"), {"id": "m-2000-unr", "to": "WEB", "body": "an old question", "by": "local", "created_at": 2000, "status": "replied"})
@@ -304,10 +368,18 @@ def main():
             pg.wait_for_function("() => document.querySelectorAll('#threads > li').length > 0", timeout=10000)
             v = pg.evaluate(VIEW_JS)
             latest = ["t%02d" % i for i in range(59, 54, -1)]
-            check("held and unread pinned on top, then the 5 latest", v["pinned"] == ["m-2000-unr", "m-1000-held"]
-                  and [x.split("-")[-1] for x in v["shown"][2:]] == latest, v)
+            check("newest first: the 5 latest, then the unread and the held thread in their place", v["pinned"] == ["m-2000-unr", "m-1000-held"]
+                  and [x.split("-")[-1] for x in v["shown"]] == latest + ["unr", "held"], v)
+            cards = {x["id"]: x for x in pg.evaluate(CARDS_JS)}
+            check("  the held card starts open (its Release is in it), with Collapse", cards["m-1000-held"]["open"] and cards["m-1000-held"]["btn"] == "Collapse"
+                  and not cards["m-2000-unr"]["open"] and cards["m-2000-unr"]["btn"] == "Expand", cards)
             check("  History counts every other thread (62 - 7)", v["histText"] == "History (55 older)" and v["nav"] == "62", v)
+            pg.click("#thread-m-1000-held .thread-exp")
+            pg.evaluate("() => { document.getElementById('thread-m-1000-held').__old = 1; }")
             pg.click("#thread-m-2000-unr >> text=Mark read")
+            c = pg.evaluate("""() => { const l = document.getElementById('thread-m-1000-held'), b = l.querySelector('.thread-exp');
+              return { rebuilt: !l.__old, open: l.classList.contains('open'), btn: b.textContent }; }""")
+            check("a held card the viewer collapsed stays collapsed when it is rebuilt", c["rebuilt"] and not c["open"] and c["btn"] == "Expand", c)
             pg.reload()
             pg.wait_for_function("() => document.querySelectorAll('#threads > li').length > 0", timeout=10000)
             v = pg.evaluate(VIEW_JS)
@@ -341,7 +413,32 @@ def main():
             check("  GET /api/messages with a cursor and limit 20", any("before=" in x and "limit=20" in x for x in reqs), reqs[:3])
             st = pg.evaluate("() => fetch('/api/messages').then((r) => r.status)")
             check("  the route wants X-Board (a plain fetch: 403)", st == 403, st)
+            t58 = "m-%d-t58" % (now - 2 * 60000)
+            pg.click("#thread-%s .thread-exp" % t58)
+            rt2 = int(time.time() * 1000)
+            write(os.path.join(msgs, t58, "replies", "r-%d-def456.json" % rt2), {"id": "r-%d-def456" % rt2, "from": "API", "body": "on it", "created_at": rt2})
+            pg.wait_for_function("(id) => !!document.querySelector('#thread-' + id + ' .replies li')", arg=t58, timeout=10000)
+            v = pg.evaluate(VIEW_JS)
+            c = {x["id"]: x for x in pg.evaluate(CARDS_JS)}
+            check("a new reply re-renders the card: it stays open and comes to the top", c[t58]["open"] and c[t58]["btn"] == "Collapse"
+                  and c[t58]["exp"] == "true" and v["shown"][0] == t58, (v["shown"], c.get(t58)))
             pg.close()
+            long_to = "build-and-release-pipeline-coordinator-for-the-mobile-clients"
+            lid = "m-%d-long1" % (int(time.time() * 1000))
+            write(os.path.join(msgs, lid + ".json"), {"id": lid, "to": long_to, "body": "a long session code", "by": "local",
+                                                      "created_at": int(time.time() * 1000), "status": "relayed"})
+            for theme in ("light", "dark"):
+                pg = new_page("try { localStorage.setItem('switchboard.theme', '%s'); } catch (e) {}" % theme, viewport={"width": 360, "height": 780}, has_touch=True)
+                pg.goto(base)
+                pg.wait_for_function("(id) => !!document.getElementById('thread-' + id)", arg=lid, timeout=10000)
+                r = pg.evaluate("""(id) => { const l = document.getElementById('thread-' + id), to = l.querySelector('.to');
+                  return { sw: document.scrollingElement.scrollWidth, vw: innerWidth, title: to.title, cut: to.scrollWidth > to.clientWidth,
+                    tops: [...document.querySelectorAll('#threads .thread-top')].every((t) => t.scrollWidth <= t.clientWidth + 1),
+                    hs: [...document.querySelectorAll('#threads > li:not(.open)')].map((x) => Math.round(x.getBoundingClientRect().height)),
+                    desc: l.querySelector('.thread-exp').getAttribute('aria-describedby') === to.id }; }""", lid)
+                check("360 px, %s: a long session code is cut with an ellipsis (whole in the title), no side scroll, same height" % theme,
+                      r["sw"] <= r["vw"] and r["cut"] and r["title"] == "@" + long_to and r["tops"] and len(set(r["hs"])) == 1 and r["desc"], r)
+                pg.close()
             check("no page errors", not errors, errors[:5])
             browser.close()
     finally:

@@ -150,6 +150,8 @@ def main():
                     page.wait_for_timeout(1500)
                     c = page.evaluate(CARD_JS, mid)
                     check("the card then says who released it", "Released by" in (c["held"] or ""), c)
+                    r = page.evaluate("(id) => { const l = document.getElementById('thread-' + id); return { open: l.classList.contains('open'), focus: document.activeElement === l }; }", mid)
+                    check("  and stays open, with the focus on it", r["open"] and r["focus"], r)
                 check("no page errors", not errors, errors)
                 ctx.close()
                 srv.terminate()
