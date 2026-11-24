@@ -637,6 +637,7 @@ dialog.notif { width: min(720px, calc(100vw - 24px)); }
 .thread-top .tt > .to, .thread-top .tt > .from { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .thread-top .tt > .preview { flex: 1 1 160px; }
 @media (max-width: 600px) { .thread-top { flex-direction: column; align-items: stretch; } }
+@media (min-width: 601px) { .thread-top .tt2 { flex: 1 1 0%; } }   /* a folded card's long preview never squeezes the recipient */
 .thread-foot { display: flex; flex-wrap: nowrap; align-items: center; gap: 8px; min-width: 0; height: 32px; }
 .thread-foot .btn { flex: 0 0 auto; }
 .thread-meta { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); }
@@ -2142,11 +2143,11 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
         if (el) el.replaceWith(nu);
         el = nu;
         // the focus was on the item itself (a card with tabindex): back on its new node, unless it moved on
-        if (self) { const t = nu; requestAnimationFrame(() => { if (t.isConnected && (!document.activeElement || document.activeElement === document.body)) t.focus(); }); }
+        if (self) { const t = nu; requestAnimationFrame(() => { if (t.isConnected && (!document.activeElement || document.activeElement === document.body)) t.focus({ preventScroll: true }); }); }
         if (focusKey) {
           requestAnimationFrame(() => {
             const t = el.querySelector('[data-focus="' + focusKey + '"]');
-            if (t) { t.focus(); if (typeof t.value === 'string' && t.setSelectionRange) t.setSelectionRange(t.value.length, t.value.length); }
+            if (t) { t.focus({ preventScroll: true }); if (typeof t.value === 'string' && t.setSelectionRange) t.setSelectionRange(t.value.length, t.value.length); }
           });
         }
       }
@@ -3814,7 +3815,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
         adapter.releaseMessage(m.id).then((r) => toast(tr(r && r.status === 'declined'
           ? 'Released, then declined: askers are being declined right now, so it got the automatic reply and is not relayed.'
           : 'Released. The operator relays it with a reminder.')),
-          (e) => { handleWriteError(e); yes.disabled = no.disabled = false; });
+          (e) => { handleWriteError(e); yes.disabled = no.disabled = false; yes.focus(); });
       });
       box.append(row);
       yes.focus();

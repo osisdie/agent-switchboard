@@ -224,6 +224,17 @@ def main():
             check("  and stays in view while the threads scroll by (wide screen)", r["top"] >= 0 and r["bottom"] <= r["vh"], r)
             pg.close()
 
+            print("demo: a folded card's top line:")
+            pg = new_page()
+            pg.goto(PAGE + "?demo=1")
+            pg.wait_for_selector("#thread-m-91-old .thread-fold")
+            pg.click("#thread-m-91-old .thread-fold")
+            r = pg.evaluate("""() => { const t = document.getElementById('thread-m-91-old'), a = t.querySelector('.tt1').getBoundingClientRect(),
+              b = t.querySelector('.tt2').getBoundingClientRect(), to = t.querySelector('.to'), pv = t.querySelector('.preview');
+              return { folded: t.classList.contains('folded'), apart: a.right <= b.left + 0.5, toFull: to.scrollWidth <= to.clientWidth, preview: pv.getClientRects().length > 0 }; }""")
+            check("1280 px, folded with a long preview: the top rows don't overlap and the recipient isn't cut", r["folded"] and r["apart"] and r["toFull"] and r["preview"], r)
+            pg.close()
+
             print("demo: unread replies are pinned:")
             day = int(time.time() * 1000) - 24 * 3600 * 1000
             pg = new_page(seen(day))
