@@ -159,6 +159,8 @@ def main():
             by = {x["id"]: x for x in cards}
             check("  Expand only where something is cut: replies, a long body; not a short body alone", by["m-90-old"]["btn"] == "Expand"
                   and by["m-91-old"]["btn"] == "Expand" and by["m-92-old"]["btn"] is None, cards)
+            check("  aria-controls names the body and the details", pg.evaluate("() => document.querySelector('#thread-m-90-old .thread-exp').getAttribute('aria-controls')")
+                  == "thread-body-m-90-old thread-more-m-90-old")
             check("  a collapsed card hides its replies and says how many", pg.evaluate("""() => { const t = document.getElementById('thread-m-90-old');
               return t.querySelector('.replies').getClientRects().length === 0 && t.querySelector('.thread-meta').textContent.includes('5 replies'); }"""))
             pg.click("#thread-m-91-old .thread-exp")
@@ -173,12 +175,12 @@ def main():
             pg.click("#thread-m-91-old .thread-exp")
             pg.fill("#msg-input", "@API one more thing")
             pg.keyboard.press("Control+Enter")
-            pg.wait_for_timeout(200)
+            pg.wait_for_function("() => { const l = document.querySelector('#threads > li'); return !!l && !/-(demo|old)$/.test(l.id); }", timeout=5000)
             v = pg.evaluate(VIEW_JS)
             check("a new message goes on top; the open card stays open", len(v["shown"]) >= 1 and v["shown"][0] not in ("m-2-demo", "m-1-demo")
                   and v["shown"][1] == "m-2-demo" and pg.evaluate(BODY_JS, "m-91-old")["open"], v)
             pg.reload()
-            pg.wait_for_timeout(500)
+            pg.wait_for_selector("#thread-m-90-old .thread-exp")
             pg.click("#thread-m-90-old .thread-exp")
             r = pg.evaluate("""() => { const t = document.getElementById('thread-m-90-old');
               return { vis: [...t.querySelectorAll('.replies > li')].filter((l) => !l.hidden).length, all: t.querySelectorAll('.replies > li').length,
@@ -194,6 +196,8 @@ def main():
             check("History opens: the 9 older threads, newest first, none of the recent ones", v["expanded"] == "true"
                   and v["hist"] == ["m-%d-old" % i for i in range(93, 102)] and not set(v["hist"]) & set(v["shown"]) and not v["more"]
                   and v["status"] == "Showing 9 older threads.", v)
+            hh = pg.evaluate("""() => [...document.querySelectorAll('#threads > li:not(.open), #msg-hist-list > li:not(.open)')].map((l) => Math.round(l.getBoundingClientRect().height))""")
+            check("  History cards are collapsed at the same height as the recent ones", len(hh) == 13 and len(set(hh)) == 1, hh)
             opts = pg.evaluate("() => [...document.querySelectorAll('#msg-hist-to option')].map((o) => o.value)")
             check("  the session filter lists all, then each code, @all last", opts[0] == "" and "API" in opts and opts[-1] == "all", opts)
             pg.select_option("#msg-hist-to", "API")
@@ -259,6 +263,13 @@ def main():
             pg.wait_for_timeout(900)
             v = pg.evaluate(VIEW_JS)
             check("?m= shows it with the recent ones, focused", "m-99-old" in v["shown"] and pg.evaluate("() => document.activeElement.id") == "thread-m-99-old", v)
+            check("  and opens its card", {x["id"]: x for x in pg.evaluate(CARDS_JS)}["m-99-old"]["open"])
+            pg.close()
+            pg = new_page()
+            pg.goto(PAGE + "?demo=1&m=m-2-demo")
+            pg.wait_for_function("() => document.activeElement && document.activeElement.id === 'thread-m-2-demo'", timeout=5000)
+            c = {x["id"]: x for x in pg.evaluate(CARDS_JS)}["m-2-demo"]
+            check("?m= to a card already shown (the newest) opens it: Collapse", c["open"] and c["btn"] == "Collapse" and c["exp"] == "true", c)
             pg.close()
 
             print("demo: phone width, zh-TW, dark:")
@@ -352,7 +363,12 @@ def main():
             check("  the held card starts open (its Release is in it), with Collapse", cards["m-1000-held"]["open"] and cards["m-1000-held"]["btn"] == "Collapse"
                   and not cards["m-2000-unr"]["open"] and cards["m-2000-unr"]["btn"] == "Expand", cards)
             check("  History counts every other thread (62 - 7)", v["histText"] == "History (55 older)" and v["nav"] == "62", v)
+            pg.click("#thread-m-1000-held .thread-exp")
+            pg.evaluate("() => { document.getElementById('thread-m-1000-held').__old = 1; }")
             pg.click("#thread-m-2000-unr >> text=Mark read")
+            c = pg.evaluate("""() => { const l = document.getElementById('thread-m-1000-held'), b = l.querySelector('.thread-exp');
+              return { rebuilt: !l.__old, open: l.classList.contains('open'), btn: b.textContent }; }""")
+            check("a held card the viewer collapsed stays collapsed when it is rebuilt", c["rebuilt"] and not c["open"] and c["btn"] == "Expand", c)
             pg.reload()
             pg.wait_for_function("() => document.querySelectorAll('#threads > li').length > 0", timeout=10000)
             v = pg.evaluate(VIEW_JS)
@@ -396,6 +412,22 @@ def main():
             check("a new reply re-renders the card: it stays open and comes to the top", c[t58]["open"] and c[t58]["btn"] == "Collapse"
                   and c[t58]["exp"] == "true" and v["shown"][0] == t58, (v["shown"], c.get(t58)))
             pg.close()
+            long_to = "build-and-release-pipeline-coordinator-for-the-mobile-clients"
+            lid = "m-%d-long1" % (int(time.time() * 1000))
+            write(os.path.join(msgs, lid + ".json"), {"id": lid, "to": long_to, "body": "a long session code", "by": "local",
+                                                      "created_at": int(time.time() * 1000), "status": "relayed"})
+            for theme in ("light", "dark"):
+                pg = new_page("try { localStorage.setItem('switchboard.theme', '%s'); } catch (e) {}" % theme, viewport={"width": 360, "height": 780}, has_touch=True)
+                pg.goto(base)
+                pg.wait_for_function("(id) => !!document.getElementById('thread-' + id)", arg=lid, timeout=10000)
+                r = pg.evaluate("""(id) => { const l = document.getElementById('thread-' + id), to = l.querySelector('.to');
+                  return { sw: document.scrollingElement.scrollWidth, vw: innerWidth, title: to.title, cut: to.scrollWidth > to.clientWidth,
+                    tops: [...document.querySelectorAll('#threads .thread-top')].every((t) => t.scrollWidth <= t.clientWidth + 1),
+                    hs: [...document.querySelectorAll('#threads > li:not(.open)')].map((x) => Math.round(x.getBoundingClientRect().height)),
+                    desc: l.querySelector('.thread-exp').getAttribute('aria-describedby') === to.id }; }""", lid)
+                check("360 px, %s: a long session code is cut with an ellipsis (whole in the title), no side scroll, same height" % theme,
+                      r["sw"] <= r["vw"] and r["cut"] and r["title"] == "@" + long_to and r["tops"] and len(set(r["hs"])) == 1 and r["desc"], r)
+                pg.close()
             check("no page errors", not errors, errors[:5])
             browser.close()
     finally:

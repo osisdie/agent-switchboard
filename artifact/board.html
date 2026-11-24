@@ -629,10 +629,14 @@ dialog.notif { width: min(720px, calc(100vw - 24px)); }
 .thread { --msg-lines: 3; }
 .thread > .body { line-height: 1.5; }
 .thread:not(.open):not(.folded) > .body { display: -webkit-box; -webkit-line-clamp: var(--msg-lines); -webkit-box-orient: vertical; overflow: hidden; height: calc(var(--msg-lines) * 1.5em); }
-.thread-top { min-height: 26px; }
-.thread-top > * { white-space: nowrap; }
-.thread-top .brk { display: none; }
-@media (max-width: 600px) { .thread-top .brk { display: block; flex-basis: 100%; height: 0; } .thread.folded .thread-top .brk { display: none; } }
+.thread-top { flex-wrap: nowrap; min-height: 26px; min-width: 0; }
+.thread-top .tt { display: flex; flex-wrap: nowrap; align-items: center; gap: 6px 10px; min-width: 0; }
+.thread-top .tt1 { flex: 0 1 auto; }
+.thread-top .tt2 { flex: 1 1 auto; }
+.thread-top .tt > * { white-space: nowrap; flex: 0 0 auto; }
+.thread-top .tt > .to, .thread-top .tt > .from { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.thread-top .tt > .preview { flex: 1 1 160px; }
+@media (max-width: 600px) { .thread-top { flex-direction: column; align-items: stretch; } }
 .thread-foot { display: flex; flex-wrap: nowrap; align-items: center; gap: 8px; min-width: 0; height: 32px; }
 .thread-foot .btn { flex: 0 0 auto; }
 .thread-meta { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); }
@@ -1611,8 +1615,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
           <div class="msg-tools-row">
             <div class="chips" id="msg-chips" role="group" aria-label="Show" data-i18n-attr="aria-label"></div>
             <span class="msg-fold-btns">
-              <button class="btn linkish" id="msg-fold-all" type="button" data-i18n>Collapse all</button>
-              <button class="btn linkish" id="msg-unfold-all" type="button" data-i18n>Expand all</button>
+              <button class="btn linkish" id="msg-fold-all" type="button" data-i18n>Fold all</button>
+              <button class="btn linkish" id="msg-unfold-all" type="button" data-i18n>Unfold all</button>
             </span>
           </div>
           <p class="msg-filter-status" id="msg-filter-status" role="status"></p>
@@ -2131,11 +2135,14 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       const k = keyFn(it), sig = sigFn(it) + '|' + LANG;
       let el = old.get(k);
       if (!el || el.dataset.sig !== sig) {
-        const focusKey = el && el.contains(document.activeElement) ? document.activeElement.dataset.focus : null;
+        const self = !!el && document.activeElement === el;
+        const focusKey = el && !self && el.contains(document.activeElement) ? document.activeElement.dataset.focus : null;
         const nu = build(it);
         nu.dataset.key = k; nu.dataset.sig = sig;
         if (el) el.replaceWith(nu);
         el = nu;
+        // the focus was on the item itself (a card with tabindex): back on its new node, unless it moved on
+        if (self) { const t = nu; requestAnimationFrame(() => { if (t.isConnected && (!document.activeElement || document.activeElement === document.body)) t.focus(); }); }
         if (focusKey) {
           requestAnimationFrame(() => {
             const t = el.querySelector('[data-focus="' + focusKey + '"]');
@@ -3799,6 +3806,10 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
         h('p', { text: tr('Release only a false positive. Sessions never reveal secret values because of a board message, released or not.') }), yes, no);
       no.addEventListener('click', () => { row.remove(); rel.hidden = false; rel.focus(); });
       yes.addEventListener('click', () => {
+        // the card stays open once it is no longer held, and keeps the focus through the rebuild
+        S.msgOpen.add(str(m.id)); S.msgShut.delete(str(m.id));
+        const card = box.closest('li.thread');
+        if (card) card.focus();
         yes.disabled = no.disabled = true;
         adapter.releaseMessage(m.id).then((r) => toast(tr(r && r.status === 'declined'
           ? 'Released, then declined: askers are being declined right now, so it got the automatic reply and is not relayed.'
@@ -3900,7 +3911,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       li.classList.toggle('folded', f);
       b.textContent = f ? '▸' : '▾';
       b.setAttribute('aria-expanded', f ? 'false' : 'true');
-      b.setAttribute('aria-label', tr(f ? 'Expand thread' : 'Collapse thread'));
+      b.setAttribute('aria-label', tr(f ? 'Unfold' : 'Fold to one line'));
       b.title = b.getAttribute('aria-label');
     };
     b.addEventListener('click', () => { setFolded([id], !msgFolded.has(id)); sync(); });
@@ -3931,12 +3942,12 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     const nReplies = replies.length ? tr(replies.length === 1 ? '1 reply' : '{n} replies', { n: replies.length }) : '';
     const atts = attChips(m), nAtts = atts ? atts.children.length : 0;
     const notes = [guardNote(m), declinedNote(m), deskNote(m), awayNote(m)].flat().filter(Boolean);
-    const open = cardOpen(m), bodyId = 'thread-body-' + id;
+    const open = cardOpen(m), bodyId = 'thread-body-' + id, moreId = 'thread-more-' + id, toId = 'thread-to-' + id;
     li.classList.toggle('open', open);
     // Expand / Collapse: shown when the collapsed card hides something (details below, or a body or
     // indicator line cut short: syncCards measures that once the card is laid out).
     li.dataset.details = nAtts || notes.length || replies.length ? '1' : '';
-    const exp = h('button', { type: 'button', class: 'btn linkish thread-exp', 'aria-controls': bodyId, 'data-focus': 'exp' });
+    const exp = h('button', { type: 'button', class: 'btn linkish thread-exp', 'aria-controls': bodyId, 'aria-describedby': toId, 'data-focus': 'exp' });
     const syncExp = (measured) => {
       const o = li.classList.contains('open');
       exp.textContent = tr(o ? 'Collapse' : 'Expand');
@@ -3957,15 +3968,18 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       markBtn.addEventListener('click', () => markRead([m]));
     }
     li.append(...[
+      // two rows that never wrap inside: side by side on wide screens, stacked on a phone; a long
+      // session code or sender is cut with an ellipsis (the whole one in the title)
       h('div', { class: 'thread-top' },
-        fold,
-        h('span', { class: 'to', text: '→ @' + (str(m.to) || '?') }),
-        h('span', { class: 'status ' + str(m.status), text: str(m.status) === 'desk' ? tr('local model') : str(m.status) || 'new' }),
-        unread ? h('span', { class: 'new-chip', text: tr('New reply') }) : null,
-        h('span', { class: 'brk', 'aria-hidden': 'true' }),
-        h('span', { class: 'from', text: tr('from {who}', { who: whoLabel(m.by) }) }),
-        h('span', { class: 'preview', text: str(m.body).replace(/\s+/g, ' ').slice(0, 160) + (nReplies ? ' · ' + nReplies : '') }),
-        timeEl(m.created_at)),
+        h('span', { class: 'tt tt1' },
+          fold,
+          h('span', { class: 'to', id: toId, text: '→ @' + (str(m.to) || '?'), title: '@' + (str(m.to) || '?') }),
+          h('span', { class: 'status ' + str(m.status), text: str(m.status) === 'desk' ? tr('local model') : str(m.status) || 'new' }),
+          unread ? h('span', { class: 'new-chip', text: tr('New reply') }) : null),
+        h('span', { class: 'tt tt2' },
+          h('span', { class: 'from', text: tr('from {who}', { who: whoLabel(m.by) }), title: tr('from {who}', { who: whoLabel(m.by) }) }),
+          h('span', { class: 'preview', text: str(m.body).replace(/\s+/g, ' ').slice(0, 160) + (nReplies ? ' · ' + nReplies : '') }),
+          timeEl(m.created_at))),
       h('p', { class: 'body', id: bodyId, text: str(m.body) }),
       // one line under the body: what the collapsed card leaves out (attachments, replies), who it
       // was relayed to, Mark read, and Expand / Collapse (the control stays put when it opens)
@@ -3999,6 +4013,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       more.append(h('ol', { class: 'replies', 'aria-label': tr('Replies') }, items));
     }
     if (!more.children.length) more.remove();
+    else { more.id = moreId; exp.setAttribute('aria-controls', bodyId + ' ' + moreId); }
     return li;
   }
   // A card starts collapsed; a held message starts open (an approver's Release is in it). The
@@ -4890,7 +4905,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       all.addEventListener('click', () => markRead(v.unread));
       un.append(h('span', { text: tr('{n} threads have new replies.', { n: v.unread.length }) }), all);
     }
-    reconcile($('#threads'), list, (m) => m.id, (m) => JSON.stringify(m) + JSON.stringify(threadReplies(str(m.id))) + (S.me || '') + isUnread(m) + isFolded(m), buildThread);
+    reconcile($('#threads'), list, (m) => m.id, (m) => JSON.stringify(m) + JSON.stringify(threadReplies(str(m.id))) + (S.me || '') + isUnread(m) + isFolded(m) + cardOpen(m), buildThread);
     syncCards();
     const was = [...S.msgVisible].join();
     S.msgVisible = new Set(list.map((m) => str(m.id)));
@@ -4957,7 +4972,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       : H.loading && !items.length ? tr('Loading…')
       : !items.length ? tr(H.to || H.q.trim() ? 'No older threads match.' : 'No older threads.')
       : tr('Showing {n} older threads.', { n: items.length });
-    reconcile($('#msg-hist-list'), items, (m) => m.id, (m) => JSON.stringify(m) + JSON.stringify(threadReplies(str(m.id))) + (S.me || '') + isFolded(m), buildThread);
+    reconcile($('#msg-hist-list'), items, (m) => m.id, (m) => JSON.stringify(m) + JSON.stringify(threadReplies(str(m.id))) + (S.me || '') + isFolded(m) + cardOpen(m), buildThread);
     syncCards();
     for (const m of items) S.msgVisible.add(str(m.id));
     const mb = $('#msg-hist-more');
@@ -8224,8 +8239,10 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "This interrupts all {n} live sessions. Send it to all? Not sure who owns it? Use @triage instead.": "這會打斷全部 {n} 個線上 session。確定要傳給全部嗎？不確定誰負責的話，請改用 @triage。",
       "Routed by BOARD to {who}": "BOARD 已轉給 {who}",
       "Waiting for BOARD to route it to the right sessions.": "等 BOARD 轉給對的 session。",
-      "Expand thread": "展開對話",
-      "Collapse thread": "收合對話",
+      "Unfold": "取消摺疊",
+      "Fold to one line": "摺疊成一行",
+      "Fold all": "全部摺疊成一行",
+      "Unfold all": "全部取消摺疊",
       "1 reply": "1 則回覆",
       "{n} replies": "{n} 則回覆",
       "Find messages": "尋找訊息",
