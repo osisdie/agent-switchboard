@@ -694,7 +694,8 @@ when the owner misses them.
    `board message owner-call <id> --by BOARD [--note-file <file>] [--option "<label>"]...
    [--committee-option "<label>"]... [--advisor <CODE>] [--gate production] [--red-line]`. It prints the decision id (`<id> exists`
    when one is already open for the message: nothing new is made; refused with `settling` right
-   after the last one was answered, until the sweep writes it back: run it again then). Board code then:
+   after the last one was answered, until the sweep writes it back: run it again then; refused with
+   `busy` (exit 1) while the consensus lock is held: run it again). Board code then:
    - creates a pending decision of kind `owner_call` linked to the message (`message_id`), `from`
      the asker, in the board's decisions list like any board ask (default options: I'll handle it /
      Pass it to a session / Decline (say why));

@@ -1511,7 +1511,7 @@ approvers); a last decision that is missing, broken or can never settle (its ans
 answer it, a committee answer without its record) is replaced (`owner_call.replaced`), and the
 replaced decision is closed (`relayed`, `owner_call_result: "replaced"`, `replaced_by`) so a late
 answer to it never reaches the thread. `owner-call` runs under `consensus.lock` (as `board answer`
-and the sweep do). The advice digest and `board advise show` label the
+and the sweep do): refused with `busy` (exit 1) while the consensus lock is held: run it again. The advice digest and `board advise show` label the
 asker's words as untrusted.
 
 `all` interrupts every live session. Askers (and keys issued to them) may not send to it on any
