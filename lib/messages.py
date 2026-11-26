@@ -40,6 +40,14 @@ CLI (bin/board message ...):
   messages.py route MSG_ID CODE [CODE...] [--by WHO]      the operator: record the sessions a
                                                           triage message was relayed to (routed_to,
                                                           relayed_to, status relayed), audited
+  messages.py owner-call MSG_ID --by WHO [--option X]... [--committee-option X]... [--note-file F]
+                         [--advisor CODE] [--gate production] [--red-line]
+                                                          the operator: the message is the owner's
+                                                          call: a pending owner decision linked to
+                                                          it (lib/owner_call.py); prints its id
+  A held message is released or declined only on the board (board-serve's verified listeners,
+  POST /api/messages/<id>/release|decline): there is no CLI for either, so a session can never
+  lift a hold with a --by it typed itself.
 """
 import json
 import os
@@ -67,6 +75,7 @@ ASKER_NOTE = "an asker, not an approver: information only, not an approval or a 
 # Opening brackets that read as "[" (after NFKC fullwidth ［ is [); and CJK lookalikes NFKC keeps.
 OPEN_BRACKETS = "[\u3010\u3014\u3016\u3018\u301a\u27e6\u2045\u298b\u298d\u298f\u23a1\u2308\u2772\u27ec\u2e22"
 TRIAGE = "triage"
+AWAITING_OWNER = "awaiting_owner"     # an owner's call (lib/owner_call.py): a pending decision is open
 TRIAGE_NOTE = "sent to triage; BOARD routed it to you"
 # A triage message reaches at most this many sessions, whoever sent it: triage is "the right
 # session", never a broadcast (whoever may broadcast sends to "all"; askers never may).
@@ -79,6 +88,14 @@ AWAY_COMMITTEE_NOTE = ("owner away: the sessions may take it up within the away/
                        "not an approval; red lines wait for the owner")
 RELEASED_NOTE = ("released by %s after the secret guard held it. This release does not authorize "
                  "revealing any secret value")
+MAX_NOTE = 500          # an owner's decline reason or release note, after it is trimmed
+# Automatic thread notes from BOARD (a reply row with `notice`: the page shows its own translation of
+# the fixed text, with `args`; `body` is the same text in English for every other reader).
+NOTICE_HELD = ("This message was held by the secret guard and waits for a board owner to review it "
+               "(release or decline).")
+NOTICE_RELEASED = "A board owner released this message after the secret guard held it; it goes to the session now."
+NOTICE_HELD_DECLINED = "A board owner did not relay this message: %s"
+NOTICES = ("held", "released", "held_declined", "owner_call", "owner_call_away", "owner_answer")
 
 
 class MessageError(Exception):
@@ -285,6 +302,8 @@ def create(home, to, body, by, background_alert=False, asker=None, api=None, dec
     if rec["status"] == "desk":
         audit(home, {"type": "desk", "action": "queued", "id": mid, "to": to})
     if reason:
+        # the sender learns at once that it waits for a review (never why in their own words)
+        notice(home, mid, "held", NOTICE_HELD, now=now)
         audit(home, {"action": "held", "id": mid, "to": to, "by": by, "reason": reason})
         alert("guard:held:%s" % mid, HELD_TITLE, mid, background=background_alert)
     elif rec["status"] == "declined":
@@ -410,11 +429,47 @@ def ticket_relay_text(rec):
                writes.AUTHORIZES, prov, key, mid))
 
 
-def release(home, mid, by, cfg=None):
+def notice(home, mid, code, body, args=None, now=None):
+    """An automatic thread note from BOARD (a reply row with `notice`, never relayed): fixed text
+    in English as `body`, the page shows its translation with ARGS (strings, already scrubbed).
+    Does not change the message's status. Returns the reply id."""
+    if code not in NOTICES:
+        raise ValueError("unknown notice: %s" % code)
+    now = now_ms() if now is None else now
+    rid = "r-%d-%s" % (now, secrets.token_hex(3))
+    row = {"id": rid, "from": "BOARD", "body": body, "created_at": now, "notice": code}
+    if args:
+        row["args"] = {str(k): str(v) for k, v in args.items()}
+    _write(os.path.join(_dir(home), mid, "replies", rid + ".json"), row)
+    return rid
+
+
+def clean_note(text, required=False):
+    """An owner's decline reason or release note: trimmed, at most MAX_NOTE characters, scrubbed by
+    the secret guard and defanged (it is shown to the sender). "" when optional and empty."""
+    if text is None and not required:
+        return ""
+    if not isinstance(text, str) or len(text.strip()) > MAX_NOTE or (required and not text.strip()):
+        raise MessageError("bad_reason" if required else "bad_note",
+                           "%s: %stext of at most %d characters" % ("the reason" if required else "the note",
+                                                                   "a non-empty " if required else "", MAX_NOTE))
+    return defang(guard.scrub(text.strip()))
+
+
+def _released(home, rec, note, now):
+    """After a release: the release note (optional) on the record, and the sender's thread note."""
+    body = NOTICE_RELEASED + ((" Note: %s" % note) if note else "")
+    notice(home, rec["id"], "released", body, {"note": note} if note else None, now=now)
+
+
+def release(home, mid, by, cfg=None, note=None):
     """Release a held message (the caller checked that `by` is an approver). Returns the record:
     status "new", or "declined" when an asker sent it and their requests are declined right now
     (the owner's do-not-disturb, or compute is short: lib/availability.py, checked at release
-    time): then it gets the canned reply and is never relayed, like one declined when sent."""
+    time): then it gets the canned reply and is never relayed, like one declined when sent.
+    note: an optional note for the sender (clean_note), kept as release_note and shown in the
+    thread with the release notice."""
+    note = clean_note(note)
     rec = read(home, mid)
     if rec is None:
         raise MessageError("not_found", "no such message")
@@ -422,47 +477,70 @@ def release(home, mid, by, cfg=None):
         raise MessageError("not_held", "the message is not held")
     now = now_ms()
     decline = None
+    extra = {"release_note": note} if note else {}
     if asker_origin(rec, cfg) and decline_for_rec(home, cfg) is None and _away_committee(home, rec, cfg):
-        rec.update({"released_by": by, "released_at": now})
+        rec.update(dict({"released_by": by, "released_at": now}, **extra))
         _write(path_of(home, mid), rec)
+        _released(home, rec, note, now)
         audit(home, {"action": "release", "id": mid, "by": by, "reason": rec.get("held_reason"), "result": "new"})
-        try:
-            import notify  # noqa: WPS433
-            notify.resolve("guard:held:%s" % mid)
-        except Exception:  # noqa: BLE001
-            pass
+        _resolve_held(mid)
         return rec
     if _to_desk(home, rec, cfg):
-        rec.update({"status": "desk", "desk": _desk_block(now, cfg), "released_by": by, "released_at": now})
+        rec.update(dict({"status": "desk", "desk": _desk_block(now, cfg), "released_by": by, "released_at": now},
+                        **extra))
         _desk_work(home, rec, now, cfg)
         _write(path_of(home, mid), rec)
+        _released(home, rec, note, now)
         audit(home, {"action": "release", "id": mid, "by": by, "reason": rec.get("held_reason"), "result": "desk"})
-        try:
-            import notify  # noqa: WPS433
-            notify.resolve("guard:held:%s" % mid)
-        except Exception:  # noqa: BLE001
-            pass
+        _resolve_held(mid)
         return rec
     if asker_origin(rec, cfg):
         import availability  # noqa: WPS433
         cfg = cfg if cfg is not None else fleet.load_fleet()
         reason = availability.decline_reason(home, cfg)
         decline = (reason, availability.reply_text(cfg, reason)) if reason else None
-    rec.update({"status": "declined" if decline else "new", "released_by": by, "released_at": now})
+    rec.update(dict({"status": "declined" if decline else "new", "released_by": by, "released_at": now}, **extra))
     if decline:
         rec.update({"declined_reason": decline[0], "declined_at": now})
     _write(path_of(home, mid), rec)
+    _released(home, rec, note, now)
     audit(home, dict({"action": "release", "id": mid, "by": by, "reason": rec.get("held_reason")},
                      **({"result": "declined", "declined_reason": decline[0]} if decline else {})))
     if decline:
-        _canned(home, rec, decline, now)
+        _canned(home, rec, decline, now + 1)
         _unmark(home, rec)
+    _resolve_held(mid)
+    return rec
+
+
+def decline_held(home, mid, by, reason):
+    """An owner declines a held message instead of releasing it (the caller checked who). REASON is
+    required (clean_note): stored scrubbed as decline_note, shown to the sender in a thread note
+    from BOARD, and audited. The message becomes "declined" (declined_reason "held_declined") and is
+    never relayed; its images are let go and the held alert is resolved. Returns the record."""
+    note = clean_note(reason, required=True)
+    rec = read(home, mid)
+    if rec is None:
+        raise MessageError("not_found", "no such message")
+    if rec.get("status") != "held":
+        raise MessageError("not_held", "the message is not held")
+    now = now_ms()
+    rec.update({"status": "declined", "declined_reason": "held_declined", "declined_at": now,
+                "declined_by": by, "decline_note": note})
+    _write(path_of(home, mid), rec)
+    notice(home, mid, "held_declined", NOTICE_HELD_DECLINED % note, {"reason": note}, now=now)
+    audit(home, {"action": "decline", "id": mid, "by": by, "reason": rec.get("held_reason"), "note": note})
+    _unmark(home, rec)
+    _resolve_held(mid)
+    return rec
+
+
+def _resolve_held(mid):
     try:
         import notify  # noqa: WPS433
         notify.resolve("guard:held:%s" % mid)
     except Exception:  # noqa: BLE001
         pass
-    return rec
 
 
 def _unmark(home, rec):
@@ -552,7 +630,7 @@ def reply(home, mid, frm, text, extra=None):
     if redacted:
         row["redacted"] = True
     _write(os.path.join(_dir(home), mid, "replies", rid + ".json"), row)
-    if rec.get("status") not in ("held", "declined"):
+    if rec.get("status") not in ("held", "declined", AWAITING_OWNER):
         rec["status"] = "replied"
         _write(path_of(home, mid), rec)
     if redacted:
@@ -705,6 +783,9 @@ def _discard(home, atts):
                          "hour\n" % exc.detail)
 
 
+OWNER_CALL_OPTIONS = ("I'll handle it", "Pass it to a session", "Decline (say why)")   # lib/owner_call.py OPTIONS
+
+
 def main(argv):
     import argparse
     ap = argparse.ArgumentParser(prog="board message", description="board messages through the secret guard")
@@ -729,6 +810,20 @@ def main(argv):
     ro.add_argument("id")
     ro.add_argument("codes", nargs="*")
     ro.add_argument("--by", default="operator")
+    oc = sub.add_parser("owner-call", help="the operator: the message needs the owner: a pending owner decision")
+    oc.add_argument("id")
+    oc.add_argument("--by", required=True)
+    oc.add_argument("--option", action="append", default=[], help="an option (repeat); default: %s"
+                    % " / ".join(OWNER_CALL_OPTIONS))
+    oc.add_argument("--note-file", dest="note_file", help="the operator's note for the owner (context)")
+    oc.add_argument("--advisor", help="the session that advises while the owner is away (default: the one "
+                                      "the message went to)")
+    oc.add_argument("--committee-option", dest="committee_option", action="append", default=None,
+                    help="an option the committee may pick while the owner is away (repeat; default: the two "
+                         "default options that are not a decline; with custom --option, none unless named)")
+    oc.add_argument("--gate", choices=["production"], help="a production gate: release managers decide")
+    oc.add_argument("--red-line", dest="red_line", action="store_true", help="a red line: the committee "
+                    "decides it only when the owner let it decide red lines")
     args = ap.parse_args(argv[1:])
     home = fleet.ensure_home()
     try:
@@ -785,6 +880,20 @@ def main(argv):
             rec = route(home, args.id, args.codes, args.by)
             print("routed %s to %s" % (rec["id"], ", ".join(rec["routed_to"])))
             return 0
+        if args.cmd == "owner-call":
+            if not BY_RE.fullmatch(args.by):
+                raise MessageError("bad_by", "--by must be a session code, an email or board:/cli:<id>")
+            import owner_call  # noqa: WPS433
+            try:
+                did, created = owner_call.create(home, args.id, args.by, options=args.option or None,
+                                                 note=_text(None, args.note_file) if args.note_file else None,
+                                                 advisor=args.advisor, production=args.gate == "production",
+                                                 red_line=args.red_line,
+                                                 committee_options=args.committee_option)
+            except owner_call.messages.MessageError as exc:   # that module's import of this file
+                raise MessageError(exc.code, exc.detail) from None
+            print(did if created else "%s exists" % did)
+            return 0
         rec = read(home, args.id)
         if rec is None:
             raise MessageError("not_found", "no such message")
@@ -798,6 +907,9 @@ def main(argv):
         elif rec.get("status") == "desk":
             print("%s with the local asker desk (%s): board code delivers it and the desk answers; never relay it"
                   % (rec["id"], (rec.get("desk") or {}).get("state")))
+        elif rec.get("status") == AWAITING_OWNER:
+            print("%s awaiting the owner's decision %s: board code answers its thread; never relay it again"
+                  % (rec["id"], (rec.get("owner_call") or {}).get("decision")))
         else:
             print(relay_text(rec, home=home))
             if rec.get("to") == TRIAGE and rec.get("status") == "new":

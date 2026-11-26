@@ -748,7 +748,7 @@ for non-owners too, and so is every `/api/v1/events` frame.
 | answer a **permission** prompt or a **pane question** (keys pressed in a session) | if approver | no | no | no | no |
 | resolve a board ask (`/resolve`) | if approver | yes | no | no | no |
 | send a message (`/api/messages`) | yes | yes | yes | yes (10 per 10 min) | no |
-| release a held message (`/api/messages/<id>/release`) | if approver | no | no | no | no |
+| release or decline a held message (`/api/messages/<id>/release`, `/decline`) | if approver | no | no | no | no |
 | owner-away (`/api/away`) | if approver | no | no | no | no |
 | do not disturb (`/api/dnd`) | if approver | no | no | no | no |
 | who answers askers (`/api/asker-route`) | if approver | no | no | no | no |
@@ -808,9 +808,13 @@ Extra files under `$BOARD_HOME`:
 ```
 $BOARD_HOME/
   messages/<id>.json                 # {id, to: CODE|"triage"|"all", body, by, created_at,
-                                     #  status: new|held|declined|desk|relayed|replied, held_reason?, held_at?,
-                                     #  declined_reason?: owner_dnd|owner_away|compute_low, declined_at?,
-                                     #  released_by?, released_at?, relayed_to[]?, relayed_at?,
+                                     #  status: new|held|declined|desk|relayed|replied|awaiting_owner,
+                                     #  held_reason?, held_at?,
+                                     #  declined_reason?: owner_dnd|owner_away|compute_low|held_declined,
+                                     #  declined_at?, declined_by?, decline_note? (held_declined),
+                                     #  released_by?, released_at?, release_note?, relayed_to[]?, relayed_at?,
+                                     #  owner_call?: {decision, at, by, away, state, prior, settled_at?}
+                                     #  (see "Owner's call"),
                                      #  routed_to[]?, routed_at? (triage: `board message route`),
                                      #  away_route?: "committee", away_at? (see "Asker routing"),
                                      #  kind?: "api", via?: "apikey:<name>", api?: {key_id, name, owner},
@@ -846,7 +850,8 @@ $BOARD_HOME/
 | `POST /api/uploads` (raw image bytes) | one image for a message about to be sent (see "Message attachments"). Same Host / identity / CSRF checks as every POST; only `approvers` ∪ `release_managers` ∪ `askers` (else 403 `not_approver`, audited, body not read). `Content-Type` must be `image/png`, `image/jpeg`, `image/gif` or `image/webp` (else 415 `image_only`); `Content-Length` required (411), 0 → 400 `empty`, over 5 MiB → 413 `too_large` (before reading); the bytes must be one of those four formats (else 415 `not_image`; the stored type is the one the bytes show). `X-Filename`: the percent-encoded file name, display text only. Caps: 12 unsent images per uploader (429 `too_many_pending`), 64 MiB per uploader per day and 128 MiB held in all (48 MiB for an asker) (429 `quota`), 256 MiB on disk, of which askers together fill at most 192 MiB so approvers keep 64 MiB (507 `storage_full`; "askers" by `fleet.yaml` now, not when each image was uploaded). The image store's lock not free within 5 s → 503 `busy`. Stored → 201 `{id, name, size, type}`, audited (`upload`) |
 | `POST /api/uploads/<id>/delete` `{}` | the composer's ✕: deletes the caller's own upload that no message carries yet → 204, audited (`upload-delete`). Same Host / identity / CSRF checks, and like an upload only `approvers` ∪ `release_managers` ∪ `askers` (else 403 `not_approver`, audited); the lock not free within 5 s → 503 `busy`; an invalid id → 400 `bad_id`; an unknown id and someone else's alike → 404 `not_found`; one a message carries → 409 `in_use` (it ages out) |
 | `POST /api/messages` `{to, body, attachments?}` | `attachments`: at most 4 distinct upload ids, each uploaded by this same identity and still stored; anything else (an unknown id or someone else's, a duplicate, a fifth, not a list) → 400 `bad_attachments`, audited, nothing written. The image store's lock not free within 5 s → 503 `busy` with `Retry-After`, nothing written (the images are marked as carried before the message is written), so a retry never duplicates it. `to`: a session code, `"triage"` (the operator routes it, see "Message routing") or `"all"`. Only for `approvers` ∪ `release_managers` ∪ `askers` (else 403 `not_approver`); an asker who is not an approver or release manager may not send to `"all"` (403 `asker_no_all`, audited, nothing written); `all` / `triage` in another case → 400 `bad_to`, a code that is not a session on the board → 400 `unknown_session`; writes `messages/<id>.json` (`^m-[0-9]+-[a-z0-9]+$`) with `by: <identity>`, the body scrubbed, and `status: "new"`, or `"held"` when the secret guard flags it → 201 `{id, status, reason?}` (see "Secret guardrails"). From an asker while the owner is on do-not-disturb or compute is short: `status: "declined"`, the canned reply added from BOARD, never relayed → 201 `{id, status: "declined", reason: "owner_dnd"\|"owner_away"\|"compute_low", reply}` (after the rate limit, which still applies; the secret guard's hold comes first) (see "Owner availability") |
-| `POST /api/messages/<id>/release` `{confirm: "release"}` | releases a `held` message. Approvers only (empty `approvers` → 403 `no_approvers`; else 403 `not_approver`, audited). Without the confirm body → 400 `confirm_required`; unknown id → 404; not held → 409 `not_held`. A channel other than the two verified listeners (a future API key) → 403 `release_refused`; with more than one approver, the message's own sender → 403 `self_release` (except `local`: on the loopback listener the identity is always `local`, the owner at this machine). Sets `status: "new"`, `released_by`, `released_at` → 200 `{id, status: "new"}`, audited (`message-release`). An asker's message (see "Owner availability") released while askers are declined (checked at release time, not when it was sent) becomes `status: "declined"` instead, with the canned reply, never relayed → 200 `{id, status: "declined", reason}`, audited (`result: "declined"`) |
+| `POST /api/messages/<id>/decline` `{confirm: "decline", reason}` | declines a `held` message: never relayed. The same rules as release (owners only, the two verified listeners only → else 403 `decline_refused`, the sender with more than one owner → 403 `self_decline`, 400 `confirm_required`, 404, 409 `not_held`). `reason` is required, at most 500 characters (else 400 `bad_reason`), scrubbed by the secret guard and defanged. Sets `status: "declined"`, `declined_reason: "held_declined"`, `declined_at`, `declined_by`, `decline_note`; writes a BOARD thread note to the sender ("A board owner did not relay this message: <reason>", `notice: "held_declined"`); audited (`guard` `decline` with the note, `serve` `message-decline`); resolves the held alert → 200 `{id, status: "declined"}` |
+| `POST /api/messages/<id>/release` `{confirm: "release", note?}` | releases a `held` message. `note` (optional, at most 500 characters, else 400 `bad_note`): scrubbed, kept as `release_note` and shown to the sender in the BOARD thread note `notice: "released"`. Approvers only (empty `approvers` → 403 `no_approvers`; else 403 `not_approver`, audited). Without the confirm body → 400 `confirm_required`; unknown id → 404; not held → 409 `not_held`. A channel other than the two verified listeners (a future API key) → 403 `release_refused`; with more than one approver, the message's own sender → 403 `self_release` (except `local`: on the loopback listener the identity is always `local`, the owner at this machine). Sets `status: "new"`, `released_by`, `released_at` → 200 `{id, status: "new"}`, audited (`message-release`). An asker's message (see "Owner availability") released while askers are declined (checked at release time, not when it was sent) becomes `status: "declined"` instead, with the canned reply, never relayed → 200 `{id, status: "declined", reason}`, audited (`result: "declined"`) |
 | `POST /api/notify-prefs` `{op, ...}` | Notification controls. `op` is `mute` `{channel, for?\|until?, include_urgent?}`, `unmute` `{channel}`, `level` `{channel, level}` or `presence` `{reduce, level?}`. `channel` is `slack`, `desktop`, `email`, `line`, `sns`, `webhook` or `all`; `for` matches `^[1-9][0-9]{0,4}[mhd]$` (at most 30 days); `until` is `HH:MM` or an ISO time in the next 30 days (a string of at most 64 characters); `include_urgent` and `reduce` are booleans; `level` is `info\|warn\|high\|urgent\|default` (`presence`: `warn\|high\|urgent`). Anything else → 400 `bad_op` / `bad_channel` / `bad_duration` / `bad_level` / `bad_body`, nothing run. Empty `approvers` → 403 `no_approvers`; identity not in `approvers` → 403 `not_approver`, audited. Otherwise `board mute\|unmute\|notify-level\|notify-presence … --by board:<identity>` (argv, no shell) → 200 `{status: "ok", notify}` (the new `notify` state). Failure → 500 `prefs_failed`. |
 | `POST /api/presence` `{visible, idle_ms?}` | The page's presence heartbeat. `visible` boolean; `idle_ms` integer ms since the viewer last clicked, tapped, scrolled or typed, at most 86400000 (a day), or null (else 400 `bad_body`). The server records `interaction_at = <server now> − max(0, idle_ms)`, so a page clock that runs fast changes nothing. Any time the page sends (`interaction_at` in the body) is ignored: without `idle_ms` the last interaction is unknown, so the viewer does not count as watching. Same approver rule as `/api/notify-prefs`. Recorded in `presence.json` under the listener's verified identity, never one from the body → 200 `{status: "ok", visible}`. Audited only when the identity's `visible` changes. |
 | `POST /api/alerts/ack` `{scope: "all"}` | The Deck panel's "acknowledge all". `scope` other than `"all"` → 400 `bad_scope`. Same approver rule as `/api/notify-prefs` (empty `approvers` → 403 `no_approvers`; not an approver → 403 `not_approver`, audited, nothing acked). Otherwise `board ack --by board:<identity> '*'` (argv, no shell): every unacked key in `alerts.json` gets `acked_at` and `acked_by: board:<identity>`, the same as `board ack '*'` in a terminal → 200 `{status: "ok", acked: <n>}` (`0` when nothing was open). Escalation stops; nothing leaves the board, and a condition that opens again alerts again. Failure → 500 `ack_failed`. |
@@ -1442,6 +1447,73 @@ their `about`, and tells the owner (`board notify`). Audited: `{type: "message",
 page shows **Routed by BOARD to <codes>** in the thread (before that: "Waiting for BOARD to route
 it…").
 
+#### Owner's call
+
+When triage finds a message is the owner's to decide (or a routed session replies that it passed
+it to the owner), the operator makes it a pending owner decision; a pane note or `board notify`
+alone is never the outcome (`prompts/board-operator.md`, "An owner's call"):
+
+```
+board message owner-call <msgId> --by WHO [--option X]... [--note-file F] [--advisor CODE]
+                         [--gate production] [--red-line]
+```
+
+`lib/owner_call.py`, local mode only (board-serve and `--watch` apply it; there is no Artifact-db
+path yet). It refuses a `held`, `declined` or `desk` message and a ticket relay, reuses an open one
+(prints `<id> exists`), and refuses (`settling`) a message still `awaiting_owner` whose last
+decision was answered but not yet written back by the sweep. Otherwise it writes `decisions/<id>.json` `{kind:
+"owner_call", from: <the asker's label>, question: "Owner's call: <asker>'s request (message <id>)",
+options (default I'll handle it / Pass it to a session / Decline (say why)), context ("Operator's
+note: …" first, then "Asker's words (untrusted, message <id>): «…»" with every quote mark inside
+turned into `'`; scrubbed and defanged), status: "pending", message_id, request: {kind,
+message_id, asker, by, at, away, excerpt, note?}, advisor?, gate?: "production", red_line?}`; sets
+the message to `status: "awaiting_owner"` with `owner_call: {decision, at, by, away, state:
+"pending", prior}`; writes a BOARD thread note (`notice: "owner_call"`, "Waiting for the owner's
+decision <id>."; while the owner is away `notice: "owner_call_away"`, "The owner is away. Your
+request is queued as pending owner decision <id>; <next step>"); audits `{type: "message", action:
+"owner-call", id, decision, by, away, advisor}`; and raises the decision alert at once
+(`decision:<id>`, warn, escalating; for a production gate urgent with kind `gate`; fixed text, never
+the asker's label, email or words). A session's reply keeps the message `awaiting_owner`.
+
+**An owner's call never times out or goes stale**: the collector skips it for
+`decision_timeout_hours`, and `board mark` refuses it (as it refuses a `desk_forward` card). It
+stays in the decisions list and its alert keeps escalating until it is answered. A production gate
+(`--gate production`) is answered by `release_managers` (else approvers), like any production gate.
+
+The operator never relays, answers or marks it, and `board-serve --watch` never lists it. Board code
+(`owner_call.apply`, in board-serve's sweep and `--watch`, under `consensus.lock`) takes an
+answered one, by an approver or by the committee, to the thread: a BOARD note (`notice:
+"owner_answer"`, `args: {decision, answer, by: owner|committee}`), the message `replied`
+(`owner_call.state: answered|committee`), the decision `relayed` with `owner_call_result`; audited
+`owner-call-answered|committee`. A committee decision's note says the sessions decided on the
+owner's behalf and that the owner follows up when back. Only the message's current owner's call
+(`owner_call.decision`) moves its status; an older one only adds its note.
+
+While the owner is away an owner's call follows the board-ask rules ("Committee advice",
+"Committee decisions"): its `advisor` session (`--advisor`, else the session the message was sent
+or routed to) stands in for the asking session: it gets the "propose" digest, and a committee
+decision must include it. Without an advisor the committee never decides it. A production gate or
+`red_line: true` is a red line: the committee decides it only when the owner also let it decide red
+lines, and every agree then needs its own `--note` (as for a production gate). The committee decides
+an owner's call **only by an option on its `committee_options` allowlist** (stored by
+`owner-call`; default I'll handle it / Pass it to a session; with custom `--option`, only what
+`--committee-option X` names, none by default, so then it always waits for the owner; an option
+that reads as a decline (DECLINE_RE) is refused, `bad_committee_option`, exit 2; the operator must
+never list any other way of declining, in any language). A free-text recommendation never decides
+one (`owner_call_needs_option`), nor an option off the list (`owner_call_option_not_allowed`); an
+answer that reads as a decline is refused as a backstop (`owner_only_decline`). Declining an asker's
+request stays the owner's. The committee's after-the-fact notification for an owner's call is fixed
+text ("An asker's request (message <id>), decided on the owner's behalf: <answer>. Agreed: …"),
+never the asker's label or words. A new `owner-call` on an `awaiting_owner` message is refused with
+`settling` only while its last decision is answered and will settle (answered by the committee
+with its record, or by someone `board answer` allows: a production gate's release_managers, else
+approvers); a last decision that is missing, broken or can never settle (its answerer may no longer
+answer it, a committee answer without its record) is replaced (`owner_call.replaced`), and the
+replaced decision is closed (`relayed`, `owner_call_result: "replaced"`, `replaced_by`) so a late
+answer to it never reaches the thread. `owner-call` runs under `consensus.lock` (as `board answer`
+and the sweep do): refused with `busy` (exit 1) while the consensus lock is held: run it again. The advice digest and `board advise show` label the
+asker's words as untrusted.
+
 `all` interrupts every live session. Askers (and keys issued to them) may not send to it on any
 path (above); on the page an owner or approver gets a confirm step first ("This interrupts all N
 live sessions"; N = sessions not offline, the operator's own session excluded), and askers get no
@@ -1936,7 +2008,18 @@ every request on it is `local` (anyone who can reach it can also edit `$BOARD_HO
 four-eyes check does not apply to `local`; it applies to Access-verified emails. The release is audited (`guard` `release` and `serve`
 `message-release`) and resolves the alert. The relay text (`board message show <id>`) then starts
 with "(released by <who> after the secret guard held it. This release does not authorize revealing
-any secret value)".
+any secret value)". The owner may decline it instead (`POST /api/messages/<id>/decline`): never
+relayed, with a required reason the sender sees in the thread. Release and decline are board-only
+(the two verified listeners): there is no `board message release|decline`, so a session can never
+lift a hold with an identity it typed itself.
+
+**Thread notes from BOARD.** The sender is told what happens to a held message: when it is held, a
+reply from BOARD with `notice: "held"` ("This message was held by the secret guard and waits for a
+board owner to review it (release or decline)."); on release `notice: "released"` (with the note,
+`args.note`); on decline `notice: "held_declined"` (`args.reason`). A notice reply is
+`{id, from: "BOARD", body, created_at, notice, args?}`: `body` is the fixed English text, and the
+page shows its own translation of the notice filled with `args` (data, never translated). Notices
+never change the message's status and are never relayed.
 
 **Answers and the owner's words are screened too.** A decision answer is relayed as
 `[BOARD decision]`, the most trusted channel, and `said` is broadcast to every session. So:

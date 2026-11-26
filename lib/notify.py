@@ -756,6 +756,15 @@ def needs_you_alert(session, decisions=None):
 
 def decision_alert(d):
     who = d.get("from") or "?"
+    if d.get("kind") == "owner_call":
+        # an asker's message is the owner's call (lib/owner_call.py): escalating until answered (it
+        # never times out). Fixed text only: never the asker's label, email or words, even for a
+        # production gate (urgent, kind gate)
+        prod = fleet.is_production(d)
+        return {"level": "urgent" if prod else "warn", "key": "decision:%s" % d.get("id"),
+                "kind": "gate" if prod else "decision", "escalate": True,
+                "title": "An asker's request waits for your decision" + (" (production)" if prod else ""),
+                "body": "decide on the board (the thread shows the request)", "url": None}
     if fleet.is_production(d):
         return {"level": "urgent", "key": "decision:%s" % d.get("id"), "kind": "gate", "escalate": True,
                 "title": "%s requests PRODUCTION approval" % who,

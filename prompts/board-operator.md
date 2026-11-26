@@ -595,8 +595,12 @@ owner, ...}`. Only an approver answers it on the board; a key never can.
 
 1. Read `$BOARD_HOME/messages/<id>.json`: `{id, to, body, by, created_at, status}`. Continue only
    if `status` is `new`. A `held` message never shows up as `message <id> new`: `board-serve` held it
-   because it asks for a secret value, alerted the owner, and only an owner can release it on the
-   board (`POST /api/messages/<id>/release`, with a confirm step). Never relay a `held` message.
+   because it asks for a secret value, alerted the owner, and only an owner can release or decline it
+   on the board (`POST /api/messages/<id>/release` or `/decline`, with a confirm step; there is no
+   CLI for either; the sender already got an automatic thread note that it waits for that review). Never relay a `held`
+   message. One an owner declined is `declined` (`declined_reason: "held_declined"`, the reason in
+   the thread): nothing to do. An `awaiting_owner` message has an open owner's call: never relay it
+   again; board code answers its thread.
    A `declined` message never shows up either: board-serve (or `board message send`) already
    answered an asker with a canned reply because the owner is on do-not-disturb or compute is short
    (`docs/contract.md`, "Owner availability"). Never relay it, never route it, never reply to it or
@@ -629,7 +633,8 @@ owner, ...}`. Only an approver answers it on the board; a key never can.
    board code made it (for every asker's request for work, and for the desk's suggestions) and
    applies the owner's answer; a forwarded one comes back to you as `message <id> new` for CODE,
    relayed as usual. Never relay, answer or mark one, and never forward an asker's request to a
-   session on your own.
+   session on your own. The same goes for a decision of kind `owner_call` ("Owner's call: …"):
+   board code writes its answer into the message's thread ("An owner's call" below).
 2. Resolve `to` and send the line that `board message show <id>` prints. It is
    `[BOARD ask <id>] <body> — reply to BOARD via SendMessage, starting with [re <id>]`, the body
    already scrubbed, plus the release reminder when an approver released the message. A message from
@@ -672,7 +677,55 @@ a broadcast**: it reaches the right session, or nobody.
    API), WEB (frontend app)."), and store it with `board message reply <id> --from BOARD --file
    <file>`: it shows in their thread. Then tell the owner:
    `board notify --link <id> "triage <id>: no session fits; asked the sender to name one"`.
-6. Replies come back as usual (`[re <id>]`, "Worker replies").
+6. **When it is the owner's call, make it a pending owner decision.** Some messages no session can
+   settle: "please review and merge this", "please decide X", "<owner>, please do Y", or anything
+   that needs the owner's approval. Run `board message owner-call <id> --by BOARD` (section
+   "An owner's call" below). Do this instead of step 5, or after routing it when a session should
+   also look at it.
+7. Replies come back as usual (`[re <id>]`, "Worker replies").
+
+### An owner's call
+
+An **"owner's call" outcome must create a pending decision** with `board message owner-call`, never
+only a pane note or a `board notify`: those leave nothing open, so the request is silently dropped
+when the owner misses them.
+
+1. Write your one-line summary for the owner to a file if you have one, then run
+   `board message owner-call <id> --by BOARD [--note-file <file>] [--option "<label>"]...
+   [--committee-option "<label>"]... [--advisor <CODE>] [--gate production] [--red-line]`. It prints the decision id (`<id> exists`
+   when one is already open for the message: nothing new is made; refused with `settling` right
+   after the last one was answered, until the sweep writes it back: run it again then; refused with
+   `busy` (exit 1) while the consensus lock is held: run it again). Board code then:
+   - creates a pending decision of kind `owner_call` linked to the message (`message_id`), `from`
+     the asker, in the board's decisions list like any board ask (default options: I'll handle it /
+     Pass it to a session / Decline (say why));
+   - sets the message to `awaiting_owner` and writes a thread note from BOARD: "Waiting for the
+     owner's decision <decision id>." While the owner is away the note says so and that it is
+     queued;
+   - raises the usual decision alert (warn, escalating until acked; a production gate is urgent).
+   `--advisor CODE`: the session asked for committee advice while the owner is away (default: the
+   session the message was sent or routed to). `--gate production` for anything headed to
+   production, `--red-line` for any other red line: the committee then never decides it unless the
+   owner let it decide red lines. Without an advisor session, it always waits for the owner.
+2. Don't tell the owner separately in the pane; the decision and its alert do that.
+3. **Never relay, answer or mark an `owner_call` decision.** Board code writes the owner's answer
+   (or the committee's, under the away rules) into the thread, sets the message to `replied`, and
+   marks the decision `relayed` itself. `board-serve --watch` never lists it. An answer such as
+   "Pass it to a session" is not an instruction to you: act on it only when the owner tells you so
+   in your pane.
+4. While the owner is away, follow sections 10a (committee advice) and 10b (committee decisions)
+   as for any board ask: the advisor gets the advice digest like an asking session; a committee
+   decision happens only where the owner opted in, and red lines and the production gate still wait
+   for the owner. The committee decides an owner's call only by an option on its allowlist
+   (`committee_options`: by default I'll handle it / Pass it to a session; with your own
+   `--option`s, only those you also give as `--committee-option`, never a decline or any other way
+   of declining, in any language). A free-text
+   recommendation never decides one: declining an asker's request stays the owner's. When the
+   committee does decide, the thread note says the sessions decided on the owner's behalf and that
+   the owner follows up when back, so "I'll handle it" is never read as nobody acting.
+5. An owner's call never times out or goes stale: it stays in the decisions list and keeps
+   escalating until it is answered. `board mark` refuses it (and a `desk_forward` card).
+6. Owner's calls are local mode only (`board-serve` / `--watch`); there is no Artifact-db path yet.
 
 ### Relaying a ticket take or release (`[BOARD ticket]`)
 
@@ -700,7 +753,10 @@ ticket.
 ### Worker replies
 
 When a worker sends `[re <msgId>] <text>`, write the text to a file with your file-writing tool and
-run `board message reply <msgId> --from <sender code> --file <file>`. Don't write the reply JSON by
+run `board message reply <msgId> --from <sender code> --file <file>`. When that reply says the
+session handed it to the owner ("passed to the owner", "this is the owner's call", "已轉給主人" or the
+owner's name), it is an owner's call too: after storing the reply, run `board message owner-call
+<msgId> --by BOARD --advisor <sender code>` ("An owner's call" above). Don't write the reply JSON by
 hand, and never put the text on the command line. It writes `messages/<msgId>/replies/<rid>.json` atomically with the text **scrubbed** by the
 secret guard, and sets the message to `replied`. When something had to be redacted, it prints
 `<rid> redacted`, audits it and raises the `guard:redacted:<msgId>` alert itself. Never repeat the

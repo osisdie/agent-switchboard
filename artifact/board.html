@@ -578,6 +578,8 @@ dialog.notif { width: min(720px, calc(100vw - 24px)); }
 .thread .held { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 0; padding: 8px 10px; border-radius: 6px; background: var(--lamp-soft); color: var(--lamp-ink); font-size: 13px; }
 .thread .held .held-confirm { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .thread .held .held-confirm p { margin: 0; flex-basis: 100%; }
+.thread .held .held-confirm textarea.held-note { flex-basis: 100%; min-width: 0; box-sizing: border-box; font: inherit; padding: 6px 8px; border: 1px solid var(--rule); border-radius: 6px; background: var(--paper); color: var(--ink); resize: vertical; }
+.status.awaiting_owner { background: var(--lamp-soft); color: var(--lamp-ink); }
 .thread .held.released { background: transparent; color: var(--muted); padding: 0; }
 .replies { list-style: none; margin: 0; padding: 0 0 0 12px; display: grid; gap: 8px; border-left: 2px solid var(--rule); }
 .replies li { display: grid; gap: 2px; font-size: 14px; }
@@ -3799,34 +3801,69 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       h('span', { text: (m.held_reason ? trKnown(m.held_reason, GUARD_REASONS) : tr('It looks like a request for a secret value')) + '.' }));
     if (S.demo || !awayEditor() || !adapter || typeof adapter.releaseMessage !== 'function') return box;
     const rel = h('button', { type: 'button', class: 'btn', text: tr('Release…') });
+    const dec = typeof adapter.declineMessage === 'function' ? h('button', { type: 'button', class: 'btn', text: tr('Decline…') }) : null;
+    const keepOpen = () => {
+      // the card stays open once it is no longer held, and keeps the focus through the rebuild
+      S.msgOpen.add(str(m.id)); S.msgShut.delete(str(m.id));
+      const card = box.closest('li.thread');
+      if (card) card.focus();
+    };
+    // one confirm row at a time: Release… and Decline… hide while it is open
+    const openRow = (row, first) => {
+      rel.hidden = true; if (dec) dec.hidden = true;
+      box.append(row);
+      first.focus();
+    };
+    const closeRow = (row, back) => { row.remove(); rel.hidden = false; if (dec) dec.hidden = false; back.focus(); };
     rel.addEventListener('click', () => {
-      rel.hidden = true;
       const yes = h('button', { type: 'button', class: 'btn primary', text: tr('Confirm: relay it to @{to}', { to: str(m.to) || '?' }) });
       const no = h('button', { type: 'button', class: 'btn', text: tr('Cancel') });
+      const note = h('textarea', { class: 'held-note', rows: '2', maxlength: String(HELD_NOTE_MAX), 'aria-label': tr('Note for the sender (optional)'), placeholder: tr('Note for the sender (optional)') });
       const row = h('div', { class: 'held-confirm' },
-        h('p', { text: tr('Release only a false positive. Sessions never reveal secret values because of a board message, released or not.') }), yes, no);
-      no.addEventListener('click', () => { row.remove(); rel.hidden = false; rel.focus(); });
+        h('p', { text: tr('Release only a false positive. Sessions never reveal secret values because of a board message, released or not.') }), note, yes, no);
+      no.addEventListener('click', () => closeRow(row, rel));
       yes.addEventListener('click', () => {
-        // the card stays open once it is no longer held, and keeps the focus through the rebuild
-        S.msgOpen.add(str(m.id)); S.msgShut.delete(str(m.id));
-        const card = box.closest('li.thread');
-        if (card) card.focus();
-        yes.disabled = no.disabled = true;
-        adapter.releaseMessage(m.id).then((r) => toast(tr(r && r.status === 'declined'
+        keepOpen();
+        yes.disabled = no.disabled = note.disabled = true;
+        adapter.releaseMessage(m.id, note.value.trim()).then((r) => toast(tr(r && r.status === 'declined'
           ? 'Released, then declined: askers are being declined right now, so it got the automatic reply and is not relayed.'
           : 'Released. The operator relays it with a reminder.')),
-          (e) => { handleWriteError(e); yes.disabled = no.disabled = false; yes.focus(); });
+          (e) => { handleWriteError(e); yes.disabled = no.disabled = note.disabled = false; yes.focus(); });
       });
-      box.append(row);
-      yes.focus();
+      openRow(row, yes);
     });
     box.append(rel);
+    if (!dec) return box;
+    // Decline…: never relayed; the reason is required and shown to the sender in the thread
+    dec.addEventListener('click', () => {
+      const reason = h('textarea', { class: 'held-note', rows: '3', maxlength: String(HELD_NOTE_MAX), required: '', 'aria-required': 'true',
+        'aria-label': tr('Reason (shown to the sender; required)'), placeholder: tr('Reason (shown to the sender; required)') });
+      const yes = h('button', { type: 'button', class: 'btn primary', text: tr('Confirm: decline it'), disabled: '' });
+      const no = h('button', { type: 'button', class: 'btn', text: tr('Cancel') });
+      const row = h('div', { class: 'held-confirm' },
+        h('p', { text: tr('Declined messages are never relayed. The sender sees your reason in the thread.') }), reason, yes, no);
+      reason.addEventListener('input', () => { yes.disabled = !reason.value.trim(); });
+      no.addEventListener('click', () => closeRow(row, dec));
+      yes.addEventListener('click', () => {
+        const why = reason.value.trim();
+        if (!why) { reason.focus(); return; }
+        keepOpen();
+        yes.disabled = no.disabled = reason.disabled = true;
+        adapter.declineMessage(m.id, why).then(() => toast(tr('Declined. The sender sees the reason in the thread.')),
+          (e) => { handleWriteError(e); no.disabled = reason.disabled = false; yes.disabled = !reason.value.trim(); reason.focus(); });
+      });
+      openRow(row, reason);
+    });
+    box.append(dec);
     return box;
   }
   // A message declined with a canned reply (the owner's do not disturb, or compute was short):
   // stored and shown, never relayed. Everyone who sees the thread sees why (no numbers).
   function declinedNote(m) {
     if (str(m.status) !== 'declined') return null;
+    if (m.declined_reason === 'held_declined') {
+      return h('p', { class: 'held declined', role: 'note', text: tr('Not relayed: {who} declined it after the secret guard held it. The reason is in the thread.', { who: whoLabel(m.declined_by) }) });
+    }
     return h('p', { class: 'held declined', role: 'note', text: tr(m.declined_reason === 'compute_low'
       ? 'Declined automatically, not relayed: compute was busy. The automatic reply is below.'
       : m.declined_reason === 'owner_away' ? 'Declined automatically, not relayed: the owner was away and not taking requests. The automatic reply is below.'
@@ -3836,6 +3873,32 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
   // local model suggested a session and the owner decides.
   // The owner is away and chose "committee" for askers (lib/asker_route.py): a work request went to
   // the sessions without an owner card.
+  // An owner's call (lib/owner_call.py): a pending owner decision is open for this message.
+  function ownerCallNote(m) {
+    const oc = m.owner_call && typeof m.owner_call === 'object' ? m.owner_call : null;
+    if (!oc || str(m.status) !== 'awaiting_owner') return null;
+    return h('p', { class: 'held desk fwd', role: 'note', text: tr('Waiting for the owner\'s decision {decision}.', { decision: str(oc.decision) })
+      + (oc.away ? ' ' + tr('The owner is away; it is queued until they decide.') : '') });
+  }
+  // Automatic thread notes from BOARD (a reply with `notice`): the fixed text in the viewer's
+  // language, filled with the note's args (data: never translated); anything else shows its body.
+  function noticeText(r) {
+    const a = r.args && typeof r.args === 'object' ? r.args : {};
+    const v = { decision: str(a.decision), answer: str(a.answer), reason: str(a.reason), note: str(a.note) };
+    switch (str(r.notice)) {
+      case 'held': return tr('This message was held by the secret guard and waits for a board owner to review it (release or decline).');
+      case 'released': return tr('A board owner released this message after the secret guard held it; it goes to the session now.') + (v.note ? ' ' + tr('Note: {note}', v) : '');
+      case 'held_declined': return tr('A board owner did not relay this message: {reason}', v);
+      case 'owner_call': return tr('Waiting for the owner\'s decision {decision}.', v);
+      case 'owner_call_away': return tr(str(a.next) === 'committee'
+        ? 'The owner is away. Your request is queued as pending owner decision {decision}; the sessions may decide it by unanimous agreement under the away rules; red lines and production wait for the owner.'
+        : 'The owner is away. Your request is queued as pending owner decision {decision}; the owner decides when they are back.', v);
+      case 'owner_answer': return tr(str(a.by) === 'committee'
+        ? 'While the owner was away, the sessions decided on the owner\'s behalf by unanimous agreement ({decision}): {answer}. The owner follows up when back.'
+        : 'The owner decided ({decision}): {answer}', v);
+      default: return null;
+    }
+  }
   function awayNote(m) {
     if (str(m.away_route) !== 'committee' || (m.desk && str(m.desk.forward) === 'committee')) return null;
     return h('p', { class: 'held desk fwd', role: 'note', text: tr('The owner is away; the sessions took it.') });
@@ -3942,7 +4005,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       : relayedTo.length || m.relayed_at ? h('span', { class: 'relay' }, relayedTo.length ? tr('Relayed to {who}', { who: relayedTo.join(', ') }) : tr('Relayed'), m.relayed_at ? ' · ' : '', m.relayed_at ? timeEl(m.relayed_at) : null) : null;
     const nReplies = replies.length ? tr(replies.length === 1 ? '1 reply' : '{n} replies', { n: replies.length }) : '';
     const atts = attChips(m), nAtts = atts ? atts.children.length : 0;
-    const notes = [guardNote(m), declinedNote(m), deskNote(m), awayNote(m)].flat().filter(Boolean);
+    const notes = [guardNote(m), declinedNote(m), ownerCallNote(m), deskNote(m), awayNote(m)].flat().filter(Boolean);
     const open = cardOpen(m), bodyId = 'thread-body-' + id, moreId = 'thread-more-' + id, toId = 'thread-to-' + id;
     li.classList.toggle('open', open);
     // Expand / Collapse: shown when the collapsed card hides something (details below, or a body or
@@ -3975,7 +4038,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
         h('span', { class: 'tt tt1' },
           fold,
           h('span', { class: 'to', id: toId, text: '→ @' + (str(m.to) || '?'), title: '@' + (str(m.to) || '?') }),
-          h('span', { class: 'status ' + str(m.status), text: str(m.status) === 'desk' ? tr('local model') : str(m.status) || 'new' }),
+          h('span', { class: 'status ' + str(m.status), text: str(m.status) === 'desk' ? tr('local model') : str(m.status) === 'awaiting_owner' ? tr('waiting for the owner') : str(m.status) || 'new' }),
           unread ? h('span', { class: 'new-chip', text: tr('New reply') }) : null),
         h('span', { class: 'tt tt2' },
           h('span', { class: 'from', text: tr('from {who}', { who: whoLabel(m.by) }), title: tr('from {who}', { who: whoLabel(m.by) }) }),
@@ -3996,10 +4059,10 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     if (replies.length) {
       // Only the latest replies; the earlier ones open in place.
       const hide = replies.length > MSG_REPLIES_SHOWN && !S.msgOpen.has(id + '#r') ? replies.length - MSG_REPLIES_SHOWN : 0;
-      const items = replies.map((r, i) => h('li', { hidden: i < hide, class: r.canned ? 'canned' : null },
-        h('span', { class: 'from' }, h('span', { text: str(r.from) || '?' }), r.canned ? h('span', { class: 'auto', text: tr('automatic reply') }) : null,
+      const items = replies.map((r, i) => h('li', { hidden: i < hide, class: r.canned || r.notice ? 'canned' : null },
+        h('span', { class: 'from' }, h('span', { text: str(r.from) || '?' }), r.canned || r.notice ? h('span', { class: 'auto', text: tr('automatic reply') }) : null,
           r.local_model ? h('span', { class: 'auto local', text: tr('local model · may be less accurate') }) : null, timeEl(r.created_at)),
-        clampText(id + ':' + str(r.id || i), str(r.body), 'rbody')));
+        clampText(id + ':' + str(r.id || i), noticeText(r) || str(r.body), 'rbody')));
       if (replies.length > MSG_REPLIES_SHOWN) {
         const n = replies.length - MSG_REPLIES_SHOWN;
         const b = h('button', { type: 'button', class: 'btn linkish more', 'aria-expanded': hide ? 'false' : 'true', text: hide ? tr('Show {n} earlier replies', { n }) : tr('Hide earlier replies') });
@@ -4783,6 +4846,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
   // (GET /api/messages, the state carries the latest 20 and a count of the older ones); the demo
   // and the Artifact page page what they have. "Read" is this viewer's own, in this browser.
   const MSG_RECENT = 5, MSG_PAGE = 20, MSG_CLAMP_CHARS = 280, MSG_CLAMP_LINES = 4, MSG_REPLIES_SHOWN = 3;
+  const HELD_NOTE_MAX = 500;   // a decline reason or release note (lib/messages.py MAX_NOTE)
   const SEEN_KEY = 'switchboard.msgSeen';
   // {base, t: {id: ms}}: replies up to base (when this browser first opened the board) or up to a
   // thread's own mark are read. Storage blocked: from this page view on.
@@ -4837,7 +4901,7 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
     const st = str(m.status);
     if (chip === 'unread') return isUnread(m);
     if (chip === 'held') return st === 'held';
-    if (chip === 'waiting') return (st === 'new' || st === 'relayed') && !threadReplies(str(m.id)).length;
+    if (chip === 'waiting') return ((st === 'new' || st === 'relayed') && !threadReplies(str(m.id)).length) || st === 'awaiting_owner';
     return true;
   }
   function msgMatch(m) {
@@ -7239,7 +7303,9 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
           'X-Filename': encodeURIComponent(str(file.name).slice(0, 200) || 'image') } });
       },
       // Approvers only, after the second (confirm) click: a message the secret guard held.
-      releaseMessage(id) { return post('/api/messages/' + encodeURIComponent(id) + '/release', { confirm: 'release' }); },
+      releaseMessage(id, note) { return post('/api/messages/' + encodeURIComponent(id) + '/release', note ? { confirm: 'release', note } : { confirm: 'release' }); },
+      // Owners only, the same rules as release: never relayed; the reason is shown to the sender.
+      declineMessage(id, reason) { return post('/api/messages/' + encodeURIComponent(id) + '/decline', { confirm: 'decline', reason }); },
       // Approvers only; board-serve runs `board resolve ID --in-pane --by <identity>`.
       resolveDecision(id) { return post('/api/decisions/' + encodeURIComponent(id) + '/resolve', { confirm: 'resolve' }); },
       // Approvers only; board-serve runs `board away on|off --by board:<identity>`.
@@ -8207,6 +8273,24 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "Confirm: relay it to @{to}": "確認：轉送給 @{to}",
       "Release only a false positive. Sessions never reveal secret values because of a board message, released or not.": "只放行誤判。不論是否放行，session 都不會因為看板訊息而透露機密的值。",
       "Released. The operator relays it with a reminder.": "已放行。operator 轉送時會附上提醒。",
+      "Decline…": "拒絕…",
+      "Note for the sender (optional)": "給發送者的附註（選填）",
+      "Reason (shown to the sender; required)": "原因（發送者看得到；必填）",
+      "Confirm: decline it": "確認：拒絕",
+      "Declined messages are never relayed. The sender sees your reason in the thread.": "拒絕的訊息不會轉送。發送者會在對話串看到你寫的原因。",
+      "Declined. The sender sees the reason in the thread.": "已拒絕。發送者會在對話串看到原因。",
+      "Not relayed: {who} declined it after the secret guard held it. The reason is in the thread.": "未轉送：機密防護攔下後，{who} 拒絕了此訊息。原因在對話串裡。",
+      "Waiting for the owner's decision {decision}.": "等待主人決定 {decision}。",
+      "The owner is away; it is queued until they decide.": "主人不在；已排入佇列，等主人決定。",
+      "waiting for the owner": "等待主人決定",
+      "This message was held by the secret guard and waits for a board owner to review it (release or decline).": "此訊息已被機密防護攔下，等待管理者審核（放行或拒絕）。",
+      "A board owner released this message after the secret guard held it; it goes to the session now.": "機密防護攔下後，管理者已放行此訊息，現在轉送給 session。",
+      "Note: {note}": "附註：{note}",
+      "A board owner did not relay this message: {reason}": "管理者未轉送此訊息：{reason}",
+      "The owner is away. Your request is queued as pending owner decision {decision}; the sessions may decide it by unanimous agreement under the away rules; red lines and production wait for the owner.": "主人不在。你的請求已排入佇列，成為待主人決定的 {decision}；依主人不在時的規則，各 session 可一致同意後代為決定；紅線與 production 仍等主人。",
+      "The owner is away. Your request is queued as pending owner decision {decision}; the owner decides when they are back.": "主人不在。你的請求已排入佇列，成為待主人決定的 {decision}；主人回來後決定。",
+      "While the owner was away, the sessions decided on the owner's behalf by unanimous agreement ({decision}): {answer}. The owner follows up when back.": "主人不在時，各 session 一致同意後代主人決定（{decision}）：{answer}。主人回來後會再跟進。",
+      "The owner decided ({decision}): {answer}": "主人已決定（{decision}）：{answer}",
       "Released by {who} after the secret guard held it; relayed with a reminder that it authorizes no secret values.": "{who} 在機密防護攔下後放行；轉送時附上提醒：放行不代表可以透露任何機密的值。",
       "Not released: {why}": "未放行：{why}",
       "the message is not held.": "這則訊息沒有被攔下。",

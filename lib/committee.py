@@ -440,7 +440,7 @@ def evaluate(home, did, rec=None, dec=None, away_rec=None, s=None):
         c = canon(m, p)
         if isinstance(c, str) and CODE_RE.fullmatch(c) and c not in parts:
             parts.append(c)
-    asker = canon(m, dec.get("from"))
+    asker = canon(m, advice.asking_session(dec))
     if not isinstance(asker, str) or asker not in parts:
         return False, "no_asker", None
     if len(parts) < 2:
@@ -472,6 +472,16 @@ def evaluate(home, did, rec=None, dec=None, away_rec=None, s=None):
     answer = clean_answer(answer)
     if not answer:
         return False, "empty", None
+    if dec.get("kind") == "owner_call":
+        # an allowlist, never wording: only an option the operator let the committee pick
+        # (committee_options, lib/owner_call.py); a free-text recommendation never decides it
+        if option is None:
+            return False, "owner_call_needs_option", None
+        allowed = [str(o) for o in dec.get("committee_options") or [] if isinstance(o, str)]
+        if option not in allowed:
+            return False, "owner_call_option_not_allowed", None
+        if advice.is_decline(answer):
+            return False, "owner_only_decline", None     # backstop: declining stays the owner's
     if guard.scrub(answer) != answer or guard.screen_answer(answer, dec.get("options")):
         return False, "held", None
     stances = [{"by": p, "stance": last[p]["stance"], "at": _ms(last[p].get("at")) or None,
@@ -604,15 +614,23 @@ def notify_owner(home, did):
     dec = advice.load_decision(home, did) or {}
     c = dec.get("committee") if isinstance(dec.get("committee"), dict) else {}
     red = c.get("production") or c.get("red_line")
-    what = "production gate" if c.get("production") else "red line" if red else "board ask"
+    what = "production gate" if c.get("production") else "red line" if red else \
+        "owner's call" if dec.get("kind") == "owner_call" else "board ask"
     title = "[board] Decided by committee while you were away: %s %s → %s" % (
         what, did, away._text(dec.get("answer"), 120))  # noqa: SLF001
     notes = "; ".join("%s: %s" % (away._text(x.get("by"), 64), short(x.get("note"), 120))  # noqa: SLF001
                       for x in c.get("stances") or [] if isinstance(x, dict) and x.get("note"))
-    body = "Asked by %s: \"%s\". Agreed: %s. Why: %s.%s Review it on the board (decided while you were away)." % (
-        away._text(dec.get("from"), 64), away._text(dec.get("question"), 200),  # noqa: SLF001
-        ", ".join(away._text(p, 64) for p in c.get("participants") or []),  # noqa: SLF001
-        short(c.get("rationale"), 240) or "-", (" Notes: %s." % notes) if notes else "")
+    if dec.get("kind") == "owner_call":
+        # an asker's request: fixed text, never the asker's label (often an email) or words
+        body = ("An asker's request (message %s), decided on the owner's behalf: %s. Agreed: %s. Review it on "
+                "the board (decided while you were away)." % (
+                    away._text(dec.get("message_id"), 64), away._text(dec.get("answer"), 120),  # noqa: SLF001
+                    ", ".join(away._text(p, 64) for p in c.get("participants") or [])))  # noqa: SLF001
+    else:
+        body = "Asked by %s: \"%s\". Agreed: %s. Why: %s.%s Review it on the board (decided while you were away)." % (
+            away._text(dec.get("from"), 64), away._text(dec.get("question"), 200),  # noqa: SLF001
+            ", ".join(away._text(p, 64) for p in c.get("participants") or []),  # noqa: SLF001
+            short(c.get("rationale"), 240) or "-", (" Notes: %s." % notes) if notes else "")
     log_event(home, {"ts": now_ms(), "type": "committee", "action": "notify-body", "id": did, "body": body})
     cmd = [os.path.join(REPO, "bin", "board-notify"), "send", "--level", "high" if red else "info",
            "--key", "committee:%s" % did, "--board", did, "--kind", "committee", "--no-escalate",
@@ -663,6 +681,8 @@ def waiting(home, only=None):
         d = advice.read_json(path)
         if not is_committee(d) or d.get("status") != "answered" or not advice.DEC_RE.fullmatch(str(d.get("id"))):
             continue
+        if d.get("kind") == "owner_call":
+            continue    # an owner's call goes back to its thread (lib/owner_call.py), never to a session
         if only and d["id"] != only:
             continue
         out.append(d)

@@ -431,6 +431,9 @@ class Page(Base):
         rec = read_json("messages", held + ".json")
         self.assertEqual((rec["status"], rec["declined_reason"], rec["released_by"]), ("declined", "owner_dnd", "local"))
         rs = replies(held)
+        # the sender's automatic notes (held, then released) and the canned reply, from BOARD
+        self.assertEqual(sorted(str(r.get("notice")) for r in rs if r.get("notice")), ["held", "released"])
+        rs = [r for r in rs if not r.get("notice")]
         self.assertEqual((len(rs), rs[0]["from"], rs[0]["canned"]), (1, "BOARD", "owner_dnd"))
         self.assertNotIn(held, watch_lines())
         self.assertTrue([e for e in events() if e.get("action") == "release" and e.get("id") == held

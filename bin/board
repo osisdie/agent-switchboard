@@ -756,6 +756,10 @@ update_decision() {  # update_decision ID JQ_FILTER [jq args...]
 
 # A decision is a production decision when its gate or its stage, trimmed and lowercased, is
 # "production" (the same rule as lib/notify.py and lib/collect.py).
+# is_red_owner_call DECISION_FILE → 0 for an owner's call the operator flagged as a red line
+# (lib/owner_call.py --red-line; lib/advice.py is_red_line): like a production gate for advice.
+is_red_owner_call() { [ "$(jq -r '(.kind == "owner_call") and (.red_line == true)' "$1")" = true ]; }
+
 is_production() {  # is_production DECISION_FILE
   [ "$(jq -r '[.gate, .stage] | map((. // "") | tostring | ascii_downcase | gsub("^\\s+|\\s+$"; ""))
                | any(. == "production")' "$1")" = true ]
@@ -1295,6 +1299,12 @@ cmd_mark() {
     case "$code" in screen|partial|partial_box|moved_on|timeout|not_approver|unknown_session|operator|config) ;; *) sub_usage mark >&2; exit 2 ;; esac
   fi
   [ -f "$(dec_path "$id")" ] || die "no such decision: $id"
+  # Board code settles these itself (lib/owner_call.py, lib/desk.py): a mark would end an owner's
+  # call or a forward card without its thread ever hearing back.
+  case "$(jq -r '.kind // ""' "$(dec_path "$id")")" in
+    owner_call|desk_forward)
+      die "mark: $id is settled by board code ($(jq -r '.kind' "$(dec_path "$id")")); never mark it" ;;
+  esac
   mark_status "$id" "$st" "" "$code" || exit 1
   echo "$id $st"
 }
@@ -2966,7 +2976,7 @@ adv_gate() {
   local id="$1" df f now
   df="$(dec_path "$id")"; f="$(adv_path "$id")"
   [ -f "$df" ] || { unlock_board; die "no such decision: $id"; }
-  if [ "$(jq -r '(.kind == "question") and ((.source // "") != "pane")' "$df")" != true ]; then
+  if [ "$(jq -r '(.kind == "question" or .kind == "owner_call") and ((.source // "") != "pane")' "$df")" != true ]; then
     unlock_board
     die "advise: $id is not a board ask (permission prompts and pane questions take no advice)"
   fi
@@ -3098,8 +3108,9 @@ adv_recommend() {
         else [ $l[] | select(ascii_downcase == ($o | ascii_downcase)) ] | if length == 1 then .[0] else empty end end' "$df")"
     [ -n "$label" ] || { unlock_board; die "advise: --option $option is not one of this ask's options"; }
   fi
-  # the asking session is always asked for its view
-  asker="$(jq -r '.from // empty' "$df")"
+  # the asking session is always asked for its view (an owner's call: its advisor session, as a
+  # human asker is never a session; lib/advice.py asking_session)
+  asker="$(jq -r 'if .kind == "owner_call" then (.advisor // empty) else (.from // empty) end' "$df")"
   if [ -n "$asker" ] && valid_code "$asker"; then
     asker="$(adv_canon "$asker" 2>/dev/null)" || true
     seen=0
@@ -3108,7 +3119,7 @@ adv_recommend() {
   fi
   # A red line (a production gate, or --red-line) the committee may decide needs a strong record:
   # the recommendation gives its reason beyond the option label (lib/committee.py RATIONALE_MIN).
-  if [ ! -f "$f" ] && [ "$(jq -r .mode <<<"$stamp")" = committee ] && { [ "$red" = 1 ] || is_production "$df"; } \
+  if [ ! -f "$f" ] && [ "$(jq -r .mode <<<"$stamp")" = committee ] && { [ "$red" = 1 ] || is_production "$df" || is_red_owner_call "$df"; } \
       && ! printf '%s' "$text" | python3 "$REPO/lib/committee.py" rationale-ok "$label" 2>/dev/null; then
     unlock_board
     echo "board advise: refused — $id is a red line the committee may decide: the recommendation must say why (at least 20 characters beyond the option), so the owner can review it; nothing recorded" >&2
@@ -3183,7 +3194,8 @@ adv_stance() {
   # A red line the committee may decide: each agree (the recommender's reaffirm too) gives this
   # session's own reason, kept on the decision for the owner (lib/committee.py NOTE_MIN).
   if [ "$stance" = agree ] && [ "$(jq -r .mode <<<"$stamp")" = committee ] \
-      && { [ "$red" = 1 ] || [ "$(jq -r '.red_line == true' "$f")" = true ] || is_production "$(dec_path "$id")"; } \
+      && { [ "$red" = 1 ] || [ "$(jq -r '.red_line == true' "$f")" = true ] || is_production "$(dec_path "$id")" \
+           || is_red_owner_call "$(dec_path "$id")"; } \
       && [ "$(jq -rn --arg n "$note" '$n | gsub("\\s+"; " ") | gsub("^ | $"; "") | length')" -lt 10 ]; then
     unlock_board
     echo "board advise: refused — $id is a red line the committee may decide: an agree needs --note with $from's own reason (at least 10 characters), kept on the decision for the owner; nothing recorded" >&2
