@@ -577,7 +577,7 @@ def process_decisions(cfg, home, sessions, now):
             # the file since it was read. Re-read it right before the write and keep theirs when
             # its status moved.
             lk = -1
-            if d.get("kind") == "question" and d.get("source") != "pane":
+            if d.get("kind") in ("question", "owner_call") and d.get("source") != "pane":
                 lk = try_board_lock(home)
                 if lk is None:     # busy: show the file as it is, write next run
                     fresh = read_json(path)

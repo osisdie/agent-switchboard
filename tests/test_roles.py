@@ -213,6 +213,7 @@ OWNER_ONLY = [
     ("resume", "/api/resume", {"code": "API"}),
     ("lesson add", "/api/lessons", {"title": "hold heavy runs while memory is low"}),
     ("release", None, {"confirm": "release"}),
+    ("decline", None, {"confirm": "decline", "reason": "not this one"}),
     ("permission answer", "/api/decisions/d-1-perm/answer", {"answer": "deny"}),
     ("pane question answer", "/api/decisions/d-1-pane/answer", {"answer": "A"}),
 ]
@@ -224,7 +225,7 @@ class Matrix(Base):
         for name, path, body in OWNER_ONLY:
             for role in ("viewer", "asker", "release_manager", "approver", "owner"):   # the owner last
                 n += 1
-                p = path or "/api/messages/%s/release" % held(n)
+                p = path or "/api/messages/%s/%s" % (held(n), body["confirm"])
                 with self.subTest(route=name, role=role):
                     st, js = req("POST", p, ROLES[role], body)
                     if role == "owner":

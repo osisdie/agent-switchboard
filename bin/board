@@ -2966,7 +2966,7 @@ adv_gate() {
   local id="$1" df f now
   df="$(dec_path "$id")"; f="$(adv_path "$id")"
   [ -f "$df" ] || { unlock_board; die "no such decision: $id"; }
-  if [ "$(jq -r '(.kind == "question") and ((.source // "") != "pane")' "$df")" != true ]; then
+  if [ "$(jq -r '(.kind == "question" or .kind == "owner_call") and ((.source // "") != "pane")' "$df")" != true ]; then
     unlock_board
     die "advise: $id is not a board ask (permission prompts and pane questions take no advice)"
   fi
@@ -3098,8 +3098,9 @@ adv_recommend() {
         else [ $l[] | select(ascii_downcase == ($o | ascii_downcase)) ] | if length == 1 then .[0] else empty end end' "$df")"
     [ -n "$label" ] || { unlock_board; die "advise: --option $option is not one of this ask's options"; }
   fi
-  # the asking session is always asked for its view
-  asker="$(jq -r '.from // empty' "$df")"
+  # the asking session is always asked for its view (an owner's call: its advisor session, as a
+  # human asker is never a session; lib/advice.py asking_session)
+  asker="$(jq -r 'if .kind == "owner_call" then (.advisor // empty) else (.from // empty) end' "$df")"
   if [ -n "$asker" ] && valid_code "$asker"; then
     asker="$(adv_canon "$asker" 2>/dev/null)" || true
     seen=0

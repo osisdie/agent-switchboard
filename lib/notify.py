@@ -778,6 +778,12 @@ def decision_alert(d):
                 "escalate": not plain,
                 "title": "An asker's request waits for you: forward it to %s?" % (to or "a session"),
                 "body": "decide on the board (forward or decline)", "url": None}
+    if d.get("kind") == "owner_call":
+        # an asker's message is the owner's call (lib/owner_call.py): like any question, escalating,
+        # but the alert never echoes the asker or their words
+        return {"level": "warn", "key": "decision:%s" % d.get("id"), "kind": "decision", "escalate": True,
+                "title": "An asker's request waits for your decision",
+                "body": "decide on the board (the thread shows the request)", "url": None}
     if d.get("kind") == "permission":
         title = "%s asks permission" % who
         body = "%s: %s" % (d.get("tool_name") or "tool", (d.get("summary") or "")[:200])

@@ -40,8 +40,12 @@ listeners (docs/contract.md, "Local adapter API"):
                                        $BOARD_HOME/uploads (lib/uploads.py), never served back
   POST /api/uploads/<id>/delete        {}  the page's ✕: the caller's own upload that no message
                                        carries yet (204); unknown or someone else's: 404 not_found
-  POST /api/messages/<id>/release      {"confirm": "release"}  (owners only: release a held
-                                       message after a false positive; audited)
+  POST /api/messages/<id>/release      {"confirm": "release", "note"?: "..."}  (owners only: release a
+                                       held message after a false positive; the optional note is shown
+                                       to the sender; audited)
+  POST /api/messages/<id>/decline      {"confirm": "decline", "reason": "..."}  (owners only, the same
+                                       rules as release: a held message is not relayed; the reason,
+                                       required, is scrubbed, shown to the sender and audited)
   POST /api/away                       {"state": "on"|"off", "said": "..."}   (owners only;
                                        via `board away on|off --by board:<identity>`)
   POST /api/dnd                        {"state": "on"|"off"}   (owners only: do not disturb; askers'
@@ -135,6 +139,7 @@ import lessons  # noqa: E402
 import pomodoro  # noqa: E402
 import limit  # noqa: E402
 import messages  # noqa: E402
+import owner_call  # noqa: E402
 import notify  # noqa: E402
 import actions  # noqa: E402
 import prefs  # noqa: E402
@@ -761,8 +766,8 @@ HISTORY_MAX = 50
 MESSAGE_KEYS = ("id", "to", "body", "by", "created_at", "status", "relayed_to", "relayed_at", "held_reason",
                 "held_at", "released_by", "released_at", "kind", "asker", "event", "ticket", "task_id", "api", "via",
                 "routed_to", "routed_at", "declined_reason", "declined_at", "away_route", "away_at",
-                "attachments")
-REPLY_KEYS = ("id", "from", "body", "created_at", "redacted", "canned", "local_model")
+                "attachments", "declined_by", "release_note", "owner_call")
+REPLY_KEYS = ("id", "from", "body", "created_at", "redacted", "canned", "local_model", "notice", "args")
 CURSOR_RE = re.compile(r"([0-9]{1,16})\.(m-[0-9]+-[a-z0-9]+)")
 
 
@@ -1669,6 +1674,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if m:
                 body = self.read_body()
                 return self.release(m.group(1), body, ident, via)
+            m = re.fullmatch(r"/api/messages/([^/]+)/decline", path)
+            if m:
+                body = self.read_body()
+                return self.release(m.group(1), body, ident, via, op="decline")
             if path == "/api/tickets/take":
                 body = self.read_body()
                 return self.ticket_take(body, ident, via)
@@ -2165,44 +2174,55 @@ class Handler(http.server.BaseHTTPRequestHandler):
             out["forward"] = "pending"      # a work request: the owner decides whether a session takes it
         return self.send_json(201, out)
 
-    def release(self, mid, body, ident, via):
-        """Release a held message (a false positive of the secret guard): owners only, and the
-        body must confirm it ({"confirm": "release"}, the page's second click). Audited; the
-        relay then carries a reminder that this authorizes no secret values."""
+    def release(self, mid, body, ident, via, op="release"):
+        """Release a held message (a false positive of the secret guard), or decline it (op
+        "decline": never relayed, with a required reason for the sender): owners only, and the body
+        must confirm it ({"confirm": "release"|"decline"}, the page's second click). Audited; a
+        released message's relay then carries a reminder that this authorizes no secret values."""
         if not MSG_ID_RE.fullmatch(mid):
             raise Refused(400, "bad_id", "invalid message id")
+        action = "message-" + op
         # Fails closed: only the two verified listeners (a direct local request, a verified Access
-        # JWT) may release; any other channel (an API key, later) may not.
+        # JWT) may release or decline; any other channel (an API key, later) may not.
         if via not in ("loopback", "cf-jwt"):
-            self.audit(ident, via, "message-release", id=mid, result="refused", reason="channel")
-            raise Refused(403, "release_refused", "held messages are released only on the board itself")
-        by = self.owner(ident, via, "message-release", what="release a held message", id=mid)
-        if body.get("confirm") != "release":
-            raise Refused(400, "confirm_required", "confirm the release: {\"confirm\": \"release\"}")
+            self.audit(ident, via, action, id=mid, result="refused", reason="channel")
+            raise Refused(403, op + "_refused", "held messages are released or declined only on the board itself")
+        by = self.owner(ident, via, action, what="%s a held message" % op, id=mid)
+        if body.get("confirm") != op:
+            raise Refused(400, "confirm_required", "confirm it: {\"confirm\": \"%s\"}" % op)
+        text = body.get("reason") if op == "decline" else body.get("note")
+        try:    # checked before anything is read or written: scrubbed by the secret guard when stored
+            messages.clean_note(text, required=op == "decline")
+        except messages.MessageError as exc:
+            raise Refused(400, exc.code, exc.detail) from exc
         with self.server.write_lock:
             rec = messages.read(self.server.home, mid) or {}
-            # releasing is owner-only, so the four-eyes rule counts owners: a single owner may release
+            # owner-only, so the four-eyes rule counts owners: a single owner may release or decline
             # a message they sent themselves (nobody else could)
             releasers = owner_ids(fleet.load_fleet())
             if self_release_refused(rec, ident, releasers):
-                self.audit(ident, via, "message-release", id=mid, result="refused", reason="self-release")
-                raise Refused(403, "self_release", "another owner must release a message you sent")
+                self.audit(ident, via, action, id=mid, result="refused", reason="self-" + op)
+                raise Refused(403, "self_" + op, "another owner must %s a message you sent" % op)
             try:
-                rel = messages.release(self.server.home, mid, by)
+                if op == "decline":
+                    rel = messages.decline_held(self.server.home, mid, by, text)
+                else:
+                    rel = messages.release(self.server.home, mid, by, note=text)
             except messages.MessageError as exc:
-                self.audit(ident, via, "message-release", id=mid, result=exc.code)
+                self.audit(ident, via, action, id=mid, result=exc.code)
                 raise Refused(404 if exc.code == "not_found" else 409, exc.code, exc.detail) from exc
             # an asker's message while their requests are declined: released into "declined" (the
             # canned reply, never relayed), checked now, not when it was sent
-            declined = rel.get("status") == "declined"
-            self.audit(ident, via, "message-release", id=mid, result="declined" if declined else "released",
-                       **({"reason": rel.get("declined_reason")} if declined else {}))
+            declined = op == "release" and rel.get("status") == "declined"
+            self.audit(ident, via, action, id=mid,
+                       result="declined" if op == "decline" or declined else "released",
+                       **({"reason": rel.get("declined_reason")} if declined else {}),
+                       **({"note": True} if text and text.strip() else {}))
         self.hub_kick()
         out = {"id": mid, "status": rel.get("status")}
         if declined:
             out["reason"] = rel.get("declined_reason")
         return self.send_json(200, out)
-
 
     def resolve(self, did, body, ident, via):
         """A board ask answered in the session (or in another one): approvers only, with a confirm
@@ -2743,6 +2763,8 @@ def actionable(home):
         # board-serve presses permission prompts and pane questions itself (relay "press").
         if isinstance(d, dict) and d.get("kind") == desk.FORWARD_KIND:
             continue    # the local desk's "forward to CODE?": lib/desk.py applies it, never relayed
+        if isinstance(d, dict) and d.get("kind") == owner_call.KIND:
+            continue    # an owner's call: lib/owner_call.py writes the answer to the thread, never relayed
         if isinstance(d, dict) and d.get("status") == "answered" and d.get("kind") == serve_api.TAKE_KIND:
             # an API take request: never relayed as a [BOARD decision]; the operator runs the take
             # on approve (prompts/board-operator.md, "Take requests from the API")
@@ -2793,7 +2815,8 @@ def desk_sweep(home):
     by --watch too, so a dead collector never strands an asker's message with the desk."""
     try:
         cfg = fleet.load_fleet()
-        out = []
+        # answered owner's calls go back to their thread (lib/owner_call.py), whoever answered
+        out = ["owner-call %s %s" % x for x in owner_call.apply(home, cfg)]
         # the owner is away with "committee" for askers: open forward cards go to the sessions
         # (lib/desk.py settle_away), also when the collector is not running
         if asker_route.away_mode(home) == "committee" and desk.open_forwards(home):

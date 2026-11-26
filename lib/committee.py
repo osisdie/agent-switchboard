@@ -440,7 +440,7 @@ def evaluate(home, did, rec=None, dec=None, away_rec=None, s=None):
         c = canon(m, p)
         if isinstance(c, str) and CODE_RE.fullmatch(c) and c not in parts:
             parts.append(c)
-    asker = canon(m, dec.get("from"))
+    asker = canon(m, advice.asking_session(dec))
     if not isinstance(asker, str) or asker not in parts:
         return False, "no_asker", None
     if len(parts) < 2:
@@ -663,6 +663,8 @@ def waiting(home, only=None):
         d = advice.read_json(path)
         if not is_committee(d) or d.get("status") != "answered" or not advice.DEC_RE.fullmatch(str(d.get("id"))):
             continue
+        if d.get("kind") == "owner_call":
+            continue    # an owner's call goes back to its thread (lib/owner_call.py), never to a session
         if only and d["id"] != only:
             continue
         out.append(d)

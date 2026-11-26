@@ -297,6 +297,7 @@ class Local(unittest.TestCase):
                   ("/api/decisions/d-1-a/answer", {"answer": "yes", "option": 1}),
                   ("/api/decisions/d-1-a/resolve", {"confirm": "resolve"}),
                   ("/api/messages/m-1-h/release", {"confirm": "release"}),
+                  ("/api/messages/m-1-h/decline", {"confirm": "decline", "reason": "no"}),
                   ("/api/away", {"state": "on", "said": "back later"}),
                   ("/api/notify-prefs", {"op": "mute", "channel": "slack", "for": "1h"}),
                   ("/api/alerts/ack", {"scope": "all"}),
