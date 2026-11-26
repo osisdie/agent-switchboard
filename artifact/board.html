@@ -3894,9 +3894,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
         ? 'The owner is away. Your request is queued as pending owner decision {decision}; the sessions may decide it by unanimous agreement under the away rules; red lines and production wait for the owner.'
         : 'The owner is away. Your request is queued as pending owner decision {decision}; the owner decides when they are back.', v);
       case 'owner_answer': return tr(str(a.by) === 'committee'
-        ? 'Decided by the sessions\' unanimous agreement while the owner was away ({decision}): {answer}'
+        ? 'While the owner was away, the sessions decided on the owner\'s behalf by unanimous agreement ({decision}): {answer}. The owner follows up when back.'
         : 'The owner decided ({decision}): {answer}', v);
-      case 'owner_closed': return tr('Nobody decided on {decision} in time; it is closed. Send the request again if it is still needed.', v);
       default: return null;
     }
   }
@@ -8290,9 +8289,8 @@ button.pm-day:focus-visible { outline: 2px solid var(--cord); outline-offset: 1p
       "A board owner did not relay this message: {reason}": "管理者未轉送此訊息：{reason}",
       "The owner is away. Your request is queued as pending owner decision {decision}; the sessions may decide it by unanimous agreement under the away rules; red lines and production wait for the owner.": "主人不在。你的請求已排入佇列，成為待主人決定的 {decision}；依主人不在時的規則，各 session 可一致同意後代為決定；紅線與 production 仍等主人。",
       "The owner is away. Your request is queued as pending owner decision {decision}; the owner decides when they are back.": "主人不在。你的請求已排入佇列，成為待主人決定的 {decision}；主人回來後決定。",
-      "Decided by the sessions' unanimous agreement while the owner was away ({decision}): {answer}": "主人不在時，各 session 一致同意後決定（{decision}）：{answer}",
+      "While the owner was away, the sessions decided on the owner's behalf by unanimous agreement ({decision}): {answer}. The owner follows up when back.": "主人不在時，各 session 一致同意後代主人決定（{decision}）：{answer}。主人回來後會再跟進。",
       "The owner decided ({decision}): {answer}": "主人已決定（{decision}）：{answer}",
-      "Nobody decided on {decision} in time; it is closed. Send the request again if it is still needed.": "{decision} 逾時沒有人決定，已關閉。仍需要的話請重新送出請求。",
       "Released by {who} after the secret guard held it; relayed with a reminder that it authorizes no secret values.": "{who} 在機密防護攔下後放行；轉送時附上提醒：放行不代表可以透露任何機密的值。",
       "Not released: {why}": "未放行：{why}",
       "the message is not held.": "這則訊息沒有被攔下。",

@@ -45,11 +45,9 @@ CLI (bin/board message ...):
                                                           the operator: the message is the owner's
                                                           call: a pending owner decision linked to
                                                           it (lib/owner_call.py); prints its id
-  messages.py release MSG_ID --by OWNER [--note-file F]   an owner releases a held message (the
-                                                          optional note is shown to the sender)
-  messages.py decline MSG_ID --by OWNER --reason-file F   an owner declines a held message: never
-                                                          relayed; the reason (required) is shown
-                                                          to the sender in the thread, audited
+  A held message is released or declined only on the board (board-serve's verified listeners,
+  POST /api/messages/<id>/release|decline): there is no CLI for either, so a session can never
+  lift a hold with a --by it typed itself.
 """
 import json
 import os
@@ -97,7 +95,7 @@ NOTICE_HELD = ("This message was held by the secret guard and waits for a board 
                "(release or decline).")
 NOTICE_RELEASED = "A board owner released this message after the secret guard held it; it goes to the session now."
 NOTICE_HELD_DECLINED = "A board owner did not relay this message: %s"
-NOTICES = ("held", "released", "held_declined", "owner_call", "owner_call_away", "owner_answer", "owner_closed")
+NOTICES = ("held", "released", "held_declined", "owner_call", "owner_call_away", "owner_answer")
 
 
 class MessageError(Exception):
@@ -788,33 +786,6 @@ def _discard(home, atts):
 OWNER_CALL_OPTIONS = ("I'll handle it", "Pass it to a session", "Decline (say why)")   # lib/owner_call.py OPTIONS
 
 
-def _cli_held(home, args):
-    """board message release|decline: only an owner (fleet.yaml owners, else approvers), and with
-    more than one owner never the sender (board-serve's four-eyes rule)."""
-    cfg = fleet.load_fleet()
-    owners = fleet.owner_ids(cfg)
-    who = str(args.by or "").strip().lower()
-    by = next((o for o in owners if str(o).strip().lower() == who), None)
-    if not who or by is None:
-        audit(home, {"type": "message", "action": "message-" + args.cmd, "id": args.id, "by": args.by,
-                     "via": "cli", "result": "refused", "reason": "not an owner"})
-        sys.stderr.write("board message: refused: %s is not an owner of this board\n" % safe_line(args.by, 200))
-        return 4
-    rec = read(home, args.id)
-    if rec is not None and len(owners) > 1 and who != "local" and str(rec.get("by") or "").strip().lower() == who:
-        audit(home, {"type": "message", "action": "message-" + args.cmd, "id": args.id, "by": by, "via": "cli",
-                     "result": "refused", "reason": "self-" + args.cmd})
-        sys.stderr.write("board message: refused: another owner must %s a message you sent\n" % args.cmd)
-        return 4
-    note = _text(None, args.note_file) if args.note_file else None
-    if args.cmd == "decline":
-        rec = decline_held(home, args.id, by, note)
-    else:
-        rec = release(home, args.id, by, cfg=cfg, note=note)
-    print("%s %s" % (rec["id"], rec["status"]))
-    return 0
-
-
 def main(argv):
     import argparse
     ap = argparse.ArgumentParser(prog="board message", description="board messages through the secret guard")
@@ -850,15 +821,6 @@ def main(argv):
     oc.add_argument("--gate", choices=["production"], help="a production gate: release managers decide")
     oc.add_argument("--red-line", dest="red_line", action="store_true", help="a red line: the committee "
                     "decides it only when the owner let it decide red lines")
-    for name, needs in (("release", False), ("decline", True)):
-        x = sub.add_parser(name, help="an owner %ss a held message" % name)
-        x.add_argument("id")
-        x.add_argument("--by", required=True)
-        if needs:
-            x.add_argument("--reason-file", dest="note_file", required=True,
-                           help="why it is not relayed (shown to the sender; required)")
-        else:
-            x.add_argument("--note-file", dest="note_file", help="a note for the sender (optional)")
     args = ap.parse_args(argv[1:])
     home = fleet.ensure_home()
     try:
@@ -928,8 +890,6 @@ def main(argv):
                 raise MessageError(exc.code, exc.detail) from None
             print(did if created else "%s exists" % did)
             return 0
-        if args.cmd in ("release", "decline"):
-            return _cli_held(home, args)
         rec = read(home, args.id)
         if rec is None:
             raise MessageError("not_found", "no such message")

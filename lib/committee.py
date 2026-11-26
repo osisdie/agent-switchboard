@@ -472,6 +472,8 @@ def evaluate(home, did, rec=None, dec=None, away_rec=None, s=None):
     answer = clean_answer(answer)
     if not answer:
         return False, "empty", None
+    if dec.get("kind") == "owner_call" and advice.is_decline(answer):
+        return False, "owner_only_decline", None     # declining an asker's request stays the owner's
     if guard.scrub(answer) != answer or guard.screen_answer(answer, dec.get("options")):
         return False, "held", None
     stances = [{"by": p, "stance": last[p]["stance"], "at": _ms(last[p].get("at")) or None,

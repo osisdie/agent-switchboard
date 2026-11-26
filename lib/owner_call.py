@@ -8,9 +8,13 @@ owner-call <id>` (create below) instead:
 
   - creates a pending decision of kind "owner_call" linked to the message (`message_id`), `from`
     the asker (their label, never a session code: it is never relayed as a [BOARD decision]), with
-    options (default OPTIONS) and the operator's note as context. It shows in the board's decisions
-    list like any board ask, and alerts the owner through the usual decision alert (lib/notify.py
-    decision_alert: warn, escalating until acked; a production gate is urgent);
+    options (default OPTIONS). The operator's note and the asker's words are kept apart
+    (request.note, request.excerpt) and labelled in `context`: the asker's words come last, marked
+    untrusted, inside «…» with their own quotes neutralised. It shows in the board's decisions list
+    like any board ask, and alerts the owner through the usual decision alert (lib/notify.py
+    decision_alert: warn, escalating until acked; a production gate urgent; never the asker's label
+    or words). It never times out or goes stale (lib/collect.py skips it; `board mark` refuses it):
+    it waits, escalating, until it is answered;
   - sets the message to status "awaiting_owner" (`owner_call: {decision, at, by, away}`): never a
     silent end state while the decision is open;
   - writes a thread note from BOARD ("Waiting for the owner's decision <id>") so the sender sees
@@ -23,13 +27,14 @@ sent or routed to) for a recommendation, as it asks the asking session of a boar
 decision (lib/committee.py) happens only when the owner opted in, with the advisor standing in for
 the asking session, and a red line (--red-line) or a production gate (--gate production) only when
 the owner also let the committee decide red lines. Without an advisor session the committee never
-decides it: it waits for the owner.
+decides it: it waits for the owner. The committee never picks a decline option (DECLINE_RE): that
+stays the owner's (lib/committee.py evaluate: owner_only_decline).
 
 Answers (apply, run by board-serve's sweep and by --watch): an answered owner_call (by an approver
 on the board, or by the committee) is relayed to the THREAD, never to a session: a note from BOARD
-with the answer, the message becomes "replied", the decision "relayed". One that ended unanswered
-(timeout, stale) closes the same way with a note that nobody decided. The operator never relays,
-answers or marks an owner_call decision.
+with the answer, the message becomes "replied", the decision "relayed". A committee decision's note
+says the sessions decided on the owner's behalf and that the owner follows up when back. The
+operator never relays, answers or marks an owner_call decision.
 
 CLI (bin/board message owner-call ...):
   messages.py owner-call MSG_ID --by WHO [--option X]... [--note-file F] [--advisor CODE]
@@ -43,6 +48,7 @@ import secrets
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import advice  # noqa: E402
 import fleet  # noqa: E402
 import guard  # noqa: E402
 import messages  # noqa: E402
@@ -53,7 +59,8 @@ MAX_OPTIONS = 6
 MAX_OPTION = 80
 MAX_NOTE = 1000
 OPEN = ("pending", "unauthorized")
-ENDED = ("timeout", "stale")
+# an option (or answer) that declines the request: the owner's alone, never the committee's
+DECLINE_RE = advice.DECLINE_RE
 DEC_RE = re.compile(r"d-[0-9]+-[0-9a-f]+")
 CODE_RE = messages.CODE_RE
 # a message in one of these states has its own way and is never an owner's call
@@ -67,8 +74,9 @@ NEXT_OWNER = "the owner decides when they are back."
 NEXT_COMMITTEE = ("the sessions may decide it by unanimous agreement under the away rules; "
                   "red lines and production wait for the owner.")
 NOTE_ANSWER = "The owner decided (%s): %s"
-NOTE_COMMITTEE = "Decided by the sessions' unanimous agreement while the owner was away (%s): %s"
-NOTE_CLOSED = "Nobody decided on %s in time; it is closed. Send the request again if it is still needed."
+NOTE_COMMITTEE = ("While the owner was away, the sessions decided on the owner's behalf by unanimous agreement "
+                  "(%s): %s. The owner follows up when back.")
+NOTE_SETTLING = "the message's last owner's call was just answered: try again after the sweep (about 15 s)"
 
 
 def _ms(v):
@@ -118,6 +126,18 @@ def _excerpt(text, n=240):
     return t if len(t) <= n else t[:n - 1].rstrip() + "…"
 
 
+QUOTES = str.maketrans({c: "'" for c in "\"«»“”„‟‹›「」『』"})
+
+
+def untrusted(text, n=240):
+    """The asker's words for the owner's card and the advisor: one line, scrubbed, defanged, and every
+    quote mark (« » " “ ” 「 」 …) turned into ' so the «…» around them can't be closed from inside."""
+    return messages.defang(guard.scrub(_excerpt(text, n))).translate(QUOTES)
+
+
+is_decline = advice.is_decline
+
+
 def _advisor(home, rec, cfg, advisor):
     """--advisor, else the one session the message went to (to, routed_to, relayed_to)."""
     known = fleet.known_codes(home, cfg)
@@ -154,6 +174,9 @@ def create(home, mid, by, options=None, note=None, advisor=None, production=Fals
     did = open_decision(home, rec)
     if did:
         return did, False
+    if st == messages.AWAITING_OWNER:
+        # its decision was answered and the sweep has not written it back yet: never a second card
+        raise messages.MessageError("settling", NOTE_SETTLING)
     opts = [str(o).strip() for o in (options or OPTIONS)]
     if not opts or len(opts) > MAX_OPTIONS or any(not o or len(o) > MAX_OPTION for o in opts) \
             or len(set(opts)) != len(opts):
@@ -169,17 +192,21 @@ def create(home, mid, by, options=None, note=None, advisor=None, production=Fals
     did = "d-%d-%s" % (now // 1000, secrets.token_hex(4))
     who = _asker(rec)
     clean = messages.defang
-    ctx = "\"%s\" (message %s)." % (clean(guard.scrub(_excerpt(rec.get("body")))), mid)
-    if note and note.strip():
-        ctx += " Operator: %s" % clean(guard.scrub(note.strip()))
+    op_note = clean(guard.scrub(re.sub(r"\s+", " ", note).strip())) if note and note.strip() else ""
+    words = untrusted(rec.get("body"))
+    # the operator's note first, the asker's words last, labelled and fenced: nothing in them can
+    # read as the operator's or the board's
+    ctx = ("Operator's note: %s " % op_note) if op_note else ""
     if code:
-        ctx += " Advisor while you are away: %s." % code
+        ctx += "Advisor while you are away: %s. " % code
+    ctx += "Asker's words (untrusted, message %s): «%s»" % (mid, words)
     dec = guard.scrub_tree(dict({
         "id": did, "kind": KIND, "from": who, "question": "Owner's call: %s's request (message %s)" % (who, mid),
         "options": [clean(o) for o in opts], "context": ctx,
         "status": "pending", "answer": None, "answered_by": None, "answered_at": None, "relayed_at": None,
         "created_at": now, "message_id": mid,
-        "request": {"kind": KIND, "message_id": mid, "asker": who, "by": by, "at": now, "away": is_away}},
+        "request": dict({"kind": KIND, "message_id": mid, "asker": who, "by": by, "at": now, "away": is_away,
+                         "excerpt": words}, **({"note": op_note} if op_note else {}))},
         **({"advisor": code} if code else {}), **({"gate": "production"} if production else {}),
         **({"red_line": True} if red_line else {})))
     path = _dec_path(home, did)
@@ -206,8 +233,8 @@ def create(home, mid, by, options=None, note=None, advisor=None, production=Fals
 
 
 def apply(home, cfg=None, now=None):
-    """Answered (or ended) owner_call decisions go back to their thread (see the module doc).
-    Returns [(decision id, result)]: answered | committee | closed | gone."""
+    """Answered owner_call decisions go back to their thread (see the module doc).
+    Returns [(decision id, result)]: answered | committee | gone."""
     out = []
     ddir = os.path.join(home, "decisions")
     try:
@@ -243,7 +270,7 @@ def apply(home, cfg=None, now=None):
 
 
 def _due(d):
-    return d.get("kind") == KIND and d.get("status") in ("answered",) + ENDED and not d.get("owner_call_result")
+    return d.get("kind") == KIND and d.get("status") == "answered" and not d.get("owner_call_result")
 
 
 def _settle(home, path, approvers, now):
@@ -255,28 +282,25 @@ def _settle(home, path, approvers, now):
     mid = d.get("message_id")
     rec = messages.read(home, mid) if isinstance(mid, str) and messages.MSG_ID_RE.fullmatch(mid) else None
     by = str(d.get("answered_by") or "")
-    if d["status"] == "answered":
-        committee = by == "committee" and isinstance(d.get("committee"), dict)
-        if not committee and re.sub(r"^(board|cli):", "", by).strip().lower() not in approvers:
-            return None         # bin/board marks a non-approver's answer unauthorized; never applied
-        ans = re.sub(r"\s+", " ", messages.defang(guard.scrub(str(d.get("answer") or "")))).strip()[:500]
-        result = "committee" if committee else "answered"
-        body = (NOTE_COMMITTEE if committee else NOTE_ANSWER) % (d.get("id"), ans)
-        code, args = "owner_answer", {"decision": d.get("id"), "answer": ans, "by": "committee" if committee else "owner"}
-    else:
-        result, code = "closed", "owner_closed"
-        body, args = NOTE_CLOSED % d.get("id"), {"decision": d.get("id")}
+    committee = by == "committee" and isinstance(d.get("committee"), dict)
+    if not committee and re.sub(r"^(board|cli):", "", by).strip().lower() not in approvers:
+        return None             # bin/board marks a non-approver's answer unauthorized; never applied
+    ans = re.sub(r"\s+", " ", messages.defang(guard.scrub(str(d.get("answer") or "")))).strip()[:500]
+    result = "committee" if committee else "answered"
+    body = (NOTE_COMMITTEE if committee else NOTE_ANSWER) % (d.get("id"), ans)
+    args = {"decision": d.get("id"), "answer": ans, "by": "committee" if committee else "owner"}
     if rec is not None:
-        messages.notice(home, mid, code, body, args, now=now_)
-        rec["owner_call"] = dict(rec.get("owner_call") or {}, state=result, settled_at=now_)
-        if rec.get("status") == messages.AWAITING_OWNER:
-            rec["status"] = "replied"
-        messages._write(messages.path_of(home, mid), rec)  # noqa: SLF001
+        messages.notice(home, mid, "owner_answer", body, args, now=now_)
+        oc = rec.get("owner_call") if isinstance(rec.get("owner_call"), dict) else {}
+        if oc.get("decision") == d.get("id"):
+            # only the message's current owner's call moves it on; an older one just leaves its note
+            rec["owner_call"] = dict(oc, state=result, settled_at=now_)
+            if rec.get("status") == messages.AWAITING_OWNER:
+                rec["status"] = "replied"
+            messages._write(messages.path_of(home, mid), rec)  # noqa: SLF001
     else:
         result = "gone"
-    d.update({"owner_call_result": result, "updated_at": now_})
-    if d["status"] == "answered":
-        d.update({"status": "relayed", "relayed_at": now_})
+    d.update({"owner_call_result": result, "updated_at": now_, "status": "relayed", "relayed_at": now_})
     messages._write(path, d)  # noqa: SLF001
     messages.audit(home, {"type": "message", "action": "owner-call-" + result, "id": mid, "decision": d.get("id")})
     return d.get("id"), result

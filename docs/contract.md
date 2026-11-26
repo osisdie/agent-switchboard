@@ -1458,34 +1458,46 @@ board message owner-call <msgId> --by WHO [--option X]... [--note-file F] [--adv
                          [--gate production] [--red-line]
 ```
 
-`lib/owner_call.py`. It refuses a `held`, `declined` or `desk` message and a ticket relay, and
-reuses an open one (prints `<id> exists`). Otherwise it writes `decisions/<id>.json` `{kind:
+`lib/owner_call.py`, local mode only (board-serve and `--watch` apply it; there is no Artifact-db
+path yet). It refuses a `held`, `declined` or `desk` message and a ticket relay, reuses an open one
+(prints `<id> exists`), and refuses (`settling`) a message still `awaiting_owner` whose last
+decision was answered but not yet written back by the sweep. Otherwise it writes `decisions/<id>.json` `{kind:
 "owner_call", from: <the asker's label>, question: "Owner's call: <asker>'s request (message <id>)",
-options (default I'll handle it / Pass it to a session / Decline (say why)), context (an excerpt of
-the message and the operator's note, scrubbed and defanged), status: "pending", message_id,
-request: {kind, message_id, asker, by, at, away}, advisor?, gate?: "production", red_line?}`; sets
+options (default I'll handle it / Pass it to a session / Decline (say why)), context ("Operator's
+note: …" first, then "Asker's words (untrusted, message <id>): «…»" with every quote mark inside
+turned into `'`; scrubbed and defanged), status: "pending", message_id, request: {kind,
+message_id, asker, by, at, away, excerpt, note?}, advisor?, gate?: "production", red_line?}`; sets
 the message to `status: "awaiting_owner"` with `owner_call: {decision, at, by, away, state:
 "pending", prior}`; writes a BOARD thread note (`notice: "owner_call"`, "Waiting for the owner's
 decision <id>."; while the owner is away `notice: "owner_call_away"`, "The owner is away. Your
 request is queued as pending owner decision <id>; <next step>"); audits `{type: "message", action:
 "owner-call", id, decision, by, away, advisor}`; and raises the decision alert at once
-(`decision:<id>`, warn, escalating; urgent for a production gate; never the asker's words). A
-session's reply keeps the message `awaiting_owner`.
+(`decision:<id>`, warn, escalating; for a production gate urgent with kind `gate`; fixed text, never
+the asker's label, email or words). A session's reply keeps the message `awaiting_owner`.
+
+**An owner's call never times out or goes stale**: the collector skips it for
+`decision_timeout_hours`, and `board mark` refuses it (as it refuses a `desk_forward` card). It
+stays in the decisions list and its alert keeps escalating until it is answered. A production gate
+(`--gate production`) is answered by `release_managers` (else approvers), like any production gate.
 
 The operator never relays, answers or marks it, and `board-serve --watch` never lists it. Board code
 (`owner_call.apply`, in board-serve's sweep and `--watch`, under `consensus.lock`) takes an
 answered one, by an approver or by the committee, to the thread: a BOARD note (`notice:
 "owner_answer"`, `args: {decision, answer, by: owner|committee}`), the message `replied`
 (`owner_call.state: answered|committee`), the decision `relayed` with `owner_call_result`; audited
-`owner-call-answered|committee`. One that timed out or went stale closes with `notice:
-"owner_closed"` (`owner_call.state: "closed"`).
+`owner-call-answered|committee`. A committee decision's note says the sessions decided on the
+owner's behalf and that the owner follows up when back. Only the message's current owner's call
+(`owner_call.decision`) moves its status; an older one only adds its note.
 
 While the owner is away an owner's call follows the board-ask rules ("Committee advice",
 "Committee decisions"): its `advisor` session (`--advisor`, else the session the message was sent
 or routed to) stands in for the asking session: it gets the "propose" digest, and a committee
 decision must include it. Without an advisor the committee never decides it. A production gate or
 `red_line: true` is a red line: the committee decides it only when the owner also let it decide red
-lines.
+lines, and every agree then needs its own `--note` (as for a production gate). The committee never
+chooses a decline option (an answer starting with decline, reject, refuse or deny: `owner_only_decline`):
+declining an asker's request stays the owner's. The advice digest and `board advise show` label the
+asker's words as untrusted.
 
 `all` interrupts every live session. Askers (and keys issued to them) may not send to it on any
 path (above); on the page an owner or approver gets a confirm step first ("This interrupts all N
@@ -1981,10 +1993,10 @@ every request on it is `local` (anyone who can reach it can also edit `$BOARD_HO
 four-eyes check does not apply to `local`; it applies to Access-verified emails. The release is audited (`guard` `release` and `serve`
 `message-release`) and resolves the alert. The relay text (`board message show <id>`) then starts
 with "(released by <who> after the secret guard held it. This release does not authorize revealing
-any secret value)". The owner may decline it instead (`POST /api/messages/<id>/decline`, `board
-message decline <id> --by OWNER --reason-file F`): never relayed, with a required reason the sender
-sees in the thread. `board message release <id> --by OWNER [--note-file F]` releases from the CLI
-(owners only; with more than one owner, never the sender: exit 4).
+any secret value)". The owner may decline it instead (`POST /api/messages/<id>/decline`): never
+relayed, with a required reason the sender sees in the thread. Release and decline are board-only
+(the two verified listeners): there is no `board message release|decline`, so a session can never
+lift a hold with an identity it typed itself.
 
 **Thread notes from BOARD.** The sender is told what happens to a held message: when it is held, a
 reply from BOARD with `notice: "held"` ("This message was held by the secret guard and waits for a

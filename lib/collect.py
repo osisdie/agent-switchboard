@@ -566,7 +566,9 @@ def process_decisions(cfg, home, sessions, now):
             if at:
                 d["hint"], d["hint_at"] = MAYBE_ANSWERED, at
                 changed = True
-        if d.get("status") == "pending" and now - int(d.get("created_at") or 0) > timeout_ms:
+        # an owner's call never times out: it waits, escalating, until it is answered (lib/owner_call.py)
+        if d.get("status") == "pending" and d.get("kind") != "owner_call" \
+                and now - int(d.get("created_at") or 0) > timeout_ms:
             d["status"] = "timeout"
             d["status_reason"] = "timeout"
             changed = True

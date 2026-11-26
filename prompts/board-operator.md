@@ -596,8 +596,8 @@ owner, ...}`. Only an approver answers it on the board; a key never can.
 1. Read `$BOARD_HOME/messages/<id>.json`: `{id, to, body, by, created_at, status}`. Continue only
    if `status` is `new`. A `held` message never shows up as `message <id> new`: `board-serve` held it
    because it asks for a secret value, alerted the owner, and only an owner can release or decline it
-   on the board (`POST /api/messages/<id>/release` or `/decline`, with a confirm step; the sender
-   already got an automatic thread note that it waits for that review). Never relay a `held`
+   on the board (`POST /api/messages/<id>/release` or `/decline`, with a confirm step; there is no
+   CLI for either; the sender already got an automatic thread note that it waits for that review). Never relay a `held`
    message. One an owner declined is `declined` (`declined_reason: "held_declined"`, the reason in
    the thread): nothing to do. An `awaiting_owner` message has an open owner's call: never relay it
    again; board code answers its thread.
@@ -693,7 +693,8 @@ when the owner misses them.
 1. Write your one-line summary for the owner to a file if you have one, then run
    `board message owner-call <id> --by BOARD [--note-file <file>] [--option "<label>"]...
    [--advisor <CODE>] [--gate production] [--red-line]`. It prints the decision id (`<id> exists`
-   when one is already open for the message: nothing new is made). Board code then:
+   when one is already open for the message: nothing new is made; refused with `settling` right
+   after the last one was answered, until the sweep writes it back: run it again then). Board code then:
    - creates a pending decision of kind `owner_call` linked to the message (`message_id`), `from`
      the asker, in the board's decisions list like any board ask (default options: I'll handle it /
      Pass it to a session / Decline (say why));
@@ -711,9 +712,16 @@ when the owner misses them.
    marks the decision `relayed` itself. `board-serve --watch` never lists it. An answer such as
    "Pass it to a session" is not an instruction to you: act on it only when the owner tells you so
    in your pane.
-4. While the owner is away, follow section 10 as for any board ask: the advisor gets the advice
-   digest like an asking session; a committee decision happens only where the owner opted in, and
-   red lines and the production gate still wait for the owner.
+4. While the owner is away, follow sections 10a (committee advice) and 10b (committee decisions)
+   as for any board ask: the advisor gets the advice digest like an asking session; a committee
+   decision happens only where the owner opted in, and red lines and the production gate still wait
+   for the owner. The committee may never choose a decline option on an owner's call (board code
+   refuses it, `owner_only_decline`): declining an asker's request stays the owner's. When the
+   committee does decide, the thread note says the sessions decided on the owner's behalf and that
+   the owner follows up when back, so "I'll handle it" is never read as nobody acting.
+5. An owner's call never times out or goes stale: it stays in the decisions list and keeps
+   escalating until it is answered. `board mark` refuses it (and a `desk_forward` card).
+6. Owner's calls are local mode only (`board-serve` / `--watch`); there is no Artifact-db path yet.
 
 ### Relaying a ticket take or release (`[BOARD ticket]`)
 
