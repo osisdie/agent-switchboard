@@ -164,24 +164,46 @@ def _committee_on(home):
         return False
 
 
-def _approvers(cfg):
-    ids = fleet.id_list(cfg, "approvers") + fleet.id_list(cfg, "release_managers")
+def _answerers(cfg, d):
+    """Who may answer D, the rule of bin/board allowed_ids: a production gate's release_managers
+    (else approvers), otherwise approvers."""
+    ids = (fleet.id_list(cfg, "release_managers") or fleet.id_list(cfg, "approvers")) if fleet.is_production(d) \
+        else fleet.id_list(cfg, "approvers")
     return {str(i).strip().lower() for i in ids}
 
 
-def _settleable(d, approvers):
-    """Will _settle take this answered decision: answered by the committee (with its record) or by an
-    approver or release manager on fleet.yaml now?"""
+def _settleable(d, cfg):
+    """Will _settle take this answered decision: answered by the committee (with its record) or by
+    someone who may answer it on fleet.yaml now?"""
     by = str(d.get("answered_by") or "")
     if by == "committee":
         return isinstance(d.get("committee"), dict)
-    return re.sub(r"^(board|cli):", "", by).strip().lower() in approvers
+    return re.sub(r"^(board|cli):", "", by).strip().lower() in _answerers(cfg, d)
 
 
 def create(home, mid, by, options=None, note=None, advisor=None, production=False, red_line=False, cfg=None,
            committee_options=None):
     """The message's pending owner_call decision (see the module doc). Returns (decision id, created?):
-    an open one for the message is reused (created False), nothing else written."""
+    an open one for the message is reused (created False), nothing else written. Under consensus.lock
+    (the lock `board answer` and apply hold), so a settle never interleaves with it; the alert goes
+    out after the lock is released."""
+    import committee  # noqa: WPS433
+    try:
+        with committee.locked(home, wait_s=10.0):
+            did, created, dec = _create(home, mid, by, options, note, advisor, production, red_line, cfg,
+                                        committee_options)
+    except TimeoutError:
+        raise messages.MessageError("busy", "another away/consensus change holds the lock; try again") from None
+    if created:
+        try:    # the usual decision alert now (the collector keeps it, escalating, until it is answered)
+            import notify  # noqa: WPS433
+            notify.on_decision(dec)
+        except Exception as exc:  # noqa: BLE001 - the decision is open either way
+            sys.stderr.write("owner-call: alert failed: %s\n" % type(exc).__name__)
+    return did, created
+
+
+def _create(home, mid, by, options, note, advisor, production, red_line, cfg, committee_options):
     rec = messages.read(home, mid)
     if rec is None:
         raise messages.MessageError("not_found", "no such message")
@@ -192,14 +214,14 @@ def create(home, mid, by, options=None, note=None, advisor=None, production=Fals
         raise messages.MessageError("ticket", "a ticket relay is never an owner's call")
     did = open_decision(home, rec)
     if did:
-        return did, False
+        return did, False, None
     cfg = cfg if cfg is not None else fleet.load_fleet()
     replaced = None
     if st == messages.AWAITING_OWNER:
         oc = rec.get("owner_call") if isinstance(rec.get("owner_call"), dict) else {}
         last = oc.get("decision")
         d = _read(_dec_path(home, last)) if isinstance(last, str) and DEC_RE.fullmatch(last) else {}
-        if d.get("kind") == KIND and d.get("message_id") == mid and _due(d) and _settleable(d, _approvers(cfg)):
+        if d.get("kind") == KIND and d.get("message_id") == mid and _due(d) and _settleable(d, cfg):
             # its decision was answered and the sweep has not written it back yet: never a second card
             raise messages.MessageError("settling", NOTE_SETTLING)
         # the last call is missing, broken or can never settle (its answerer is no longer an approver,
@@ -257,14 +279,25 @@ def create(home, mid, by, options=None, note=None, advisor=None, production=Fals
                         {"decision": did, "next": "committee" if nxt is NEXT_COMMITTEE else "owner"}, now=now)
     else:
         messages.notice(home, mid, "owner_call", NOTE_WAIT % did, {"decision": did}, now=now)
+    if replaced:
+        _retire(home, replaced, mid, did, now)
     messages.audit(home, {"type": "message", "action": "owner-call", "id": mid, "decision": did, "by": by,
-                          "away": is_away, "advisor": code})
-    try:    # the usual decision alert now (the collector keeps it, escalating, until it is answered)
-        import notify  # noqa: WPS433
-        notify.on_decision(dec)
-    except Exception as exc:  # noqa: BLE001 - the decision is open either way
-        sys.stderr.write("owner-call: alert failed: %s\n" % type(exc).__name__)
-    return did, True
+                          "away": is_away, "advisor": code, **({"replaced": replaced} if replaced else {})})
+    return did, True, dec
+
+
+def _retire(home, old, mid, new, now):
+    """The call a new one replaced: handled ("relayed", owner_call_result "replaced"), so a late
+    answer to it can never reach the thread."""
+    if not DEC_RE.fullmatch(str(old)):
+        return
+    path = _dec_path(home, old)
+    d = _read(path)
+    if d.get("kind") != KIND or d.get("message_id") != mid or d.get("owner_call_result"):
+        return
+    d.update({"status": "relayed", "relayed_at": now, "updated_at": now, "owner_call_result": "replaced",
+              "replaced_by": new})
+    messages._write(path, d)  # noqa: SLF001
 
 
 def apply(home, cfg=None, now=None):
@@ -276,7 +309,6 @@ def apply(home, cfg=None, now=None):
         names = sorted(n for n in os.listdir(ddir) if n.endswith(".json"))
     except OSError:
         return out
-    approvers = None
     for name in names:
         path = os.path.join(ddir, name)
         try:
@@ -289,12 +321,11 @@ def apply(home, cfg=None, now=None):
         d = _read(path)
         if not _due(d):
             continue
-        if approvers is None:
-            approvers = _approvers(cfg if cfg is not None else fleet.load_fleet())
+        cfg = cfg if cfg is not None else fleet.load_fleet()
         try:
             import committee  # noqa: WPS433 - its lock is the one `board answer` and `board advise` hold
             with committee.locked(home, wait_s=2.0):
-                r = _settle(home, path, approvers, now)
+                r = _settle(home, path, cfg, now)
         except TimeoutError:
             continue            # an answer is being written: the next sweep takes it
         if r:
@@ -306,7 +337,7 @@ def _due(d):
     return d.get("kind") == KIND and d.get("status") == "answered" and not d.get("owner_call_result")
 
 
-def _settle(home, path, approvers, now):
+def _settle(home, path, cfg, now):
     """One owner_call decision back to its thread (under the consensus lock): (id, result) or None."""
     d = _read(path)         # read again under the lock: an answer may have changed it
     if not _due(d):
@@ -314,7 +345,7 @@ def _settle(home, path, approvers, now):
     now_ = messages.now_ms() if now is None else now
     mid = d.get("message_id")
     rec = messages.read(home, mid) if isinstance(mid, str) and messages.MSG_ID_RE.fullmatch(mid) else None
-    if not _settleable(d, approvers):
+    if not _settleable(d, cfg):
         return None             # bin/board marks a non-approver's answer unauthorized; never applied
     committee = d.get("answered_by") == "committee"
     ans = re.sub(r"\s+", " ", messages.defang(guard.scrub(str(d.get("answer") or "")))).strip()[:500]

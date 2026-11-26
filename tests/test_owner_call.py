@@ -286,6 +286,30 @@ class OwnerCall(unittest.TestCase):
         d4, created = owner_call.create(HOME, m["id"], "BOARD")
         self.assertTrue(created)
         self.assertEqual(rd("messages", m["id"] + ".json")["owner_call"]["replaced"], d3)
+        # a replaced call is closed: a late (re-)answer to it never reaches the thread
+        for old in (d1, d2):
+            o = rd("decisions", old + ".json")
+            self.assertEqual((o["status"], o["owner_call_result"]), ("relayed", "replaced"), old)
+        self.assertNotEqual(board("answer", d1, "I'll handle it", "--by", "local").returncode, 0)
+        o = rd("decisions", d2 + ".json")
+        o.update({"status": "answered", "answered_by": "local"})
+        with open(os.path.join(HOME, "decisions", d2 + ".json"), "w", encoding="utf-8") as fh:
+            json.dump(o, fh)                                    # even written by hand: already handled
+        before = len(replies(m["id"]))
+        self.assertEqual(owner_call.apply(HOME), [])
+        self.assertEqual(len(replies(m["id"])), before)
+        self.assertEqual(rd("messages", m["id"] + ".json")["owner_call"]["decision"], d4)
+        # a production call answered by an approver who is not a release manager never settles: replaced
+        m2 = asker_msg("please ship the hotfix to production")
+        p1 = owner_call.create(HOME, m2["id"], "BOARD", production=True)[0]
+        o = rd("decisions", p1 + ".json")
+        o.update({"status": "answered", "answer": "I'll handle it", "answered_by": BOSS})
+        with open(os.path.join(HOME, "decisions", p1 + ".json"), "w", encoding="utf-8") as fh:
+            json.dump(o, fh)
+        self.assertEqual(owner_call.apply(HOME), [])
+        p2, created = owner_call.create(HOME, m2["id"], "BOARD", production=True)
+        self.assertTrue(created)
+        self.assertEqual(rd("decisions", p1 + ".json")["owner_call_result"], "replaced")
 
     def test_04c_production_gate_and_alert(self):
         """--gate production: release managers answer it; the alert is urgent (kind gate) with fixed
@@ -415,6 +439,7 @@ class OwnerCall(unittest.TestCase):
             self.assertIn("An asker's request (message %s), decided on the owner's behalf" % mid, nb[0]["body"])
             for leak in (ANN, "ann@", "rollout"):
                 self.assertNotIn(leak, nb[0]["body"])
+            self.assertTrue([e for e in events() if e.get("action") == "notified" and e.get("id") == did])
         finally:
             away(False)
             os.remove(os.path.join(HOME, "away-decisions.json"))

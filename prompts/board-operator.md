@@ -717,7 +717,8 @@ when the owner misses them.
    decision happens only where the owner opted in, and red lines and the production gate still wait
    for the owner. The committee decides an owner's call only by an option on its allowlist
    (`committee_options`: by default I'll handle it / Pass it to a session; with your own
-   `--option`s, only those you also give as `--committee-option`, never a decline). A free-text
+   `--option`s, only those you also give as `--committee-option`, never a decline or any other way
+   of declining, in any language). A free-text
    recommendation never decides one: declining an asker's request stays the owner's. When the
    committee does decide, the thread note says the sessions decided on the owner's behalf and that
    the owner follows up when back, so "I'll handle it" is never read as nobody acting.

@@ -614,7 +614,8 @@ def notify_owner(home, did):
     dec = advice.load_decision(home, did) or {}
     c = dec.get("committee") if isinstance(dec.get("committee"), dict) else {}
     red = c.get("production") or c.get("red_line")
-    what = "production gate" if c.get("production") else "red line" if red else "board ask"
+    what = "production gate" if c.get("production") else "red line" if red else \
+        "owner's call" if dec.get("kind") == "owner_call" else "board ask"
     title = "[board] Decided by committee while you were away: %s %s → %s" % (
         what, did, away._text(dec.get("answer"), 120))  # noqa: SLF001
     notes = "; ".join("%s: %s" % (away._text(x.get("by"), 64), short(x.get("note"), 120))  # noqa: SLF001
