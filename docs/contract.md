@@ -1494,9 +1494,19 @@ While the owner is away an owner's call follows the board-ask rules ("Committee 
 or routed to) stands in for the asking session: it gets the "propose" digest, and a committee
 decision must include it. Without an advisor the committee never decides it. A production gate or
 `red_line: true` is a red line: the committee decides it only when the owner also let it decide red
-lines, and every agree then needs its own `--note` (as for a production gate). The committee never
-chooses a decline option (an answer starting with decline, reject, refuse or deny: `owner_only_decline`):
-declining an asker's request stays the owner's. The advice digest and `board advise show` label the
+lines, and every agree then needs its own `--note` (as for a production gate). The committee decides
+an owner's call **only by an option on its `committee_options` allowlist** (stored by
+`owner-call`; default I'll handle it / Pass it to a session; with custom `--option`, only what
+`--committee-option X` names, none by default, so then it always waits for the owner; a decline can
+never be listed: refused `bad_committee_option`, exit 2). A free-text recommendation never decides
+one (`owner_call_needs_option`), nor an option off the list (`owner_call_option_not_allowed`); an
+answer that reads as a decline is refused as a backstop (`owner_only_decline`). Declining an asker's
+request stays the owner's. The committee's after-the-fact notification for an owner's call is fixed
+text ("An asker's request (message <id>), decided on the owner's behalf: <answer>. Agreed: …"),
+never the asker's label or words. A new `owner-call` on an `awaiting_owner` message is refused with
+`settling` only while its last decision is answered and will settle; a last decision that is
+missing, broken or can never settle (its answerer is no longer an approver, a committee answer
+without its record) is replaced (`owner_call.replaced`). The advice digest and `board advise show` label the
 asker's words as untrusted.
 
 `all` interrupts every live session. Askers (and keys issued to them) may not send to it on any

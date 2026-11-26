@@ -692,7 +692,7 @@ when the owner misses them.
 
 1. Write your one-line summary for the owner to a file if you have one, then run
    `board message owner-call <id> --by BOARD [--note-file <file>] [--option "<label>"]...
-   [--advisor <CODE>] [--gate production] [--red-line]`. It prints the decision id (`<id> exists`
+   [--committee-option "<label>"]... [--advisor <CODE>] [--gate production] [--red-line]`. It prints the decision id (`<id> exists`
    when one is already open for the message: nothing new is made; refused with `settling` right
    after the last one was answered, until the sweep writes it back: run it again then). Board code then:
    - creates a pending decision of kind `owner_call` linked to the message (`message_id`), `from`
@@ -715,8 +715,10 @@ when the owner misses them.
 4. While the owner is away, follow sections 10a (committee advice) and 10b (committee decisions)
    as for any board ask: the advisor gets the advice digest like an asking session; a committee
    decision happens only where the owner opted in, and red lines and the production gate still wait
-   for the owner. The committee may never choose a decline option on an owner's call (board code
-   refuses it, `owner_only_decline`): declining an asker's request stays the owner's. When the
+   for the owner. The committee decides an owner's call only by an option on its allowlist
+   (`committee_options`: by default I'll handle it / Pass it to a session; with your own
+   `--option`s, only those you also give as `--committee-option`, never a decline). A free-text
+   recommendation never decides one: declining an asker's request stays the owner's. When the
    committee does decide, the thread note says the sessions decided on the owner's behalf and that
    the owner follows up when back, so "I'll handle it" is never read as nobody acting.
 5. An owner's call never times out or goes stale: it stays in the decisions list and keeps

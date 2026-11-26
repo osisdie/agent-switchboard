@@ -36,7 +36,7 @@ import messages  # noqa: E402
 import notify  # noqa: E402
 import owner_call  # noqa: E402
 
-BOSS, ANN, RM = "boss@example.com", "ann@example.com", "rm@example.com"
+BOSS, ANN, RM = "boss@example.invalid", "ann@example.invalid", "rm@example.invalid"
 
 
 def write_fleet():
@@ -259,6 +259,34 @@ class OwnerCall(unittest.TestCase):
                          ("awaiting_owner", d2, "pending"))
         self.assertTrue([x for x in replies(m["id"]) if (x.get("args") or {}).get("decision") == "d-2-00000abc"])
 
+    def test_04bb_settling_only_when_it_can_settle(self):
+        """`settling` only while the last decision is answered and will settle; a missing one, or one
+        whose answerer is no longer an approver, is replaced by a new call."""
+        m = asker_msg("please decide the logo")
+        d1 = owner_call.create(HOME, m["id"], "BOARD")[0]
+        path = os.path.join(HOME, "decisions", d1 + ".json")
+        d = rd("decisions", d1 + ".json")
+        d.update({"status": "answered", "answer": "I'll handle it", "answered_by": "gone@example.invalid"})
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(d, fh)
+        self.assertEqual(owner_call.apply(HOME), [])               # never settles
+        d2, created = owner_call.create(HOME, m["id"], "BOARD")
+        self.assertTrue(created)
+        rec = rd("messages", m["id"] + ".json")
+        self.assertEqual((rec["owner_call"]["decision"], rec["owner_call"]["replaced"]), (d2, d1))
+        # a committee answer without its record: never settles either
+        d = rd("decisions", d2 + ".json")
+        d.update({"status": "answered", "answer": "I'll handle it", "answered_by": "committee"})
+        with open(os.path.join(HOME, "decisions", d2 + ".json"), "w", encoding="utf-8") as fh:
+            json.dump(d, fh)
+        d3, created = owner_call.create(HOME, m["id"], "BOARD")
+        self.assertTrue(created)
+        # the decision file gone
+        os.remove(os.path.join(HOME, "decisions", d3 + ".json"))
+        d4, created = owner_call.create(HOME, m["id"], "BOARD")
+        self.assertTrue(created)
+        self.assertEqual(rd("messages", m["id"] + ".json")["owner_call"]["replaced"], d3)
+
     def test_04c_production_gate_and_alert(self):
         """--gate production: release managers answer it; the alert is urgent (kind gate) with fixed
         text, never the asker's label, email or words."""
@@ -331,10 +359,36 @@ class OwnerCall(unittest.TestCase):
                                                {"mode": "committee", "red_lines": "committee"})
             self.assertEqual((ok, why), (True, "ok"), kw)
             self.assertEqual((plan["asker"], plan["answer"], plan["red_line"]), ("API", "I'll handle it", True))
+        S = {"mode": "committee", "red_lines": "owner"}
         did, d = setup()
-        ok, why, _ = committee.evaluate(HOME, did, record(did, "owner", "Decline (say why)"), d, away_rec,
-                                        {"mode": "committee", "red_lines": "owner"})
-        self.assertEqual((ok, why), (False, "owner_only_decline"))
+        self.assertEqual(d["committee_options"], ["I'll handle it", "Pass it to a session"])
+        # an allowlist, never wording: a free-text decline, an option off the list, a decline listed by hand
+        free = dict(record(did, "owner"), option=None, recommendation="Declined: out of scope for this board")
+        self.assertEqual(committee.evaluate(HOME, did, free, d, away_rec, S)[:2], (False, "owner_call_needs_option"))
+        free["recommendation"] = "婉拒：不在範圍內，這件事主人回來再說"
+        self.assertEqual(committee.evaluate(HOME, did, free, d, away_rec, S)[:2], (False, "owner_call_needs_option"))
+        self.assertEqual(committee.evaluate(HOME, did, record(did, "owner", "Decline (say why)"), d, away_rec, S)[:2],
+                         (False, "owner_call_option_not_allowed"))
+        self.assertEqual(committee.evaluate(HOME, did, record(did, "owner", "Decline (say why)"),
+                                            dict(d, committee_options=["Decline (say why)"]), away_rec, S)[:2],
+                         (False, "owner_only_decline"))           # the backstop
+        self.assertEqual(committee.evaluate(HOME, did, record(did, "owner", "Pass it to a session"), d, away_rec, S)[:2],
+                         (True, "ok"))
+        # custom options: none for the committee unless named; a named one decides, the others never
+        did, d = setup(options=["Ship it", "Hold it"])
+        self.assertEqual(d["committee_options"], [])
+        self.assertEqual(committee.evaluate(HOME, did, record(did, "owner", "Ship it"), d, away_rec, S)[:2],
+                         (False, "owner_call_option_not_allowed"))
+        did, d = setup(options=["Ship it", "Hold it"], committee_options=["Ship it"])
+        self.assertEqual(committee.evaluate(HOME, did, record(did, "owner", "Ship it"), d, away_rec, S)[:2], (True, "ok"))
+        self.assertEqual(committee.evaluate(HOME, did, record(did, "owner", "Hold it"), d, away_rec, S)[:2],
+                         (False, "owner_call_option_not_allowed"))
+        m = asker_msg("please decide")
+        for extra in (["--option", "Ship it", "--option", "Decline", "--committee-option", "Decline"],
+                      ["--committee-option", "Decline (say why)"], ["--committee-option", "Not an option"]):
+            r = board("message", "owner-call", m["id"], "--by", "BOARD", *extra)
+            self.assertEqual(r.returncode, 2, (extra, r.stderr))
+        self.assertEqual(rd("messages", m["id"] + ".json")["status"], "new")
         ok, why, _ = committee.evaluate(HOME, did, record(did, "owner"), dict(d, advisor=None), away_rec,
                                         {"mode": "committee", "red_lines": "owner"})
         self.assertEqual((ok, why), (False, "no_asker"))
@@ -354,6 +408,13 @@ class OwnerCall(unittest.TestCase):
             a = [x for x in replies(mid) if x.get("notice") == "owner_answer"][0]
             self.assertIn("decided on the owner's behalf", a["body"])
             self.assertIn("The owner follows up when back", a["body"])
+            # the owner's after-the-fact notification: fixed text, never the asker's label or words
+            committee.notify_owner(HOME, did)
+            nb = [e for e in events() if e.get("action") == "notify-body" and e.get("id") == did]
+            self.assertEqual(len(nb), 1)
+            self.assertIn("An asker's request (message %s), decided on the owner's behalf" % mid, nb[0]["body"])
+            for leak in (ANN, "ann@", "rollout"):
+                self.assertNotIn(leak, nb[0]["body"])
         finally:
             away(False)
             os.remove(os.path.join(HOME, "away-decisions.json"))
@@ -441,7 +502,8 @@ class OwnerCall(unittest.TestCase):
             d2, _ = owner_call.create(HOME, m2["id"], "BOARD", red_line=True)
             r = board("advise", d2, "--from", "WEB", "--option", "1", "the hotfix is small and reviewed by two")
             self.assertEqual(r.returncode, 0, r.stderr)
-            src = open(os.path.join(REPO, "bin", "board"), encoding="utf-8").read()
+            with open(os.path.join(REPO, "bin", "board"), encoding="utf-8") as fh:
+                src = fh.read()
             self.assertIn('|| is_red_owner_call "$(dec_path "$id")"; }', src)
             self.assertIn('is_production "$df" || is_red_owner_call "$df"; }', src)
         finally:

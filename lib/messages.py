@@ -40,8 +40,8 @@ CLI (bin/board message ...):
   messages.py route MSG_ID CODE [CODE...] [--by WHO]      the operator: record the sessions a
                                                           triage message was relayed to (routed_to,
                                                           relayed_to, status relayed), audited
-  messages.py owner-call MSG_ID --by WHO [--option X]... [--note-file F] [--advisor CODE]
-                         [--gate production] [--red-line]
+  messages.py owner-call MSG_ID --by WHO [--option X]... [--committee-option X]... [--note-file F]
+                         [--advisor CODE] [--gate production] [--red-line]
                                                           the operator: the message is the owner's
                                                           call: a pending owner decision linked to
                                                           it (lib/owner_call.py); prints its id
@@ -818,6 +818,9 @@ def main(argv):
     oc.add_argument("--note-file", dest="note_file", help="the operator's note for the owner (context)")
     oc.add_argument("--advisor", help="the session that advises while the owner is away (default: the one "
                                       "the message went to)")
+    oc.add_argument("--committee-option", dest="committee_option", action="append", default=None,
+                    help="an option the committee may pick while the owner is away (repeat; default: the two "
+                         "default options that are not a decline; with custom --option, none unless named)")
     oc.add_argument("--gate", choices=["production"], help="a production gate: release managers decide")
     oc.add_argument("--red-line", dest="red_line", action="store_true", help="a red line: the committee "
                     "decides it only when the owner let it decide red lines")
@@ -885,7 +888,8 @@ def main(argv):
                 did, created = owner_call.create(home, args.id, args.by, options=args.option or None,
                                                  note=_text(None, args.note_file) if args.note_file else None,
                                                  advisor=args.advisor, production=args.gate == "production",
-                                                 red_line=args.red_line)
+                                                 red_line=args.red_line,
+                                                 committee_options=args.committee_option)
             except owner_call.messages.MessageError as exc:   # that module's import of this file
                 raise MessageError(exc.code, exc.detail) from None
             print(did if created else "%s exists" % did)

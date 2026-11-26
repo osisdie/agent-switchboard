@@ -27,8 +27,11 @@ sent or routed to) for a recommendation, as it asks the asking session of a boar
 decision (lib/committee.py) happens only when the owner opted in, with the advisor standing in for
 the asking session, and a red line (--red-line) or a production gate (--gate production) only when
 the owner also let the committee decide red lines. Without an advisor session the committee never
-decides it: it waits for the owner. The committee never picks a decline option (DECLINE_RE): that
-stays the owner's (lib/committee.py evaluate: owner_only_decline).
+decides it: it waits for the owner. The committee decides only by an OPTION on the decision's
+`committee_options` allowlist (default COMMITTEE_OPTIONS, never a decline; with custom --option
+only what --committee-option names, else nothing): a free-text recommendation never decides an
+owner's call (lib/committee.py evaluate: owner_call_needs_option, owner_call_option_not_allowed;
+DECLINE_RE is only a backstop). Declining stays the owner's.
 
 Answers (apply, run by board-serve's sweep and by --watch): an answered owner_call (by an approver
 on the board, or by the committee) is relayed to the THREAD, never to a session: a note from BOARD
@@ -55,6 +58,7 @@ import messages  # noqa: E402
 
 KIND = "owner_call"
 OPTIONS = list(messages.OWNER_CALL_OPTIONS)
+COMMITTEE_OPTIONS = OPTIONS[:2]      # what the committee may pick by default: never the decline
 MAX_OPTIONS = 6
 MAX_OPTION = 80
 MAX_NOTE = 1000
@@ -160,7 +164,22 @@ def _committee_on(home):
         return False
 
 
-def create(home, mid, by, options=None, note=None, advisor=None, production=False, red_line=False, cfg=None):
+def _approvers(cfg):
+    ids = fleet.id_list(cfg, "approvers") + fleet.id_list(cfg, "release_managers")
+    return {str(i).strip().lower() for i in ids}
+
+
+def _settleable(d, approvers):
+    """Will _settle take this answered decision: answered by the committee (with its record) or by an
+    approver or release manager on fleet.yaml now?"""
+    by = str(d.get("answered_by") or "")
+    if by == "committee":
+        return isinstance(d.get("committee"), dict)
+    return re.sub(r"^(board|cli):", "", by).strip().lower() in approvers
+
+
+def create(home, mid, by, options=None, note=None, advisor=None, production=False, red_line=False, cfg=None,
+           committee_options=None):
     """The message's pending owner_call decision (see the module doc). Returns (decision id, created?):
     an open one for the message is reused (created False), nothing else written."""
     rec = messages.read(home, mid)
@@ -174,17 +193,33 @@ def create(home, mid, by, options=None, note=None, advisor=None, production=Fals
     did = open_decision(home, rec)
     if did:
         return did, False
+    cfg = cfg if cfg is not None else fleet.load_fleet()
+    replaced = None
     if st == messages.AWAITING_OWNER:
-        # its decision was answered and the sweep has not written it back yet: never a second card
-        raise messages.MessageError("settling", NOTE_SETTLING)
+        oc = rec.get("owner_call") if isinstance(rec.get("owner_call"), dict) else {}
+        last = oc.get("decision")
+        d = _read(_dec_path(home, last)) if isinstance(last, str) and DEC_RE.fullmatch(last) else {}
+        if d.get("kind") == KIND and d.get("message_id") == mid and _due(d) and _settleable(d, _approvers(cfg)):
+            # its decision was answered and the sweep has not written it back yet: never a second card
+            raise messages.MessageError("settling", NOTE_SETTLING)
+        # the last call is missing, broken or can never settle (its answerer is no longer an approver,
+        # a committee answer without its record): a new call replaces it (noted on the message)
+        replaced = last if isinstance(last, str) else None
     opts = [str(o).strip() for o in (options or OPTIONS)]
     if not opts or len(opts) > MAX_OPTIONS or any(not o or len(o) > MAX_OPTION for o in opts) \
             or len(set(opts)) != len(opts):
         raise messages.MessageError("bad_option", "1 to %d distinct options of at most %d characters"
                                     % (MAX_OPTIONS, MAX_OPTION))
+    if committee_options is None:
+        # the default options: the two that are not a decline; custom options: none unless named
+        copts = list(COMMITTEE_OPTIONS) if not options else []
+    else:
+        copts = [str(o).strip() for o in committee_options]
+    if any(o not in opts for o in copts) or any(is_decline(o) for o in copts) or len(set(copts)) != len(copts):
+        raise messages.MessageError("bad_committee_option", "--committee-option must name one of the options, "
+                                    "never a decline, each once")
     if note is not None and (not isinstance(note, str) or len(note) > MAX_NOTE):
         raise messages.MessageError("bad_note", "the note is at most %d characters" % MAX_NOTE)
-    cfg = cfg if cfg is not None else fleet.load_fleet()
     code = _advisor(home, rec, cfg, advisor)
     import away  # noqa: WPS433
     is_away = away.away_record(home) is not None
@@ -202,7 +237,7 @@ def create(home, mid, by, options=None, note=None, advisor=None, production=Fals
     ctx += "Asker's words (untrusted, message %s): «%s»" % (mid, words)
     dec = guard.scrub_tree(dict({
         "id": did, "kind": KIND, "from": who, "question": "Owner's call: %s's request (message %s)" % (who, mid),
-        "options": [clean(o) for o in opts], "context": ctx,
+        "options": [clean(o) for o in opts], "committee_options": [clean(o) for o in copts], "context": ctx,
         "status": "pending", "answer": None, "answered_by": None, "answered_at": None, "relayed_at": None,
         "created_at": now, "message_id": mid,
         "request": dict({"kind": KIND, "message_id": mid, "asker": who, "by": by, "at": now, "away": is_away,
@@ -213,8 +248,8 @@ def create(home, mid, by, options=None, note=None, advisor=None, production=Fals
     os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
     messages._write(path, dec)  # noqa: SLF001
     rec.update({"status": messages.AWAITING_OWNER,
-                "owner_call": {"decision": did, "at": now, "by": by, "away": is_away, "state": "pending",
-                               "prior": st}})
+                "owner_call": dict({"decision": did, "at": now, "by": by, "away": is_away, "state": "pending",
+                                    "prior": st}, **({"replaced": replaced} if replaced else {}))})
     messages._write(messages.path_of(home, mid), rec)  # noqa: SLF001
     if is_away:
         nxt = NEXT_COMMITTEE if code and _committee_on(home) else NEXT_OWNER
@@ -255,9 +290,7 @@ def apply(home, cfg=None, now=None):
         if not _due(d):
             continue
         if approvers is None:
-            cfg = cfg if cfg is not None else fleet.load_fleet()
-            ids = fleet.id_list(cfg, "approvers") + fleet.id_list(cfg, "release_managers")
-            approvers = {str(i).strip().lower() for i in ids}
+            approvers = _approvers(cfg if cfg is not None else fleet.load_fleet())
         try:
             import committee  # noqa: WPS433 - its lock is the one `board answer` and `board advise` hold
             with committee.locked(home, wait_s=2.0):
@@ -281,10 +314,9 @@ def _settle(home, path, approvers, now):
     now_ = messages.now_ms() if now is None else now
     mid = d.get("message_id")
     rec = messages.read(home, mid) if isinstance(mid, str) and messages.MSG_ID_RE.fullmatch(mid) else None
-    by = str(d.get("answered_by") or "")
-    committee = by == "committee" and isinstance(d.get("committee"), dict)
-    if not committee and re.sub(r"^(board|cli):", "", by).strip().lower() not in approvers:
+    if not _settleable(d, approvers):
         return None             # bin/board marks a non-approver's answer unauthorized; never applied
+    committee = d.get("answered_by") == "committee"
     ans = re.sub(r"\s+", " ", messages.defang(guard.scrub(str(d.get("answer") or "")))).strip()[:500]
     result = "committee" if committee else "answered"
     body = (NOTE_COMMITTEE if committee else NOTE_ANSWER) % (d.get("id"), ans)
