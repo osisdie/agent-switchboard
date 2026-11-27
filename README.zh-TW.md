@@ -165,7 +165,8 @@ scripts/setup-dev.sh           # only if you'll commit to this repo: pre-commit 
   連結到 `~/.local/bin`。
 
 重複執行不會有任何變動。`scripts/install.sh --uninstall` 會移除 hook 項目、還原你的 `statusLine`，
-並移除這些符號連結。
+並移除這些符號連結。加上 `--tab-bell` 還會讓需要你處理的 session 的終端機分頁響鈴（見
+[分頁鈴聲](#tab-bell-light-up-the-tab-that-needs-you)）。
 
 **設定**放在 `$BOARD_CONFIG_DIR`（預設：repo 裡有 `tmp-local/` 就用它，否則用
 `~/.config/agent-switchboard`）：
@@ -394,6 +395,37 @@ pane 標題裡的任務、執行中或閒置、記憶體用量）、已用的 co
 「在做什麼」會引用 session 最後一則訊息和最後一個指示的第一行，從 transcript 結尾讀取並經過機密
 防護。這兩項**只給核可者**看：其他人只會看到一行說明；它們也絕不會鏡像到 Artifact 或放進告警。
 在 `fleet.yaml` 設 `cards: {show_prompt: false}` 可以關掉指示那一行。
+
+<a id="tab-bell-light-up-the-tab-that-needs-you"></a>
+### 分頁鈴聲：讓需要你的分頁亮起來
+
+每個 session 各開在一個終端機分頁時，`scripts/install.sh --tab-bell` 會讓需要你處理的 session 的分頁
+出現鈴鐺圖示（工作列也會閃），你在別的分頁做事也看得到。它會把 `hooks/tab-bell.sh` 加成
+`Notification` hook，對應四個 matcher：`permission_prompt`、`elicitation_dialog`、
+`elicitation_url_dialog` 和 `agent_needs_input`。這個 hook 只對 tmux pane 的 tty 寫一個 BEL（不在
+tmux 裡時，有控制終端機才寫到控制終端機），不輸出任何東西，一律 exit 0。
+
+Claude Code 本身也能響終端機鈴聲（`/config` 的通知管道 `terminal_bell`，也就是
+`preferredNotifChannel` 設定），但那會套用到它所有的通知。這個 hook 依 matcher 響鈴，所以
+`idle_prompt` 保持安靜：否則每一輪結束都會響。
+
+看不看得到，取決於這個 repo 以外的兩個設定：
+
+- tmux：確認 `bell-action` 是 `any`（tmux 的預設值；有些設定檔會改成 `none` 或 `current`），
+  `visual-bell` 是 `off`（或 `both`）：`visual-bell on` 只會顯示一行訊息，不會把 BEL 傳出去。
+  執行中的 tmux server 不是這些值時，`install.sh --tab-bell` 會提醒你。
+
+  ```bash
+  tmux set -g bell-action any; tmux set -g visual-bell off   # and the same lines in ~/.tmux.conf
+  ```
+
+- 終端機：Windows Terminal 在它的 settings.json 的 `profiles.defaults` 底下加上
+  `"bellStyle": ["window", "taskbar"]`（分頁出現鈴鐺圖示、工作列閃爍，沒有聲音）。其他終端機
+  請查它們的鈴聲設定（視覺鈴聲、分頁上的鈴聲或活動標記）。
+
+要關掉某個 session 的鈴聲，在它的環境變數設 `BOARD_TAB_BELL=0`（`off`、`false`、`no` 也可以）；設
+`BOARD_TAB_BELL=tmux` 則只透過 tmux 響鈴。要移除，執行 `scripts/install.sh --uninstall`，或手動從
+`~/.claude/settings.json` 刪掉執行 `hooks/tab-bell.sh` 的那四個 `Notification` 項目。
 
 ### 決策
 
@@ -1592,6 +1624,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `lib/actions.py` | Session 動作：在閒置的 session 輸入白名單內的斜線指令（`/compact`、`/remote-control`），附 press 式檢查、壓縮佇列與收集器的接手（`board session`） |
 | `lib/resume.py` | 用量上限後繼續：在 pane 中辨認 Claude 的上限畫面（比對樣式在 `fleet.yaml limit_resume`），送出最少的按鍵與繼續提示，每按一鍵都重新確認畫面（`board resume`）；也供收集器定期查看，給卡片的「用量上限」標籤用 |
 | `hooks/board-statusline-tap.sh` | statusline 包裝器，把 5h／每週用量記錄到 `usage.json`，不改變你的 statusline |
+| `hooks/tab-bell.sh` | 選用的 Notification hook：session 需要你時讓它的 tmux pane 響鈴，一律 exit 0 |
 | `bin/fleet-up` | 依 `fleet.yaml` 啟動整組 session 的冪等啟動器（設定 `serve.enabled` 時也會啟動 `board-serve`） |
 | `bin/board-serve`、`lib/serve.py` | 自架看板：local 模式的頁面 + 建立在 `$BOARD_HOME` 上的 JSON／SSE API，只限 127.0.0.1；`--watch` 供 local 模式的 operator 使用 |
 | `autostart/` | Windows 登入工作與 systemd 使用者 unit |

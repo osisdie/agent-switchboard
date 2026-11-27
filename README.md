@@ -167,7 +167,8 @@ scripts/setup-dev.sh           # only if you'll commit to this repo: pre-commit 
   `fleet-up`) into `~/.local/bin`.
 
 Re-running it changes nothing. `scripts/install.sh --uninstall` removes the hook entries, restores
-your `statusLine` and removes the symlinks.
+your `statusLine` and removes the symlinks. Add `--tab-bell` to also ring the terminal tab of a
+session that needs you (see [Tab bell](#tab-bell-light-up-the-tab-that-needs-you)).
 
 **Configure** in `$BOARD_CONFIG_DIR` (default: `tmp-local/` in the repo if it exists, else
 `~/.config/agent-switchboard`):
@@ -413,6 +414,38 @@ line of its last prompt, read from the tail of its transcript and run through th
 Those two are for **approvers only**: anyone else sees a note instead, and they are never mirrored
 to the Artifact or put in an alert. Turn the prompt off with `cards: {show_prompt: false}` in
 `fleet.yaml`.
+
+### Tab bell: light up the tab that needs you
+
+If each session sits in its own terminal tab, `scripts/install.sh --tab-bell` makes the tab of a
+session that needs you show a bell (and the taskbar flash) while you work elsewhere. It adds
+`hooks/tab-bell.sh` as a `Notification` hook for four matchers: `permission_prompt`,
+`elicitation_dialog`, `elicitation_url_dialog` and `agent_needs_input`. The hook writes one BEL to
+the tmux pane's tty (outside tmux, to the controlling terminal if it has one), prints nothing and
+always exits 0.
+
+Claude Code can ring the terminal bell itself (`/config`, notification channel `terminal_bell`,
+the `preferredNotifChannel` setting), but that covers all of its notifications. This hook rings per
+matcher, so `idle_prompt` stays quiet: otherwise every finished turn would ring.
+
+Two settings outside this repo decide whether you see it:
+
+- tmux: make sure `bell-action` is `any` (the tmux default; some configs set `none` or `current`)
+  and `visual-bell` is `off` (or `both`): `visual-bell on` shows a message instead of passing the
+  BEL through. `install.sh --tab-bell` warns when the running tmux server has other values.
+
+  ```bash
+  tmux set -g bell-action any; tmux set -g visual-bell off   # and the same lines in ~/.tmux.conf
+  ```
+
+- the terminal: in Windows Terminal, add `"bellStyle": ["window", "taskbar"]` under
+  `profiles.defaults` in its settings.json (a bell icon on the tab and a taskbar flash, no sound).
+  Other terminals: check their bell setting (visual bell, bell or activity mark on the tab).
+
+Turn it off for a session with `BOARD_TAB_BELL=0` (or `off`, `false`, `no`) in its environment, or
+use `BOARD_TAB_BELL=tmux` to ring only through tmux. To remove it, run `scripts/install.sh
+--uninstall`, or delete the four `Notification` entries that run `hooks/tab-bell.sh` from
+`~/.claude/settings.json` by hand.
 
 ### Decisions
 
@@ -1791,6 +1824,7 @@ scripts/setup-dev.sh   # points git at .githooks/ (core.hooksPath) and checks th
 | `lib/actions.py` | Session actions: the allowlisted slash commands (`/compact`, `/remote-control`) typed into idle sessions with press-style checks, the compact queue and the collector's hand-off (`board session`) |
 | `lib/resume.py` | Resume after a usage limit: recognizes Claude's limit screens in a pane (patterns in `fleet.yaml limit_resume`), sends the fewest keys and the resume prompt, re-checking the screen between keys (`board resume`); the collector's throttled look for the card's "usage limit" chip |
 | `hooks/board-statusline-tap.sh` | Statusline wrapper that records 5h/weekly usage to `usage.json` without changing your statusline |
+| `hooks/tab-bell.sh` | Opt-in Notification hook: rings the bell of the session's tmux pane when it needs you, always exits 0 |
 | `bin/fleet-up` | Idempotent fleet launcher from `fleet.yaml` (also starts `board-serve` with `serve.enabled`) |
 | `bin/board-serve`, `lib/serve.py` | Self-hosted board: the page in local mode + JSON/SSE API over `$BOARD_HOME`, 127.0.0.1 only; `--watch` feeds the local-mode operator |
 | `autostart/` | Windows logon task and systemd user unit |
